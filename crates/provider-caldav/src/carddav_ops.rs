@@ -16,7 +16,7 @@ use crate::{
     discovery::{authenticate_before_reading, follow, trusted_start},
     error::CalDavError,
     href::redirect_href,
-    multiget::same_path,
+    multiget::{Multigets, same_path},
     request::{
         ADDRESS_BOOK_LIST_PROPFIND, ADDRESS_BOOK_PRINCIPAL_PROPFIND, address_book_sync_report,
         addressbook_multiget_as_stored,
@@ -208,6 +208,7 @@ pub(crate) async fn contact_report(
 
 pub(crate) async fn fallback_contact_sync(
     executor: &dyn DavExecutor,
+    multigets: &Multigets,
     collection: &str,
     book: &AddressBookId,
     writable: bool,
@@ -215,6 +216,7 @@ pub(crate) async fn fallback_contact_sync(
 ) -> Result<engine_provider::ScopeSync<ContactCard>, CalDavError> {
     let sync = ctag_sync(
         executor,
+        multigets,
         collection,
         cursor,
         "address-data",

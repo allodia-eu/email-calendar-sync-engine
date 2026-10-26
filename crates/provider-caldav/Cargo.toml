@@ -29,6 +29,8 @@ serde_json = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 futures-util = { workspace = true }
+# `sync` for the semaphore one provider's multigets share (`multiget::Multigets`).
+tokio = { workspace = true, features = ["sync"] }
 
 [features]
 # Exposes `fuzz_parse` for a cargo-fuzz target driving the iCalendar parser; off

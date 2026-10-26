@@ -26,7 +26,7 @@ use crate::{
     },
     ctag_sync::{is_ctag_cursor, refuses_sync_collection},
     error::CalDavError,
-    multiget::fill_bodies,
+    multiget::{Multigets, fill_bodies},
     request::{addressbook_multiget_as_stored, addressbook_multiget_report},
     transport::{DavClient, DavExecutor, DavMethod, Precondition, WriteRequest},
     vcard_write,
@@ -75,6 +75,7 @@ pub struct CardDavProvider {
     /// account has no contacts here, which is a capability the host reads, not an error.
     advertised: bool,
     capabilities: Capabilities,
+    multigets: Multigets,
 }
 
 impl core::fmt::Debug for CardDavProvider {
@@ -162,6 +163,7 @@ impl CardDavProvider {
             writable_books,
             writable,
             advertised,
+            multigets: Multigets::default(),
         })
     }
 
@@ -267,6 +269,7 @@ impl ContactsProvider for CardDavProvider {
         if is_ctag_cursor(cursor) {
             let sync = fallback_contact_sync(
                 self.executor.as_ref(),
+                &self.multigets,
                 self.href(),
                 &self.collection,
                 self.writable,
@@ -293,6 +296,7 @@ impl ContactsProvider for CardDavProvider {
             _ => {
                 let sync = fallback_contact_sync(
                     self.executor.as_ref(),
+                    &self.multigets,
                     self.href(),
                     &self.collection,
                     self.writable,
@@ -307,6 +311,7 @@ impl ContactsProvider for CardDavProvider {
         };
         fill_bodies(
             self.executor.as_ref(),
+            &self.multigets,
             self.href(),
             &mut report,
             "address-data",

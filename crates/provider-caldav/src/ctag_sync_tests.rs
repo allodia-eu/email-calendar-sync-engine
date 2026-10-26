@@ -14,6 +14,7 @@ use crate::{
     CalDavError, CardDavProvider,
     carddav_tests::{BOOKS, PRINCIPAL},
     ctag_sync::refuses_sync_collection,
+    multiget::Multigets,
     sync::sync_events,
     test_support::{Replay, ok, options, status},
     transport::DavMethod,
@@ -72,7 +73,7 @@ async fn a_calendar_whose_sync_answer_has_no_token_is_read_through_its_ctag() {
         ok(EVENT),
     ]);
 
-    let result = sync_events(&exec, CALENDAR, &calendar(), None)
+    let result = sync_events(&exec, &Multigets::default(), CALENDAR, &calendar(), None)
         .await
         .unwrap();
 
@@ -113,9 +114,15 @@ async fn a_calendar_held_by_its_ctag_asks_only_for_the_ctag_while_it_stands_stil
     let exec = Replay::new(vec![ok(&ctag(CALENDAR, "c-1"))]);
     let cursor = SyncState::new("ctag:c-1");
 
-    let result = sync_events(&exec, CALENDAR, &calendar(), Some(&cursor))
-        .await
-        .unwrap();
+    let result = sync_events(
+        &exec,
+        &Multigets::default(),
+        CALENDAR,
+        &calendar(),
+        Some(&cursor),
+    )
+    .await
+    .unwrap();
 
     assert!(
         matches!(&result.update, SyncUpdate::Delta { changed, removed, .. }
@@ -133,9 +140,15 @@ async fn a_calendar_whose_ctag_moved_is_read_again_in_full() {
     ]);
     let cursor = SyncState::new("ctag:c-1");
 
-    let result = sync_events(&exec, CALENDAR, &calendar(), Some(&cursor))
-        .await
-        .unwrap();
+    let result = sync_events(
+        &exec,
+        &Multigets::default(),
+        CALENDAR,
+        &calendar(),
+        Some(&cursor),
+    )
+    .await
+    .unwrap();
 
     // A snapshot, so whatever the listing no longer names is removed.
     assert!(result.is_snapshot());

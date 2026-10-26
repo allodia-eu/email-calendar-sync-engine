@@ -6,7 +6,7 @@ use engine_core::{
 };
 use engine_provider::{ContactSourceSync, ContactsProvider, IgnoreConnectSteps};
 
-use super::same_path;
+use super::{Multigets, same_path};
 use crate::{
     CardDavProvider,
     carddav_tests::{BOOKS, PRINCIPAL},
@@ -39,7 +39,9 @@ async fn a_member_synced_without_its_calendar_data_is_fetched_by_multiget() {
     let exec = Replay::new(vec![ok(BODILESS_SYNC), ok(EVENT_BODY)]);
     let calendar = CalendarId::try_from(CALENDAR).unwrap();
 
-    let result = sync_events(&exec, CALENDAR, &calendar, None).await.unwrap();
+    let result = sync_events(&exec, &Multigets::default(), CALENDAR, &calendar, None)
+        .await
+        .unwrap();
 
     let SyncUpdate::Snapshot { objects, present } = &result.update else {
         panic!("expected a snapshot");
@@ -83,7 +85,9 @@ async fn a_member_keeps_the_href_the_sync_named_it_by() {
     let exec = Replay::new(vec![ok(BODILESS_SYNC), ok(EVENT_BODY_ABSOLUTE)]);
     let calendar = CalendarId::try_from(CALENDAR).unwrap();
 
-    let result = sync_events(&exec, CALENDAR, &calendar, None).await.unwrap();
+    let result = sync_events(&exec, &Multigets::default(), CALENDAR, &calendar, None)
+        .await
+        .unwrap();
 
     let SyncUpdate::Snapshot { objects, present } = &result.update else {
         panic!("expected a snapshot");
@@ -101,7 +105,9 @@ async fn an_event_the_multiget_returns_without_a_body_stays_present() {
     let exec = Replay::new(vec![ok(BODILESS_SYNC), ok(NO_BODY)]);
     let calendar = CalendarId::try_from(CALENDAR).unwrap();
 
-    let result = sync_events(&exec, CALENDAR, &calendar, None).await.unwrap();
+    let result = sync_events(&exec, &Multigets::default(), CALENDAR, &calendar, None)
+        .await
+        .unwrap();
 
     let SyncUpdate::Snapshot { objects, present } = &result.update else {
         panic!("expected a snapshot");
@@ -193,7 +199,9 @@ async fn a_member_the_multiget_answers_404_for_is_removed() {
     let exec = Replay::new(vec![ok(BODILESS_SYNC), ok(GONE)]);
     let calendar = CalendarId::try_from(CALENDAR).unwrap();
 
-    let result = sync_events(&exec, CALENDAR, &calendar, None).await.unwrap();
+    let result = sync_events(&exec, &Multigets::default(), CALENDAR, &calendar, None)
+        .await
+        .unwrap();
 
     let SyncUpdate::Snapshot { objects, present } = &result.update else {
         panic!("expected a snapshot");
@@ -249,28 +257,34 @@ impl crate::transport::DavExecutor for Overlapping {
     }
 }
 
-#[tokio::test]
-async fn the_multigets_of_a_large_collection_are_in_flight_together() {
-    // Five hundred bodiless members: five multigets of a hundred.
+/// A sync answer of `count` bodiless members of `collection`.
+fn bodiless(collection: &str, count: usize) -> crate::dav::MultiStatus {
     let mut members = String::new();
-    for n in 0..500 {
+    for n in 0..count {
         use std::fmt::Write as _;
         write!(
             members,
-            "<D:response><D:href>/dav/cal/alice/default/{n}.ics</D:href><D:propstat><D:prop>\
+            "<D:response><D:href>{collection}{n}.ics</D:href><D:propstat><D:prop>\
              <D:getetag>\"e{n}\"</D:getetag></D:prop><D:status>HTTP/1.1 200 OK</D:status>\
              </D:propstat></D:response>"
         )
         .unwrap();
     }
-    let mut report = crate::dav::parse_multistatus(&format!(
+    crate::dav::parse_multistatus(&format!(
         r#"<D:multistatus xmlns:D="DAV:">{members}</D:multistatus>"#
     ))
-    .unwrap();
+    .unwrap()
+}
+
+#[tokio::test]
+async fn the_multigets_of_a_large_collection_are_in_flight_together() {
+    // Five hundred bodiless members: five multigets of a hundred.
+    let mut report = bodiless(CALENDAR, 500);
     let exec = Overlapping::default();
 
     super::fill_bodies(
         &exec,
+        &Multigets::default(),
         CALENDAR,
         &mut report,
         "calendar-data",
@@ -283,5 +297,41 @@ async fn the_multigets_of_a_large_collection_are_in_flight_together() {
         exec.most.load(std::sync::atomic::Ordering::SeqCst),
         super::IN_FLIGHT,
         "as many multigets out at once as the bound allows, and no more"
+    );
+}
+
+#[tokio::test]
+async fn collections_synced_at_once_share_one_bound() {
+    // The engine syncs several calendars at once; each sending its own four would put eight
+    // on the server here.
+    const WORK: &str = "/dav/cal/alice/work/";
+    let (mut home, mut work) = (bodiless(CALENDAR, 500), bodiless(WORK, 500));
+    let exec = Overlapping::default();
+    let multigets = Multigets::default();
+
+    let (a, b) = tokio::join!(
+        super::fill_bodies(
+            &exec,
+            &multigets,
+            CALENDAR,
+            &mut home,
+            "calendar-data",
+            crate::request::calendar_multiget_report,
+        ),
+        super::fill_bodies(
+            &exec,
+            &multigets,
+            WORK,
+            &mut work,
+            "calendar-data",
+            crate::request::calendar_multiget_report,
+        ),
+    );
+    a.unwrap();
+    b.unwrap();
+
+    assert_eq!(
+        exec.most.load(std::sync::atomic::Ordering::SeqCst),
+        super::IN_FLIGHT
     );
 }

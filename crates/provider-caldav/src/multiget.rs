@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 
 use futures_util::{StreamExt, stream};
+use tokio::sync::Semaphore;
 
 use crate::{
     dav::MultiStatus,
@@ -20,10 +21,23 @@ use crate::{
 /// requests on its first sync, few enough that no answer is unreasonably large.
 const BATCH: usize = 100;
 
-/// How many multigets are in flight at once. They are independent, and each answer is put back
-/// by href, so the order they land in does not matter. Sent one after another, a first sync of
-/// six thousand iCloud events waited out sixty round trips of most of a second each.
+/// How many multigets are in flight at once, across every collection one provider syncs. They
+/// are independent, and each answer is put back by href, so the order they land in does not
+/// matter. Sent one after another, a first sync of six thousand iCloud events waited out sixty
+/// round trips of most of a second each.
 const IN_FLIGHT: usize = 4;
+
+/// The bound on one provider's multigets in flight: [`IN_FLIGHT`], shared by every collection
+/// it syncs. The engine syncs several calendars at once, and a bound per collection would let
+/// each send its own four.
+#[derive(Debug)]
+pub(crate) struct Multigets(Semaphore);
+
+impl Default for Multigets {
+    fn default() -> Self {
+        Self(Semaphore::new(IN_FLIGHT))
+    }
+}
 
 /// Fetches, with `multiget`, the body of every changed member of `report` that arrived without
 /// its `data` property, and puts each answer in place of the member it fetched.
@@ -38,6 +52,7 @@ const IN_FLIGHT: usize = 4;
 /// Returns [`CalDavError`] when a multiget fails.
 pub(crate) async fn fill_bodies(
     exec: &dyn DavExecutor,
+    multigets: &Multigets,
     collection: &str,
     report: &mut MultiStatus,
     data: &str,
@@ -64,7 +79,7 @@ pub(crate) async fn fill_bodies(
         .collect();
     let requests: Vec<_> = missing
         .chunks(BATCH)
-        .map(|batch| fetch(exec, collection, multiget(batch)))
+        .map(|batch| fetch(exec, multigets, collection, multiget(batch)))
         .collect();
     let mut answers = stream::iter(requests).buffer_unordered(IN_FLIGHT);
     while let Some(fetched) = answers.next().await {
@@ -94,9 +109,15 @@ pub(crate) async fn fill_bodies(
 /// is not `Send` for every lifetime the trait's boxed future would need.
 async fn fetch(
     exec: &dyn DavExecutor,
+    multigets: &Multigets,
     collection: &str,
     body: String,
 ) -> Result<MultiStatus, CalDavError> {
+    let _permit = multigets
+        .0
+        .acquire()
+        .await
+        .expect("the multiget semaphore is never closed");
     exec.send(DavMethod::Report, collection, "1", body)
         .await?
         .into_multistatus()
