@@ -3,20 +3,45 @@
 # SabreDAV underneath with its own authentication, principal layout and default collections,
 # and it is a common choice for a self-hosted calendar and address book. See README.md.
 #
-# `docker compose up -d --wait` installs Nextcloud on SQLite, runs the post-installation hook
+# `docker compose up -d --wait` installs Nextcloud on PostgreSQL, runs the post-installation hook
 # (which creates the account's calendar and address book and writes a readiness marker) and
 # reports healthy only then. Host port 18082 avoids Stalwart's 18080 and SabreDAV's 18081.
 
 name: nextcloud-harness
 
 services:
+  db:
+    # PostgreSQL, as a real Nextcloud deployment runs. SQLite cannot keep up: Nextcloud writes on
+    # every authenticated request, a read included, so two requests at once fail one with
+    # "database is locked", which a slower CI runner meets.
+    # postgres:17.11-alpine, pinned by multi-arch digest.
+    image: postgres:17-alpine@sha256:eee6c6e1b0894fa4fe0075eb054af9fd1cf39a35321c2d4110626cfe506411fb
+    container_name: pim-nextcloud-harness-db
+    environment:
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: nextcloud-db-pw
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nextcloud -d nextcloud"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
   nextcloud:
     # nextcloud:35.0.2-apache, pinned by multi-arch digest (linux/amd64 + linux/arm64).
     # Bump deliberately: re-resolve the digest and run the gated suite.
     image: nextcloud:35.0.2-apache@sha256:89af7ee7a96ff5e9668280566209268ae6b2d02327f6ef6d56f6d68228cf9431
     container_name: pim-nextcloud-harness
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
-      SQLITE_DATABASE: nextcloud
+      POSTGRES_HOST: db
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: nextcloud-db-pw
       # Throwaway harness credentials, committed on purpose. Never real data.
       NEXTCLOUD_ADMIN_USER: alice
       NEXTCLOUD_ADMIN_PASSWORD: nextcloud-alice-pw
