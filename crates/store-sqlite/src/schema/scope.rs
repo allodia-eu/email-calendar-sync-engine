@@ -19,9 +19,8 @@ ALTER TABLE sync_scope ADD COLUMN expansion_zone TEXT;
 /// Migration v19: the per-scope **collection tag**, the listing's marker for a collection's
 /// contents (`CollectionTag`) as it stood when the scope's cursor was recorded.
 ///
-/// Nullable, and set only for scopes whose listing carries one (CalDAV and CardDAV
-/// collections). A pass that finds the listing's tag equal to this one skips the collection
-/// without asking it anything.
+/// Nullable, and set only for scopes whose listing carries one (CalDAV calendars). A pass that
+/// finds the listing's tag equal to this one skips the collection without asking it anything.
 pub(crate) const V19: &str = "\
 ALTER TABLE sync_scope ADD COLUMN collection_tag TEXT;
 ";
