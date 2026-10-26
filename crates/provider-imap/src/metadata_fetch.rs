@@ -102,8 +102,7 @@ pub(crate) fn structure_sets(mut uids: Vec<u32>, per_set: usize) -> Vec<String> 
 /// open at `uid_validity`. Only what the pool has free right now; none for a pass without a pool.
 ///
 /// Asked for at once rather than in turn: a connection the pool has to dial signs in first,
-/// which on Yahoo takes about a second and a half, and three in turn held the first rows of a
-/// pass back by five seconds.
+/// which on Yahoo takes about a second and a half, and the structure fetch waits for the last.
 pub(crate) async fn spare_helpers<S>(
     pool: Option<&Arc<ImapPool<S>>>,
     mailbox: &str,
@@ -131,11 +130,7 @@ where
         }
         Some(helper)
     });
-    futures_util::future::join_all(helpers)
-        .await
-        .into_iter()
-        .flatten()
-        .collect()
+    join_all(helpers).await.into_iter().flatten().collect()
 }
 
 /// Settles `open` with one [`STRUCTURE_ITEMS`] fetch per connection, `conn` and each of
