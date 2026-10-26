@@ -143,7 +143,8 @@ pub struct EventSyncReport {
 }
 
 impl EventSyncReport {
-    fn absorb(&mut self, other: &Self) {
+    /// Adds `other`'s counts and refusals to this report: the sum of several scopes' passes.
+    pub fn absorb(&mut self, other: &Self) {
         self.applied.upserted += other.applied.upserted;
         self.applied.tombstoned += other.applied.tombstoned;
         self.applied.reconciled += other.applied.reconciled;

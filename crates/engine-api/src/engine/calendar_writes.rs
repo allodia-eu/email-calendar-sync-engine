@@ -407,12 +407,7 @@ impl Engine {
                 .reconcile_calendar_events(provider, account, calendar)
                 .await
             {
-                Ok(one) => {
-                    report.applied.upserted += one.applied.upserted;
-                    report.applied.tombstoned += one.applied.tombstoned;
-                    report.applied.reconciled += one.applied.reconciled;
-                    report.unexpandable.extend(one.unexpandable);
-                }
+                Ok(one) => report.absorb(&one),
                 Err(ApiError::Busy) => return Reconciled::Busy,
                 Err(err) => return Reconciled::Failed(Box::new(err)),
             }
