@@ -11,10 +11,12 @@
 //! which is a **rate limit** when its reason says so and an insufficient-permission
 //! **permanent** failure otherwise.
 //!
-//! Two status codes drive a resync-style recovery, and they differ by API:
+//! Three answers drive a resync-style recovery, and they differ by API:
 //! - **Google Calendar** returns `410 Gone` for an expired `syncToken`
 //!   ([`FailureClass::NeedsResync`], the analogue of Graph's `410` / JMAP's
 //!   `cannotCalculateChanges`).
+//! - **Google People** returns `400 FAILED_PRECONDITION` with an `ErrorInfo` reason of
+//!   `EXPIRED_SYNC_TOKEN`; the same status without that reason is a stale-etag conflict.
 //! - **Gmail** returns `404` for a `startHistoryId` that has aged out of the history window; that
 //!   is *not* globally a resync (a `404` on a message `get` just means the message is gone), so the
 //!   Gmail fetch layer special-cases a `404` from the `history.list` call rather than classifying
@@ -176,6 +178,9 @@ impl GoogleError {
     pub fn failure_class(&self) -> FailureClass {
         match self {
             Self::Transport(e) => transport_class(e),
+            // People's expired syncToken shares a stale-etag write's status; only the
+            // `ErrorInfo` reason marks it as a resync.
+            Self::Status { body, .. } if is_expired_sync_token(body) => FailureClass::NeedsResync,
             Self::Status { status, reason, .. } => status_class(*status, reason.as_deref()),
             // An aged-out Gmail historyId forces a full resync.
             Self::HistoryExpired(_) => FailureClass::NeedsResync,
@@ -217,6 +222,22 @@ fn error_reason(body: &str) -> Option<String> {
     first_reason
         .or_else(|| error.get("status").and_then(Value::as_str))
         .map(str::to_owned)
+}
+
+/// `true` when the envelope carries a `google.rpc.ErrorInfo` whose reason is
+/// `EXPIRED_SYNC_TOKEN`: how People says a `syncToken` is more than seven days old.
+fn is_expired_sync_token(body: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    value
+        .pointer("/error/details")
+        .and_then(Value::as_array)
+        .is_some_and(|details| {
+            details.iter().any(|detail| {
+                detail.get("reason").and_then(Value::as_str) == Some("EXPIRED_SYNC_TOKEN")
+            })
+        })
 }
 
 /// `true` when a `403`'s reason marks a rate/quota limit rather than a permission
@@ -291,6 +312,10 @@ mod tests {
     const HISTORY_GONE: &str = include_str!("../tests/fixtures/error/history_gone.json");
     const SYNC_TOKEN_GONE: &str = include_str!("../tests/fixtures/error/sync_token_gone.json");
     const INVALID_LABEL: &str = include_str!("../tests/fixtures/error/invalid_label.json");
+    const CONTACTS_SYNC_TOKEN_EXPIRED: &str =
+        include_str!("../tests/fixtures/error/contacts_sync_token_expired.json");
+    const CONTACTS_STALE_ETAG: &str =
+        include_str!("../tests/fixtures/error/contacts_stale_etag.json");
 
     #[test]
     fn real_error_bodies_yield_their_reason_and_class() {
@@ -345,6 +370,16 @@ mod tests {
         let expired = GoogleError::history_expired("startHistoryId too old");
         assert_eq!(expired.failure_class(), FailureClass::NeedsResync);
         assert!(expired.to_string().contains("full resync"));
+    }
+
+    #[test]
+    fn people_expired_sync_token_needs_resync_but_a_stale_etag_stays_a_conflict() {
+        // Captured from a client that last synced contacts more than seven days earlier:
+        // the status and code are a stale-etag write's, and only the `ErrorInfo` differs.
+        let expired = GoogleError::status(400, CONTACTS_SYNC_TOKEN_EXPIRED);
+        assert_eq!(expired.failure_class(), FailureClass::NeedsResync);
+        let stale = GoogleError::status(400, CONTACTS_STALE_ETAG);
+        assert_eq!(stale.failure_class(), FailureClass::Conflict);
     }
 
     #[test]

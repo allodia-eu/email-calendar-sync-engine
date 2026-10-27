@@ -13,7 +13,7 @@ use engine_core::{
 use engine_provider::{ContactSourceSync, ContactsProvider};
 
 use crate::{
-    GoogleContactProvider,
+    GoogleClient, GoogleContactProvider,
     test_support::{fake_client, fake_client_fallible, json},
 };
 
@@ -32,6 +32,8 @@ const DIRECTORY_PRECONDITION: &str =
 const STALE_ETAG: &str = include_str!("../tests/fixtures/error/contacts_stale_etag.json");
 const SYNC_TOKEN_INVALID: &str =
     include_str!("../tests/fixtures/error/contacts_sync_token_invalid.json");
+const SYNC_TOKEN_EXPIRED: &str =
+    include_str!("../tests/fixtures/error/contacts_sync_token_expired.json");
 
 fn account() -> AccountId {
     AccountId::try_from("account-1").unwrap()
@@ -248,6 +250,41 @@ async fn owned_connections_never_degrade_to_unavailable() {
             .is_err(),
         "owned-contact failures must surface"
     );
+}
+
+/// People expires a sync token seven days after the sync that issued it, and says so with
+/// the same `400 FAILED_PRECONDITION` a stale-etag write gets; only the `ErrorInfo` reason
+/// tells them apart. Read as a conflict, the stored token is replayed on every pass and the
+/// address book stops changing for good, so it must restart as a snapshot instead. Both
+/// incremental sources are driven: on the optional one the same status also means "absent".
+#[tokio::test]
+async fn captured_expired_sync_token_restarts_as_a_snapshot() {
+    restarts_as_a_snapshot(
+        GoogleContactProvider::connections,
+        "/v1/people/me/connections",
+    )
+    .await;
+    restarts_as_a_snapshot(GoogleContactProvider::other_contacts, "/v1/otherContacts").await;
+}
+
+async fn restarts_as_a_snapshot(source: fn(GoogleClient) -> GoogleContactProvider, path: &str) {
+    let client = fake_client_fallible(vec![
+        ("syncToken=expired", Err((400, json(SYNC_TOKEN_EXPIRED)))),
+        (path, Ok(json(DELTA_NOCHANGE))),
+    ]);
+    let result = source(client)
+        .sync_contacts(&account(), Some(&SyncState::new("expired")))
+        .await
+        .unwrap_or_else(|error| panic!("{path}: an expired token is not a failure: {error}"));
+    let ContactSourceSync::Available {
+        sync,
+        cursor_recovered,
+    } = result
+    else {
+        panic!("{path}: expired is not absent; got {result:?}");
+    };
+    assert!(cursor_recovered, "{path}");
+    assert!(matches!(sync.update, SyncUpdate::Snapshot { .. }), "{path}");
 }
 
 /// A direct fetch normalizes the same person the snapshot produced.
