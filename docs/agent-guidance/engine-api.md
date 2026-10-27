@@ -373,7 +373,11 @@ facade"*).
   not recorded), `false` for every other failure, which means the write was not applied
   (`providers.md`). For a calendar or contact write and a send it is the same answer on every
   provider, so a host never asks which one it was. Mail and folder edits do not classify a
-  lost answer, so for them `false` does not mean "not applied". The one deliberate exception is `ScopeHeld`,
+  lost answer, so for them `false` does not mean "not applied". A failed read of one item asks
+  `ApiError::item_unavailable()`: `true` only for a `ProviderError::item_unavailable`, an item
+  the provider stored but can never serve, so a host may stop asking for it. Any other
+  permanent failure may be about the account or the request, and says nothing about the item.
+  The one deliberate exception is `ScopeHeld`,
   which `map_sync_error` classifies as `ApiError::Busy` (a retryable race, not a
   failure) — classification, not restringing. Add similar classifications there if
   another error class deserves a distinct host signal.
