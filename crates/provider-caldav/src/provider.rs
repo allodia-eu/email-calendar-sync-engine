@@ -20,10 +20,10 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    CalendarUserAddresses, CalendarWrites, Capabilities, ConnectObserver, ConnectStep,
-    ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt,
-    IgnoreConnectSteps, OverrideSurvival, Provider, ProviderResult, RsvpControls, ScopeSync,
-    WriteGuard,
+    CalendarListing, CalendarUserAddresses, CalendarWrites, Capabilities, ConnectObserver,
+    ConnectStep, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite,
+    EventWriteReceipt, IgnoreConnectSteps, OverrideSurvival, Provider, ProviderResult,
+    RsvpControls, ScopeSync, WriteGuard,
 };
 
 use crate::{
@@ -219,15 +219,23 @@ impl Provider for CalDavProvider {
         &self,
         _account: &AccountId,
         _cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Calendar>> {
+    ) -> ProviderResult<CalendarListing> {
         // The collection list is re-discovered as a snapshot each pass (no list
         // cursor), so the store tombstones any calendar that has disappeared.
-        let calendars = discovery::list_calendars(self.executor.as_ref(), &self.home_href).await?;
+        let listed = discovery::list_calendars(self.executor.as_ref(), &self.home_href).await?;
+        let tags = listed
+            .iter()
+            .filter_map(|(calendar, tag)| Some((calendar.id.clone(), tag.clone()?)))
+            .collect();
+        let calendars: Vec<Calendar> = listed.into_iter().map(|(calendar, _)| calendar).collect();
         let present = calendars.iter().map(|c| c.id.key().clone()).collect();
-        Ok(ScopeSync::new(
-            SyncUpdate::snapshot(calendars, present),
-            SyncState::new(CALENDAR_LIST_CURSOR),
-        ))
+        Ok(CalendarListing {
+            sync: ScopeSync::new(
+                SyncUpdate::snapshot(calendars, present),
+                SyncState::new(CALENDAR_LIST_CURSOR),
+            ),
+            tags,
+        })
     }
 
     async fn sync_events(

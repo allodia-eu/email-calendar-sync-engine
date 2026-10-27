@@ -35,7 +35,8 @@ async fn live_calendar_creates_a_recurring_event() {
     let calendars = calendar_provider(&token)
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };
@@ -128,7 +129,8 @@ async fn live_calendar_changes_and_removes_a_rule() {
     let calendars = calendar_provider(&token)
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };
@@ -274,7 +276,8 @@ async fn live_calendar_removes_one_occurrence_and_keeps_the_series() {
     let calendars = calendar_provider(&token)
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };
@@ -383,7 +386,8 @@ async fn live_calendar_edits_one_occurrence_and_leaves_the_series_alone() {
     let calendars = calendar_provider(&token)
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };

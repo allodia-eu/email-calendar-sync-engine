@@ -166,7 +166,7 @@ impl Provider for FakeMail {
         &self,
         _account: &AccountId,
         _cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Calendar>> {
+    ) -> ProviderResult<CalendarListing> {
         if self.fails(Fault::CalendarFetch) {
             return Err(ProviderError::retryable("calendar list unreachable"));
         }
@@ -174,7 +174,8 @@ impl Provider for FakeMail {
         Ok(ScopeSync::new(
             SyncUpdate::snapshot(self.calendars.clone(), present),
             self.cursor.clone(),
-        ))
+        )
+        .into())
     }
 
     async fn sync_events(

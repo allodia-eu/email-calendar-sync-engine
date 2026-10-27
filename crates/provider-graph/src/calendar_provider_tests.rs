@@ -94,7 +94,11 @@ fn exposes_graph_calendar_scopes_and_write_capabilities() {
 async fn syncs_the_calendar_list_and_an_event_snapshot() {
     let provider = provider(fake_client(routes()));
 
-    let calendars = provider.sync_calendars(&account(), None).await.unwrap();
+    let calendars = provider
+        .sync_calendars(&account(), None)
+        .await
+        .unwrap()
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };

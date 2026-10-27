@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use engine_core::{
-    calendar::{Calendar, Event},
+    calendar::Event,
     ids::{AccountId, CalendarId, ProviderKey},
     mail::{Mailbox, Message},
     raw::RawMime,
@@ -14,10 +14,10 @@ use engine_core::{
 };
 
 use crate::{
-    CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream, HandOver, MailEdit,
-    MailEditReceipt, MailboxWrites, MessageReport, ProviderError, ProviderResult, ReportReceipt,
-    ScopeSync, SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
-    error::unsupported,
+    CalendarListing, CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream,
+    HandOver, MailEdit, MailEditReceipt, MailboxWrites, MessageReport, ProviderError,
+    ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SourceStream,
+    SubmissionReceipt, error::unsupported,
 };
 // `Capabilities`, `EmailChunk` and `PageToken` are named only by the doc links here, but
 // rustdoc resolves those against the *module's* scope — a link that worked in the crate root
@@ -454,7 +454,7 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
         &self,
         account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Calendar>> {
+    ) -> ProviderResult<CalendarListing> {
         let _ = (account, cursor);
         Err(unsupported("calendar sync"))
     }

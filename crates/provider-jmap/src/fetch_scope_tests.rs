@@ -239,7 +239,8 @@ async fn a_container_delta_larger_than_one_get_arrives_whole() {
     let sync = provider_over(&server)
         .sync_calendars(&account(), Some(&since))
         .await
-        .unwrap();
+        .unwrap()
+        .sync;
 
     let SyncUpdate::Delta { changed, .. } = &sync.update else {
         panic!("a cursor gives a delta");

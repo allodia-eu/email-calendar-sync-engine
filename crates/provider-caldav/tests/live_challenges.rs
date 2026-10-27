@@ -66,7 +66,8 @@ async fn connects_as_the_account(prefix: &str) {
     let calendars = provider
         .sync_calendars(&account, None)
         .await
-        .expect("the home is listed as the account");
+        .expect("the home is listed as the account")
+        .sync;
     let engine_core::sync::SyncUpdate::Snapshot { objects, .. } = calendars.update else {
         panic!("a calendar listing is a snapshot");
     };

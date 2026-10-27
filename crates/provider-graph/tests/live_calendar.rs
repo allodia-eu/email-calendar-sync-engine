@@ -24,7 +24,8 @@ async fn live_calendar_lists_syncs_and_writes() {
     let calendars = calendar_provider(&token)
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };

@@ -9,6 +9,8 @@
 //! adapter precisely because some questions (a scheduling-inbox `PROPFIND`, a `.well-known`
 //! redirect) cannot be asked through a typed calendar API at all.
 
+use std::collections::BTreeMap;
+
 use engine_core::{
     calendar::{Calendar, Event},
     ids::{AccountId, CalendarId},
@@ -82,21 +84,25 @@ pub(crate) fn describe(provider: &CalDavProvider) {
     }
 }
 
-/// Every calendar under the home, as the listing reports it.
-pub(crate) async fn calendars(provider: &CalDavProvider) -> Result<Vec<Calendar>, String> {
+/// The tag the listing showed for each calendar, keyed by its id.
+pub(crate) type Tags = BTreeMap<CalendarId, CollectionTag>;
+
+/// Every calendar under the home, as the listing reports it, with the tags it showed.
+pub(crate) async fn calendars(provider: &CalDavProvider) -> Result<(Vec<Calendar>, Tags), String> {
     let listed = provider
         .sync_calendars(&account(), None)
         .await
         .map_err(|err| format!("listing calendars failed: {err}"))?;
-    Ok(match listed.update {
+    let calendars = match listed.sync.update {
         SyncUpdate::Snapshot { objects, .. } => objects,
         SyncUpdate::Delta { changed, .. } => changed,
-    })
+    };
+    Ok((calendars, listed.tags))
 }
 
 /// One line per calendar: its href, name, whether this account may write to it, and the tag
 /// a sync compares to decide whether to ask it anything.
-pub(crate) fn print_calendars(calendars: &[Calendar]) {
+pub(crate) fn print_calendars(calendars: &[Calendar], tags: &Tags) {
     println!("{} calendar(s):\n", calendars.len());
     for calendar in calendars {
         println!("  {}", calendar.name);
@@ -104,9 +110,7 @@ pub(crate) fn print_calendars(calendars: &[Calendar]) {
         println!("    writable   {}", calendar.access.may_write);
         println!(
             "    tag        {}",
-            calendar
-                .collection_tag
-                .as_ref()
+            tags.get(&calendar.id)
                 .map_or("(none: every sync asks)", CollectionTag::as_str)
         );
         println!();
@@ -120,7 +124,7 @@ pub(crate) async fn calendar(
     provider: &CalDavProvider,
     profile: &Profile,
 ) -> Result<CalendarId, String> {
-    let calendars = calendars(provider).await?;
+    let (calendars, _) = calendars(provider).await?;
     let named = |wanted: &str| {
         calendars.iter().find(|calendar| {
             let href = calendar.id.as_str();

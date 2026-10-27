@@ -351,7 +351,8 @@ async fn sabredav_reports_a_read_only_share_as_unwritable() {
     let synced = provider
         .sync_calendars(&account, None)
         .await
-        .expect("sync_calendars");
+        .expect("sync_calendars")
+        .sync;
     let calendars = match synced.update {
         SyncUpdate::Snapshot { objects, .. } => objects,
         SyncUpdate::Delta { changed, .. } => changed,

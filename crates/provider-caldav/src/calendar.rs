@@ -38,7 +38,6 @@ pub(crate) fn calendar_from_response(response: &DavResponse) -> Result<Calendar,
         .map(str::to_owned);
     calendar.color = response.props.get("calendar-color").map(str::to_owned);
     calendar.access = access_from_privileges(&response.props);
-    calendar.collection_tag = collection_tag(&response.props);
     Ok(calendar)
 }
 
@@ -159,35 +158,36 @@ mod tests {
         assert_eq!(calendar.name, "work");
     }
 
-    /// A listed collection whose `200` propstat carries `props`, as one multistatus.
-    fn listed(props: &str) -> Calendar {
+    /// The tag of a listed collection whose `200` propstat carries `props`.
+    fn listed_tag(props: &str) -> Option<String> {
         let xml = format!(
             "<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\" xmlns:CS=\"http://calendarserver.org/ns/\"><D:response><D:href>/dav/cal/u/work/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/><C:calendar/></D:resourcetype>{props}</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"
         );
-        mapped(&xml, "/work/")
+        let response = &parse_multistatus(&xml).unwrap().responses[0];
+        collection_tag(&response.props).map(|tag| tag.as_str().to_owned())
     }
 
     #[test]
     fn the_sync_token_is_the_collection_tag_ahead_of_the_ctag() {
-        let calendar =
-            listed("<D:sync-token>https://x/sync/7</D:sync-token><CS:getctag>\"22\"</CS:getctag>");
         assert_eq!(
-            calendar.collection_tag.as_ref().map(CollectionTag::as_str),
+            listed_tag(
+                "<D:sync-token>https://x/sync/7</D:sync-token><CS:getctag>\"22\"</CS:getctag>"
+            )
+            .as_deref(),
             Some("https://x/sync/7"),
         );
     }
 
     #[test]
     fn a_server_without_a_sync_token_is_tagged_by_its_ctag() {
-        let calendar = listed("<D:sync-token/><CS:getctag>\"22\"</CS:getctag>");
         assert_eq!(
-            calendar.collection_tag.as_ref().map(CollectionTag::as_str),
+            listed_tag("<D:sync-token/><CS:getctag>\"22\"</CS:getctag>").as_deref(),
             Some("\"22\""),
         );
     }
 
     #[test]
     fn a_collection_with_neither_has_no_tag() {
-        assert_eq!(listed("").collection_tag, None);
+        assert_eq!(listed_tag(""), None);
     }
 }

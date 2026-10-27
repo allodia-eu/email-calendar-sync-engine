@@ -110,7 +110,9 @@ are split escape-aware so the writer and the parser agree.
   that names none holds any component, events included.
 - **The listing carries each calendar's collection tag.** The same `PROPFIND` reads every
   collection's `DAV:sync-token` (RFC 6578 §4) and CalendarServer `getctag`, and the
-  calendar's `collection_tag` is the sync-token, or the CTag where the server has none. A
+  calendar's tag is the sync-token, or the CTag where the server has none. The tags travel
+  beside the calendars (`CalendarListing::tags`), never on a `Calendar`: they are sync
+  bookkeeping, recorded with each calendar's event cursor, and nothing a host reads. A
   calendar whose tag equals the one recorded with its scope's cursor is not asked again, so
   a quiet refresh costs one `PROPFIND` however many calendars the home holds. The token is
   what a `sync-collection` report would answer, by definition, so equal tags mean equal

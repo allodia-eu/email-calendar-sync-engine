@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use engine_core::{
-    calendar::{Calendar, Event},
+    calendar::Event,
     contact::{AddressBook, ContactCard, ContactDraft, ContactPatch, ContactResource},
     ids::{AccountId, CalendarId, ContactId, ProviderKey},
     mail::{Mailbox, Message},
@@ -15,12 +15,12 @@ use engine_core::{
 };
 
 use crate::{
-    CalendarUserAddresses, CalendarWrites, ConnectionInfo, ContactDestination, ContactPhoto,
-    ContactSourceSync, ContactWriteReceipt, ContactsProvider, Draft, EmailStream, EventDeletion,
-    EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, HandOver, MailEdit,
-    MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport, Provider,
-    ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SourceStream,
-    SubmissionReceipt,
+    CalendarListing, CalendarUserAddresses, CalendarWrites, ConnectionInfo, ContactDestination,
+    ContactPhoto, ContactSourceSync, ContactWriteReceipt, ContactsProvider, Draft, EmailStream,
+    EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, HandOver,
+    MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport,
+    Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
+    SourceStream, SubmissionReceipt,
 };
 
 /// A boxed provider is itself a [`Provider`], delegating every method to the box's
@@ -168,7 +168,7 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         &self,
         account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Calendar>> {
+    ) -> ProviderResult<CalendarListing> {
         (**self).sync_calendars(account, cursor).await
     }
 

@@ -4,10 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Alert;
 use crate::{
-    extended::ExtendedProperties,
-    ids::CalendarId,
-    time::TimeZoneId,
-    version::{CollectionTag, RevisionTokens},
+    extended::ExtendedProperties, ids::CalendarId, time::TimeZoneId, version::RevisionTokens,
 };
 
 /// The caller's normalized access rights on a calendar.
@@ -119,10 +116,6 @@ pub struct Calendar {
     pub access: CalendarAccess,
     /// Per-object revision tokens, if the provider supplies any.
     pub revisions: RevisionTokens,
-    /// The marker the listing carried for the calendar's events, where the protocol has one
-    /// (CalDAV). Absent means every sync must ask the calendar itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collection_tag: Option<CollectionTag>,
     /// Preserved provider-defined extended properties.
     pub extended: ExtendedProperties,
 }
@@ -146,7 +139,6 @@ impl Calendar {
             default_alerts_without_time: Vec::new(),
             access: CalendarAccess::owner(),
             revisions: RevisionTokens::none(),
-            collection_tag: None,
             extended: ExtendedProperties::new(),
         }
     }

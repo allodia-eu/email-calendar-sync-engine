@@ -1,7 +1,7 @@
 //! The two calendar scope syncers [`run_scope`](crate::run_scope) drives: the account's
 //! calendar list, and the events of one event scope.
 
-use std::sync::Mutex;
+use std::{collections::BTreeMap, sync::Mutex};
 
 use engine_core::{
     calendar::{Calendar, Event},
@@ -17,13 +17,14 @@ use engine_store::DerivedWrite;
 
 use crate::{ScopeFetch, ScopeSyncer, UnexpandableEvent, changed_objects};
 
-/// The calendar-container scope syncer.
+/// The calendar-container scope syncer. Its meta is the tag the listing showed for each
+/// calendar, which the store keeps with that calendar's event cursor rather than on its row.
 pub(crate) struct CalendarScope<'p, P>(pub(crate) &'p P);
 
 #[async_trait::async_trait]
 impl<P: Provider> ScopeSyncer for CalendarScope<'_, P> {
     type Halt = core::convert::Infallible;
-    type Meta = ();
+    type Meta = BTreeMap<CalendarId, CollectionTag>;
     type Object = Calendar;
 
     fn scope(&self, account: &AccountId) -> SyncScope {
@@ -34,11 +35,14 @@ impl<P: Provider> ScopeSyncer for CalendarScope<'_, P> {
         &self,
         account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> Result<ScopeFetch<Calendar, (), Self::Halt>, ProviderError> {
+    ) -> Result<ScopeFetch<Calendar, Self::Meta, Self::Halt>, ProviderError> {
         self.0
             .sync_calendars(account, cursor)
             .await
-            .map(|sync| ScopeFetch::Proceed { sync, meta: () })
+            .map(|listing| ScopeFetch::Proceed {
+                sync: listing.sync,
+                meta: listing.tags,
+            })
     }
 
     fn derive(&self, _sync: &ScopeSync<Calendar>) -> DerivedWrite {

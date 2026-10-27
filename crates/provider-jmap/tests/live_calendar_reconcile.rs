@@ -76,7 +76,8 @@ async fn calendar(provider: &JmapProvider) -> CalendarId {
     let synced = provider
         .sync_calendars(&account(), None)
         .await
-        .expect("calendars");
+        .expect("calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = synced.update else {
         panic!("expected a snapshot");
     };

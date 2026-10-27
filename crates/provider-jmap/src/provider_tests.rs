@@ -252,7 +252,8 @@ async fn calendar_first_sync_snapshots_collections_and_events() {
     let calendars = provider(vec![fixture("calendar_snapshot_response.json")])
         .sync_calendars(&account(), None)
         .await
-        .unwrap();
+        .unwrap()
+        .sync;
     assert!(calendars.is_snapshot());
     let SyncUpdate::Snapshot { objects, present } = &calendars.update else {
         panic!("expected snapshot");

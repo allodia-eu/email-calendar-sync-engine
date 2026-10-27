@@ -110,7 +110,8 @@ async fn calendar_provider(token: &str) -> (GraphCalendarProvider, engine_core::
     let calendars = placeholder
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("a calendar list sync is a snapshot");
     };

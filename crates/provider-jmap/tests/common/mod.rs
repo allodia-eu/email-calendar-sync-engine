@@ -72,7 +72,11 @@ pub(crate) async fn require(provider: &JmapProvider, uid: &str) -> Event {
 
 /// The account's first calendar — where a throwaway event lands.
 pub(crate) async fn calendar(provider: &JmapProvider) -> CalendarId {
-    let calendars = provider.sync_calendars(&account(), None).await.unwrap();
+    let calendars = provider
+        .sync_calendars(&account(), None)
+        .await
+        .unwrap()
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = calendars.update else {
         panic!("expected a snapshot");
     };
