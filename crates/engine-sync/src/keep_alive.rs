@@ -29,6 +29,10 @@ impl<'a, S: Store> KeepAlive<'a, S> {
 
     /// Runs `work`, renewing the lease whenever it falls due meanwhile.
     ///
+    /// A renewal already due runs before `work` is polled: the chunks of one page are ready at
+    /// once, so the time goes on the store's work between them, and a renewal that waited for
+    /// `work` to be pending would not run until the pass next waited on its provider.
+    ///
     /// A renewal refused as stale means another worker has the scope (the process was suspended
     /// past the lease, say); the pass's next commit is refused and the pass claims again, so there
     /// is nothing to do here. A renewal that fails for any other reason is tried again at the
@@ -38,11 +42,11 @@ impl<'a, S: Store> KeepAlive<'a, S> {
         loop {
             tokio::select! {
                 biased;
-                done = &mut work => return done,
                 () = tokio::time::sleep_until(self.due) => {
                     let _ = self.store.renew_sync_scope_lease(self.lease, self.ttl).await;
                     self.due = Instant::now() + self.ttl / 3;
                 }
+                done = &mut work => return done,
             }
         }
     }
