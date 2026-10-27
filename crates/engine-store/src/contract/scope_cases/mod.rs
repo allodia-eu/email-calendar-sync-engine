@@ -22,6 +22,7 @@ pub(super) use self::{
         forget_scope_drops_objects_rows_and_cursor, forget_scope_under_a_stale_lease_is_rejected,
     },
     lease::{
+        a_renewed_scope_lease_keeps_a_long_pass_its_own,
         abandon_sync_leases_preserves_cursor_and_fences_old_worker, maintenance_is_lease_gated,
         release_with_stale_token_is_noop, scope_lease_is_exclusive_until_released,
         stale_lease_is_rejected,

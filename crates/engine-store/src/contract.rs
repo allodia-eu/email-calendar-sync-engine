@@ -146,6 +146,7 @@ where
     scope_cases::container_and_member_scopes_are_independent(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::scope_lease_is_exclusive_until_released(&store, &clock).await;
+    scope_cases::a_renewed_scope_lease_keeps_a_long_pass_its_own(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::abandon_sync_leases_preserves_cursor_and_fences_old_worker(&store, &clock).await;
     let (store, clock) = make();

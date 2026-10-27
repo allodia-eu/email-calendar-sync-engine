@@ -237,3 +237,61 @@ pub(in crate::contract) async fn release_with_stale_token_is_noop<S: Store + Sto
         .expect_err("the live new lease still holds the scope");
     assert_eq!(contended, StoreError::ScopeHeld);
 }
+
+/// A pass that renews its lease keeps the scope for as long as it runs, however far past its
+/// first expiry, and a renewal under a lease another worker has since taken is refused.
+pub(in crate::contract) async fn a_renewed_scope_lease_keeps_a_long_pass_its_own<
+    S: Store + StoreRead,
+>(
+    store: &S,
+    clock: &ManualClock,
+) {
+    let account = acct("acct-long-pass");
+    let scope = email_scope(&account);
+    let held = store
+        .claim_sync_scope(account.clone(), &scope, lease_request("long-pass", 30))
+        .await
+        .unwrap();
+
+    // Ten minutes of renewing every ten seconds, against a thirty-second lease.
+    for _ in 0..60 {
+        clock.advance(Duration::from_secs(10));
+        store
+            .renew_sync_scope_lease(&held.lease, Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .claim_sync_scope(account.clone(), &scope, lease_request("poll", 30))
+                .await
+                .expect_err("a renewed lease still holds the scope"),
+            StoreError::ScopeHeld,
+        );
+    }
+    // Still its own: it can commit.
+    let derived = DerivedWrite::empty();
+    let objects = SyncUpdate::delta(vec![TestObject::new("m-late", "late")], vec![]);
+    let cursor = SyncState::new("cursor-late");
+    store
+        .apply_sync_update(
+            &held.lease,
+            ApplyBatch::new(&objects, &derived, &[], &cursor),
+        )
+        .await
+        .expect("the renewed lease commits");
+
+    // Once it stops renewing it lapses, another worker takes the scope, and a late renewal is
+    // refused rather than taking the scope back.
+    clock.advance(Duration::from_secs(31));
+    store
+        .claim_sync_scope(account.clone(), &scope, lease_request("poll", 30))
+        .await
+        .expect("a lapsed lease frees the scope");
+    assert_eq!(
+        store
+            .renew_sync_scope_lease(&held.lease, Duration::from_secs(30))
+            .await
+            .expect_err("a superseded lease cannot be renewed"),
+        StoreError::StaleLease,
+    );
+}

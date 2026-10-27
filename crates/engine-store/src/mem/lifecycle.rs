@@ -20,6 +20,23 @@ impl<C: Clock> MemStore<C> {
         }
     }
 
+    /// Extends the scope `lease` holds to `ttl` from now, while it is still that lease's.
+    pub(super) fn renew_scope(&self, lease: &SyncLease, ttl: core::time::Duration) -> Result<()> {
+        let expiry = self
+            .clock
+            .now()
+            .checked_add(ttl)
+            .ok_or_else(|| StoreError::Backend("lease ttl overflow".to_owned()))?;
+        let mut inner = self.lock();
+        let cell = inner
+            .scopes
+            .get_mut(lease.scope())
+            .filter(|cell| cell.token == lease.token() && cell.lease_expiry.is_some())
+            .ok_or(StoreError::StaleLease)?;
+        cell.lease_expiry = Some(expiry);
+        Ok(())
+    }
+
     /// Empties the scope `lease` holds, cursor included, and frees it.
     pub(super) fn forget_scope_under(&self, lease: &SyncLease) -> Result<()> {
         let mut inner = self.lock();

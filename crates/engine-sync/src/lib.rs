@@ -319,8 +319,9 @@ pub(crate) fn derive_messages(messages: &[Message]) -> DerivedWrite {
 /// showing a queued keyword change the server accepted after the pass began reading.
 ///
 /// The pass start is read off the lease rather than a clock of this crate's: a lease's expiry is
-/// the store's clock at the claim plus the TTL asked for, and a scope lease is never renewed, so
-/// the claim instant is on the clock the store settles ops by. Every pass claims before it reads.
+/// the store's clock at the claim plus the TTL asked for, and the handle keeps that expiry however
+/// often the store renews the lease, so the claim instant is on the clock the store settles ops
+/// by. Every pass claims before it reads.
 pub(crate) fn read_since<'a, T: SyncObject>(
     batch: ApplyBatch<'a, T>,
     lease: &SyncLease,
@@ -348,6 +349,7 @@ mod calendar;
 mod calendar_scopes;
 mod contact;
 mod horizon;
+mod keep_alive;
 mod mail_account;
 mod mail_report;
 mod observer;

@@ -32,7 +32,7 @@ use futures_util::StreamExt;
 
 use crate::{
     MAX_STALE_RECLAIMS, SyncCommit, SyncError, SyncObserver, derive_messages,
-    mail_report::SyncTiming, recipients, sent_copies,
+    keep_alive::KeepAlive, mail_report::SyncTiming, recipients, sent_copies,
 };
 
 /// How a streaming sync runs: the depth window, plus how it separates network
@@ -152,6 +152,7 @@ where
             .claim_sync_scope(account.clone(), &scope, req.clone())
             .await?;
         let lease = claim.lease;
+        let mut keep_alive = KeepAlive::new(store, &lease, req.ttl);
         // The cursor each pass resumes the *provider* fetch from; the store advances
         // it per additive checkpoint, or only on the final reconcile chunk.
         let pass_cursor = claim.state;
@@ -170,7 +171,7 @@ where
         );
         loop {
             let awaited = Instant::now();
-            let next = stream.next().await;
+            let next = keep_alive.around(stream.next()).await;
             timing.add_fetching(awaited);
             let Some(item) = next else {
                 // The stream ended cleanly: an additive pass has committed and

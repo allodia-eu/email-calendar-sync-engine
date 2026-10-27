@@ -66,6 +66,10 @@ impl<S: Store> Store for Unrecordable<S> {
         self.0.set_expansion_window(lease, window).await
     }
 
+    async fn renew_sync_scope_lease(&self, lease: &SyncLease, ttl: Duration) -> Result<()> {
+        self.0.renew_sync_scope_lease(lease, ttl).await
+    }
+
     async fn release_sync_scope(&self, lease: SyncLease) -> Result<()> {
         self.0.release_sync_scope(lease).await
     }
