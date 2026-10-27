@@ -8,6 +8,7 @@ use engine_core::{
     membership::Memberships,
     sync::SyncUpdate,
 };
+use futures_util::StreamExt;
 
 use super::*;
 use crate::test_support::{
@@ -22,6 +23,7 @@ const META_LABELED: &str = include_str!("../tests/fixtures/mail/message_metadata
 const RAW: &str = include_str!("../tests/fixtures/mail/message_raw.json");
 const HISTORY: &str = include_str!("../tests/fixtures/mail/history_delta.json");
 const HISTORY_GONE: &str = include_str!("../tests/fixtures/error/history_gone.json");
+const QUOTA_EXCEEDED: &str = include_str!("../tests/fixtures/error/quota_exceeded_untimed.json");
 
 fn account() -> AccountId {
     AccountId::try_from("acct-1").unwrap()
@@ -159,6 +161,35 @@ async fn sync_email_restarts_as_a_snapshot_when_the_history_cursor_expired() {
             .chars()
             .all(|c| c.is_ascii_digit())
     );
+}
+
+#[tokio::test]
+async fn a_page_refused_partway_still_hands_on_what_it_fetched() {
+    // Gmail refuses once a user's per-minute quota is spent, which a snapshot meets partway
+    // through a page. The messages fetched before the refusal are passed on ahead of the error,
+    // so the pass stores them now rather than only once the page is fetched again.
+    let provider = GmailProvider::new(fake_client_fallible(vec![
+        ("/profile", Ok(json(PROFILE))),
+        ("/messages?maxResults", Ok(json(LIST))),
+        ("/messages/message-2", Ok(json(META_LABELED))),
+        ("/messages/message-1", Ok(json(META))),
+        ("/messages/message-0", Err((403, json(QUOTA_EXCEEDED)))),
+    ]));
+    let account = account();
+    let items: Vec<_> = provider
+        .stream_email(&account, None, SyncWindow::full(), 0, 0)
+        .collect()
+        .await;
+
+    let (last, chunks) = items.split_last().expect("the pass yields something");
+    let fetched: Vec<&str> = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.as_ref().expect("a chunk before the refusal").changed)
+        .map(|message| message.id.key().as_str())
+        .collect();
+    assert_eq!(fetched, ["message-2", "message-1"]);
+    let refusal = last.as_ref().expect_err("the pass still ends refused");
+    assert_eq!(refusal.class(), FailureClass::RateLimited);
 }
 
 #[test]
