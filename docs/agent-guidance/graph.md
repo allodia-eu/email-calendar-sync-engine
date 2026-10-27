@@ -461,6 +461,10 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
 (Windows→IANA), `cal_write` (create/patch/delete), `calendar` (the provider). It advertises
 `calendars` **and** `calendar_writes(WriteGuard::Enforced)`.
 
+- **A calendar's write access is its `canEdit`.** The calendar list reports, per calendar,
+  whether the signed-in user may change its events: false on a calendar shared read-only and
+  on a subscribed one. `false` maps to `CalendarAccess::reader()`, so a host offers no event
+  there; a calendar without the field keeps the owner's access.
 - **`calendarView/delta` is the source, masters + local expansion.** Event delta is
   `GET /me/calendars/{id}/calendarView/delta?startDateTime=…&endDateTime=…` (v1.0's only
   windowed delta; `/me/events` has no v1.0 delta). It returns the series `seriesMaster`

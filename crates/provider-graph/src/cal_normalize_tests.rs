@@ -143,6 +143,24 @@ fn an_online_meeting_projects_its_join_url_and_preserves_the_teams_payload() {
 }
 
 #[test]
+fn a_calendar_graph_says_may_not_be_edited_is_read_only() {
+    // `canEdit` is the signed-in user's right to change the calendar's events: false on a
+    // calendar shared read-only and on a subscribed one, true on the user's own (the captured
+    // fixtures).
+    assert!(
+        calendar_from_json(&json(CALENDAR))
+            .unwrap()
+            .access
+            .may_write
+    );
+    let mut shared = json(CALENDAR);
+    shared["canEdit"] = Value::Bool(false);
+    let shared = calendar_from_json(&shared).unwrap();
+    assert!(!shared.access.may_write);
+    assert!(shared.access.may_read);
+}
+
+#[test]
 fn a_non_default_calendar_normalizes_with_its_own_id_and_color() {
     // One MS account exposes several calendars; each is a distinct container with its own
     // id, name, default flag, and `#rrggbb` color (Graph's `hexColor` wins over `color`).
