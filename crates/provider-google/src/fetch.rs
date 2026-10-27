@@ -177,8 +177,9 @@ pub(crate) struct Fetched {
 /// Ordered rather than completion-ordered so a page's rows land in the order the server
 /// listed them however the individual fetches interleave.
 ///
-/// Any other failure ends the fan-out and keeps what came before it: each get costs quota, and
-/// a refusal partway through a page would otherwise throw away everything the page had paid for.
+/// Any other failure ends the fan-out and keeps what came before it, so the messages a page
+/// fetched ahead of a refusal reach the store now rather than only once the page is fetched
+/// again. They are paid for again then: Gmail's position in a listing is a page, not a message.
 async fn get_messages(client: &GoogleClient, ids: Vec<String>) -> Fetched {
     let mut gets = stream::iter(ids)
         .map(|id| async move { get_message(client, &id).await })
