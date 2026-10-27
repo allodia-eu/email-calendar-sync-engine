@@ -42,7 +42,7 @@
 //! pass. It needs no new provider verb.
 
 use core::time::Duration;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use engine_core::{
     calendar::Calendar,
@@ -192,11 +192,11 @@ where
     S: Store + StoreRead,
 {
     let req = LeaseRequest::new(worker, ttl);
-    let (calendars, ()) = run_scope(store, account, &CalendarScope(provider), &req)
+    let (calendars, tags) = run_scope(store, account, &CalendarScope(provider), &req)
         .await?
         .into_applied();
     let listed = stored_calendars(provider, store, account).await?;
-    let groups = event_scopes(provider, account, &listed);
+    let groups = event_scopes(provider, account, &listed, &tags);
 
     // Before the fan-out, so a calendar that has just left the list is not synced once more.
     // An empty list judges nothing: it is far more likely a list that failed to arrive.
@@ -245,21 +245,13 @@ where
     })
 }
 
-/// The calendars one event scope holds.
+/// The calendars one event scope holds, and the tag the scope is gated on.
 struct ScopeGroup {
     scope: SyncScope,
     calendars: Vec<Calendar>,
-}
-
-impl ScopeGroup {
-    /// The tag the scope is gated on: its calendar's, when it holds exactly one. A scope
-    /// several calendars share has no single listing tag to compare.
-    fn tag(&self) -> Option<&CollectionTag> {
-        match self.calendars.as_slice() {
-            [only] => only.collection_tag.as_ref(),
-            _ => None,
-        }
-    }
+    /// The listing's tag for the scope's calendar, when it holds exactly one. A scope several
+    /// calendars share has no single listing tag to compare.
+    tag: Option<CollectionTag>,
 }
 
 /// The account's calendars as the list scope now stores them, the default one first.
@@ -285,20 +277,26 @@ where
     Ok(calendars)
 }
 
-/// Groups `calendars` by the event scope each answers, in the order the first of each appears.
+/// Groups `calendars` by the event scope each answers, in the order the first of each appears,
+/// gating each group of one calendar on the tag `tags` holds for it.
 fn event_scopes<P: Provider>(
     provider: &P,
     account: &AccountId,
     calendars: &[Calendar],
+    tags: &BTreeMap<CalendarId, CollectionTag>,
 ) -> Vec<ScopeGroup> {
     let mut groups: Vec<ScopeGroup> = Vec::new();
     for calendar in calendars {
         let scope = provider.event_scope(account, &calendar.id);
         match groups.iter_mut().find(|group| group.scope == scope) {
-            Some(group) => group.calendars.push(calendar.clone()),
+            Some(group) => {
+                group.calendars.push(calendar.clone());
+                group.tag = None;
+            }
             None => groups.push(ScopeGroup {
                 scope,
                 calendars: vec![calendar.clone()],
+                tag: tags.get(&calendar.id).cloned(),
             }),
         }
     }
@@ -331,7 +329,7 @@ where
     P: Provider,
     S: Store + StoreRead,
 {
-    let tag = group.tag();
+    let tag = group.tag.as_ref();
     // A lease-free read: a tag is only ever recorded with a cursor, so a match means a pass
     // has already applied everything up to this state of the calendar.
     if tag.is_some() && store.collection_tag(&group.scope).await?.as_ref() == tag {

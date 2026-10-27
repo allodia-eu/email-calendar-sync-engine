@@ -100,6 +100,7 @@ pub(crate) async fn calendars(provider: &CalDavProvider, account: &AccountId) ->
         .sync_calendars(account, None)
         .await
         .expect("list calendars")
+        .sync
         .update
     {
         SyncUpdate::Snapshot { objects, .. } => objects,

@@ -9,11 +9,12 @@ use engine_core::{ids::DavCollectionId, version::CollectionTag};
 
 use super::*;
 
-/// One calendar on the fake server: its listing entry, its events, and whether reading its
-/// events fails.
+/// One calendar on the fake server: its listing entry and tag, its events, and whether reading
+/// its events fails.
 #[derive(Clone)]
 struct DavCalendar {
     listing: Calendar,
+    tag: CollectionTag,
     events: Vec<Event>,
     fails: bool,
 }
@@ -44,8 +45,7 @@ impl FakeDav {
     /// Lists `id` with `tag` and these events.
     fn put(&self, id: &str, tag: &str, events: &[Seeded<'_>]) {
         let calendar = cal(id);
-        let mut listing = Calendar::new(calendar.clone(), id);
-        listing.collection_tag = Some(CollectionTag::new(tag));
+        let listing = Calendar::new(calendar.clone(), id);
         let events = events
             .iter()
             .map(|(event, day)| {
@@ -61,6 +61,7 @@ impl FakeDav {
             calendar,
             DavCalendar {
                 listing,
+                tag: CollectionTag::new(tag),
                 events,
                 fails: false,
             },
@@ -108,19 +109,24 @@ impl Provider for FakeDav {
         &self,
         _account: &AccountId,
         _cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Calendar>> {
-        let listings: Vec<Calendar> = self
-            .calendars
-            .lock()
-            .unwrap()
+    ) -> ProviderResult<CalendarListing> {
+        let calendars = self.calendars.lock().unwrap();
+        let listings: Vec<Calendar> = calendars
             .values()
             .map(|calendar| calendar.listing.clone())
             .collect();
+        let tags = calendars
+            .iter()
+            .map(|(id, calendar)| (id.clone(), calendar.tag.clone()))
+            .collect();
         let present = listings.iter().map(|c| c.id.key().clone()).collect();
-        Ok(ScopeSync::new(
-            SyncUpdate::snapshot(listings, present),
-            SyncState::new("list"),
-        ))
+        Ok(CalendarListing {
+            sync: ScopeSync::new(
+                SyncUpdate::snapshot(listings, present),
+                SyncState::new("list"),
+            ),
+            tags,
+        })
     }
 
     async fn sync_events(

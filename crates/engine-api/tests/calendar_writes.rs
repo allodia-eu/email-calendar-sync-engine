@@ -33,9 +33,9 @@ use engine_core::{
     version::{ETag, RevisionTokens},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, EventEdit, EventRsvp, EventWrite,
-    EventWriteReceipt, OverrideSurvival, Provider, ProviderError, ProviderResult, RsvpControls,
-    ScopeSync, WriteGuard, WritePrecondition,
+    CalendarListing, CalendarWrites, Capabilities, ConnectionInfo, EventEdit, EventRsvp,
+    EventWrite, EventWriteReceipt, OverrideSurvival, Provider, ProviderError, ProviderResult,
+    RsvpControls, ScopeSync, WriteGuard, WritePrecondition,
 };
 
 /// The account's own address — and deliberately **not** the one the invitation was sent to,
@@ -232,13 +232,14 @@ impl Provider for CalendarServer {
         &self,
         _account: &AccountId,
         _cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Calendar>> {
+    ) -> ProviderResult<CalendarListing> {
         let calendars = vec![Calendar::new(CalendarId::try_from("work").unwrap(), "Work")];
         let present = calendars.iter().map(|c| c.id.key().clone()).collect();
         Ok(ScopeSync::new(
             SyncUpdate::snapshot(calendars, present),
             SyncState::new("cal-1"),
-        ))
+        )
+        .into())
     }
 
     /// A snapshot with no cursor, a delta with one: everything changed since it, plus what

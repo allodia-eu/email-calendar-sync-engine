@@ -188,7 +188,8 @@ async fn run(args: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         Some("calendars") => {
-            commands::print_calendars(&commands::calendars(&provider).await?);
+            let (calendars, tags) = commands::calendars(&provider).await?;
+            commands::print_calendars(&calendars, &tags);
             Ok(())
         }
         Some("sync") => sync::sync(&provider).await,

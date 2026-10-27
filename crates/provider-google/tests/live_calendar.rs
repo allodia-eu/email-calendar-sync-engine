@@ -18,7 +18,8 @@ async fn live_calendars_list() {
     let sync = calendar_provider(token)
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     assert!(sync.is_snapshot());
     let SyncUpdate::Snapshot { objects, .. } = &sync.update else {
         panic!("expected a calendar snapshot");
@@ -74,7 +75,8 @@ async fn live_calendar_create_patch_delete() {
     let calendars = provider
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = calendars.update else {
         panic!("expected a calendar snapshot");
     };

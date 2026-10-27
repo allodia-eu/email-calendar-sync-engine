@@ -289,7 +289,8 @@ async fn caldav_reports_its_own_calendar_as_writable() {
     let calendars = provider
         .sync_calendars(&account, None)
         .await
-        .expect("sync_calendars");
+        .expect("sync_calendars")
+        .sync;
     let listed = match calendars.update {
         SyncUpdate::Snapshot { objects, .. } => objects,
         SyncUpdate::Delta { changed, .. } => changed,

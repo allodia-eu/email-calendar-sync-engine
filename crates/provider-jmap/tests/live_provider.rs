@@ -192,6 +192,7 @@ async fn live_calendar_fetch() {
             .sync_calendars(&account(), None)
             .await
             .unwrap()
+            .sync
             .is_snapshot()
     );
     let events = provider

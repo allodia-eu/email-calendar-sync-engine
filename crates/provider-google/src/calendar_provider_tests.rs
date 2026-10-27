@@ -58,7 +58,8 @@ async fn sync_calendars_snapshots_the_list() {
     let sync = provider(vec![("/calendarList", json(CALENDARS))])
         .sync_calendars(&account(), None)
         .await
-        .unwrap();
+        .unwrap()
+        .sync;
     assert!(sync.is_snapshot());
     let SyncUpdate::Snapshot { objects, present } = &sync.update else {
         panic!("expected a calendar snapshot");

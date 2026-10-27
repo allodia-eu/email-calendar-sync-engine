@@ -11,16 +11,16 @@ use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use engine_core::{
-    calendar::{Calendar, Event},
+    calendar::Event,
     error::FailureClass,
     ids::{AccountId, CalendarId},
     sync::{SyncScope, SyncState, SyncUpdate},
     time::TimeZoneId,
 };
 use engine_provider::{
-    CalendarUserAddresses, CalendarWrites, Capabilities, ConnectionInfo, EventDeletion, EventDraft,
-    EventEdit, EventRsvp, EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderResult,
-    RsvpControls, ScopeSync, SyncKind, WriteGuard,
+    CalendarListing, CalendarUserAddresses, CalendarWrites, Capabilities, ConnectionInfo,
+    EventDeletion, EventDraft, EventEdit, EventRsvp, EventWriteReceipt, OverrideSurvival,
+    PageToken, Provider, ProviderResult, RsvpControls, ScopeSync, SyncKind, WriteGuard,
 };
 
 use crate::{
@@ -142,14 +142,15 @@ impl Provider for GraphCalendarProvider {
         &self,
         _account: &AccountId,
         _cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Calendar>> {
+    ) -> ProviderResult<CalendarListing> {
         // `GET /me/calendars` is a full snapshot every pass, so every calendar is present.
         let calendars = cal_fetch::calendars(&self.client).await?;
         let present = calendars.iter().map(|c| c.id.key().clone()).collect();
         Ok(ScopeSync::new(
             SyncUpdate::snapshot(calendars, present),
             SyncState::new(CALENDAR_LIST_CURSOR),
-        ))
+        )
+        .into())
     }
 
     async fn sync_events(

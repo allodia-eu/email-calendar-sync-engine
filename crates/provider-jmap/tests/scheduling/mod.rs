@@ -174,6 +174,7 @@ pub(crate) async fn dav_events(provider: &CalDavProvider, account: &AccountId) -
         .sync_calendars(account, None)
         .await
         .expect("sync calendars")
+        .sync
         .update
     else {
         panic!("expected a calendar snapshot");
@@ -294,6 +295,7 @@ pub(crate) async fn deliver_invitation(parties: &Parties) -> Event {
         .sync_calendars(&organizer_account(), None)
         .await
         .expect("sync organiser calendars")
+        .sync
         .update
     else {
         panic!("expected a calendar snapshot");

@@ -73,10 +73,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // List the account's calendars (re-discovered as a snapshot each pass).
     let calendars = provider.sync_calendars(&account, None).await?;
-    let cals = objects(&calendars.update);
+    let cals = objects(&calendars.sync.update);
     println!("\n{} calendar(s) in the home:", cals.len());
     for cal in cals {
-        let tag = cal.collection_tag.as_ref().map_or("—", |tag| tag.as_str());
+        let tag = calendars.tags.get(&cal.id).map_or("—", |tag| tag.as_str());
         println!("  • {}  [{}]  tag {tag}", cal.name, cal.id.as_str());
     }
 

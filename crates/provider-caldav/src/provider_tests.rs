@@ -196,14 +196,13 @@ async fn calendar_sync_loop_normalizes_folds_and_expands_the_seed() {
     let calendar: Calendar = load(&store, &calendar_scope, &calendar_keys[0]).await;
     assert_eq!(calendar.name, "Stalwart Calendar (alice@test.local)");
 
-    assert_eq!(
-        calendar.collection_tag.as_ref().map(CollectionTag::as_str),
-        Some("urn:stalwart:davsync:16"),
-        "the listing's sync-token is the calendar's tag",
-    );
-
     // ---- Events: six seed resources, each a member of the listed calendar. ----
     let event_scope = provider.event_scope(&account, &calendar.id);
+    assert_eq!(
+        store.collection_tag(&event_scope).await.unwrap(),
+        Some(CollectionTag::new("urn:stalwart:davsync:16")),
+        "the listing's sync-token is recorded with the calendar's event cursor",
+    );
     let event_keys = store.object_keys(&event_scope).await.unwrap();
     assert_eq!(event_keys.len(), 6, "six seed resources stored");
 

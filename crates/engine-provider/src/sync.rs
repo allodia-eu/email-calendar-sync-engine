@@ -1,6 +1,13 @@
 //! The per-scope sync result an adapter returns.
 
-use engine_core::sync::{SyncObject, SyncState, SyncUpdate};
+use std::collections::BTreeMap;
+
+use engine_core::{
+    calendar::Calendar,
+    ids::CalendarId,
+    sync::{SyncObject, SyncState, SyncUpdate},
+    version::CollectionTag,
+};
 
 /// One scope's worth of fetched changes plus the cursor to persist after applying
 /// them.
@@ -36,6 +43,30 @@ impl<T: SyncObject> ScopeSync<T> {
     #[must_use]
     pub fn is_snapshot(&self) -> bool {
         self.update.is_snapshot()
+    }
+}
+
+/// The account's calendar list as one pass read it: the list scope's changes, and the
+/// [`CollectionTag`] the listing showed for each calendar where the protocol has one (CalDAV).
+///
+/// The tags are sync bookkeeping, so they travel beside the calendars rather than on them: the
+/// engine records one with its calendar's event cursor and skips the calendar while the listing
+/// shows the same tag again. A calendar without a tag is asked on every pass.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CalendarListing {
+    /// The calendar list's changes and cursor.
+    pub sync: ScopeSync<Calendar>,
+    /// Each listed calendar's tag, keyed by its id.
+    pub tags: BTreeMap<CalendarId, CollectionTag>,
+}
+
+impl From<ScopeSync<Calendar>> for CalendarListing {
+    /// A listing without tags, for a protocol whose calendar list carries none.
+    fn from(sync: ScopeSync<Calendar>) -> Self {
+        Self {
+            sync,
+            tags: BTreeMap::new(),
+        }
     }
 }
 
