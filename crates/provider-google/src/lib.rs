@@ -50,6 +50,7 @@ mod mutate;
 mod named_labels;
 mod normalize;
 mod provider;
+mod quota;
 mod report;
 mod submit;
 mod throttle;

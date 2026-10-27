@@ -128,9 +128,9 @@ pub use engine_core::{error::FailureClass, mail::MailFlags, search_index::MailRo
 /// [`ThrottleObserver`], because the engine writes no logs of its own.
 ///
 /// [`RequestGate`] is the one with a **per-account** lifetime rather than a per-process one.
-/// A server that limits concurrency counts requests against the account, so one gate is built
-/// per account and cloned to every provider connected for it; the adapter fills in the number,
-/// because only it knows the server. See its docs, and
+/// A server that limits concurrency, or bills a rate, counts against the account, so one gate
+/// is built per account and cloned to every provider connected for it; the adapter fills in
+/// the ceiling and any budget, because only it knows the server. See its docs, and
 /// `docs/agent-guidance/http-throttling.md`.
 pub use engine_http::{
     IgnoreThrottles, RequestGate, RetryConfig, RetryPolicy, ThrottleEvent, ThrottleObserver,
