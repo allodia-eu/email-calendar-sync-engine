@@ -1365,6 +1365,7 @@ dependencies = [
  "engine-store",
  "engine-sync",
  "engine-tls",
+ "futures-util",
  "provider-jmap",
  "quick-xml",
  "reqwest",

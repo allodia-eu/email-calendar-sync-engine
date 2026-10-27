@@ -13,7 +13,7 @@ use engine_core::sync::SyncState;
 use crate::{
     dav::{MultiStatus, has_precondition},
     error::CalDavError,
-    multiget::fill_bodies,
+    multiget::{Multigets, fill_bodies},
     request::{CTAG_PROPFIND, MEMBER_ETAGS_PROPFIND},
     transport::{DavExecutor, DavMethod},
 };
@@ -63,6 +63,7 @@ pub(crate) enum CtagSync {
 /// there is nothing to sync it by.
 pub(crate) async fn ctag_sync(
     exec: &dyn DavExecutor,
+    multigets: &Multigets,
     collection: &str,
     cursor: Option<&SyncState>,
     data: &str,
@@ -92,6 +93,6 @@ pub(crate) async fn ctag_sync(
         )
         .await?
         .into_multistatus()?;
-    fill_bodies(exec, collection, &mut members, data, multiget).await?;
+    fill_bodies(exec, multigets, collection, &mut members, data, multiget).await?;
     Ok(CtagSync::Changed { members, next })
 }

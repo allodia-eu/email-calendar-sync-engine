@@ -27,7 +27,7 @@ use crate::{
     ctag_sync::{CtagSync, ctag_sync, is_ctag_cursor, refuses_sync_collection},
     dav::MultiStatus,
     error::CalDavError,
-    multiget::{fill_bodies, same_path},
+    multiget::{Multigets, fill_bodies, same_path},
     request::{calendar_multiget_report, sync_collection_report},
     transport::{DavExecutor, DavMethod},
 };
@@ -39,12 +39,13 @@ use crate::{
 /// Returns [`CalDavError`] on a transport/HTTP failure or a malformed response.
 pub(crate) async fn sync_events(
     exec: &dyn DavExecutor,
+    multigets: &Multigets,
     collection_href: &str,
     calendar: &CalendarId,
     cursor: Option<&SyncState>,
 ) -> Result<ScopeSync<Event>, CalDavError> {
     if is_ctag_cursor(cursor) {
-        return by_ctag(exec, collection_href, calendar, cursor).await;
+        return by_ctag(exec, multigets, collection_href, calendar, cursor).await;
     }
     let token = cursor.map_or("", SyncState::as_str);
     let mut snapshot = token.is_empty();
@@ -57,10 +58,11 @@ pub(crate) async fn sync_events(
         }
         Err(err) if !refuses_sync_collection(&err, snapshot) => return Err(err),
         // A refusal, or an answer without a sync-token: the server does not do the report.
-        _ => return by_ctag(exec, collection_href, calendar, cursor).await,
+        _ => return by_ctag(exec, multigets, collection_href, calendar, cursor).await,
     };
     fill_bodies(
         exec,
+        multigets,
         collection_href,
         &mut multistatus,
         "calendar-data",
@@ -83,12 +85,14 @@ pub(crate) async fn sync_events(
 /// Syncs `collection_href` through its CTag, as a snapshot whenever it moved.
 async fn by_ctag(
     exec: &dyn DavExecutor,
+    multigets: &Multigets,
     collection_href: &str,
     calendar: &CalendarId,
     cursor: Option<&SyncState>,
 ) -> Result<ScopeSync<Event>, CalDavError> {
     let sync = ctag_sync(
         exec,
+        multigets,
         collection_href,
         cursor,
         "calendar-data",
@@ -204,6 +208,7 @@ mod tests {
         let exec = replay(vec![ok(include_str!("../tests/fixtures/sync-initial.xml"))]);
         let result = sync_events(
             &exec,
+            &Multigets::default(),
             "/dav/cal/alice%40test.local/default/",
             &calendar(),
             None,
@@ -235,6 +240,7 @@ mod tests {
         );
         let result = sync_events(
             &replay(vec![ok(&fixture)]),
+            &Multigets::default(),
             "/dav/cal/alice%40test.local/default/",
             &calendar(),
             None,
@@ -265,6 +271,7 @@ mod tests {
         let cursor = SyncState::new("urn:stalwart:davsync:16");
         let result = sync_events(
             &exec,
+            &Multigets::default(),
             "/dav/cal/alice%40test.local/default/",
             &calendar(),
             Some(&cursor),
@@ -289,6 +296,7 @@ mod tests {
         let cursor = SyncState::new("urn:stalwart:davsync:16");
         let result = sync_events(
             &exec,
+            &Multigets::default(),
             "/dav/cal/alice%40test.local/default/",
             &calendar(),
             Some(&cursor),
@@ -325,6 +333,7 @@ mod tests {
         let cursor = SyncState::new("stale-token");
         let result = sync_events(
             &exec,
+            &Multigets::default(),
             "/dav/cal/alice%40test.local/default/",
             &calendar(),
             Some(&cursor),
@@ -343,6 +352,7 @@ mod tests {
         let exec = replay(vec![ok(body), ok(body)]);
         let result = sync_events(
             &exec,
+            &Multigets::default(),
             "/dav/cal/alice%40test.local/default/",
             &calendar(),
             None,
@@ -360,6 +370,7 @@ mod tests {
         let exec = replay(vec![ok(body)]);
         let result = sync_events(
             &exec,
+            &Multigets::default(),
             "/dav/cal/alice%40test.local/default/",
             &calendar(),
             None,

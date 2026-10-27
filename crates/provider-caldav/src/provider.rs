@@ -32,6 +32,7 @@ use crate::{
     discovery,
     error::CalDavError,
     href::{collection_href, encode_path_segment},
+    multiget::Multigets,
     transport::{DavClient, DavExecutor},
 };
 
@@ -76,6 +77,7 @@ pub struct CalDavProvider {
     principal: Option<String>,
     /// The address set, when discovery already read it off the principal.
     addresses: Option<CalendarUserAddresses>,
+    multigets: Multigets,
 }
 
 impl core::fmt::Debug for CalDavProvider {
@@ -148,6 +150,7 @@ impl CalDavProvider {
             home_href,
             principal: home.principal,
             addresses: home.addresses,
+            multigets: Multigets::default(),
         })
     }
 
@@ -235,6 +238,7 @@ impl Provider for CalDavProvider {
     ) -> ProviderResult<ScopeSync<Event>> {
         Ok(crate::sync::sync_events(
             self.executor.as_ref(),
+            &self.multigets,
             &collection_href(calendar.as_str())?,
             calendar,
             cursor,
