@@ -51,6 +51,13 @@ const MAX_KEEPALIVE: Duration = Duration::from_mins(28);
 /// The floor a host keep-alive is clamped to, so a misconfigured tiny interval cannot
 /// busy-loop the re-`IDLE`.
 const MIN_KEEPALIVE: Duration = Duration::from_secs(10);
+/// How long a turn of `IDLE` lasts on a server whose `IDLE` lags behind its mailbox
+/// (`Connection::idle_lags`), whatever keep-alive the host asked for. Each turn ends with a
+/// `NOOP`, so new mail shows within about this long rather than the server's own delay (Yahoo:
+/// about two minutes); it also keeps the connection busy enough that Yahoo does not log it
+/// out after five quiet minutes. The turns are internal: a quiet one reports nothing, and
+/// [`WatchEvent::KeepAlive`] still comes once per host keep-alive.
+const LAGGING_IDLE_TURN: Duration = Duration::from_secs(20);
 
 /// Whether the watch connection is currently in `IDLE`, and if so the command tag (to
 /// match its eventual `DONE` completion) and the deadline at which it must be
@@ -67,6 +74,12 @@ pub struct ImapWatcher<S> {
     conn: Connection<S>,
     mailbox: MailboxId,
     keepalive: Duration,
+    /// Whether the server's `IDLE` lags (`Connection::idle_lags`), so each turn ends with a
+    /// `NOOP`.
+    lags: bool,
+    /// When the current keep-alive interval ends and a quiet watch reports
+    /// [`WatchEvent::KeepAlive`]; on a lagging server it spans several turns.
+    keepalive_due: Option<Instant>,
     state: WatchState,
     /// This watch's claim on the account's connection budget, returned when the watcher is
     /// dropped — stopped, or its task aborted. `None` only for a watcher the offline tests
@@ -105,10 +118,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapWatcher<S> {
             ));
         }
         conn.examine(mailbox.as_str()).await?;
+        let lags = conn.idle_lags();
         Ok(Self {
             conn,
             mailbox,
             keepalive: keepalive.clamp(MIN_KEEPALIVE, MAX_KEEPALIVE),
+            lags,
+            keepalive_due: None,
             state: WatchState::NotIdling,
             _lease: None,
         })
@@ -122,17 +138,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapWatcher<S> {
         }
     }
 
-    /// Ensures the connection is idling, issuing `IDLE` (and recording its tag +
-    /// keep-alive deadline) only when not already, so a watcher **stays** idling across
-    /// `Changed` events. Returns the current deadline.
-    async fn ensure_idling(&mut self) -> ProviderResult<Instant> {
+    /// Ensures the connection is idling, issuing `IDLE` (and recording its tag + the
+    /// turn's deadline) only when not already, so a watcher **stays** idling across
+    /// `Changed` events. Returns the current deadline, and whether the server reported a
+    /// change before it accepted the `IDLE`.
+    async fn ensure_idling(&mut self) -> ProviderResult<(Instant, bool)> {
         match &self.state {
-            WatchState::Idling { deadline, .. } => Ok(*deadline),
+            WatchState::Idling { deadline, .. } => Ok((*deadline, false)),
             WatchState::NotIdling => {
-                let tag = idle::idle_start(&mut self.conn).await?;
-                let deadline = Instant::now() + self.keepalive;
+                let (tag, saw_change) = idle::idle_start(&mut self.conn).await?;
+                let now = Instant::now();
+                let due = match self.keepalive_due {
+                    Some(due) if due > now => due,
+                    _ => now + self.keepalive,
+                };
+                self.keepalive_due = Some(due);
+                let deadline = if self.lags {
+                    due.min(now + LAGGING_IDLE_TURN)
+                } else {
+                    due
+                };
                 self.state = WatchState::Idling { tag, deadline };
-                Ok(deadline)
+                Ok((deadline, saw_change))
             }
         }
     }
@@ -145,35 +172,49 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapWatcher<S> {
     /// A classified [`ProviderError`] when the connection drops or the server errors
     /// (the host reconnects per its own policy).
     pub async fn next_event(&mut self) -> ProviderResult<WatchEvent> {
-        let deadline = self.ensure_idling().await?;
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        match timeout(remaining, idle::idle_wait_change(&mut self.conn)).await {
-            // A change — report it but STAY idling, so a change arriving while the host
-            // syncs (on a separate connection) is still captured by the next call.
-            Ok(Ok(())) => Ok(WatchEvent::Changed),
-            // The connection dropped or the server errored: leave IDLE so a fresh call
-            // re-establishes it, and surface the classified failure.
-            Ok(Err(err)) => {
-                self.state = WatchState::NotIdling;
-                Err(ProviderError::from(err))
+        loop {
+            let (deadline, saw_change) = self.ensure_idling().await?;
+            if saw_change {
+                // Reported before the continuation: already idling, so stay there.
+                return Ok(WatchEvent::Changed);
             }
-            // The keep-alive elapsed: end IDLE (the RFC 2177 re-issue), draining any
-            // change that landed at the boundary — reported as `Changed`, an otherwise
-            // quiet interval as `KeepAlive`. Either way we leave IDLE; the next call
-            // re-issues it. The boundary `DONE` doubles as a liveness probe: a silently
-            // dead connection fails here and surfaces to the host.
-            Err(_elapsed) => {
-                let WatchState::Idling { tag, .. } = &self.state else {
-                    return Err(ProviderError::invalid_state("watch lost its idle state"));
-                };
-                let tag = tag.clone();
-                let saw_change = idle::idle_done(&mut self.conn, &tag).await?;
-                self.state = WatchState::NotIdling;
-                Ok(if saw_change {
-                    WatchEvent::Changed
-                } else {
-                    WatchEvent::KeepAlive
-                })
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match timeout(remaining, idle::idle_wait_change(&mut self.conn)).await {
+                // A change — report it but STAY idling, so a change arriving while the host
+                // syncs (on a separate connection) is still captured by the next call.
+                Ok(Ok(())) => return Ok(WatchEvent::Changed),
+                // The connection dropped or the server errored: leave IDLE so a fresh call
+                // re-establishes it, and surface the classified failure.
+                Ok(Err(err)) => {
+                    self.state = WatchState::NotIdling;
+                    return Err(ProviderError::from(err));
+                }
+                // The turn elapsed: end IDLE (the RFC 2177 re-issue), draining any change
+                // that landed at the boundary, and on a lagging server ask with `NOOP`. A
+                // change is reported as `Changed`; a quiet turn as `KeepAlive` once the
+                // keep-alive is due, and otherwise by idling again. The boundary `DONE`
+                // doubles as a liveness probe: a silently dead connection fails here and
+                // surfaces to the host.
+                Err(_elapsed) => {
+                    let WatchState::Idling { tag, .. } = &self.state else {
+                        return Err(ProviderError::invalid_state("watch lost its idle state"));
+                    };
+                    let tag = tag.clone();
+                    let mut saw_change = idle::idle_done(&mut self.conn, &tag).await?;
+                    self.state = WatchState::NotIdling;
+                    if self.lags && !saw_change {
+                        saw_change = idle::noop_change(&mut self.conn).await?;
+                    }
+                    if !saw_change && self.keepalive_due.is_some_and(|due| Instant::now() < due) {
+                        continue;
+                    }
+                    self.keepalive_due = None;
+                    return Ok(if saw_change {
+                        WatchEvent::Changed
+                    } else {
+                        WatchEvent::KeepAlive
+                    });
+                }
             }
         }
     }
