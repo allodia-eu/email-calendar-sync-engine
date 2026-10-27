@@ -20,14 +20,14 @@ fn calendar() -> CalendarId {
 }
 
 fn provider(routes: Vec<(&'static str, serde_json::Value)>) -> GoogleCalendarProvider {
-    GoogleCalendarProvider::new(fake_client(routes), calendar())
+    GoogleCalendarProvider::new(fake_client(routes))
 }
 
 #[test]
-fn scopes_bind_a_calendar_and_a_calendar_list_container() {
+fn each_calendar_has_its_own_scope_under_a_calendar_list_container() {
     let p = provider(vec![]);
     assert_eq!(
-        p.event_scope(&account()),
+        p.event_scope(&account(), &calendar()),
         SyncScope::GoogleCalendar {
             account: account(),
             calendar: calendar()
@@ -70,7 +70,7 @@ async fn sync_calendars_snapshots_the_list() {
 #[tokio::test]
 async fn sync_events_snapshot_reconciles_with_a_sync_token() {
     let sync = provider(vec![("/events?singleEvents=false", json(EVENTS))])
-        .sync_events(&account(), None)
+        .sync_events(&account(), &calendar(), None)
         .await
         .unwrap();
     assert!(sync.is_snapshot());
@@ -84,7 +84,11 @@ async fn sync_events_snapshot_reconciles_with_a_sync_token() {
 #[tokio::test]
 async fn sync_events_delta_is_additive_with_a_tombstone() {
     let sync = provider(vec![("syncToken=", json(DELTA))])
-        .sync_events(&account(), Some(&SyncState::new("events-sync-token-1")))
+        .sync_events(
+            &account(),
+            &calendar(),
+            Some(&SyncState::new("events-sync-token-1")),
+        )
         .await
         .unwrap();
     assert!(!sync.is_snapshot());
@@ -134,7 +138,7 @@ async fn create_patch_delete_route_through_the_provider() {
         ("/events/srv-1", created),
     ]);
 
-    // A draft for the *bound* calendar is created; one for another calendar is refused.
+    // A draft is created in the calendar it names.
     let draft = EventDraft::new(
         calendar(),
         Uid::new("u@test.local").unwrap(),
@@ -145,15 +149,28 @@ async fn create_patch_delete_route_through_the_provider() {
     );
     let receipt = p.create_event(&account(), &draft).await.unwrap();
     assert_eq!(receipt.event.key().as_str(), "srv-1");
+    // A server that answers only under another calendar proves the request went there.
+    let other = provider(vec![(
+        "/calendars/other/events",
+        serde_json::json!({ "id": "srv-2", "iCalUID": "o@google.com", "etag": "\"v1\"" }),
+    )]);
     let elsewhere = EventDraft::new(
         CalendarId::try_from("other").unwrap(),
-        Uid::new("u@test.local").unwrap(),
-        "Nope",
+        Uid::new("o@test.local").unwrap(),
+        "Elsewhere",
         zoned.clone(),
         zoned.clone(),
         stamp,
     );
-    assert!(p.create_event(&account(), &elsewhere).await.is_err());
+    let receipt = other.create_event(&account(), &elsewhere).await.unwrap();
+    assert_eq!(receipt.event.key().as_str(), "srv-2");
+    assert!(
+        provider(vec![("/calendars/primary/events", serde_json::json!({}))])
+            .create_event(&account(), &elsewhere)
+            .await
+            .is_err(),
+        "and never to the primary calendar",
+    );
 
     // Patch + delete route through too.
     let mut base = Event::new(
@@ -170,7 +187,7 @@ async fn create_patch_delete_route_through_the_provider() {
     );
     assert!(p.patch_event(&account(), &base, &edit).await.is_ok());
     assert!(
-        p.delete_event(&account(), None, &EventDeletion::of(&base))
+        p.delete_event(&account(), Some(&base), &EventDeletion::of(&base))
             .await
             .is_ok()
     );
@@ -181,8 +198,8 @@ async fn sync_events_restarts_as_a_snapshot_when_the_sync_token_expired() {
     let mut routes: Vec<(&str, crate::test_support::FakeRoute)> =
         vec![("syncToken=", Err((410, json(SYNC_GONE))))];
     routes.push(("/events?singleEvents=false", Ok(json(EVENTS))));
-    let sync = GoogleCalendarProvider::new(fake_client_fallible(routes), calendar())
-        .sync_events(&account(), Some(&SyncState::new("old")))
+    let sync = GoogleCalendarProvider::new(fake_client_fallible(routes))
+        .sync_events(&account(), &calendar(), Some(&SyncState::new("old")))
         .await
         .unwrap();
     // Recovery yields a fresh snapshot, not an error.

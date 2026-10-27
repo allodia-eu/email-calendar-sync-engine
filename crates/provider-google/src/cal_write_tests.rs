@@ -159,6 +159,14 @@ fn build_patch_rejects_a_form_change() {
     );
 }
 
+#[test]
+fn a_write_names_a_subscribed_calendar_as_one_path_segment() {
+    assert_eq!(
+        events_path("nl.dutch#holiday@group.v.calendar.google.com"),
+        "/calendar/v3/calendars/nl.dutch%23holiday%40group.v.calendar.google.com/events"
+    );
+}
+
 #[tokio::test]
 async fn patch_event_with_an_empty_patch_calls_nothing() {
     // An empty patch neither errors nor calls the server; it reports the base revision.

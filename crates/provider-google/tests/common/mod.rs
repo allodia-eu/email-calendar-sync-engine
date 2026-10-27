@@ -35,8 +35,12 @@ pub(crate) fn calendar_provider(token: String) -> GoogleCalendarProvider {
         &engine_http::test_server::user_agent(),
     )
     .expect("client");
-    // "primary" is Google's alias for the account's default calendar.
-    GoogleCalendarProvider::new(client, CalendarId::try_from("primary").unwrap())
+    GoogleCalendarProvider::new(client)
+}
+
+/// Google's alias for the account's default calendar.
+pub(crate) fn primary() -> CalendarId {
+    CalendarId::try_from("primary").unwrap()
 }
 
 /// A zoned wall clock in the zone the probes author in.

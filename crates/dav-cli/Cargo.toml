@@ -19,6 +19,7 @@ name = "dav"
 path = "src/main.rs"
 
 [dependencies]
+engine-api = { workspace = true }
 engine-core = { workspace = true }
 engine-ical = { workspace = true }
 engine-mime = { workspace = true }

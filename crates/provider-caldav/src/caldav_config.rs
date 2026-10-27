@@ -19,9 +19,6 @@ pub struct CalDavConfig {
     pub credentials: Credentials,
     /// The URL to begin discovery at; defaults to the RFC 6764 well-known path.
     pub discovery_path: String,
-    /// The calendar collection to bind events to — a name under the calendar home
-    /// (e.g. `default`) or an absolute collection path.
-    pub calendar: String,
     /// The TLS trust policy for this account, shared with every other provider
     /// (`docs/agent-guidance/tls.md`). Defaults to the hermetic bundled roots;
     /// override with [`CalDavConfig::with_tls`].
@@ -49,7 +46,6 @@ impl core::fmt::Debug for CalDavConfig {
             .field("base_url", &self.base_url)
             .field("credentials", &self.credentials)
             .field("discovery_path", &self.discovery_path)
-            .field("calendar", &self.calendar)
             .field("tls", &self.tls)
             .field("retry", &self.retry)
             .field("user_agent", &self.user_agent)
@@ -60,8 +56,7 @@ impl core::fmt::Debug for CalDavConfig {
 }
 
 impl CalDavConfig {
-    /// Settings with the RFC 6764 well-known discovery path and the `default`
-    /// calendar.
+    /// Settings with the RFC 6764 well-known discovery path.
     #[must_use]
     pub fn new(
         base_url: impl Into<String>,
@@ -72,7 +67,6 @@ impl CalDavConfig {
             base_url: base_url.into(),
             credentials,
             discovery_path: "/.well-known/caldav".to_owned(),
-            calendar: "default".to_owned(),
             tls: TlsClientConfig::default(),
             retry: engine_http::RetryConfig::default(),
             user_agent,
@@ -85,14 +79,6 @@ impl CalDavConfig {
     #[must_use]
     pub fn with_credential_hosts(mut self, policy: Arc<dyn CredentialHosts>) -> Self {
         self.credential_hosts = Some(policy);
-        self
-    }
-
-    /// Binds events to a different calendar collection (a home-relative name or an
-    /// absolute path).
-    #[must_use]
-    pub fn with_calendar(mut self, calendar: impl Into<String>) -> Self {
-        self.calendar = calendar.into();
         self
     }
 

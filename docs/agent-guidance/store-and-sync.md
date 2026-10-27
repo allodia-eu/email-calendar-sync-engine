@@ -148,6 +148,24 @@ Consequences that the orchestrator must not paper over:
   it is enforced where every request passes — `engine_http::RequestGate`, one per account
   (`http-throttling.md`). Conflating them breaks in both directions: an IMAP folder holds its
   own socket, so its ceiling is per connection, while every Graph folder shares the mailbox's.
+- **A calendar provider serves every calendar of its account, and the engine owns the
+  fan-out.** `Provider::event_scope(account, calendar)` names the scope a calendar's events
+  sync under: one per calendar where the event delta is per collection (CalDAV, Graph,
+  Google), one shared by every calendar where it is account-wide (JMAP). `sync_calendar`
+  syncs the calendar list, groups the listed calendars by scope, and syncs each scope once,
+  concurrently and bounded (`MAX_CONCURRENT_EVENT_SCOPES`, a store bound like the folder
+  one). Each scope reports its own outcome, so one refused calendar never fails the others.
+  An event scope no listed calendar answers any more is forgotten whole, as a vanished
+  folder's is; an empty list judges nothing. A calendar that appears later seeds the window
+  the account's other scopes already hold, never the narrower horizon a pass was handed.
+- **A collection tag skips an unchanged collection.** Where the listing carries a marker for a
+  collection's contents (`CollectionTag`: a DAV sync-token or CTag), the store records the
+  one the listing showed **before** the fetch with the scope's cursor, in the same
+  transaction (`ApplyBatch::collection_tag`). A pass whose listing shows the recorded tag
+  skips the scope without a request; a tag read after the fetch could claim a change the pass
+  never saw. A streaming page leaves the recorded tag alone, a cursor written without one
+  clears it, and a forgotten scope loses it. A post-write reconcile records none, so the next
+  pass reads the calendar's new tag rather than trusting the old one.
 - **Referential apply order.** Container scopes (mailboxes, calendars, address
   books) are applied before the member scopes that reference them (emails,
   events, contacts). Membership rows resolve against already-applied containers,
@@ -778,8 +796,8 @@ one event never race on either provider.
   deliberately pure: they record the op, call the provider, record the outcome. They never
   touch the stored object — a write's response is a receipt, not a document, and the store's
   copy must keep coming from the **server** (`caldav.md`). So the read-your-writes step is a
-  separate primitive, `engine_sync::reconcile_calendar_events`: the **event-scope delta**,
-  which re-delivers the object the server now holds, tombstones a delete, and advances the
+  separate primitive, `engine_sync::reconcile_calendar_events`: the **event-scope delta** of
+  the calendar the write touched (never every calendar of the account), which re-delivers the object the server now holds, tombstones a delete, and advances the
   cursor — one round trip, no new provider verb. The `Engine` facade runs it after every
   calendar write (`engine-api.md`), so a host gets read-your-writes by construction while the
   drivers stay usable by a **headless** caller — the #60 drainer has no host `horizon`/zone

@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use engine_core::{
     calendar::{Calendar, Event},
-    ids::{AccountId, ProviderKey},
+    ids::{AccountId, CalendarId, ProviderKey},
     mail::{Mailbox, Message},
     raw::RawMime,
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
@@ -428,9 +428,15 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
         }
     }
 
-    /// The scope the account's calendar events sync under. Defaults to the JMAP
-    /// `(account, CalendarEvent)` scope; non-JMAP providers override.
-    fn event_scope(&self, account: &AccountId) -> SyncScope {
+    /// The scope `calendar`'s events sync under.
+    ///
+    /// One provider serves every calendar of the account it signed in to, so this is asked per
+    /// calendar. Where the protocol's event delta is per calendar (CalDAV, Graph, Google) each
+    /// calendar has a scope of its own; where it is account-wide (JMAP's `CalendarEvent` state)
+    /// every calendar answers the **same** scope, and the account's events sync once under it.
+    /// Defaults to that JMAP scope; non-JMAP providers override.
+    fn event_scope(&self, account: &AccountId, calendar: &CalendarId) -> SyncScope {
+        let _ = calendar;
         SyncScope::JmapType {
             account: account.clone(),
             data_type: JmapDataType::CalendarEvent,
@@ -453,8 +459,9 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
         Err(unsupported("calendar sync"))
     }
 
-    /// Fetches the account's calendar events since `cursor` (JSCalendar). Providers
-    /// advertising [`Capabilities::calendars`] override this.
+    /// Fetches the events of the scope [`event_scope`](Self::event_scope) names for `calendar`,
+    /// since `cursor`. Where several calendars share one scope, any of them answers for all.
+    /// Providers advertising [`Capabilities::calendars`] override this.
     ///
     /// # Errors
     ///
@@ -463,9 +470,10 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
     async fn sync_events(
         &self,
         account: &AccountId,
+        calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
-        let _ = (account, cursor);
+        let _ = (account, calendar, cursor);
         Err(unsupported("calendar sync"))
     }
 }

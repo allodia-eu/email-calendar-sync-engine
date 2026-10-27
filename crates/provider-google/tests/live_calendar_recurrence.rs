@@ -68,7 +68,7 @@ async fn live_calendar_creates_a_recurring_event() {
 
     // Read it back through the adapter's own sync path: what a host would see.
     let events = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &primary(), None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {
@@ -173,7 +173,7 @@ async fn live_calendar_changes_and_removes_a_rule() {
         let provider = &provider;
         async move {
             let events = provider
-                .sync_events(&account(), None)
+                .sync_events(&account(), &primary(), None)
                 .await
                 .expect("sync events");
             let SyncUpdate::Snapshot { objects, .. } = events.update else {
@@ -236,7 +236,7 @@ async fn live_calendar_changes_and_removes_a_rule() {
 
     base.revisions = cleared.revisions.clone();
     provider
-        .delete_event(&account(), None, &EventDeletion::of(&base))
+        .delete_event(&account(), Some(&base), &EventDeletion::of(&base))
         .await
         .expect("delete the probe event");
 }

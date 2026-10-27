@@ -20,9 +20,8 @@ use engine_provider::{
     CalendarWrites, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence,
     PatchTarget,
 };
-use provider_caldav::CalDavProvider;
 
-use super::{pre_clean, require};
+use super::{OnCalendar, pre_clean, require};
 
 const RECURRING_UID: &str = "live-caldav-recurring@test.local";
 
@@ -50,7 +49,7 @@ fn weekly_on_monday() -> RecurrenceRule {
 
 /// Creates a recurring event through the neutral draft, then reads the rule back off the
 /// server and deletes it. Leaves the seed untouched.
-pub(crate) async fn create_carries_the_rule(provider: &CalDavProvider, account: &AccountId) {
+pub(crate) async fn create_carries_the_rule(provider: &OnCalendar, account: &AccountId) {
     let uid = Uid::new(RECURRING_UID).unwrap();
     pre_clean(provider, account, &uid).await;
 
@@ -99,7 +98,7 @@ pub(crate) async fn create_carries_the_rule(provider: &CalDavProvider, account: 
 ///
 /// The instant is the caller's to resolve — no adapter carries tzdata — so this also pins
 /// the refusal: the same draft without it must not be silently written with a local clock.
-pub(crate) async fn an_until_is_written_in_utc(provider: &CalDavProvider, account: &AccountId) {
+pub(crate) async fn an_until_is_written_in_utc(provider: &OnCalendar, account: &AccountId) {
     let uid = Uid::new("live-caldav-recurring-until@test.local").unwrap();
     pre_clean(provider, account, &uid).await;
 
@@ -161,10 +160,7 @@ pub(crate) async fn an_until_is_written_in_utc(provider: &CalDavProvider, accoun
 /// Both halves need a real server: the patcher's output is only a claim until something
 /// stores it and hands it back, and the second half is the one where a leftover override
 /// would keep drawing occurrences under "does not repeat".
-pub(crate) async fn a_rule_can_be_changed_and_removed(
-    provider: &CalDavProvider,
-    account: &AccountId,
-) {
+pub(crate) async fn a_rule_can_be_changed_and_removed(provider: &OnCalendar, account: &AccountId) {
     const UID: &str = "live-caldav-rule-edit@test.local";
     let uid = Uid::new(UID).unwrap();
     pre_clean(provider, account, &uid).await;
@@ -260,7 +256,7 @@ pub(crate) async fn a_rule_can_be_changed_and_removed(
 /// reasoned about from the bytes: an override whose instant the rule no longer produces is
 /// materialized as an *added* occurrence, so a leftover would keep drawing the very
 /// occurrence the user deleted — at the time they had moved it to.
-pub(crate) async fn an_occurrence_can_be_removed(provider: &CalDavProvider, account: &AccountId) {
+pub(crate) async fn an_occurrence_can_be_removed(provider: &OnCalendar, account: &AccountId) {
     const UID: &str = "live-caldav-occurrence-delete@test.local";
     let uid = Uid::new(UID).unwrap();
     pre_clean(provider, account, &uid).await;

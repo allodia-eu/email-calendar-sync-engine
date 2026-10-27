@@ -295,7 +295,6 @@ let config = CalDavConfig::new(
     },
     agent.clone(),
 )
-.with_calendar("default")
 .with_tls(tls);
 
 let provider = CalDavProvider::connect(config).await?;
@@ -314,11 +313,11 @@ let contacts = provider_caldav::CardDavProvider::connect(
 .await?;
 ```
 
-The `with_calendar` argument is either a name relative to the calendar home (e.g. `"default"`) or an absolute collection path. After listing calendars with `sync_calendars`, you can `rebind` to a different collection without re-running discovery.
+One `CalDavProvider` serves every calendar under the home its discovery found. `sync_calendars` lists them, each with its collection tag; `Engine::sync_calendar` syncs the list and then every calendar's events; a write names its calendar on the draft.
 
 ### Notes
 
-- A `CalDavProvider` is **bound to one calendar collection** for events. The calendar list syncs at the account level; cross-collection fan-out is the host's job.
+- A `CalDavProvider` binds no calendar. Each calendar's events sync under a scope of their own, and a calendar whose listing tag has not moved since its last sync is skipped without a request.
 - A `CardDavProvider` is likewise bound to one address book. It preserves raw
   vCard and uses ETag-conditional `PUT`/`DELETE`. `rebind` switches books without
   repeating discovery and carries write capability with it, so a rebind onto a

@@ -7,6 +7,10 @@
 
 use super::*;
 
+fn work() -> CalendarId {
+    CalendarId::try_from("work").unwrap()
+}
+
 fn calendar(id: &str, name: &str) -> Calendar {
     Calendar::new(CalendarId::try_from(id).unwrap(), name)
 }
@@ -63,7 +67,7 @@ async fn sync_calendar_stores_containers_events_and_occurrences() {
     assert_eq!(report.calendars.upserted, 1);
     assert_eq!(report.events.applied.upserted, 2);
 
-    let event_scope = provider.event_scope(&account());
+    let event_scope = provider.event_scope(&account(), &work());
     // Every event materializes occurrences: the single one once, the weekly-count-3
     // three times.
     assert_eq!(
@@ -130,7 +134,7 @@ async fn a_moved_event_replaces_its_occurrence_rows_rather_than_ghosting() {
 
     assert_eq!(
         store
-            .index_row_counts(&after.event_scope(&account()), &key("evt-1"))
+            .index_row_counts(&after.event_scope(&account(), &work()), &key("evt-1"))
             .await
             .unwrap()
             .occurrences,
@@ -172,14 +176,20 @@ async fn reconcile_calendar_events_applies_the_event_delta_without_the_container
         .with_calendar(vec![calendar("work", "Work")], vec![moved])
         .failing(Fault::CalendarFetch);
 
-    let report =
-        reconcile_calendar_events(&after, &store, &account(), worker(), Duration::from_mins(1))
-            .await
-            .unwrap();
+    let report = reconcile_calendar_events(
+        &after,
+        &store,
+        &account(),
+        &work(),
+        worker(),
+        Duration::from_mins(1),
+    )
+    .await
+    .unwrap();
     assert_eq!(report.applied.upserted, 1);
     assert!(report.unexpandable.is_empty());
 
-    let scope = after.event_scope(&account());
+    let scope = after.event_scope(&account(), &work());
     let stored: Event = serde_json::from_value(
         store
             .object_payload(&scope, &key("evt-1"))
@@ -226,7 +236,7 @@ async fn unsupported_recurrence_stores_event_without_occurrences() {
 
     // The event is stored and indexed, but materializes no occurrences (rather than
     // failing the whole sync).
-    let event_scope = provider.event_scope(&account());
+    let event_scope = provider.event_scope(&account(), &work());
     let counts = store
         .index_row_counts(&event_scope, &key("evt-x"))
         .await
@@ -283,7 +293,7 @@ async fn a_sync_re_expands_a_changed_event_over_the_stores_window_not_the_caller
     )
     .await
     .unwrap();
-    let scope = before.event_scope(&account());
+    let scope = before.event_scope(&account(), &work());
     let expanded = store
         .index_row_counts(&scope, &key("evt-w"))
         .await
@@ -340,6 +350,7 @@ async fn a_reconcile_before_any_sync_is_an_error_not_an_empty_calendar() {
         &provider,
         &store,
         &account(),
+        &work(),
         worker(),
         Duration::from_mins(1),
     )

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs once, as www-data, after the image installs Nextcloud (its post-installation hook) and
-# before the web server starts. Seeds the `harness` calendar with the six calendar fixtures the
+# before the web server starts. Seeds the `harness` and `work` calendars with the fixtures the
 # Stalwart and SabreDAV harnesses use, so one dataset validates all three servers, and gives the
 # account an email address, which is what its principal reports as its calendar user address.
 set -eu
@@ -13,6 +13,10 @@ $OCC user:setting "$USER" settings email "$HARNESS_EMAIL"
 $OCC dav:create-calendar "$USER" harness
 for ics in /seed/calendar/*.ics; do
     $OCC calendar:import --errors=1 "$USER" harness "$ics"
+done
+$OCC dav:create-calendar "$USER" work
+for ics in /seed/calendar/work/*.ics; do
+    $OCC calendar:import --errors=1 "$USER" work "$ics"
 done
 $OCC dav:create-addressbook "$USER" harness
 

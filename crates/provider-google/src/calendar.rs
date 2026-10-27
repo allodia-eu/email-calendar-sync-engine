@@ -1,13 +1,12 @@
-//! The calendar [`Provider`] implementation: a Google client bound to one calendar for
-//! events, with the calendar list synced at the account level.
+//! The calendar [`Provider`] implementation: one Google client serving every calendar of
+//! the account.
 //!
-//! Like [`GmailProvider`](crate::GmailProvider) is account-global for mail, a
-//! [`GoogleCalendarProvider`] is **bound to one calendar**: its
-//! [`event_scope`](Provider::event_scope) names that calendar
-//! ([`SyncScope::GoogleCalendar`]) and syncs its `events.list`, while the calendar list
-//! syncs under the per-account [`SyncScope::GoogleCalendarList`]. The cross-calendar
-//! fan-out is the orchestrator's job. Unlike Graph, the time window is **optional**, and
-//! Google is IANA-native (no display-zone request header).
+//! The calendar list syncs under the per-account [`SyncScope::GoogleCalendarList`], and each
+//! calendar's events under a [`SyncScope::GoogleCalendar`] of its own
+//! ([`event_scope`](Provider::event_scope)), through that calendar's `events.list`. Google
+//! addresses an event inside its calendar, so a write reaches the calendar the draft or the
+//! stored event names. Unlike Graph, the time window is **optional**, and Google is
+//! IANA-native (no display-zone request header).
 
 use std::collections::BTreeSet;
 
@@ -58,14 +57,13 @@ use crate::{
 /// carries no provider cursor of its own — like Gmail's label list.
 const CALENDAR_LIST_CURSOR: &str = "google-calendars";
 
-/// A Google Calendar read/sync provider bound to one calendar.
+/// A Google Calendar read/sync/write provider for every calendar of one account.
 ///
-/// Construct one with [`GoogleCalendarProvider::new`] from a connected [`GoogleClient`]
-/// and the calendar to bind; optionally set a snapshot date [`window`](CalendarWindow)
+/// Construct one with [`GoogleCalendarProvider::new`] from a connected [`GoogleClient`];
+/// optionally set a snapshot date [`window`](CalendarWindow)
 /// with [`with_window`](Self::with_window) (Google's window is optional, unlike Graph's).
 pub struct GoogleCalendarProvider {
     client: GoogleClient,
-    calendar: CalendarId,
     window: Option<CalendarWindow>,
     capabilities: Capabilities,
 }
@@ -73,14 +71,13 @@ pub struct GoogleCalendarProvider {
 impl core::fmt::Debug for GoogleCalendarProvider {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GoogleCalendarProvider")
-            .field("calendar", &self.calendar.key().as_str())
             .field("window", &self.window)
             .finish_non_exhaustive()
     }
 }
 
 impl GoogleCalendarProvider {
-    /// Binds a connected client to one calendar for event read/sync and writes.
+    /// Serves a connected client's calendars for event read/sync and writes.
     ///
     /// Google *enforces* the lost-update guard — a stale `If-Match` ETag is a `412` on a
     /// write — so, like Graph and unlike JMAP, it advertises [`WriteGuard::Enforced`].
@@ -91,10 +88,9 @@ impl GoogleCalendarProvider {
     /// caller never assembles an iMIP message itself. Nothing to discover: it is a property
     /// of the service.
     #[must_use]
-    pub fn new(client: GoogleClient, calendar: CalendarId) -> Self {
+    pub fn new(client: GoogleClient) -> Self {
         Self {
             client,
-            calendar,
             window: None,
             capabilities: Capabilities::none()
                 .with_calendars()
@@ -102,11 +98,6 @@ impl GoogleCalendarProvider {
                 .with_calendar_rsvp(GOOGLE_RSVP)
                 .with_calendar_scheduling(),
         }
-    }
-
-    /// The bound calendar's id as a path segment.
-    fn calendar_id(&self) -> &str {
-        self.calendar.key().as_str()
     }
 
     /// Windows the initial (snapshot) event enumeration to `[start, end)` via
@@ -134,10 +125,10 @@ impl Provider for GoogleCalendarProvider {
         }
     }
 
-    fn event_scope(&self, account: &AccountId) -> SyncScope {
+    fn event_scope(&self, account: &AccountId, calendar: &CalendarId) -> SyncScope {
         SyncScope::GoogleCalendar {
             account: account.clone(),
-            calendar: self.calendar.clone(),
+            calendar: calendar.clone(),
         }
     }
 
@@ -158,6 +149,7 @@ impl Provider for GoogleCalendarProvider {
     async fn sync_events(
         &self,
         _account: &AccountId,
+        calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         // Drain every `events.list` page into one update. A snapshot reconciles (its
@@ -172,7 +164,7 @@ impl Provider for GoogleCalendarProvider {
         let next_cursor = loop {
             let page = match cal_fetch::events_page(
                 &self.client,
-                &self.calendar,
+                calendar,
                 cursor,
                 page_token.as_ref(),
                 self.window,
@@ -219,6 +211,16 @@ impl Provider for GoogleCalendarProvider {
 }
 impl engine_provider::MailboxWrites for GoogleCalendarProvider {}
 
+/// The calendar a stored event lives in, as a path segment: the one its sync filed it under.
+fn calendar_of(event: &Event) -> ProviderResult<&str> {
+    event
+        .calendars
+        .iter()
+        .next()
+        .map(|calendar| calendar.key().as_str())
+        .ok_or_else(|| ProviderError::invalid_state("the event names no calendar"))
+}
+
 #[async_trait]
 impl CalendarWrites for GoogleCalendarProvider {
     async fn create_event(
@@ -226,16 +228,7 @@ impl CalendarWrites for GoogleCalendarProvider {
         _account: &AccountId,
         draft: &EventDraft,
     ) -> ProviderResult<EventWriteReceipt> {
-        // A draft naming a different calendar is refused rather than silently written to
-        // the bound one — this provider is calendar-bound, like `GraphCalendarProvider`.
-        if draft.calendar != self.calendar {
-            return Err(ProviderError::invalid_state(format!(
-                "draft targets calendar {:?}, but this provider is bound to {:?}",
-                draft.calendar.key().as_str(),
-                self.calendar_id()
-            )));
-        }
-        cal_write::create_event(&self.client, self.calendar_id(), draft).await
+        cal_write::create_event(&self.client, draft.calendar.key().as_str(), draft).await
     }
 
     async fn patch_event(
@@ -244,7 +237,7 @@ impl CalendarWrites for GoogleCalendarProvider {
         base: &Event,
         edit: &EventEdit,
     ) -> ProviderResult<EventWriteReceipt> {
-        cal_write::patch_event(&self.client, self.calendar_id(), base, edit).await
+        cal_write::patch_event(&self.client, calendar_of(base)?, base, edit).await
     }
 
     async fn rsvp_event(
@@ -254,16 +247,21 @@ impl CalendarWrites for GoogleCalendarProvider {
         rsvp: &EventRsvp,
     ) -> ProviderResult<EventWriteReceipt> {
         GOOGLE_RSVP.accept(rsvp)?;
-        cal_write::rsvp_event(&self.client, self.calendar_id(), base, rsvp).await
+        cal_write::rsvp_event(&self.client, calendar_of(base)?, base, rsvp).await
     }
 
     async fn delete_event(
         &self,
         _account: &AccountId,
-        _base: Option<&Event>,
+        base: Option<&Event>,
         deletion: &EventDeletion,
     ) -> ProviderResult<()> {
-        cal_write::delete_event(&self.client, self.calendar_id(), deletion).await
+        let base = base.ok_or_else(|| {
+            ProviderError::invalid_state(
+                "a Google event is deleted from its calendar, which only the stored event names",
+            )
+        })?;
+        cal_write::delete_event(&self.client, calendar_of(base)?, deletion).await
     }
 
     /// The account's primary calendar id, which is the address Google organises and answers

@@ -2,6 +2,7 @@
 //! maintenance, and release.
 
 mod apply;
+mod collection_tag;
 mod forget;
 mod lease;
 mod mail;
@@ -16,6 +17,7 @@ pub(super) use self::{
         reconciliation_skips_regressed_op, replay_is_idempotent, snapshot_tombstones_only_absent,
         streaming_page_keeps_cursor,
     },
+    collection_tag::collection_tag_travels_with_the_cursor,
     forget::{
         forget_scope_drops_objects_rows_and_cursor, forget_scope_under_a_stale_lease_is_rejected,
     },

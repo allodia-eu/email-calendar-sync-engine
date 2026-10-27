@@ -12,7 +12,7 @@
 use async_trait::async_trait;
 use engine_core::{
     calendar::{Calendar, Event},
-    ids::{AccountId, AddressBookId},
+    ids::{AccountId, AddressBookId, CalendarId},
     mail::{Mailbox, Message},
     raw::RawMime,
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
@@ -290,9 +290,12 @@ impl Provider for JmapProvider {
         .await?)
     }
 
+    /// Every calendar's events, under the account-wide `CalendarEvent` state: whichever
+    /// calendar asks, the answer is the same.
     async fn sync_events(
         &self,
         _account: &AccountId,
+        _calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         let account = self.calendar_account()?;

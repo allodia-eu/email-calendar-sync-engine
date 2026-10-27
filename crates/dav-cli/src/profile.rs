@@ -33,7 +33,7 @@
 //!
 //! Some profiles need no file because they are **this repository's own fixtures**:
 //! `stalwart` (the auto-scheduling harness), `sabredav` (the no-scheduling fixture) and
-//! `nextcloud` (bound to its seeded `harness` calendar, since its home has no `default`). Their
+//! `nextcloud` (pointed at its seeded `harness` calendar, since its home has no `default`). Their
 //! addresses come from `STALWART_HTTP_ADDR` / `SABREDAV_HTTP_ADDR` / `NEXTCLOUD_HTTP_ADDR` when
 //! set, the same variables the live tests read, and otherwise from the ports
 //! `docker/*/docker-compose.yml` publishes.
@@ -46,7 +46,7 @@
 
 use std::{collections::BTreeMap, fmt, fs, path::PathBuf};
 
-/// A resolved server: where it is, who we are, and which collection to bind.
+/// A resolved server: where it is, who we are, and which calendar the event commands use.
 #[derive(Debug, Clone)]
 pub(crate) struct Profile {
     /// Where the profile came from, for the banner — a file path, a built-in name, or flags.
@@ -57,7 +57,7 @@ pub(crate) struct Profile {
     pub(crate) user: String,
     /// The password.
     pub(crate) pass: String,
-    /// The collection to bind, when the account's is not called `default`.
+    /// The calendar the event commands use, when it is not the one called `default`.
     pub(crate) calendar: Option<String>,
     /// Where discovery starts instead of the well-known path: a principal a host stored.
     pub(crate) start: Option<String>,

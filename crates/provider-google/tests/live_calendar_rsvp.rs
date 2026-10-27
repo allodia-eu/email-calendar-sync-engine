@@ -78,7 +78,7 @@ fn provider(token: String) -> GoogleCalendarProvider {
         &engine_http::test_server::user_agent(),
     )
     .expect("client");
-    GoogleCalendarProvider::new(client, calendar())
+    GoogleCalendarProvider::new(client)
 }
 
 /// An HTTP client for the seed calls, built through the engine's own TLS policy.
@@ -157,7 +157,7 @@ async fn insert_with_guest(token: &str, summary: &str) -> EventId {
 /// Re-reads `id` through the adapter's own sync — the projection a host would see.
 async fn read_event(provider: &GoogleCalendarProvider, id: &EventId) -> Event {
     let sync = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &calendar(), None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &sync.update else {
@@ -189,7 +189,7 @@ fn my_status(event: &Event) -> ParticipationStatus {
 
 async fn delete(provider: &GoogleCalendarProvider, event: &Event) {
     if let Err(error) = provider
-        .delete_event(&account(), None, &EventDeletion::of(event))
+        .delete_event(&account(), Some(event), &EventDeletion::of(event))
         .await
     {
         eprintln!("cleanup delete gave up (leaving a throwaway event): {error}");

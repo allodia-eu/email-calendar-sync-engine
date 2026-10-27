@@ -180,6 +180,7 @@ impl Provider for FakeMail {
     async fn sync_events(
         &self,
         _account: &AccountId,
+        _calendar: &CalendarId,
         _cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         let present = self.events.iter().map(|e| e.id.key().clone()).collect();

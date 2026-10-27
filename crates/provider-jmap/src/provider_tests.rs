@@ -261,7 +261,7 @@ async fn calendar_first_sync_snapshots_collections_and_events() {
     assert_eq!(present.len(), 1);
 
     let events = provider(vec![fixture("event_snapshot_response.json")])
-        .sync_events(&account(), None)
+        .sync_events(&account(), &any_calendar(), None)
         .await
         .unwrap();
     assert!(events.is_snapshot());
@@ -325,7 +325,11 @@ async fn permanent_fetch_errors_propagate() {
     assert!(p.sync_mailboxes(&account(), None).await.is_err());
     assert!(p.sync_email(&account(), None).await.is_err());
     assert!(p.sync_calendars(&account(), None).await.is_err());
-    assert!(p.sync_events(&account(), None).await.is_err());
+    assert!(
+        p.sync_events(&account(), &any_calendar(), None)
+            .await
+            .is_err()
+    );
     let draft = Draft::new(
         engine_core::ids::MessageIdHeader::new("m@h").unwrap(),
         engine_core::mail::EmailAddress::new("a@h"),
@@ -357,7 +361,11 @@ async fn missing_account_ids_surface_as_errors() {
     assert!(bare.sync_mailboxes(&account(), None).await.is_err());
     assert!(bare.sync_email(&account(), None).await.is_err());
     assert!(bare.sync_calendars(&account(), None).await.is_err());
-    assert!(bare.sync_events(&account(), None).await.is_err());
+    assert!(
+        bare.sync_events(&account(), &any_calendar(), None)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -381,7 +389,7 @@ async fn capabilities_and_scopes_come_from_the_session() {
         }
     );
     assert_eq!(
-        p.event_scope(&account()),
+        p.event_scope(&account(), &any_calendar()),
         SyncScope::JmapType {
             account: account(),
             data_type: JmapDataType::CalendarEvent,
@@ -410,4 +418,9 @@ fn a_batch_carries_many_sources_only_where_the_account_answers_blob_get() {
         with.connection_info().sources_per_request,
         crate::blob_batch::SOURCES_PER_REQUEST
     );
+}
+
+/// JMAP's event state is account-wide, so which calendar asks for it does not matter.
+fn any_calendar() -> engine_core::ids::CalendarId {
+    engine_core::ids::CalendarId::try_from("any").unwrap()
 }

@@ -255,8 +255,11 @@ Step 6 lands in small, tested slices. Order and status:
      response is a *receipt*, not a document (a CalDAV `PUT` answers with an `ETag` and no
      body; a JMAP `/set` with an id and no object), so the driver alone would leave the row
      holding the **pre-write** projection, `raw_ical` and revision. Each facade write
-     therefore runs `engine_sync::reconcile_calendar_events` — an **event-scope delta**, one
-     round trip, the same primitive a sync reads through — the moment the write lands. The
+     therefore runs `engine_sync::reconcile_calendar_events` — an **event-scope delta** of the
+     calendar the write touched, one round trip, the same primitive a sync reads through —
+     the moment the write lands. A create reconciles its draft's calendar and an edit the
+     calendars of its base event; a write that names only an event id finds its calendars in
+     the store, and reconciles every listed calendar when the store does not hold the event. The
      store then holds what the **server** holds, a delete is tombstoned locally, and an edit
      that moved the event moves its occurrence rows. That is what makes "edit, re-read, edit
      again" work: the second edit's guard is the revision the *server* reported, not the

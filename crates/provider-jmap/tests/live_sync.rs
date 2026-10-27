@@ -177,7 +177,7 @@ async fn full_mail_and_calendar_sync_loop() {
     )
     .unwrap();
     let host_zone = TimeZoneId::iana("Europe/Amsterdam").unwrap();
-    sync_calendar(
+    let report = sync_calendar(
         &provider,
         &store,
         &account,
@@ -188,10 +188,24 @@ async fn full_mail_and_calendar_sync_loop() {
     )
     .await
     .expect("sync_calendar");
+    // JMAP's event state is account-wide: every calendar answers one scope, synced once.
+    assert_eq!(
+        report.scopes.len(),
+        1,
+        "one event scope for the whole account"
+    );
+    assert!(
+        report.scopes[0].calendars.len() >= 2,
+        "the seed's two calendars share it"
+    );
 
-    let event_scope = provider.event_scope(&account);
+    let event_scope = provider.event_scope(&account, &any_calendar());
     let event_keys = store.object_keys(&event_scope).await.unwrap();
-    assert_eq!(event_keys.len(), 6, "6 seed events stored");
+    assert_eq!(
+        event_keys.len(),
+        8,
+        "the default calendar's six seed events and the work calendar's two"
+    );
 
     // Every event materializes occurrences (the recurring one several), proving
     // JSCalendar recurrence flowed through normalize → expand → store.
@@ -289,4 +303,9 @@ async fn streamed_mail_sync_commits_pages_and_reports_progress() {
     assert!(seq.iter().all(|(_, _, scope)| *scope == email_scope));
     assert_eq!(seq.last().unwrap().1, Some(stored));
     assert_eq!(seq.last().unwrap().0, stored);
+}
+
+/// JMAP's event state is account-wide, so which calendar asks for it does not matter.
+fn any_calendar() -> engine_core::ids::CalendarId {
+    engine_core::ids::CalendarId::try_from("any").unwrap()
 }

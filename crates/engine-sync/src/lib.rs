@@ -66,7 +66,9 @@ pub enum SyncError {
     /// A calendar reconcile was asked for on an event scope that has never been expanded,
     /// so there is no window to re-expand a changed event over.
     ///
-    /// Only reachable by reconciling before the account's calendars have ever synced. It is
+    /// Only reachable by reconciling a calendar no [`sync_calendar`] pass has reached: before
+    /// the account's first, or one its listing does not name. A listed calendar's window is
+    /// recorded before its first fetch, so a pass that then fails still leaves one. It is
     /// an error rather than a silent no-op because expanding nothing would store the events
     /// with **zero** occurrence rows *and* advance the cursor — so the next sync would see
     /// no changes and the grid would stay empty forever. Sync the calendar first.
@@ -172,6 +174,12 @@ pub(crate) trait ScopeSyncer: Sync {
     /// keyword-only changes, which project to rows without being objects.
     fn derive(&self, sync: &ScopeSync<Self::Object>) -> DerivedWrite;
 
+    /// The collection's tag as the listing read it before this pass, recorded with the cursor
+    /// ([`ApplyBatch::collection_tag`]). Only a scope that is one listed collection has one.
+    fn collection_tag(&self) -> Option<&engine_core::version::CollectionTag> {
+        None
+    }
+
     /// Recipient observations to write in the *same* transaction as the batch.
     /// Empty for every scope but email.
     ///
@@ -244,7 +252,8 @@ where
             }
         };
         let batch = ApplyBatch::new(&sync.update, &derived, &[], &sync.next_cursor)
-            .with_recipient_observations(&observations);
+            .with_recipient_observations(&observations)
+            .with_collection_tag(syncer.collection_tag());
         let batch = read_since(batch, &claim.lease, req);
         match store.apply_sync_update(&claim.lease, batch).await {
             Ok(applied) => {
@@ -336,6 +345,7 @@ pub(crate) fn changed_objects<T: SyncObject>(update: &SyncUpdate<T>) -> &[T] {
 mod attachment;
 mod body;
 mod calendar;
+mod calendar_scopes;
 mod contact;
 mod horizon;
 mod mail_account;
@@ -354,7 +364,10 @@ pub use attachment::{
     fetch_message_source,
 };
 pub use body::{ensure_message_source, fetch_inline_parts, fetch_message_body};
-pub use calendar::{CalendarSyncReport, EventSyncReport, reconcile_calendar_events, sync_calendar};
+pub use calendar::{
+    CalendarSyncReport, EventScopePass, EventScopeSync, EventSyncReport, reconcile_calendar_events,
+    sync_calendar,
+};
 pub use contact::{
     ContactReconcileReport, ContactSourceReport, ContactSyncReport, PeopleRebuildReport,
     rebuild_people_index, reconcile_contact_card, reconcile_contact_deletion, sync_address_books,

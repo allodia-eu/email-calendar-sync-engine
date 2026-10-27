@@ -34,9 +34,8 @@ use engine_provider::{
     CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, EventWrite, Occurrence,
     PatchTarget, Provider, WriteGuard,
 };
-use provider_caldav::CalDavProvider;
 
-use super::{fetch, lines_without, pre_clean, require, server_etag, server_ical};
+use super::{OnCalendar, fetch, lines_without, pre_clean, require, server_etag, server_ical};
 
 /// The `DTSTAMP`/`LAST-MODIFIED` a revision carries. Fixed, because engine time types
 /// cannot read a clock — and a fixed value keeps the tests deterministic.
@@ -54,7 +53,7 @@ fn amsterdam(local: &str) -> CalendarDateTime {
 
 /// Seeds a document too rich for an [`EventDraft`] to express, through the whole-document
 /// verb. This is fixture setup, not the thing under test.
-async fn seed(provider: &CalDavProvider, account: &AccountId, uid: &Uid, body: String) {
+async fn seed(provider: &OnCalendar, account: &AccountId, uid: &Uid, body: String) {
     let href = provider.event_href(uid).expect("mint event href");
     provider
         .put_event(
@@ -87,7 +86,7 @@ const ROUND_TRIP_UID: &str = "caldav-write-roundtrip@test.local";
 /// sync the **store still holds the pre-write revision**, so a host that re-read it there
 /// would guard on a superseded one and get a `412` on a write that should have succeeded.
 /// If the receipt's `ETag` were absent, stale, or not the resource's, this fails.
-pub(crate) async fn round_trip(provider: &CalDavProvider, account: &AccountId) {
+pub(crate) async fn round_trip(provider: &OnCalendar, account: &AccountId) {
     let caps = provider.connection_info().capabilities;
     assert!(
         caps.calendar_writes(),
@@ -233,7 +232,7 @@ fn rich_body() -> String {
 /// the `VALARM` or the `X-` property fails here — and *only* here; no offline fake can
 /// tell you.
 pub(crate) async fn patched_update_preserves_the_document(
-    provider: &CalDavProvider,
+    provider: &OnCalendar,
     account: &AccountId,
 ) {
     let uid = Uid::new(RICH_UID).unwrap();
@@ -307,7 +306,7 @@ const CONFLICT_UID: &str = "caldav-stale-etag@test.local";
 /// This is also the assertion that earns CalDAV its [`WriteGuard::Enforced`]. The JMAP
 /// adapter cannot pass it — which is why it advertises [`WriteGuard::Absent`] instead of
 /// pretending (`jmap.md`).
-pub(crate) async fn stale_if_match_is_a_conflict(provider: &CalDavProvider, account: &AccountId) {
+pub(crate) async fn stale_if_match_is_a_conflict(provider: &OnCalendar, account: &AccountId) {
     let uid = Uid::new(CONFLICT_UID).unwrap();
     pre_clean(provider, account, &uid).await;
 
@@ -401,7 +400,7 @@ const SERIES_UID: &str = "caldav-override-split@test.local";
 /// from a `recurrenceOverrides/<start>/…` patch. Same neutral intent, entirely different
 /// work underneath — which is the argument for `PatchTarget` living where it does.
 pub(crate) async fn instance_override_split_is_accepted(
-    provider: &CalDavProvider,
+    provider: &OnCalendar,
     account: &AccountId,
 ) {
     let uid = Uid::new(SERIES_UID).unwrap();

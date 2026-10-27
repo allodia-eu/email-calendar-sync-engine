@@ -290,6 +290,7 @@ dependencies = [
 name = "dav-cli"
 version = "0.1.0"
 dependencies = [
+ "engine-api",
  "engine-core",
  "engine-ical",
  "engine-mime",

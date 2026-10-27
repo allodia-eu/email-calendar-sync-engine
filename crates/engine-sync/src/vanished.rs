@@ -1,5 +1,6 @@
 //! Forgetting the mail of a folder the account no longer has, and the folder-list re-read a
-//! folder change ends with.
+//! folder change ends with. A calendar that has left its account's calendar list goes the same
+//! way ([`forget_scopes`]).
 //!
 //! Where message sync is per folder (IMAP, Graph), a folder's messages live in a scope of
 //! their own, and nothing removes that scope when the folder leaves the folder list. On IMAP
@@ -14,7 +15,7 @@ use std::collections::BTreeSet;
 use engine_core::{
     ids::{AccountId, MailboxId},
     mail::Mailbox,
-    sync::ObjectKind,
+    sync::{ObjectKind, SyncScope},
 };
 use engine_provider::Provider;
 use engine_store::{LeaseRequest, Store, StoreError, StoreRead, SyncApplied, WorkerId};
@@ -86,12 +87,33 @@ pub async fn forget_vanished_folders<S: Store + StoreRead>(
         return Ok(0);
     }
 
+    let stale: Vec<SyncScope> = scopes
+        .into_iter()
+        .filter(|scope| {
+            scope
+                .folder()
+                .is_some_and(|folder| !listed.contains(folder))
+        })
+        .collect();
+    forget_scopes(store, account, req, &stale).await
+}
+
+/// Forgets each of `scopes` whole, returning how many it forgot: the step both a vanished
+/// folder and a vanished calendar end with. A scope already empty is passed over rather than
+/// claimed for nothing, and one another worker holds is left for the next pass.
+///
+/// # Errors
+///
+/// Returns [`SyncError::Store`] if the store cannot be read or a forget fails.
+pub(crate) async fn forget_scopes<S: Store + StoreRead>(
+    store: &S,
+    account: &AccountId,
+    req: &LeaseRequest,
+    scopes: &[SyncScope],
+) -> Result<usize, SyncError> {
     let mut forgotten = 0;
-    for scope in &scopes {
-        let Some(folder) = scope.folder() else {
-            continue;
-        };
-        if listed.contains(folder) || already_empty(store, account, scope).await? {
+    for scope in scopes {
+        if already_empty(store, account, scope).await? {
             continue;
         }
         match store
@@ -114,7 +136,7 @@ pub async fn forget_vanished_folders<S: Store + StoreRead>(
 async fn already_empty<S: Store + StoreRead>(
     store: &S,
     account: &AccountId,
-    scope: &engine_core::sync::SyncScope,
+    scope: &SyncScope,
 ) -> Result<bool, SyncError> {
     Ok(store
         .load_sync_state(account.clone(), scope)

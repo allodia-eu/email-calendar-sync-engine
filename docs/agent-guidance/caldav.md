@@ -91,17 +91,27 @@ are split escape-aware so the writer and the parser agree.
   see one representation regardless of transport. A resource with only an override
   (no master) yields that override as a standalone instance event
   (`calendar-semantics.md`).
-- **Calendar scope is per collection.** Like IMAP's per-mailbox email, CalDAV
-  state is per collection (a sync-token, RFC 6578). So a `CalDavProvider` is
-  **bound to one calendar collection** for events: `event_scope` is
-  `SyncScope::DavCollection{account, collection}` (the collection href), and
-  `sync_events` is a `sync-collection` REPORT over it. The account's **calendar
-  list** syncs under the new per-account container scope
-  `SyncScope::DavCollectionList{account}` — a `PROPFIND` of the calendar home
-  re-snapshots it each pass (no list cursor), applied before the per-collection
-  events it parents (`store-and-sync.md` referential apply order). This mirrors
-  IMAP's `ImapMailboxList` → `ImapMailbox` exactly. The cross-collection fan-out
-  (drive every calendar) is the later orchestrator's job.
+- **One provider, every calendar; one scope per collection.** Like IMAP's per-mailbox
+  email, CalDAV state is per collection (a sync-token, RFC 6578), so each calendar's
+  events sync under a scope of their own: `event_scope(account, calendar)` is
+  `SyncScope::DavCollection{account, collection}` (the calendar's href), and
+  `sync_events(account, calendar, cursor)` is a `sync-collection` REPORT over it. A
+  `CalDavProvider` binds no calendar: one connection, one discovery and one HTTP client
+  serve every calendar under the home, and `engine_sync::sync_calendar` drives them
+  (`store-and-sync.md`). The account's **calendar list** syncs under the per-account
+  container scope `SyncScope::DavCollectionList{account}`: a `PROPFIND` of the calendar
+  home re-snapshots it each pass (no list cursor), applied before the per-collection events
+  it parents (`store-and-sync.md` referential apply order), as IMAP's `ImapMailboxList`
+  parents `ImapMailbox`.
+- **The listing carries each calendar's collection tag.** The same `PROPFIND` reads every
+  collection's `DAV:sync-token` (RFC 6578 §4) and CalendarServer `getctag`, and the
+  calendar's `collection_tag` is the sync-token, or the CTag where the server has none. A
+  calendar whose tag equals the one recorded with its scope's cursor is not asked again, so
+  a quiet refresh costs one `PROPFIND` however many calendars the home holds. The token is
+  what a `sync-collection` report would answer, by definition, so equal tags mean equal
+  contents. **Stalwart's sync-token is account-wide**: every collection in a home reports the
+  same one and it moves when any of them changes, so on Stalwart the gate holds but skips
+  only when nothing at all has changed.
 - **Identity is the resource href.** An event's `EventId` is its resource href
   (URL-encoded, as the server returns it); the iCalendar `UID` is the separate
   cross-system `Uid`. The `getetag` is preserved in `event.revisions` (the `ETag`
@@ -450,8 +460,9 @@ are split escape-aware so the writer and the parser agree.
 
   `CalDavProvider::event_href` mints the conventional `<collection>/<uid>.ics` resource href
   for a create (percent-encoding the `UID` as one path segment) from the draft's `UID`; a
-  patch/delete reuses the stored `EventId`. A draft naming a calendar other than the bound
-  collection is **refused**, not silently written to the bound one — `rebind` first.
+  patch/delete reuses the stored `EventId`. A create lands in the calendar its draft names,
+  by the href the listing gave it; a bare name is refused, since it would be a second id for
+  a listed calendar, keyed to a scope of its own.
 - **The new `ETag` is read back where the server supplies it.** A successful PUT returns the
   resource's new entity tag in the `ETag` response header (RFC 4791 §5.3.4), surfaced on the
   receipt as `revisions`; when the server omits it the receipt carries an empty
@@ -824,7 +835,7 @@ the preservation assertion is written. Observed against each:
 | Read-only collection | **Cannot produce one** — the harness account owns everything it can see | **The privilege fixture**: Bob's calendar, shared to Alice read-only | Two **address books**: the instance's users and an app's recently contacted |
 | Scheduling (RFC 6638) | **Full auto-schedule** — advertises `calendar-auto-schedule`, exposes `CALDAV:schedule-inbox-URL` | **None** — the fixture loads no `Schedule\Plugin`, so its `DAV:` header lists `calendar-access` and not `calendar-auto-schedule` | Advertises `calendar-auto-schedule` |
 | `Capabilities::calendar_scheduling` | `true` | `false` — **the only negative case in the repo** | `true`: the positive answer on the same server software |
-| Home | One calendar | One calendar | Several: `personal`, a generated birthday calendar, an inbox and an outbox, so a test binds `harness` by name |
+| Home | `default` and `work` | `default` and `work`, beside Bob's read-only share | `harness` and `work`, beside `personal`, a generated birthday calendar, an inbox and an outbox, so a test names `harness` |
 
 Two consequences to keep in mind before touching these tests:
 

@@ -45,6 +45,7 @@ use super::{
     sync_mail,
 };
 
+mod calendar_fanout;
 mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
