@@ -64,8 +64,11 @@ async fn live_back_to_back_drains_stay_under_the_quota() {
             .sync_email(&account, None)
             .await
             .unwrap_or_else(|err| panic!("drain {drain} was refused: {err}"));
-        let engine_core::sync::SyncUpdate::Snapshot { objects, .. } = &sync.update else {
-            panic!("a drain from no cursor is a snapshot");
+        let engine_core::sync::SyncUpdate::Delta {
+            changed: objects, ..
+        } = &sync.update
+        else {
+            panic!("a drain from no cursor is an additive backfill");
         };
         messages += objects.len();
         println!(

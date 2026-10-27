@@ -77,8 +77,11 @@ async fn mailboxes(provider: &GmailProvider) -> Vec<Mailbox> {
 
 async fn message(provider: &GmailProvider, key: &ProviderKey) -> Message {
     let sync = provider.sync_email(&account(), None).await.expect("sync");
-    let SyncUpdate::Snapshot { objects, .. } = sync.update else {
-        panic!("expected a message snapshot");
+    let SyncUpdate::Delta {
+        changed: objects, ..
+    } = sync.update
+    else {
+        panic!("a cursorless sync is an additive backfill");
     };
     objects
         .into_iter()
