@@ -1,15 +1,13 @@
-//! Label-list, message snapshot/history-delta fetch + paging, and raw-source fetch for
-//! the Gmail provider.
+//! Label-list, message page/history-delta fetch + paging, and raw-source fetch for the Gmail
+//! provider. Which pages a pass asks for, and in what order, is `crate::pass`.
 //!
 //! Gmail's sync is **account-global** (`historyId`), not per-folder like Graph, so there
 //! are two shapes rather than one unified delta:
 //!
-//! - **Snapshot** ([`snapshot_page`], `cursor` `None`): `users.messages.list` enumerates `{id,
-//!   threadId}` refs (paginated by `pageToken`, optionally windowed by a `q: after:<epoch>` floor);
-//!   each id is fetched full (`messages.get?format=metadata`, [`MAX_CONCURRENT_GETS`] at a time)
-//!   and normalized. The cursor to persist is the account `historyId` captured *before* the
-//!   enumeration (any messages that arrive mid-snapshot are simply re-reported by the first delta —
-//!   idempotent).
+//! - **A listed page** ([`snapshot_page`]): `users.messages.list` enumerates `{id, threadId}` refs
+//!   (paginated by `pageToken`, optionally windowed by a `q: after:<epoch>` floor); each id is
+//!   fetched full (`messages.get?format=metadata`, [`MAX_CONCURRENT_GETS`] at a time) and
+//!   normalized. A backfill fetches the window this way, a page a pass at a time.
 //! - **Delta** ([`delta_page`], `cursor` `Some`): `users.history.list?startHistoryId=…` returns
 //!   `messagesAdded`/`labelsAdded`/`labelsRemoved` (whose message objects are *partials* — id +
 //!   labelIds only) and `messagesDeleted`. Deleted ids tombstone. A partial's `labelIds` is the
@@ -18,8 +16,8 @@
 //!   which in Gmail is a label change like any other) is already answered by the page and becomes a
 //!   state change costing no further request. Only `messagesAdded` is re-fetched full, because
 //!   nothing in a history record carries a subject, a sender or a body. A `404` (the
-//!   `startHistoryId` aged out of the window) becomes [`GoogleError::HistoryExpired`] → the stream
-//!   restarts as a snapshot.
+//!   `startHistoryId` aged out of the window) becomes [`GoogleError::HistoryExpired`] → the pass
+//!   backfills the window again.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -217,7 +215,7 @@ pub(crate) async fn snapshot_page(
     history_id: &SyncState,
     named: &NamedLabels,
 ) -> Result<(SyncPage<Message>, Option<GoogleError>), GoogleError> {
-    let doc = client.get(&list_url(client, page, floor)).await?;
+    let doc = client.get(&list_url(client, page, floor, 100)).await?;
 
     // `messages` is absent on an empty mailbox / final empty page — treat as no rows.
     let entries = doc.get("messages").and_then(Value::as_array);
@@ -435,21 +433,22 @@ fn string_array(value: Option<&Value>) -> Option<Vec<String>> {
     )
 }
 
-/// The `messages.list` URL: a continuation `pageToken`, else the first page, optionally
-/// windowed by an `after:<epoch>` floor.
+/// The `messages.list` URL for `size` ids a page: a continuation `pageToken`, else the first
+/// page, optionally windowed by an `after:<epoch>` floor.
 ///
 /// `includeSpamTrash` is not optional here. `messages.list` omits both by default while
 /// `history.list` reports their label changes regardless — it takes no such flag — so
 /// without it a delta files a message into Junk and the next snapshot, seeing it in no
 /// page, tombstones it. Which one the store believes would depend on whether the last
 /// pass happened to be a snapshot.
-fn list_url(
+pub(crate) fn list_url(
     client: &GoogleClient,
     page: Option<&PageToken>,
     floor: Option<CalendarDate>,
+    size: u16,
 ) -> String {
     use std::fmt::Write as _;
-    let mut url = format!("{USERS_ME}/messages?maxResults=100&includeSpamTrash=true");
+    let mut url = format!("{USERS_ME}/messages?maxResults={size}&includeSpamTrash=true");
     if let Some(page) = page {
         let _ = write!(url, "&pageToken={}", encode_query_value(page.as_str()));
     }

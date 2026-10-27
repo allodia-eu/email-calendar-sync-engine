@@ -58,9 +58,15 @@ Auth-Code+PKCE loopback flow and captures fixtures — the exact mirror of
   fetch layer threads back as query params it builds itself — so, unlike Graph's `@odata`
   links, **there is no URL to rebase**; `with_base` (a proxy, a regional endpoint, or the
   test replay server) is reached because the client roots every path there.
-- **`fetch`** — the label list, the message snapshot (`messages.list` → per-id
+- **`fetch`**: the label list, a backfill page (`messages.list` → per-id
   `messages.get`, fanned out `MAX_CONCURRENT_GETS` at a time), the history delta
   (`history.list`), and the raw-source fetch.
+- **`cursor`**: where a message sync stands between passes: synced, backfilling from a page
+  token, or due its reconcile.
+- **`pass`**: the pass each cursor calls for: a delta, a backfill a page at a time with a
+  delta before each page, or the list-only reconcile.
+- **`quota`**: what each Gmail call costs, and the pace that keeps an account under the
+  per-user quota (`http-throttling.md`).
 - **`mutate`/`submit`** — `edit_mail` (label deltas) and `submit_email` (`messages.send`).
 - **`labels_write`**: `edit_mailbox`, the folder changes (below).
 - **`provider`** — `GmailProvider`, the `Provider` impl.
@@ -130,10 +136,14 @@ lookup is case-insensitive) is preserved bracket-stripped as a threading **hint*
 identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) →
 `received_at`; the `Date` header (RFC 2822) → `sent_at`.
 
-## Sync (snapshot + history delta)
+## Sync (backfill, reconcile, history delta)
 
-- **Snapshot** (cursor `None`): capture the account `historyId` from `profile` **before**
-  enumerating, then page `messages.list`, fetching each id full (`format=metadata` with a
+Where a sync stands lives in the cursor (`src/cursor.rs`), and each pass is the one it calls
+for (`src/pass.rs`). A bare `historyId` is a synced account; `backfill;h=…;p=…` is a backfill
+part way; `reconcile;h=…` is a backfill finished and not yet reconciled.
+
+- **Backfill** (no cursor, or `backfill;…`): capture the account `historyId` from `profile`
+  **before** enumerating, then page `messages.list`, fetching each id full (`format=metadata` with a
   fixed `metadataHeaders` set for a minimal, deterministic payload). Those per-id gets are
   the pass's whole cost — `messages.list` returns bare `{id, threadId}` and Gmail offers no
   companion batch-get — so a page fetches them **concurrently**, `MAX_CONCURRENT_GETS` in
@@ -155,10 +165,29 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   the gated probe that keeps that decision honest. That same 20 is what the adapter narrows
   the account's `engine_http::RequestGate` to (`http-throttling.md`), so the ceiling now
   bounds everything the account does at once rather than one page's fan-out at a time — a
-  body warm overlapping a snapshot used to be able to exceed it. The persisted cursor
-  is that captured `historyId` (messages arriving mid-snapshot are re-reported by the
-  first delta — idempotent). This is a **reconciling** pass (its present set tombstones
-  absent rows). A `SyncWindow` floor windows the enumeration to `q: after:<epoch>`.
+  body warm overlapping a backfill used to be able to exceed it. A `SyncWindow` floor windows
+  the enumeration to `q: after:<epoch>`.
+
+  It is **additive** and checkpointed after every page with the token of the next, because at
+  20 units a message a large mailbox takes many passes (about 270 messages a minute under the
+  pace), and an app is suspended or quit long before it is done. The token is the only
+  position that can resume it: `messages.list` is not ordered strictly by date (3 of 193
+  messages out of order on the test account, one by 13 days), so a date boundary skips mail.
+  A token Gmail cannot read answers `400 Invalid pageToken` and the backfill starts again from
+  the top; a well-formed one it does not recognise answers the first page by itself
+  (`tests/fixtures/error/invalid_page_token.json`). Before every page a **delta** from the
+  cursor's `historyId` runs (2 units), so mail arriving during a backfill of hours is not held
+  back until it ends, and changes to what is already stored keep arriving. A pass killed
+  partway (`tests/live_backfill.rs`) loses at most the page it was on.
+
+  Widening the sync depth clears the cursor in the host, so the backfill fetches again what is
+  already stored inside the old window: the adapter cannot see the store, and a fetch costs
+  20 units whether the message is new or not.
+- **Reconcile** (`reconcile;h=…`): the window's ids listed and nothing fetched, at 500 a page
+  for 5 units, so the store tombstones what the server no longer has; it ends on the bare
+  `historyId` the backfill reached, and the delta after it replays everything since. A pass of
+  its own because a pass is one mode throughout, and a backfill must be additive to be
+  checkpointed.
 - **Delta** (cursor `Some`): `history.list?startHistoryId=…` returns
   `messagesAdded`/`labelsAdded`/`labelsRemoved` — whose message objects are **partials**
   (id + labelIds only) — and `messagesDeleted`, which tombstones. This is an **additive**
@@ -181,9 +210,10 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
 
   A `404` (the
   `startHistoryId` aged out of Gmail's window) → `GoogleError::HistoryExpired`
-  (`NeedsResync`) → the stream drops the cursor and restarts as a snapshot, exactly like
-  Graph's `410` restart, and only before the first page is committed. Gmail always returns
-  the latest `historyId`, so the cursor always advances.
+  (`NeedsResync`) → the pass captures a fresh `historyId` and backfills the window again from
+  the top, in the same additive pass; the reconcile after it tombstones what is gone. Only
+  before the first history page is passed on. Gmail always returns the latest `historyId`, so
+  the cursor always advances.
 
 ## Writes + submission
 
@@ -642,14 +672,14 @@ read, the path encoding, the response shape, and a rename that reaches Gmail and
 Each was proven able to fail; patching a property Gmail does not accept on that resource is
 rejected outright rather than silently ignored, so a wrong patch cannot pass as a success.
 
-## Spam and Trash are not optional in the snapshot
+## Spam and Trash are not optional in the listing
 
 `messages.list` omits `SPAM` and `TRASH` unless `includeSpamTrash=true`. `history.list`
-takes no such flag and reports their label changes regardless. The two passes therefore
-disagree, and not symmetrically: **a snapshot tombstones every key absent from its present
-set**, so the snapshot wins by deleting what the delta had just filed correctly. Which one
-the store believes comes down to whether the last pass happened to be a snapshot, and a
-`historyId` aging out is enough to turn one into the other.
+takes no such flag and reports their label changes regardless. The two therefore disagree,
+and not symmetrically: **the reconcile tombstones every key absent from its listing**, so it
+wins by deleting what the delta had just filed correctly. Which one the store believes comes
+down to whether the last pass happened to be a reconcile, and a `historyId` aging out is
+enough to bring one about.
 
 So `fetch::list_url` always sets the flag — including on the windowed `q=after:<epoch>`
 shape, which excludes them just as the unwindowed one does (verified live; an explicit
@@ -657,14 +687,14 @@ shape, which excludes them just as the unwindowed one does (verified live; an ex
 
 Two consequences worth knowing before touching this:
 
-- **A snapshot fetches every spam and trash message full**, one `messages.get` each, the
+- **A backfill fetches every spam and trash message full**, one `messages.get` each, the
   same as any other. Gmail purges both after 30 days and the sync-window floor bounds it
-  further, but an account with a large Trash pays for it on every reconcile.
+  further, but an account with a large Trash pays for it on every backfill.
 - **Spam and Trash are ordinary place labels here**, so `memberships_of` files a message
   in them like any other folder and the roles are already mapped (`SPAM` → `Junk`,
   `TRASH` → `Trash`). A message with only keyword labels still falls through to the
   synthetic All Mail, which is why spam does not appear there — matching Gmail's own
   All Mail, which excludes both.
 
-`live_spam_trash.rs` drives both passes over one message and asserts they agree; it fails
-on the snapshot half alone if the flag is dropped.
+`live_spam_trash.rs` drives a first sync and a delta over one message and asserts they agree;
+it fails on the first sync alone if the flag is dropped.

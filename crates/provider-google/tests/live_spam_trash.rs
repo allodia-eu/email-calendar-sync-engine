@@ -1,10 +1,10 @@
-//! Gated live checks that a Gmail snapshot and a Gmail delta agree about a message in
+//! Gated live checks that a Gmail first sync and a Gmail delta agree about a message in
 //! Junk or Trash.
 //!
 //! `messages.list` omits `SPAM` and `TRASH` unless asked; `history.list` takes no such
-//! flag and reports their label changes regardless. So the two passes can disagree, and
-//! the disagreement is not symmetric: a snapshot tombstones every key absent from its
-//! present set, so the snapshot wins by *deleting* what the delta had just filed
+//! flag and reports their label changes regardless. So the two can disagree, and the
+//! disagreement is not symmetric: the reconcile that ends a backfill tombstones every key
+//! absent from its listing, so it wins by *deleting* what the delta had just filed
 //! correctly. Which one the store believes depends on whether the last pass happened to
 //! be a snapshot — history aging out is enough to turn one into the other.
 //!
@@ -75,17 +75,31 @@ async fn send_probe(provider: &GmailProvider, marker: &str) -> ProviderKey {
         .email_key
 }
 
-/// A snapshot pass, and the cursor to take a delta from.
+/// A first sync carried through its reconcile, and the cursor to take a delta from.
+///
+/// The messages are those the backfill fetched **and** the reconcile found present: a key
+/// missing from the reconcile's listing is tombstoned, so for this file's question it is as
+/// good as not carried at all.
 async fn snapshot(provider: &GmailProvider) -> (Vec<engine_core::mail::Message>, SyncState) {
-    let scope = provider
+    let backfill = provider
         .sync_email(&account(), None)
         .await
-        .expect("snapshot");
-    let cursor = scope.next_cursor.clone();
-    let SyncUpdate::Snapshot { objects, .. } = scope.update else {
-        panic!("a first pass is a snapshot");
+        .expect("backfill");
+    let SyncUpdate::Delta { changed, .. } = backfill.update else {
+        panic!("a first pass is an additive backfill");
     };
-    (objects, cursor)
+    let reconcile = provider
+        .sync_email(&account(), Some(&backfill.next_cursor))
+        .await
+        .expect("reconcile");
+    let SyncUpdate::Snapshot { present, .. } = reconcile.update else {
+        panic!("the pass after a backfill reconciles");
+    };
+    let carried = changed
+        .into_iter()
+        .filter(|message| present.contains(message.id.key()))
+        .collect();
+    (carried, reconcile.next_cursor)
 }
 
 /// Where the **snapshot** says `key` is filed, or `None` when the snapshot does not carry

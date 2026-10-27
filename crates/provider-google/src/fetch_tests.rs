@@ -98,10 +98,10 @@ async fn snapshot_page_lists_fetches_each_and_carries_the_history_cursor() {
 async fn snapshot_windows_by_after_epoch_only_when_a_floor_is_set() {
     let client = fake_client(vec![]);
     let floor = CalendarDate::new(2026, 4, 1).unwrap();
-    let windowed = list_url(&client, None, Some(floor));
+    let windowed = list_url(&client, None, Some(floor), 100);
     // Midnight 2026-04-01 UTC = 1775001600.
     assert!(windowed.contains("&q=after:1775001600"), "{windowed}");
-    assert!(!list_url(&client, None, None).contains("q=after"));
+    assert!(!list_url(&client, None, None, 100).contains("q=after"));
 }
 
 #[tokio::test]
@@ -146,9 +146,9 @@ async fn every_snapshot_page_asks_for_spam_and_trash() {
     let floor = CalendarDate::new(2026, 4, 1).unwrap();
     let token = PageToken::new("NEXT_PAGE");
     for url in [
-        list_url(&client, None, None),
-        list_url(&client, None, Some(floor)),
-        list_url(&client, Some(&token), Some(floor)),
+        list_url(&client, None, None, 100),
+        list_url(&client, None, Some(floor), 100),
+        list_url(&client, Some(&token), Some(floor), 100),
     ] {
         assert!(url.contains("&includeSpamTrash=true"), "{url}");
     }
@@ -158,7 +158,7 @@ async fn every_snapshot_page_asks_for_spam_and_trash() {
 async fn page_urls_continue_from_a_page_token() {
     let client = fake_client(vec![]);
     let token = PageToken::new("NEXT_PAGE");
-    assert!(list_url(&client, Some(&token), None).contains("&pageToken=NEXT_PAGE"));
+    assert!(list_url(&client, Some(&token), None, 100).contains("&pageToken=NEXT_PAGE"));
     assert!(
         history_url(&client, &SyncState::new("42"), Some(&token)).contains("&pageToken=NEXT_PAGE")
     );
