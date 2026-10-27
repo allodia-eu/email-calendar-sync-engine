@@ -152,6 +152,14 @@ impl GraphError {
     pub fn failure_class(&self) -> FailureClass {
         match self {
             Self::Transport(e) => transport_class(e),
+            // Exchange answers this for a message it stored without converting it on arrival
+            // (a meeting message whose MIME and iCalendar methods disagree is one): its MIME can
+            // never be produced, so asking again only repeats the answer.
+            Self::Status {
+                status: 500,
+                code: Some(code),
+                ..
+            } if code == "ErrorMimeContentConversionFailed" => FailureClass::Permanent,
             Self::Status { status, .. } => status_class(*status),
             // Malformed JSON or a structurally invalid response is a protocol-level
             // incompatibility: retrying the same request will not fix it.
@@ -263,6 +271,18 @@ mod tests {
 
     const BAD_REQUEST: &str = include_str!("../tests/fixtures/error/bad_request.json");
     const UNAUTHORIZED: &str = include_str!("../tests/fixtures/error/unauthorized.json");
+    const MIME_CONVERSION_FAILED: &str =
+        include_str!("../tests/fixtures/error/mime_content_conversion_failed.json");
+
+    #[test]
+    fn a_message_exchange_cannot_convert_to_mime_is_a_permanent_failure_and_other_500s_are_not() {
+        // Captured from `$value` on a message Exchange stored without converting it on arrival:
+        // every later request for its MIME answers the same, so a retry only repeats it.
+        let unconvertible = GraphError::status(500, MIME_CONVERSION_FAILED);
+        assert_eq!(unconvertible.failure_class(), FailureClass::Permanent);
+        let other = GraphError::status(500, r#"{"error":{"code":"generalException"}}"#);
+        assert_eq!(other.failure_class(), FailureClass::Retryable);
+    }
 
     #[test]
     fn real_error_bodies_yield_their_code_and_class() {
