@@ -264,12 +264,20 @@ fn name_value(name: &ContactName) -> Value {
             json!({"kind": kind, "value": component.value})
         })
         .collect::<Vec<_>>();
-    json!({
-        "full": name.full,
-        "components": components,
-        "sortAs": name.sort_as,
-        "phoneticSystem": name.phonetic_system
-    })
+    // A field the name does not have is left out: RFC 9553 gives none of these a null value, and
+    // Fastmail refuses a card that sends one.
+    let mut value = Map::new();
+    if let Some(full) = &name.full {
+        value.insert("full".into(), json!(full));
+    }
+    value.insert("components".into(), Value::Array(components));
+    if !name.sort_as.is_empty() {
+        value.insert("sortAs".into(), json!(name.sort_as));
+    }
+    if let Some(system) = &name.phonetic_system {
+        value.insert("phoneticSystem".into(), json!(system));
+    }
+    Value::Object(value)
 }
 
 fn bool_set(values: &BTreeSet<String>) -> Value {
