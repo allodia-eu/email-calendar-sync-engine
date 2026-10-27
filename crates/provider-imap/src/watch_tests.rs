@@ -34,18 +34,13 @@ async fn write(server: &mut BufReader<DuplexStream>, bytes: &str) {
 /// the client ready to issue its first `a5 IDLE`. The caller keeps driving the server
 /// half for the IDLE phase.
 async fn serve_handshake(server: &mut BufReader<DuplexStream>) {
-    serve_handshake_advertising(server, "").await;
-}
-
-/// [`serve_handshake`], advertising `extra` capabilities beside IDLE and QRESYNC.
-async fn serve_handshake_advertising(server: &mut BufReader<DuplexStream>, extra: &str) {
     write(server, "* OK ready\r\n").await;
     assert!(read_line(server).await.contains("LOGIN"));
     write(server, "a1 OK logged in\r\n").await;
     assert!(read_line(server).await.contains("CAPABILITY"));
     write(
         server,
-        &format!("* CAPABILITY IMAP4rev2 IDLE CONDSTORE QRESYNC{extra}\r\na2 OK done\r\n"),
+        "* CAPABILITY IMAP4rev2 IDLE CONDSTORE QRESYNC\r\na2 OK done\r\n",
     )
     .await;
     assert!(read_line(server).await.contains("ENABLE"));
@@ -305,84 +300,24 @@ async fn stop_is_a_noop_when_not_idling() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn on_yahoo_a_turn_is_short_and_a_noop_finds_what_idle_did_not_say() {
-    // Yahoo reports changes over IDLE only every two minutes, but answers a NOOP with a new
-    // message within a turn or two. Its servers say who they are with `XYMHIGHESTMODSEQ`, so there
-    // the watcher idles in short turns, whatever keep-alive the host asked for, and asks
-    // between them.
-    let (client, server) = duplex(4096);
-    let server = tokio::spawn(async move {
-        let mut server = BufReader::new(server);
-        serve_handshake_advertising(&mut server, " XYMHIGHESTMODSEQ").await;
-        assert!(read_line(&mut server).await.contains("IDLE")); // a5 IDLE
-        let idled = tokio::time::Instant::now();
-        write(&mut server, "+ idling\r\n").await;
-        assert_eq!(read_line(&mut server).await.trim(), "DONE");
-        let turn = idled.elapsed();
-        write(&mut server, "a5 OK IDLE terminated\r\n").await;
-        assert_eq!(read_line(&mut server).await.trim(), "a6 NOOP");
-        write(&mut server, "* 4 EXISTS\r\na6 OK NOOP completed\r\n").await;
-        (server, turn)
-    });
-
-    let mut watcher = start_watcher(client, DEFAULT_IDLE_KEEPALIVE).await;
-    assert_eq!(watcher.next_event().await.unwrap(), WatchEvent::Changed);
-
-    drop(watcher);
-    let (_server, turn) = server.await.unwrap();
-    assert_eq!(turn, Duration::from_secs(20));
-}
-
-#[tokio::test(start_paused = true)]
-async fn on_yahoo_quiet_turns_report_keepalive_only_at_the_hosts_interval() {
-    // The short turns are the watcher's own: a host that runs a reconcile on `KeepAlive`
-    // must not be asked to every 20 seconds.
-    let (client, server) = duplex(4096);
-    let server = tokio::spawn(async move {
-        let mut server = BufReader::new(server);
-        serve_handshake_advertising(&mut server, " XYMHIGHESTMODSEQ").await;
-        for turn in 0..3 {
-            let idle = 5 + 2 * turn;
-            assert_eq!(read_line(&mut server).await.trim(), format!("a{idle} IDLE"));
-            write(&mut server, "+ idling\r\n").await;
-            assert_eq!(read_line(&mut server).await.trim(), "DONE");
-            write(&mut server, &format!("a{idle} OK IDLE terminated\r\n")).await;
-            let noop = idle + 1;
-            assert_eq!(read_line(&mut server).await.trim(), format!("a{noop} NOOP"));
-            write(&mut server, &format!("a{noop} OK NOOP completed\r\n")).await;
-        }
-        server
-    });
-
-    let mut watcher = start_watcher(client, Duration::from_mins(1)).await;
-    let started = tokio::time::Instant::now();
-    assert_eq!(watcher.next_event().await.unwrap(), WatchEvent::KeepAlive);
-    assert_eq!(started.elapsed(), Duration::from_mins(1));
-
-    drop(watcher);
-    server.await.unwrap();
-}
-
-#[tokio::test(start_paused = true)]
 async fn a_change_reported_before_the_idle_continuation_is_not_lost() {
-    // Between two turns the server may report a change ahead of `+ idling`; once idling it
-    // will not say it again.
+    // When the keep-alive re-issues IDLE, the server may report a change ahead of `+ idling`;
+    // once idling it will not say it again.
     let (client, server) = duplex(4096);
     let server = tokio::spawn(async move {
         let mut server = BufReader::new(server);
-        serve_handshake_advertising(&mut server, " XYMHIGHESTMODSEQ").await;
+        serve_handshake(&mut server).await;
         assert_eq!(read_line(&mut server).await.trim(), "a5 IDLE");
         write(&mut server, "+ idling\r\n").await;
         assert_eq!(read_line(&mut server).await.trim(), "DONE");
         write(&mut server, "a5 OK IDLE terminated\r\n").await;
-        assert_eq!(read_line(&mut server).await.trim(), "a6 NOOP");
-        write(&mut server, "a6 OK NOOP completed\r\n").await;
-        assert_eq!(read_line(&mut server).await.trim(), "a7 IDLE");
+        assert_eq!(read_line(&mut server).await.trim(), "a6 IDLE");
         write(&mut server, "* 4 EXISTS\r\n+ idling\r\n").await;
         server
     });
 
     let mut watcher = start_watcher(client, DEFAULT_IDLE_KEEPALIVE).await;
+    assert_eq!(watcher.next_event().await.unwrap(), WatchEvent::KeepAlive);
     assert_eq!(watcher.next_event().await.unwrap(), WatchEvent::Changed);
     assert!(format!("{watcher:?}").contains("idling: true"));
 
