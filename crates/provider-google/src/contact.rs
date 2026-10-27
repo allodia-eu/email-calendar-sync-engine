@@ -116,7 +116,7 @@ impl GoogleContactProvider {
             let page = match self.client.get(&url).await {
                 Ok(page) => page,
                 Err(error)
-                    if delta_cursor.is_some()
+                    if active_sync_token.is_some()
                         && changed.is_empty()
                         && error.failure_class() == FailureClass::NeedsResync =>
                 {

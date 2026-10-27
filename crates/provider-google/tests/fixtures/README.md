@@ -199,7 +199,8 @@ handle → a placeholder.
 | `contacts/group_created.json` | `POST /v1/contactGroups` | the group create echo |
 | `error/contacts_stale_etag.json` | `updateContact` with a superseded etag | `400 FAILED_PRECONDITION` → `Conflict` (Finding 13) |
 | `error/contacts_directory_precondition.json` | `people:listDirectoryPeople` on a consumer account | `400 FAILED_PRECONDITION` → source `Unavailable` (Finding 15) |
-| `error/contacts_sync_token_invalid.json` | a malformed `syncToken` | `400 INVALID_ARGUMENT` — **not** the `410` expiry signal |
+| `error/contacts_sync_token_invalid.json` | a malformed `syncToken` | `400 INVALID_ARGUMENT` — **not** the expiry signal |
+| `error/contacts_sync_token_expired.json` | `connections.list` with a `syncToken` more than seven days old, from a client's log | `400 FAILED_PRECONDITION` + `ErrorInfo` `EXPIRED_SYNC_TOKEN` → `NeedsResync` (Finding 22) |
 
 12. **A People page with nothing to report omits the collection key entirely.** A quiet
     incremental sync answers exactly `{"nextSyncToken": "…"}` — no `connections` array at
@@ -247,3 +248,13 @@ handle → a placeholder.
     it. The adapter now waits that `403` out rather than failing the scope (finding 21 and
     `src/throttle.rs`), so a suite that meets it pauses; a suite that keeps spending faster
     than 6,000 units a minute still outruns every window it waits for.
+
+<!-- Finding 22 opens its own list, so it renders under its own number. -->
+
+22. **An expired People sync token is `400 FAILED_PRECONDITION`, not `410`.** Tokens expire
+    seven days after the sync that issued them, and the answer shares its status and code
+    with a stale-etag write (Finding 13); only `error.details[]`, a `google.rpc.ErrorInfo`
+    with reason `EXPIRED_SYNC_TOKEN`, tells them apart. Read as a conflict, the token is
+    replayed on every pass and the address book never changes again. A malformed token
+    is a different answer again (`400 INVALID_ARGUMENT`), so a live test cannot produce
+    this one on demand; the fixture is the body a real client received.

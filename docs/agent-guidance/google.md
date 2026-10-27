@@ -39,7 +39,8 @@ Auth-Code+PKCE loopback flow and captures fixtures — the exact mirror of
   **rate limit** when its reason says so (`rateLimitExceeded`/`userRateLimitExceeded`/…)
   and an insufficient-permission **permanent** failure otherwise. `401`→auth, `409`/`412`
   →conflict, `410`→`NeedsResync` (Calendar's expired `syncToken`), `429`→rate limit,
-  `5xx`→retryable.
+  `5xx`→retryable. People's expired `syncToken` is a `400 FAILED_PRECONDITION` whose
+  `ErrorInfo` reason is `EXPIRED_SYNC_TOKEN`, and is the one `400` that is `NeedsResync`.
 - **`base64url`** — the URL-safe base64 codec Gmail's `raw` message field uses **both
   ways** (`send` takes it, `get?format=raw` returns it). Unlike the other adapters, which
   either assemble (encode-only, `engine-rfc5322`) or fetch raw bytes (Graph's `$value`),
@@ -459,9 +460,11 @@ diagnosing).
 
 `GoogleContactProvider` binds independently to owned Connections, Other
 Contacts, Workspace directory people, or contact groups. Each source has its own
-scope, token lifecycle, source class, and permission degradation. Connection
-tokens that expire with `410` restart as a snapshot; optional-source permission
-failures do not fail owned contacts. Contact groups normalize to the same
+scope, token lifecycle, source class, and permission degradation. A sync token
+expires seven days after the sync that issued it; People answers `400
+FAILED_PRECONDITION` with an `ErrorInfo` reason of `EXPIRED_SYNC_TOKEN` (not `410`),
+and the source restarts as a snapshot. Optional-source permission failures do not
+fail owned contacts. Contact groups normalize to the same
 provider-neutral group-card kind as JMAP and vCard.
 
 **A People page with nothing to report omits its collection key entirely** — a quiet
