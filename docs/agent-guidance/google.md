@@ -143,10 +143,11 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   with width. It is simply nowhere near 20. The figure this line used to carry, "20 clean, 30
   occasional, 50 throttles a tenth", was a *rate* result wearing a width's clothes: a fixed
   width of 5 goes 0% → 21% → 82% refused across three consecutive unrested blocks, because the
-  quota emptied and nothing about the width changed. The limit an ordinary pass actually meets
-  is that quota — Total Query Cost, 6,000 units per minute per user, announced as `403
-  rateLimitExceeded`. Both refusals are captured under `tests/fixtures/error/`, and
-  `http-throttling.md` has the sweep. 20 stays as the fan-out width because it is a sensible
+  quota emptied and nothing about the width changed. The limit an unpaced pass meets is that
+  quota: Total Query Cost, 6,000 units per minute per user and 20 of them per message fetched,
+  announced as `403 rateLimitExceeded`. So the client paces every Gmail call to it through the
+  account's gate (`src/quota.rs`). Both refusals are captured under `tests/fixtures/error/`, and
+  `http-throttling.md` has the sweep and the pace. 20 stays as the fan-out width because it is a sensible
   amount of work to have outstanding, not because Gmail refuses 21. The batch endpoint is not used: a batch of n counts as n
   requests, is no faster at equal width (both shapes cost one round trip), costs ~25% more
   bytes for the multipart envelope, and answers `200` while individual members carry their
@@ -251,11 +252,13 @@ identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) �
   A stored draft therefore names only the recipients it has: `assemble_draft_message` writes
   no `To` header when there are none, and every adapter that stores MIME drafts uses it.
   `tests/live_drafts.rs` saves one with no recipients.
-- **A whole-account snapshot is expensive enough to fail a live run.** Gmail meters a
-  "Total Query Cost" of 6000 units per minute per user, and a `sync_email` snapshot
-  fetches every message; a few in quick succession answer `403 rateLimitExceeded`, which
-  reads like a permissions problem and is not. The draft live tests take one snapshot per
-  phase and reuse it. The engine **classifies** that `403` correctly (`src/throttle.rs`) and,
+- **A whole-account snapshot costs about two thirds of a minute's quota.** Gmail meters a
+  "Total Query Cost" of 6000 units per minute per user and a `sync_email` snapshot fetches
+  every message at 20 units apiece. The client paces itself under that budget, but each live
+  test builds its own client and so its own budget, so two run at once can still draw
+  `403 rateLimitExceeded`, which reads like a permissions problem and is not. The draft live
+  tests take one snapshot per phase and reuse it. The engine **classifies** that `403`
+  correctly (`src/throttle.rs`) and,
   where the refusal names its quota window — about a third do, measured — reports the instant
   it clears through `ProviderError::retry_after`. It does not sleep through it: a quota window
   is tens of seconds, and parking a task on one holds a lane of the account's gate against a

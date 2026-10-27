@@ -386,6 +386,25 @@ mod tests {
         assert!(!format!("{client:?}").contains("super-secret-token"));
     }
 
+    /// Gmail bills a user's calls against 6,000 units a minute, and the account's gate is the
+    /// one place every provider and every core of that account spends through, so the client
+    /// states its pace there as it connects.
+    #[test]
+    fn connecting_holds_the_account_to_gmails_quota() {
+        let retry = crate::test_support::retry();
+        GoogleClient::connect(
+            "t",
+            crate::test_support::tls(),
+            &retry,
+            &crate::test_support::user_agent(),
+        )
+        .unwrap();
+        assert_eq!(
+            retry.gate().pace(),
+            Some((crate::quota::UNITS_PER_MINUTE, crate::quota::WINDOW))
+        );
+    }
+
     /// People is the one API not served from [`GOOGLE_BASE`]: a contact path rooted
     /// there answers an HTML `404`, so `people_url` must retarget it — while a custom
     /// base (replay server / proxy) still wins.

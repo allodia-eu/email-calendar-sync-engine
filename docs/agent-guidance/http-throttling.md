@@ -102,7 +102,7 @@ Surveyed across every adapter, because a throttle is not a provider-specific sym
 |---|---|---|---|---|---|
 | `provider-graph` | `429` (+ `Retry-After`) | **4 per mailbox** | Documented `MailboxConcurrency`, and measured: a sharp cliff, 4 clean over 460 requests and 5 refused 13% | **yes**, in `HttpTransport::new` | no — the status is the whole answer |
 | `provider-jmap` | `429`, method `rateLimit`/`overQuota`, **and a `400`** (below) | the session's `maxConcurrentRequests` | **The server states it** (RFC 8620 §2) — 4 on Stalwart, 10 on Fastmail | **yes**, in `JmapClient::connect`, once the session resolves | **yes**, `400` → `JmapThrottles` |
-| `provider-google` | **both**: `429` for concurrency, `403` for the per-minute quota | **between 48 and 64 per user**, measured | See "Gmail has two limits, and they are not the same limit" | yes, at `MAX_CONCURRENT_GETS` (20), comfortably under it | **yes**, `403` → `GoogleThrottles` |
+| `provider-google` | **both**: `429` for concurrency, `403` for the per-minute quota | **between 48 and 64 per user**, measured | See "Gmail has two limits, and they are not the same limit" | yes, at `MAX_CONCURRENT_GETS` (20), comfortably under it, **and paces it** to the published quota (`provider-google/src/quota.rs`) | **yes**, `403` → `GoogleThrottles` |
 | `provider-caldav` + CardDAV | `429` (Stalwart); SabreDAV refuses nothing | **none found** — clean at widths 1–64 on both servers | Measured on two implementations; `provider-caldav/tests/live_concurrency.rs` | **no** | no — the status is the whole answer |
 | `provider-imap` | `NO [LIMIT]` to `LOGIN`, a 4xx to SMTP `AUTH` → `RateLimited`, waited out by nobody (`imap-smtp.md`) | 1 **per connection** | Not HTTP, and one connection is one command at a time | n/a — not an HTTP adapter | n/a |
 
@@ -238,6 +238,35 @@ Consequences:
   as a guarantee, and this was within an hour of being written up as one. Treat the instant as
   a bonus: two refusals in three carry nothing but the classification, and a host backs off on
   its own schedule there.
+- **The gate paces Gmail to its quota, so this adapter alone never meets the `403`.** Google
+  publishes the budget and the price of every call
+  (<https://developers.google.com/workspace/gmail/api/reference/quota>, for every project
+  created on or after 1 May 2026): **20 units to fetch a message, 60 for its source**, 5 to
+  list a page, 2 for a history page, against 6,000 per user per minute. Measured on the test
+  account: 299 metadata fetches succeeded in the minute before the first refusal. A snapshot
+  page of a hundred messages is therefore 2,005 units, three pages a minute at most, and a
+  20-wide fan-out spends a minute's budget in seconds: a pass that met the wall partway and
+  started again from the top next time never finished a large mailbox. So the adapter states
+  a budget on the account's gate (`RequestGate::pace_to`, 5,400 units a minute: nine tenths,
+  leaving the rest to the user's other clients of the same project) and charges every call
+  its price before sending it (`RequestGate::spend`). The budget is the gate's for the gate's
+  own reason: the snapshot, the body warm and a second core all spend one user's units.
+  Calls are served in the order they asked, so a 60-unit body fetch is never starved by a
+  stream of 20-unit gets. Calendar and People are billed under quotas of their own and cost
+  nothing here. `provider-google/tests/live_quota_pace.rs` drains the test mailbox three times
+  back to back, about 11,600 units, with no refusal; without the pace the second drain is
+  refused. A project created before May 2026 keeps Google's older, larger quota, and this pace
+  is merely slower than it needs to be there.
+- What still meets the `403` is another client of the same user: the app on a second device
+  spends the same budget, and no gate in this process can see it.
+- **Three things the pace does not count, each decided rather than overlooked.** A call is
+  charged once, before `send_retrying`, so its retries go out uncharged: they only happen while
+  the server is already refusing, and whether Google bills a refused call is unmeasured. A
+  reservation is not given back when the call that made it is dropped (a page's buffered gets,
+  after a refusal), which errs towards waiting longer than needed. And a call is charged before
+  it takes a lane, so calls whose turn came while every lane was busy go out together when lanes
+  free, at most the lane ceiling's worth (20); holding a lane while waiting on the pace instead
+  would let a queue of Gmail calls starve the account's calendar and contacts of lanes.
 - A quota window is tens of seconds, so when the instant *is* named it is past the absorb
   bound and goes back to the caller rather than being slept on. Proved end to end against the
   live account in `tests/live_quota_throttle.rs` — refused, told 37.5 s, came back then,
@@ -357,16 +386,13 @@ account, which is what that sentence looks like in practice.
 
 ## Known gaps
 
-- **Rate is unbounded everywhere.** The gate bounds *width*, and on three of the five adapters
-  width is not the quantity the server counts — Gmail bills units per minute, Stalwart's DAV
-  endpoint trips somewhere between 50/s and 150/s, and nothing in the engine paces requests per
-  second. What exists now is the **reactive** half: a rate limit, once hit, is classified,
-  waited out if brief, and otherwise reported with the instant it clears. The proactive half — a token bucket per account, which is a different instrument
-  from `RequestGate` and would need a rate to be stated or learned — is deliberately not built.
-  Two reasons, and the second is the real one: no server in this set states a rate the way JMAP
-  states a width, so any bucket would be a guess; and a guess low enough to be safe on a
-  drained quota is a guess that halves throughput on a rested one. Revisit it if a host reports
-  quota refusals that the backoff does not absorb.
+- **Rate is unbounded everywhere but Gmail.** Stalwart's DAV endpoint trips somewhere between
+  50/s and 150/s and nothing paces it: no server but Google states a rate, so a budget there
+  would be a guess, and a guess low enough to be safe on a drained quota halves throughput on a
+  rested one. What exists for them is the **reactive** half: a rate limit, once hit, is
+  classified, waited out if brief, and otherwise reported with the instant it clears. Gmail is
+  paced because Google publishes both the budget and the price of every call ("The gate paces
+  Gmail" above).
 - **A host that ignores `retry_after` is worse off than one that did not have it**, for a
   wait between five seconds and a minute: it now gets a failed scope where a task used to
   sleep and succeed. That is the deliberate trade — the sleep was holding the account's gate

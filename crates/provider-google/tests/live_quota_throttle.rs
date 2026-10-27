@@ -9,10 +9,12 @@
 //!
 //! # The contract under test
 //!
-//! Drains the whole mailbox repeatedly at the width the adapter really uses. One pass over
-//! this account costs about 720 cost units (142 messages at 5 apiece, plus the listing), and
-//! Gmail allows 6,000 per minute per user, so a pass or so in the second minute meets the
-//! wall. Then, in order:
+//! The adapter paces itself under the quota (`live_quota_pace.rs`), so its own spending never
+//! meets the wall. What still does is **another client of the same user** spending the same
+//! budget: the app on a second device, under the same Cloud project. This plays that client,
+//! with an unpaced twenty-wide burst of message fetches (20 units apiece against 6,000 per
+//! minute) until Gmail refuses it, and then runs the adapter's pass into the drained window.
+//! Then, in order:
 //!
 //! 1. the pass **fails** rather than parking — a quota window is most of a minute and the engine
 //!    does not sleep a task, or an account's gate lane, through one;
@@ -51,8 +53,16 @@ use engine_http::{RetryConfig, ThrottleEvent};
 use engine_provider::Provider;
 use provider_google::{GmailProvider, GoogleClient};
 
-/// Passes over the mailbox before giving up on provoking the limit.
-const MAX_PASSES: usize = 30;
+/// Drained windows before giving up on a refusal that names its instant.
+const MAX_PASSES: usize = 12;
+
+/// Rounds of a hundred fetches the outside client spends before giving up on a refusal. At 20
+/// units a fetch, Gmail's 6,000 a minute is gone in four; fifty is far past any quota this test
+/// expects, so a run that reaches it says so rather than spending forever.
+const MAX_ROUNDS: usize = 50;
+
+/// The Gmail API root the outside client calls directly.
+const GMAIL: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 
 /// Added to the instant the server named before coming back.
 ///
@@ -69,6 +79,47 @@ fn token() -> Option<String> {
     std::env::var("GOOGLE_ACCESS_TOKEN")
         .ok()
         .filter(|t| !t.is_empty())
+}
+
+/// Spends the user's quota the way another, unpaced client would: twenty message fetches at a
+/// time until Gmail refuses one.
+async fn spend_the_quota_elsewhere(token: &str) {
+    use futures_util::{StreamExt, stream};
+    let http = reqwest::Client::new();
+    let listed: serde_json::Value = http
+        .get(format!("{GMAIL}/messages?maxResults=100"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .expect("list")
+        .json()
+        .await
+        .expect("list body");
+    let ids: Vec<String> = listed["messages"]
+        .as_array()
+        .expect("the test mailbox has messages")
+        .iter()
+        .filter_map(|m| m["id"].as_str().map(str::to_owned))
+        .collect();
+    for _ in 0..MAX_ROUNDS {
+        let statuses: Vec<u16> = stream::iter(ids.iter())
+            .map(|id| {
+                let request = http
+                    .get(format!("{GMAIL}/messages/{id}?format=metadata"))
+                    .bearer_auth(token);
+                async move { request.send().await.map_or(0, |r| r.status().as_u16()) }
+            })
+            .buffer_unordered(20)
+            .collect()
+            .await;
+        if statuses.contains(&403) {
+            return;
+        }
+    }
+    panic!(
+        "{MAX_ROUNDS} rounds of fetches drew no quota refusal: the project's quota is larger than \
+         Gmail's published 6,000 units a minute, or every fetch failed before reaching it"
+    );
 }
 
 /// One reported throttle, flattened to what this asserts on.
@@ -99,7 +150,7 @@ async fn live_a_gmail_quota_refusal_names_when_it_clears_and_coming_back_then_wo
         });
     }));
     let client = GoogleClient::connect(
-        token,
+        token.clone(),
         &engine_tls::TlsClientConfig::bundled(),
         &retry,
         &engine_http::test_server::user_agent(),
@@ -107,20 +158,21 @@ async fn live_a_gmail_quota_refusal_names_when_it_clears_and_coming_back_then_wo
     .expect("client");
     let provider = GmailProvider::new(client);
 
-    // --- 1..3: spend the quota until a refusal names an instant. ---
+    // --- 1..3: another client drains the window; the pass meets it, until a refusal names an
+    // instant. ---
     let started = Instant::now();
     let mut passes = 0;
     let mut refusals = 0;
     let (refusal, named) = loop {
         assert!(
             passes < MAX_PASSES,
-            "{passes} passes drew {refusals} refusal(s), none naming an instant. Reaching \
-             the quota at all takes a pass or two; if that happened and no refusal ever \
-             carried `window_start_time`, Gmail has stopped sending it and `throttle.rs` \
-             needs re-measuring — about a third of refusals carried it when this was \
-             written, so a dozen without is a finding, not a flake.",
+            "{passes} passes drew {refusals} refusal(s), none naming an instant. If refusals \
+             came and none carried `window_start_time`, Gmail has stopped sending it and \
+             `throttle.rs` needs re-measuring: about a third of refusals carried it when this \
+             was written, so a dozen without is a finding, not a flake.",
         );
         passes += 1;
+        spend_the_quota_elsewhere(&token).await;
         let Err(err) = provider.sync_email(&account(), None).await else {
             continue;
         };
