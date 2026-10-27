@@ -41,8 +41,12 @@ vCard 3/4 input is unfolded and normalized into the JSContact-shaped
 or extension lines the parser does not understand. Targeted writes edit the raw
 document and preserve untouched lines. Creates use `If-None-Match: *`; update
 and delete require the source ETag under `If-Match`, so the destination
-advertises `WriteGuard::Enforced`. Embedded data-URI and authenticated URI photo
-reads are supported; photo mutation is not.
+advertises `WriteGuard::Enforced`. Embedded photos (a `data:` URI, or vCard 3
+`ENCODING=b`) and URI photos are read; photo mutation is not. A URI photo on an origin
+the credential reaches is fetched with it; one elsewhere is fetched without, and a
+`401` or `403` there is a card without a picture rather than a failure. iCloud keeps
+its cards' photos on `gateway.icloud.com` behind the account's password, so they show
+as no picture: the password does not go to a URL a card names.
 
 Every written value is escaped — `KIND` included, because `ContactKind::Other`
 carries host text, and an unescaped line break there injects properties into the

@@ -447,6 +447,14 @@ impl ContactsProvider for CardDavProvider {
                 Err(CalDavError::Status {
                     status: 404 | 410, ..
                 }) => return Ok(None),
+                // A URL a card names never receives the account's credential (RFC 9110 §11.5:
+                // a protection space does not extend beyond its server), so a refusal there
+                // says only that the picture is not ours to fetch: iCloud keeps photos on
+                // another host, behind the password. On an origin the credential does reach,
+                // a refusal is the credential's, and stays an error.
+                Err(CalDavError::Status {
+                    status: 401 | 403, ..
+                }) if !self.executor.sends_credential_to(&media.uri) => return Ok(None),
                 Err(error) => return Err(error.into()),
             }
         };
