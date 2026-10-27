@@ -53,6 +53,7 @@ mod drafts;
 pub(super) mod drain;
 mod durable_send;
 mod fake_provider;
+mod long_pass;
 mod mail_account;
 mod mail_edit;
 mod mail_sync;

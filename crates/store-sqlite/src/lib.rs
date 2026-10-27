@@ -48,6 +48,7 @@ mod purge;
 mod read;
 mod schema;
 mod scope_ops;
+mod scope_renew;
 mod search_ops;
 mod source_ops;
 mod sql;

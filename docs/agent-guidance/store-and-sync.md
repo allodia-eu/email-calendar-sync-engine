@@ -192,6 +192,13 @@ are one mechanism here, not alternatives.
   and bumps the generation, and when the suspended worker resumes its apply is
   rejected as stale instead of corrupting state. Workers handle `StaleLease` by
   re-claiming and recomputing — never by retrying the stale write.
+- A pass can outlast its lease: a backfill paced under a server's quota runs for as long as the
+  mailbox is large. Unrenewed, its lease lapses mid-pass, the next poll claims the scope, and the
+  two passes fence each other out commit by commit. So the mail stream renews its lease every
+  third of the TTL while it waits on its provider (`engine_sync::keep_alive`,
+  `Store::renew_sync_scope_lease`), the same shape as the outbox's renewal below. The
+  `SyncLease` handle keeps its claim-time expiry; only the stored lease moves, which is what lets
+  `read_since` read the pass's start off the handle.
 - `release_sync_scope` frees a scope before its TTL so a finished worker does not
   block the next sync for the full lease window.
 - **The claim → fetch → apply → release cycle lives in exactly one place**:

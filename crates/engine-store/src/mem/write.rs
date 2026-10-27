@@ -219,6 +219,14 @@ impl<C: Clock> Store for MemStore<C> {
         Ok(())
     }
 
+    async fn renew_sync_scope_lease(
+        &self,
+        lease: &SyncLease,
+        ttl: core::time::Duration,
+    ) -> Result<()> {
+        self.renew_scope(lease, ttl)
+    }
+
     async fn release_sync_scope(&self, lease: SyncLease) -> Result<()> {
         self.release_scope(&lease);
         Ok(())

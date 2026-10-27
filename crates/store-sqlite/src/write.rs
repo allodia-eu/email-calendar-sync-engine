@@ -19,7 +19,7 @@ use serde::Serialize;
 
 use crate::{
     Clock, SqliteStore, convert::expiry_after, outbox_ops, purge, scope_key, scope_ops,
-    scope_ops::OwnedUpdate, window_ops,
+    scope_ops::OwnedUpdate, scope_renew, window_ops,
 };
 
 #[async_trait]
@@ -106,6 +106,18 @@ impl<C: Clock> Store for SqliteStore<C> {
         let token = lease.token().get();
         let window = window.clone();
         self.call(move |conn| window_ops::set_expansion_window(conn, &key, token, &window))
+            .await
+    }
+
+    async fn renew_sync_scope_lease(
+        &self,
+        lease: &SyncLease,
+        ttl: core::time::Duration,
+    ) -> Result<()> {
+        let expiry = expiry_after(self.clock.now(), ttl)?;
+        let key = scope_key(lease.scope());
+        let token = lease.token().get();
+        self.call(move |conn| scope_renew::renew(conn, &key, token, expiry))
             .await
     }
 
