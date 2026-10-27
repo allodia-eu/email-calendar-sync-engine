@@ -321,6 +321,11 @@ read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
   `syncToken` request cannot also carry a window). A `410` on a stale `syncToken`
   classifies as `NeedsResync` → snapshot restart (the same mechanism as Gmail's
   history-expiry; here the error classifier maps `410` directly, no special case).
+  **A subscribed holiday calendar never syncs incrementally.** Its snapshot carries a
+  `nextSyncToken`, and the first request with that token is answered `410
+  fullSyncRequired`, so every pass over such a calendar costs the refused delta and a
+  full snapshot (a national holiday calendar holds about 200 events, in one page).
+  Correct, and bounded by the calendar's size; nothing to fix in the adapter.
 - **Writes** (`cal_write`): `events.insert` (create), `events.patch` (a partial merge —
   the neutral `EventEdit` intent → a partial event JSON, never re-serializing the
   projection; a start/end move that would change the time *form* is refused),
