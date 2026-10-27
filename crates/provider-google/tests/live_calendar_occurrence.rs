@@ -8,11 +8,7 @@ mod common;
 
 use common::*;
 use engine_core::{
-    calendar::Event,
-    ids::{CalendarId, Uid},
-    membership::Memberships,
-    sync::SyncUpdate,
-    time::UtcDateTime,
+    calendar::Event, ids::Uid, membership::Memberships, sync::SyncUpdate, time::UtcDateTime,
 };
 use engine_provider::{CalendarWrites, EventDeletion, EventDraft, Provider};
 
@@ -38,7 +34,7 @@ async fn live_calendar_removes_one_occurrence() {
         return;
     };
     let provider = calendar_provider(token);
-    let cal = CalendarId::try_from("primary").unwrap();
+    let cal = primary(&provider).await;
     let stamp: UtcDateTime = "2026-08-23T10:00:00Z".parse().unwrap();
 
     let mut weekly = RecurrenceRule::new(Frequency::Weekly);
@@ -62,7 +58,7 @@ async fn live_calendar_removes_one_occurrence() {
 
     // The cursor is taken *after* the create, so the delta below carries the cancellation.
     let cursor = provider
-        .sync_events(&account(), &primary(), None)
+        .sync_events(&account(), &primary(&provider).await, None)
         .await
         .expect("sync events")
         .next_cursor;
@@ -93,7 +89,7 @@ async fn live_calendar_removes_one_occurrence() {
         .expect("remove one occurrence");
 
     let delta = provider
-        .sync_events(&account(), &primary(), Some(&cursor))
+        .sync_events(&account(), &primary(&provider).await, Some(&cursor))
         .await
         .expect("sync the change");
     let SyncUpdate::Delta {
@@ -156,7 +152,7 @@ async fn live_calendar_reads_a_moved_and_a_removed_occurrence_off_the_series() {
         return;
     };
     let provider = calendar_provider(token);
-    let cal = CalendarId::try_from("primary").unwrap();
+    let cal = primary(&provider).await;
     let stamp: UtcDateTime = "2026-08-23T10:00:00Z".parse().unwrap();
 
     let mut weekly = RecurrenceRule::new(Frequency::Weekly);
@@ -224,7 +220,7 @@ async fn live_calendar_reads_a_moved_and_a_removed_occurrence_off_the_series() {
         .expect("remove one occurrence");
 
     let events = provider
-        .sync_events(&account(), &primary(), None)
+        .sync_events(&account(), &primary(&provider).await, None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {

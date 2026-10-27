@@ -158,7 +158,7 @@ async fn series_with_an_override(
     provider: &GoogleCalendarProvider,
     label: &str,
 ) -> (Event, EventId) {
-    let cal = CalendarId::try_from("primary").unwrap();
+    let cal = primary(provider).await;
     let mut weekly = RecurrenceRule::new(Frequency::Weekly);
     weekly.bound = RecurrenceBound::Count(NonZeroU32::new(6).unwrap());
 
@@ -242,7 +242,7 @@ async fn overrides_of(
     id: &EventId,
 ) -> BTreeMap<LocalDateTime, RecurrenceOverride> {
     let events = provider
-        .sync_events(&account(), &primary(), None)
+        .sync_events(&account(), &primary(provider).await, None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {

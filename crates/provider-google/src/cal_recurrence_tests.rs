@@ -155,7 +155,7 @@ async fn removing_one_occurrence_deletes_that_occurrence_not_the_series() {
         "/events/evt-1_20260808T070000Z",
         Ok(serde_json::Value::Null),
     )]);
-    delete_event(&client, "primary", &deletion).await.unwrap();
+    delete_event(&client, &deletion).await.unwrap();
 }
 
 #[tokio::test]
@@ -174,9 +174,7 @@ async fn an_occurrence_edit_patches_the_id_google_derives_for_it() {
         )),
         EventPatch::new(stamp()).summary("Moved"),
     );
-    let receipt = patch_event(&client, "cal-1", &base_event(), &edit)
-        .await
-        .unwrap();
+    let receipt = patch_event(&client, &base_event(), &edit).await.unwrap();
     assert_eq!(
         receipt.event,
         base_event().id,
@@ -195,7 +193,7 @@ async fn an_occurrence_edit_without_a_resolved_instant_is_refused() {
         PatchTarget::Instance(Occurrence::starting(zoned("2026-08-10T09:00:00"))),
         EventPatch::new(stamp()).summary("Moved"),
     );
-    let err = patch_event(&client, "cal-1", &base_event(), &edit)
+    let err = patch_event(&client, &base_event(), &edit)
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::InvalidState);
@@ -210,7 +208,7 @@ async fn an_occurrence_edit_cannot_carry_a_recurrence_change() {
         PatchTarget::Instance(Occurrence::starting(zoned("2026-08-10T09:00:00"))),
         EventPatch::new(stamp()).recurrence(DraftRecurrence::new(weekly_on_monday())),
     );
-    let err = patch_event(&client, "cal-1", &base_event(), &edit)
+    let err = patch_event(&client, &base_event(), &edit)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("targets the series"), "{err}");

@@ -53,10 +53,10 @@ async fn create(base: &str) -> Result<EventId, ProviderError> {
 
 async fn delete(base: &str) -> Result<(), ProviderError> {
     let deletion = EventDeletion::unconditional(
-        EventId::try_from("e1").unwrap(),
+        EventId::try_from("cal1/e1").unwrap(),
         Uid::new("evt-1@test.local").unwrap(),
     );
-    crate::cal_write::delete_event(&client(base), "cal1", &deletion).await
+    crate::cal_write::delete_event(&client(base), &deletion).await
 }
 
 fn card_draft() -> ContactDraft {
@@ -182,7 +182,7 @@ async fn a_delete_the_server_refused_or_already_made_is_answered_as_such() {
 
 fn stored_event() -> engine_core::calendar::Event {
     let mut event = engine_core::calendar::Event::new(
-        EventId::try_from("e1").unwrap(),
+        EventId::try_from("cal1/e1").unwrap(),
         Uid::new("evt-1@test.local").unwrap(),
         Memberships::of_one(CalendarId::try_from("cal1").unwrap()),
         draft().start,
@@ -220,24 +220,19 @@ async fn changes_answered(base: &str) -> Vec<(&'static str, Result<(), ProviderE
     vec![
         (
             "series patch",
-            crate::cal_write::patch_event(&cal, "cal1", &event, &edit(PatchTarget::Series))
+            crate::cal_write::patch_event(&cal, &event, &edit(PatchTarget::Series))
                 .await
                 .map(drop),
         ),
         (
             "occurrence patch",
-            crate::cal_write::patch_event(
-                &cal,
-                "cal1",
-                &event,
-                &edit(PatchTarget::Instance(occurrence)),
-            )
-            .await
-            .map(drop),
+            crate::cal_write::patch_event(&cal, &event, &edit(PatchTarget::Instance(occurrence)))
+                .await
+                .map(drop),
         ),
         (
             "rsvp",
-            crate::cal_write::rsvp_event(&cal, "cal1", &event, &rsvp)
+            crate::cal_write::rsvp_event(&cal, &event, &rsvp)
                 .await
                 .map(drop),
         ),

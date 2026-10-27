@@ -28,7 +28,7 @@ Auth-Code+PKCE loopback flow and captures fixtures — the exact mirror of
 
 `provider-google` implements the `engine_provider::Provider` contract for **mail
 (read/sync + on-demand source + writes + submission)** on `GmailProvider` and **calendar
-(read/sync + writes)** on `GoogleCalendarProvider` (calendar-bound), each over its own
+(read/sync + writes)** on `GoogleCalendarProvider` (every calendar), each over its own
 `GoogleClient` on the same token. The mail layers:
 
 - **`error`** — `GoogleError` (`Status`/`HistoryExpired`/`Json`/`Protocol`/`Transport`)
@@ -83,7 +83,7 @@ Four `SyncScope` variants (`engine-core/src/sync/scope.rs`) mirror the shape:
   no cursor), applied before the messages that reference its labels.
 - **`GoogleCalendarList { account }`** / **`GoogleCalendar { account, calendar }`** — the
   calendar-discovery container and the per-calendar event scope (cursor =
-  `nextSyncToken`).
+  `nextSyncToken` behind a version prefix; a cursor without it syncs its calendar afresh).
 
 ## Gmail label → model mapping (the crux)
 
@@ -296,9 +296,12 @@ is one sent to itself, and `SENT` is a placement.
 One `GoogleCalendarProvider` serves every calendar of the account (like
 `GraphCalendarProvider`): `event_scope(account, calendar)` names that calendar
 (`GoogleCalendar`) and `sync_events` reads its `events.list`; the calendar list syncs under
-the per-account `GoogleCalendarList`. Google addresses an event inside its calendar, so a
-create goes to the draft's calendar and a patch, RSVP or delete to the calendar the stored
-event names. It advertises calendar
+the per-account `GoogleCalendarList`. A Google event id is unique within its calendar only
+(one meeting has the same id in every calendar it shows in), so the engine's `EventId` is
+`<calendar>/<event>` (`cal_id`): a create goes to the draft's calendar, and a patch, RSVP or
+delete to the calendar its id names, with or without the stored event. A calendar is named by
+its listed id; the `primary` alias is refused, being a second id for the default calendar,
+whose listed id is the account's address. It advertises calendar
 read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
 
 - **IANA-native** (`cal_normalize`): event `start`/`end` are `{ dateTime, timeZone }` with

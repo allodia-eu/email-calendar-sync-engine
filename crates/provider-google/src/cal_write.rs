@@ -10,7 +10,6 @@
 
 use engine_core::{
     calendar::{Event, RecurrenceBound, UntilForm, format_rrule},
-    ids::EventId,
     time::CalendarDateTime,
     version::{ETag, RevisionTokens},
 };
@@ -22,6 +21,7 @@ use engine_provider::{
 use serde_json::{Map, Value, json};
 
 use crate::{
+    cal_id,
     cal_invite::{draft_attendees, merge_attendees},
     error::{GoogleError, unread_answer},
     json::opt_str,
@@ -56,7 +56,7 @@ pub(crate) async fn create_event(
         .await
         .map_err(GoogleError::into_write_error)?
         .ok_or_else(|| unread_answer("create event returned no body"))?;
-    receipt(&created, draft.uid.clone())
+    receipt(&created, calendar, draft.uid.clone())
 }
 
 /// Applies `edit` to `base` via `PATCH …/events/{id}`, guarded by the ETag `base` was read at.
@@ -70,7 +70,6 @@ pub(crate) async fn create_event(
 /// occurrence it lands on.
 pub(crate) async fn patch_event(
     client: &GoogleClient,
-    calendar: &str,
     base: &Event,
     edit: &EventEdit,
 ) -> ProviderResult<EventWriteReceipt> {
@@ -90,11 +89,10 @@ pub(crate) async fn patch_event(
             base.revisions.clone(),
         ));
     }
+    let (calendar, master) = cal_id::split(&base.id)?;
     let (id, guard) = match &edit.target {
-        PatchTarget::Series => (base.id.key().as_str().to_owned(), if_match(base)),
-        PatchTarget::Instance(occurrence) => {
-            (occurrence_id(base.id.key().as_str(), occurrence)?, None)
-        }
+        PatchTarget::Series => (master.to_owned(), if_match(base)),
+        PatchTarget::Instance(occurrence) => (occurrence_id(master, occurrence)?, None),
     };
     let body = build_patch(base, &edit.patch)?;
     let answer = client
@@ -113,7 +111,7 @@ pub(crate) async fn patch_event(
         PatchTarget::Instance(_) => GoogleError::optional_answer(answer).map(|_| None)?,
     };
     match updated {
-        Some(event) => receipt(&event, base.uid.clone()),
+        Some(event) => receipt(&event, calendar, base.uid.clone()),
         None => Ok(EventWriteReceipt::new(
             base.id.clone(),
             base.uid.clone(),
@@ -148,19 +146,18 @@ pub(crate) async fn patch_event(
 /// `guard` of `None` has to mean "answer unconditionally" for the field to mean anything.
 pub(crate) async fn rsvp_event(
     client: &GoogleClient,
-    calendar: &str,
     base: &Event,
     rsvp: &EventRsvp,
 ) -> ProviderResult<EventWriteReceipt> {
     // `sendUpdates` is a *query* parameter, not a body field (Calendar API v3). `all` also
     // reaches guests outside the domain, which is what an external organizer is.
     let notify = if rsvp.notify_organizer { "all" } else { "none" };
+    let (calendar, event) = cal_id::split(&base.id)?;
     let updated = client
         .patch(
             &client.url(&format!(
-                "{}/{}?sendUpdates={notify}",
+                "{}/{event}?sendUpdates={notify}",
                 events_path(calendar),
-                base.id.key().as_str()
             )),
             "application/json",
             rsvp.guard
@@ -171,7 +168,7 @@ pub(crate) async fn rsvp_event(
         )
         .await;
     match GoogleError::optional_answer(updated)? {
-        Some(event) => receipt(&event, base.uid.clone()),
+        Some(event) => receipt(&event, calendar, base.uid.clone()),
         None => Ok(EventWriteReceipt::new(
             base.id.clone(),
             base.uid.clone(),
@@ -221,10 +218,9 @@ fn build_rsvp(rsvp: &EventRsvp) -> Value {
 /// occurrence delete is therefore unconditional.
 pub(crate) async fn delete_event(
     client: &GoogleClient,
-    calendar: &str,
     deletion: &EventDeletion,
 ) -> ProviderResult<()> {
-    let master = deletion.event.key().as_str();
+    let (calendar, master) = cal_id::split(&deletion.event)?;
     let (id, guard) = match deletion.occurrence_target() {
         None => (
             master.to_owned(),
@@ -441,15 +437,16 @@ fn if_match(base: &Event) -> Option<&str> {
     base.revisions.etag.as_ref().map(ETag::as_str)
 }
 
-/// Builds a receipt from a create/patch response: the event id it resolved to, the
+/// Builds a receipt from a write response in `calendar`: the event id it resolved to, the
 /// server's `iCalUID` (falling back to `fallback_uid`), and the new ETag.
 fn receipt(
     event: &Value,
+    calendar: &str,
     fallback_uid: engine_core::ids::Uid,
 ) -> ProviderResult<EventWriteReceipt> {
     let id = opt_str(event, "id").ok_or_else(|| unread_answer("write response had no event id"))?;
-    let event_id = EventId::try_from(id)
-        .map_err(|e| unread_answer(&format!("bad created event id: {e}")).with_source(e))?;
+    let event_id = cal_id::event_id(calendar, id)
+        .map_err(|e| unread_answer(&format!("bad created event id: {e}")))?;
     let uid = opt_str(event, "iCalUID")
         .and_then(|u| engine_core::ids::Uid::new(u).ok())
         .unwrap_or(fallback_uid);

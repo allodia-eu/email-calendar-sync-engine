@@ -7,7 +7,7 @@
 mod common;
 
 use common::*;
-use engine_core::{ids::CalendarId, sync::SyncUpdate};
+use engine_core::sync::SyncUpdate;
 use engine_provider::{CalendarWrites, Provider};
 
 /// Creating a **recurring** event, and reading the rule back off the server.
@@ -30,7 +30,7 @@ async fn live_calendar_creates_a_recurring_event() {
         return;
     };
     let provider = calendar_provider(token);
-    let cal = CalendarId::try_from("primary").unwrap();
+    let cal = primary(&provider).await;
     let stamp: UtcDateTime = "2026-08-23T10:00:00Z".parse().unwrap();
     let zoned = |s: &str| CalendarDateTime::Zoned {
         local: s.parse::<LocalDateTime>().unwrap(),
@@ -68,7 +68,7 @@ async fn live_calendar_creates_a_recurring_event() {
 
     // Read it back through the adapter's own sync path: what a host would see.
     let events = provider
-        .sync_events(&account(), &primary(), None)
+        .sync_events(&account(), &primary(&provider).await, None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {
@@ -138,7 +138,7 @@ async fn live_calendar_changes_and_removes_a_rule() {
         return;
     };
     let provider = calendar_provider(token);
-    let cal = CalendarId::try_from("primary").unwrap();
+    let cal = primary(&provider).await;
     let stamp: UtcDateTime = "2026-08-23T10:00:00Z".parse().unwrap();
     let zoned = |s: &str| CalendarDateTime::Zoned {
         local: s.parse::<LocalDateTime>().unwrap(),
@@ -173,7 +173,7 @@ async fn live_calendar_changes_and_removes_a_rule() {
         let provider = &provider;
         async move {
             let events = provider
-                .sync_events(&account(), &primary(), None)
+                .sync_events(&account(), &primary(provider).await, None)
                 .await
                 .expect("sync events");
             let SyncUpdate::Snapshot { objects, .. } = events.update else {

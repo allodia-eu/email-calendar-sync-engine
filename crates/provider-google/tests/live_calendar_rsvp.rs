@@ -66,8 +66,9 @@ fn token() -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
+/// The account's default calendar, by the id its listing gives it.
 fn calendar() -> CalendarId {
-    CalendarId::try_from("primary").unwrap()
+    CalendarId::try_from(SELF_ADDRESS).unwrap()
 }
 
 fn provider(token: String) -> GoogleCalendarProvider {
@@ -128,7 +129,7 @@ async fn import_invitation(token: &str, uid: &Uid, summary: &str) -> EventId {
     let status = response.status();
     let imported: serde_json::Value = response.json().await.expect("import response");
     assert!(status.is_success(), "import failed: {imported}");
-    EventId::try_from(imported["id"].as_str().expect("an imported event id")).unwrap()
+    in_primary(imported["id"].as_str().expect("an imported event id"))
 }
 
 /// Creates a meeting the **account itself** organises, with one other guest, which is the
@@ -151,7 +152,12 @@ async fn insert_with_guest(token: &str, summary: &str) -> EventId {
     let status = response.status();
     let created: serde_json::Value = response.json().await.expect("insert response");
     assert!(status.is_success(), "insert failed: {created}");
-    EventId::try_from(created["id"].as_str().expect("an event id")).unwrap()
+    in_primary(created["id"].as_str().expect("an event id"))
+}
+
+/// The adapter's id for Google event `id` in the primary calendar, which names its calendar.
+fn in_primary(id: &str) -> EventId {
+    EventId::try_from(format!("{}/{id}", calendar().key().as_str()).as_str()).unwrap()
 }
 
 /// Re-reads `id` through the adapter's own sync — the projection a host would see.
