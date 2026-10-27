@@ -5,12 +5,13 @@
 //! request/response shape: the client sends `<tag> IDLE`, the server answers with a
 //! `+ ` **continuation** (not a tagged completion) and then streams *unsolicited*
 //! untagged responses for as long as the client idles, until the client sends a bare
-//! `DONE` to end it. So these three primitives manage that lifecycle directly over the
+//! `DONE` to end it. So these primitives manage that lifecycle directly over the
 //! connection's low-level read/write seam:
 //!
 //! - [`idle_start`] — send `IDLE`, consume the continuation, return the command tag.
 //! - [`idle_wait_change`] — read untagged responses until one signals a change.
 //! - [`idle_done`] — send `DONE`, drain to the tagged completion, report a boundary change.
+//! - [`noop_change`] — between two turns, poll with `NOOP` and report a change.
 //!
 //! A notification carries **no data** — it only classifies *that* the mailbox changed
 //! (see [`classify`]); the watcher turns that into a [`WatchEvent`](engine_provider::WatchEvent)
@@ -79,28 +80,29 @@ fn classify(line: &[u8]) -> IdleLine {
 }
 
 /// Sends `<tag> IDLE` and consumes the server's `+ ` continuation, returning the tag
-/// (so [`idle_done`] can match the command's eventual completion). Untagged responses
-/// the server interleaves before the continuation are skipped — a change in that
-/// sub-second window is reconciled by the host's sync-on-start and the keep-alive
-/// backstop (`crate::watch`), never lost silently into the store.
+/// (so [`idle_done`] can match the command's eventual completion) and whether an untagged
+/// response the server interleaved before the continuation was a change. The server will
+/// not repeat that change once idling, so the watcher reports it.
 ///
 /// # Errors
 ///
 /// [`ImapError::Protocol`] if the server answers with a tagged line instead of a
 /// continuation (it refused `IDLE`), or [`ImapError::Io`] on a transport failure.
-pub(crate) async fn idle_start<S>(conn: &mut Connection<S>) -> ImapResult<String>
+pub(crate) async fn idle_start<S>(conn: &mut Connection<S>) -> ImapResult<(String, bool)>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let tag = conn.next_tag();
     conn.send_raw(format!("{tag} IDLE\r\n").as_bytes()).await?;
+    let mut saw_change = false;
     loop {
         let line = conn.read_line().await?;
         if strip_ascii_prefix(&line, b"+ ").is_some() {
-            return Ok(tag);
+            return Ok((tag, saw_change));
         }
         if strip_ascii_prefix(&line, b"* ").is_some() {
-            continue; // an untagged status before the continuation; tolerated
+            saw_change |= classify(&line) == IdleLine::Changed;
+            continue;
         }
         return Err(ImapError::protocol(format!(
             "IDLE expected a continuation, got: {}",
