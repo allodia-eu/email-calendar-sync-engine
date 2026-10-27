@@ -306,10 +306,10 @@ async fn stop_is_a_noop_when_not_idling() {
 
 #[tokio::test(start_paused = true)]
 async fn on_yahoo_a_turn_is_short_and_a_noop_finds_what_idle_did_not_say() {
-    // Yahoo reports a new message over IDLE about two minutes after it lands, but answers a
-    // NOOP with it at once. Its servers say who they are with `XYMHIGHESTMODSEQ`, so there the
-    // watcher idles in short turns, whatever keep-alive the host asked for, and asks between
-    // them.
+    // Yahoo reports changes over IDLE only every two minutes, but answers a NOOP with a new
+    // message within a turn or two. Its servers say who they are with `XYMHIGHESTMODSEQ`, so there
+    // the watcher idles in short turns, whatever keep-alive the host asked for, and asks
+    // between them.
     let (client, server) = duplex(4096);
     let server = tokio::spawn(async move {
         let mut server = BufReader::new(server);

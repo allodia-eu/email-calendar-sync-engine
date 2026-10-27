@@ -884,8 +884,9 @@ folders into Trash is proven offline only: all three servers file a folder insid
   live in the host**, not the engine. A change the server reports before it accepts an
   `IDLE` (ahead of the `+` continuation) is not repeated once idling, so it is reported as
   `Changed` too.
-- **A server whose `IDLE` lags is watched in short turns.** Yahoo reports a new message over
-  `IDLE` about two minutes after it lands, while a `NOOP` reports it at once
+- **A server whose `IDLE` lags is watched in short turns.** Yahoo reports changes over `IDLE`
+  only on a two-minute cycle counted from the `IDLE` command, so a new message waits up to two
+  minutes, about one on average, while a `NOOP` reports it within a turn or two
   (`spec-deviations.md`, YAHOO-15). On a server advertising `XYMHIGHESTMODSEQ` the watcher
   caps a turn at 20 seconds, whatever keep-alive the host asked for, and ends each with a
   `NOOP` whose changes count as the watch's (`Connection::idle_lags`). The turns are the

@@ -19,9 +19,9 @@ impl<S> Connection<S> {
     }
 
     /// Whether this server's `IDLE` reports a change long after the mailbox has it. Yahoo's,
-    /// which it says by advertising `XYMHIGHESTMODSEQ`, announces a new message about two
-    /// minutes after it lands while a `NOOP` reports it at once, so a watcher there idles in
-    /// short turns and asks between them (`crate::watch`).
+    /// which it says by advertising `XYMHIGHESTMODSEQ`, reports changes only on a two-minute
+    /// cycle counted from the `IDLE` command, while a `NOOP` reports a new message within a turn
+    /// or two, so a watcher there idles in short turns and asks between them (`crate::watch`).
     pub(crate) fn idle_lags(&self) -> bool {
         self.negotiated.has(Extension::XymHighestModseq)
     }

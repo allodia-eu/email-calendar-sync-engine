@@ -54,7 +54,7 @@ const MIN_KEEPALIVE: Duration = Duration::from_secs(10);
 /// How long a turn of `IDLE` lasts on a server whose `IDLE` lags behind its mailbox
 /// (`Connection::idle_lags`), whatever keep-alive the host asked for. Each turn ends with a
 /// `NOOP`, so new mail shows within about this long rather than the server's own delay (Yahoo:
-/// about two minutes); it also keeps the connection busy enough that Yahoo does not log it
+/// up to two minutes); it also keeps the connection busy enough that Yahoo does not log it
 /// out after five quiet minutes. The turns are internal: a quiet one reports nothing, and
 /// [`WatchEvent::KeepAlive`] still comes once per host keep-alive.
 const LAGGING_IDLE_TURN: Duration = Duration::from_secs(20);
