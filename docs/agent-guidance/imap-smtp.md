@@ -884,14 +884,11 @@ folders into Trash is proven offline only: all three servers file a folder insid
   live in the host**, not the engine. A change the server reports before it accepts an
   `IDLE` (ahead of the `+` continuation) is not repeated once idling, so it is reported as
   `Changed` too.
-- **A server whose `IDLE` lags is watched in short turns.** Yahoo reports a new message over
-  `IDLE` about two minutes after it lands, while a `NOOP` reports it at once
-  (`spec-deviations.md`, YAHOO-15). On a server advertising `XYMHIGHESTMODSEQ` the watcher
-  caps a turn at 20 seconds, whatever keep-alive the host asked for, and ends each with a
-  `NOOP` whose changes count as the watch's (`Connection::idle_lags`). The turns are the
-  watcher's own: a quiet one reports nothing, and `KeepAlive` still comes once per host
-  keep-alive, so a host that reconciles on it is not asked to every 20 seconds. Any other
-  server idles for the whole keep-alive and gets no `NOOP`.
+- **A server's own `IDLE` delay is accepted, not polled around.** Yahoo reports changes over
+  `IDLE` only on a two-minute cycle, so its new mail shows up to two minutes late
+  (`spec-deviations.md`, YAHOO-15). A `NOOP` between short turns would show it sooner, at the
+  cost of a command every few seconds per watched folder per user, the load `IDLE` exists to
+  spare a server; it was tried and withdrawn.
 - **Coverage.** The `idle` primitives (continuation handling, untagged-line
   classification, `DONE` drain) are unit-tested over scripted transcripts; the watcher's
   keep-alive timing and stay-idling-across-events behavior are tested over a real

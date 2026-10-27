@@ -5,13 +5,12 @@
 //! request/response shape: the client sends `<tag> IDLE`, the server answers with a
 //! `+ ` **continuation** (not a tagged completion) and then streams *unsolicited*
 //! untagged responses for as long as the client idles, until the client sends a bare
-//! `DONE` to end it. So these primitives manage that lifecycle directly over the
+//! `DONE` to end it. So these three primitives manage that lifecycle directly over the
 //! connection's low-level read/write seam:
 //!
 //! - [`idle_start`] — send `IDLE`, consume the continuation, return the command tag.
 //! - [`idle_wait_change`] — read untagged responses until one signals a change.
 //! - [`idle_done`] — send `DONE`, drain to the tagged completion, report a boundary change.
-//! - [`noop_change`] — between two turns, poll with `NOOP` and report a change.
 //!
 //! A notification carries **no data** — it only classifies *that* the mailbox changed
 //! (see [`classify`]); the watcher turns that into a [`WatchEvent`](engine_provider::WatchEvent)
@@ -162,33 +161,6 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     conn.send_raw(b"DONE\r\n").await?;
-    drain_to_completion(conn, tag, "IDLE").await
-}
-
-/// Sends `NOOP` between two turns of `IDLE` and reports whether its answer carried a change:
-/// the poll a server whose `IDLE` lags behind its mailbox needs (`Connection::idle_lags`).
-///
-/// # Errors
-///
-/// As [`idle_done`], for the `NOOP`'s completion.
-pub(crate) async fn noop_change<S>(conn: &mut Connection<S>) -> ImapResult<bool>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
-{
-    let tag = conn.next_tag();
-    conn.send_raw(format!("{tag} NOOP\r\n").as_bytes()).await?;
-    drain_to_completion(conn, &tag, "NOOP").await
-}
-
-/// Reads to `tag`'s completion, returning whether any untagged line on the way was a change.
-async fn drain_to_completion<S>(
-    conn: &mut Connection<S>,
-    tag: &str,
-    command: &str,
-) -> ImapResult<bool>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
-{
     let prefix = format!("{tag} ");
     let mut saw_change = false;
     loop {
@@ -203,7 +175,7 @@ where
                 "NO" => Err(ImapError::no(detail)),
                 "BAD" => Err(ImapError::bad(detail)),
                 other => Err(ImapError::protocol(format!(
-                    "unknown {command} completion {other}"
+                    "unknown IDLE completion {other}"
                 ))),
             };
         }
