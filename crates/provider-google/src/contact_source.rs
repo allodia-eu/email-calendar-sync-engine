@@ -8,6 +8,7 @@
 
 use engine_core::{
     contact::{ContactField, ContactFieldSet, ContactSourceClass},
+    error::FailureClass,
     ids::{AddressBookId, ContactId, ProviderKey},
 };
 use engine_provider::ProviderResult;
@@ -162,7 +163,11 @@ pub(crate) fn is_source_absent(error: &GoogleError) -> bool {
             status: 400,
             reason,
             ..
-        } => reason.as_deref() == Some("FAILED_PRECONDITION"),
+        } => {
+            // An expired `syncToken` shares the status and reason, and is not an absence.
+            reason.as_deref() == Some("FAILED_PRECONDITION")
+                && error.failure_class() != FailureClass::NeedsResync
+        }
         _ => false,
     }
 }

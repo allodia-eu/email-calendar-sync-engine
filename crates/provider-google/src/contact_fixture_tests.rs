@@ -7,6 +7,7 @@
 //! at all. See `tests/fixtures/README.md` for how they were captured.
 
 use engine_core::{
+    error::FailureClass,
     ids::AccountId,
     sync::{SyncState, SyncUpdate},
 };
@@ -285,6 +286,22 @@ async fn restarts_as_a_snapshot(source: fn(GoogleClient) -> GoogleContactProvide
     };
     assert!(cursor_recovered, "{path}");
     assert!(matches!(sync.update, SyncUpdate::Snapshot { .. }), "{path}");
+}
+
+/// The restart sends no token, so an expiry answered to it again is a failure to surface:
+/// restarting a second time would loop forever, and on an optional source the shared
+/// `FAILED_PRECONDITION` must not read as the source being absent.
+#[tokio::test]
+async fn an_expiry_answered_to_the_restart_surfaces_as_needs_resync() {
+    let client = fake_client_fallible(vec![(
+        "/v1/otherContacts",
+        Err((400, json(SYNC_TOKEN_EXPIRED))),
+    )]);
+    let error = GoogleContactProvider::other_contacts(client)
+        .sync_contacts(&account(), Some(&SyncState::new("expired")))
+        .await
+        .expect_err("a snapshot that cannot be read is not a sync");
+    assert_eq!(error.class(), FailureClass::NeedsResync);
 }
 
 /// A direct fetch normalizes the same person the snapshot produced.

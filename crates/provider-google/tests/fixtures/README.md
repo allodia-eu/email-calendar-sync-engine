@@ -231,13 +231,6 @@ handle → a placeholder.
 17. **Sync tokens are eventually consistent.** A write is visible to a direct `GET`
     immediately but takes seconds (~5–15 observed) to surface in a delta, so the live
     tests poll rather than read once.
-22. **An expired People sync token is `400 FAILED_PRECONDITION`, not `410`.** Tokens expire
-    seven days after the sync that issued them, and the answer shares its status and code
-    with a stale-etag write (Finding 13); only `error.details[]`, a `google.rpc.ErrorInfo`
-    with reason `EXPIRED_SYNC_TOKEN`, tells them apart. Read as a conflict, the token is
-    replayed on every pass and the address book never changes again. A malformed token
-    is a different answer again (`400 INVALID_ARGUMENT`), so a live test cannot produce
-    this one on demand; the fixture is the body a real client received.
 18. **Gmail rewrites the `Message-ID` on `drafts.create`, not only on send.** A draft
     written with `<local@test.local>` comes back carrying `<CALRU+…@mail.gmail.com>`. The
     consequence lands on a host rather than the adapter: a saved Gmail draft **cannot** be
@@ -255,3 +248,13 @@ handle → a placeholder.
     it. The adapter now waits that `403` out rather than failing the scope (finding 21 and
     `src/throttle.rs`), so a suite that meets it pauses; a suite that keeps spending faster
     than 6,000 units a minute still outruns every window it waits for.
+
+<!-- Finding 22 opens its own list, so it renders under its own number. -->
+
+22. **An expired People sync token is `400 FAILED_PRECONDITION`, not `410`.** Tokens expire
+    seven days after the sync that issued them, and the answer shares its status and code
+    with a stale-etag write (Finding 13); only `error.details[]`, a `google.rpc.ErrorInfo`
+    with reason `EXPIRED_SYNC_TOKEN`, tells them apart. Read as a conflict, the token is
+    replayed on every pass and the address book never changes again. A malformed token
+    is a different answer again (`400 INVALID_ARGUMENT`), so a live test cannot produce
+    this one on demand; the fixture is the body a real client received.

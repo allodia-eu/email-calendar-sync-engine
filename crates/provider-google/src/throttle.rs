@@ -53,7 +53,7 @@ use engine_core::error::FailureClass;
 use engine_http::{Throttle, ThrottleClassifier};
 use serde_json::Value;
 
-use crate::error::GoogleError;
+use crate::error::{GoogleError, error_info};
 
 /// The one status whose body decides whether it is a throttle.
 ///
@@ -132,18 +132,8 @@ fn classify(status: u16, body: &[u8], now: SystemTime) -> Option<Throttle> {
 /// module docs for why each of those falls back rather than approximating.
 fn quota_window_remaining(body: &str, now: SystemTime) -> Option<Duration> {
     let envelope: Value = serde_json::from_str(body).ok()?;
-    let metadata = envelope
-        .get("error")?
-        .get("details")?
-        .as_array()?
-        .iter()
-        // `details` is a list of typed messages: the quota figures are on the `ErrorInfo`,
-        // and a `Help` message sits beside it carrying only a documentation link.
-        .find(|detail| {
-            detail.get("@type").and_then(Value::as_str)
-                == Some("type.googleapis.com/google.rpc.ErrorInfo")
-        })?
-        .get("metadata")?;
+    // The quota figures are on the `ErrorInfo`; the `Help` beside it carries only a link.
+    let metadata = error_info(&envelope)?.get("metadata")?;
 
     // Only a per-minute window. A daily quota's unit states a reset up to 24 hours out,
     // which is not a wait — it is the next pass's problem.

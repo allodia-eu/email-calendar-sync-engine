@@ -180,7 +180,9 @@ impl GoogleError {
             Self::Transport(e) => transport_class(e),
             // People's expired syncToken shares a stale-etag write's status; only the
             // `ErrorInfo` reason marks it as a resync.
-            Self::Status { body, .. } if is_expired_sync_token(body) => FailureClass::NeedsResync,
+            Self::Status {
+                status: 400, body, ..
+            } if is_expired_sync_token(body) => FailureClass::NeedsResync,
             Self::Status { status, reason, .. } => status_class(*status, reason.as_deref()),
             // An aged-out Gmail historyId forces a full resync.
             Self::HistoryExpired(_) => FailureClass::NeedsResync,
@@ -227,16 +229,25 @@ fn error_reason(body: &str) -> Option<String> {
 /// `true` when the envelope carries a `google.rpc.ErrorInfo` whose reason is
 /// `EXPIRED_SYNC_TOKEN`: how People says a `syncToken` is more than seven days old.
 fn is_expired_sync_token(body: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<Value>(body) else {
-        return false;
-    };
-    value
-        .pointer("/error/details")
-        .and_then(Value::as_array)
-        .is_some_and(|details| {
-            details.iter().any(|detail| {
-                detail.get("reason").and_then(Value::as_str) == Some("EXPIRED_SYNC_TOKEN")
-            })
+    serde_json::from_str::<Value>(body).is_ok_and(|envelope| {
+        error_info(&envelope)
+            .and_then(|info| info.get("reason"))
+            .and_then(Value::as_str)
+            == Some("EXPIRED_SYNC_TOKEN")
+    })
+}
+
+/// The `google.rpc.ErrorInfo` among an envelope's `error.details[]`, a list of typed
+/// messages in which a `Help` may sit beside it.
+pub(crate) fn error_info(envelope: &Value) -> Option<&Value> {
+    envelope
+        .get("error")?
+        .get("details")?
+        .as_array()?
+        .iter()
+        .find(|detail| {
+            detail.get("@type").and_then(Value::as_str)
+                == Some("type.googleapis.com/google.rpc.ErrorInfo")
         })
 }
 
@@ -268,7 +279,8 @@ fn status_class(status: u16, reason: Option<&str>) -> FailureClass {
         // conflict, so classifying it `Permanent` would make a host drop a recoverable
         // outbox entry. (The same status/reason pair also marks an optional source as
         // absent — a consumer account's Workspace directory — but that is intercepted
-        // as `Unavailable` before it is ever classified.)
+        // as `Unavailable` before it is ever classified. An expired People `syncToken`
+        // shares the pair too; `failure_class` reads its `ErrorInfo` before this runs.)
         400 if reason == Some("FAILED_PRECONDITION") => FailureClass::Conflict,
         409 | 412 => FailureClass::Conflict,
         410 => FailureClass::NeedsResync,
