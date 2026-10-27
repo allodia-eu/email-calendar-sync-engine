@@ -51,6 +51,12 @@ const MAX_KEEPALIVE: Duration = Duration::from_mins(28);
 /// The floor a host keep-alive is clamped to, so a misconfigured tiny interval cannot
 /// busy-loop the re-`IDLE`.
 const MIN_KEEPALIVE: Duration = Duration::from_secs(10);
+/// How long a turn of `IDLE` lasts on a server whose `IDLE` lags behind its mailbox
+/// (`Connection::idle_lags`), whatever keep-alive the host asked for. Each turn ends with a
+/// `NOOP`, so new mail shows within about this long rather than the server's own delay (Yahoo:
+/// about two minutes); it also keeps the connection busy enough that Yahoo does not log it
+/// out after five quiet minutes.
+const LAGGING_IDLE_TURN: Duration = Duration::from_secs(20);
 
 /// Whether the watch connection is currently in `IDLE`, and if so the command tag (to
 /// match its eventual `DONE` completion) and the deadline at which it must be
@@ -67,6 +73,9 @@ pub struct ImapWatcher<S> {
     conn: Connection<S>,
     mailbox: MailboxId,
     keepalive: Duration,
+    /// Whether the server's `IDLE` lags (`Connection::idle_lags`), so each turn ends with a
+    /// `NOOP`.
+    lags: bool,
     state: WatchState,
     /// This watch's claim on the account's connection budget, returned when the watcher is
     /// dropped — stopped, or its task aborted. `None` only for a watcher the offline tests
@@ -105,10 +114,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapWatcher<S> {
             ));
         }
         conn.examine(mailbox.as_str()).await?;
+        let lags = conn.idle_lags();
+        let keepalive = keepalive.clamp(MIN_KEEPALIVE, MAX_KEEPALIVE);
         Ok(Self {
             conn,
             mailbox,
-            keepalive: keepalive.clamp(MIN_KEEPALIVE, MAX_KEEPALIVE),
+            keepalive: if lags {
+                keepalive.min(LAGGING_IDLE_TURN)
+            } else {
+                keepalive
+            },
+            lags,
             state: WatchState::NotIdling,
             _lease: None,
         })
@@ -167,8 +183,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapWatcher<S> {
                     return Err(ProviderError::invalid_state("watch lost its idle state"));
                 };
                 let tag = tag.clone();
-                let saw_change = idle::idle_done(&mut self.conn, &tag).await?;
+                let mut saw_change = idle::idle_done(&mut self.conn, &tag).await?;
                 self.state = WatchState::NotIdling;
+                if self.lags && !saw_change {
+                    saw_change = idle::noop_change(&mut self.conn).await?;
+                }
                 Ok(if saw_change {
                     WatchEvent::Changed
                 } else {

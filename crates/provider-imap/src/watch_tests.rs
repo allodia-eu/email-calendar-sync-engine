@@ -34,13 +34,18 @@ async fn write(server: &mut BufReader<DuplexStream>, bytes: &str) {
 /// the client ready to issue its first `a5 IDLE`. The caller keeps driving the server
 /// half for the IDLE phase.
 async fn serve_handshake(server: &mut BufReader<DuplexStream>) {
+    serve_handshake_advertising(server, "").await;
+}
+
+/// [`serve_handshake`], advertising `extra` capabilities beside IDLE and QRESYNC.
+async fn serve_handshake_advertising(server: &mut BufReader<DuplexStream>, extra: &str) {
     write(server, "* OK ready\r\n").await;
     assert!(read_line(server).await.contains("LOGIN"));
     write(server, "a1 OK logged in\r\n").await;
     assert!(read_line(server).await.contains("CAPABILITY"));
     write(
         server,
-        "* CAPABILITY IMAP4rev2 IDLE CONDSTORE QRESYNC\r\na2 OK done\r\n",
+        &format!("* CAPABILITY IMAP4rev2 IDLE CONDSTORE QRESYNC{extra}\r\na2 OK done\r\n"),
     )
     .await;
     assert!(read_line(server).await.contains("ENABLE"));
@@ -297,4 +302,33 @@ async fn stop_is_a_noop_when_not_idling() {
     watcher.stop().await.unwrap();
 
     server.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn on_yahoo_a_turn_is_short_and_a_noop_finds_what_idle_did_not_say() {
+    // Yahoo reports a new message over IDLE about two minutes after it lands, but answers a
+    // NOOP with it at once. Its servers say who they are with `XYMHIGHESTMODSEQ`, so there the
+    // watcher idles in short turns, whatever keep-alive the host asked for, and asks between
+    // them.
+    let (client, server) = duplex(4096);
+    let server = tokio::spawn(async move {
+        let mut server = BufReader::new(server);
+        serve_handshake_advertising(&mut server, " XYMHIGHESTMODSEQ").await;
+        assert!(read_line(&mut server).await.contains("IDLE")); // a5 IDLE
+        let idled = tokio::time::Instant::now();
+        write(&mut server, "+ idling\r\n").await;
+        assert_eq!(read_line(&mut server).await.trim(), "DONE");
+        let turn = idled.elapsed();
+        write(&mut server, "a5 OK IDLE terminated\r\n").await;
+        assert_eq!(read_line(&mut server).await.trim(), "a6 NOOP");
+        write(&mut server, "* 4 EXISTS\r\na6 OK NOOP completed\r\n").await;
+        (server, turn)
+    });
+
+    let mut watcher = start_watcher(client, DEFAULT_IDLE_KEEPALIVE).await;
+    assert_eq!(watcher.next_event().await.unwrap(), WatchEvent::Changed);
+
+    drop(watcher);
+    let (_server, turn) = server.await.unwrap();
+    assert!(turn <= Duration::from_secs(30), "a turn of {turn:?}");
 }

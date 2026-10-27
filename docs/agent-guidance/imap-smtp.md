@@ -878,6 +878,12 @@ folders into Trash is proven offline only: all three servers file a folder insid
   `reply` bound does not cover, because silence is what `IDLE` is; the `DONE` drain does
   get it, so a server that never completes `DONE` is a lost connection
   (`watch_tests::an_idle_is_bounded_by_its_keepalive_and_the_done_by_the_reply_bound`).
+- **A server whose `IDLE` lags is watched in short turns.** Yahoo reports a new message over
+  `IDLE` about two minutes after it lands, while a `NOOP` reports it at once
+  (`spec-deviations.md`, YAHOO-15). On a server advertising `XYMHIGHESTMODSEQ` the watcher
+  caps a turn at 20 seconds, whatever keep-alive the host asked for, and ends each with a
+  `NOOP` whose changes count as the watch's (`Connection::idle_lags`). Any other server keeps
+  the host's keep-alive and no `NOOP`.
   The keep-alive interval is the one host-supplied
   knob (a protocol timer, clamped to a sane range; default 28 min, shorter on mobile to
   detect a dead link sooner), not a product policy — **scheduling and reconnect/backoff
