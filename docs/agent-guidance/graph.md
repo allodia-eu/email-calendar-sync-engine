@@ -396,6 +396,15 @@ shared mailboxes; verification awaits a work/school account.)
 
 ## Known limitations (documented, not bugs)
 
+- **A message Exchange cannot give back as MIME.** Exchange converts a message to its own
+  format on arrival and rebuilds the MIME for `$value` from that. When the conversion fails on
+  arrival, it keeps the message with an attachment of its own naming the cause, and every
+  `$value` for it, v1.0 and beta alike, answers `500 ErrorMimeContentConversionFailed`. The JSON
+  read of the same message and its attachments works. Seen on two meeting cancellations whose
+  MIME `method=` said `REQUEST` while the iCalendar said `CANCEL`, which RFC 6047 §2.4 forbids
+  ("The value MUST be the same (ignoring case) as the value of the "METHOD" property"); Exchange's
+  attachment read "Inbound Mime method and ICAL method mismatch". The error is permanent for that
+  message (`error.rs`), so a host stops asking for its body instead of retrying it on every pass.
 - **Editing one occurrence: the same derived id, and Graph flips its `type` to `exception`.** `PATCH /me/events/OID.<seriesMasterId>.<date>` applies to that occurrence alone — measured: `200`, and the series keeps its own subject. The `ETag` the caller read is the *series'*, so it is not sent; the occurrence's own revision is not something a base of the series carries.
 
   ⚠️ **The patch makes `id` opaque, but `occurrenceId` keeps the derived form.** Once an
