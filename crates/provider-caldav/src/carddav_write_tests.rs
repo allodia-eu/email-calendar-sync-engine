@@ -198,3 +198,79 @@ async fn read_only_wrong_destination_conflicts_and_malformed_results_fail_closed
             .is_err()
     );
 }
+
+/// A [`Replay`] whose credential reaches only the account's own server, as the live transport's
+/// does: an origin a card's content names is never sent it ([`crate::credential_scope`]).
+struct OwnServerOnly(Replay);
+
+#[async_trait::async_trait]
+impl crate::transport::DavExecutor for OwnServerOnly {
+    async fn send(
+        &self,
+        method: crate::transport::DavMethod,
+        href: &str,
+        depth: &str,
+        body: String,
+    ) -> Result<crate::transport::HttpResponse, crate::CalDavError> {
+        self.0.send(method, href, depth, body).await
+    }
+
+    async fn send_write(
+        &self,
+        request: crate::transport::WriteRequest,
+    ) -> Result<crate::transport::HttpResponse, crate::CalDavError> {
+        self.0.send_write(request).await
+    }
+
+    fn sends_credential_to(&self, href: &str) -> bool {
+        !href.contains("://") || href.starts_with("https://contacts.example/")
+    }
+}
+
+#[tokio::test]
+async fn a_photo_url_that_refuses_a_request_without_the_credential_is_no_picture() {
+    // iCloud keeps a card's photo on another host, behind the account's password, and the
+    // password never goes to a URL a card names (RFC 9110 §11.5: a protection space does not
+    // extend beyond its server). That refusal is a card without a picture we may show; on the
+    // account's own server, where the credential does go, a refusal is still a failure.
+    let provider = CardDavProvider::with_executor(
+        Box::new(OwnServerOnly(Replay::new(vec![
+            ok(PRINCIPAL),
+            options(Some("1, 3, addressbook")),
+            ok(BOOKS),
+            status(401, ""),
+            status(403, ""),
+            status(401, ""),
+        ]))),
+        "/.well-known/carddav",
+        "default",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .unwrap();
+    let card = ContactCard::new(
+        ContactId::try_from("/addressbooks/alice/default/ada.vcf").unwrap(),
+        Memberships::of_one(AddressBookId::try_from("/addressbooks/alice/default/").unwrap()),
+    );
+    let photo = |uri: &str| ContactResource {
+        uri: uri.into(),
+        ..ContactResource::default()
+    };
+    for elsewhere in [
+        "https://gateway.example/contacts/photo",
+        "https://gateway.example/contacts/other",
+    ] {
+        assert!(
+            provider
+                .fetch_contact_photo(&account(), &card, &photo(elsewhere))
+                .await
+                .expect("a refusal where the credential never went is not a failure")
+                .is_none()
+        );
+    }
+    let own = provider
+        .fetch_contact_photo(&account(), &card, &photo("https://contacts.example/photo"))
+        .await
+        .expect_err("a refusal on the account's own server is");
+    assert_eq!(own.class(), FailureClass::Authentication);
+}
