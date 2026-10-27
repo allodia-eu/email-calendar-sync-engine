@@ -29,6 +29,7 @@ pub struct ProviderError {
     detail: String,
     retry_after: Option<Duration>,
     confirmation_needed: bool,
+    item_unavailable: bool,
     source: Option<BoxError>,
 }
 
@@ -41,6 +42,7 @@ impl ProviderError {
             detail: detail.into(),
             retry_after: None,
             confirmation_needed: false,
+            item_unavailable: false,
             source: None,
         }
     }
@@ -95,6 +97,19 @@ impl ProviderError {
     #[must_use]
     pub fn permanent(detail: impl Into<String>) -> Self {
         Self::new(FailureClass::Permanent, detail)
+    }
+
+    /// The provider can never serve this one item, however often it is asked, while the
+    /// account and its other items are unaffected ([`FailureClass::Permanent`]): a message
+    /// the server stored but cannot give back. A caller may stop asking for it. A permanent
+    /// failure without this flag may be about the whole account or the request, and says
+    /// nothing about the item.
+    #[must_use]
+    pub fn item_unavailable(detail: impl Into<String>) -> Self {
+        Self {
+            item_unavailable: true,
+            ..Self::new(FailureClass::Permanent, detail)
+        }
     }
 
     /// The outcome is **genuinely ambiguous** and must not be blindly retried: an SMTP send
@@ -159,6 +174,13 @@ impl ProviderError {
     #[must_use]
     pub fn requires_confirmation(&self) -> bool {
         self.confirmation_needed
+    }
+
+    /// Whether the provider can never serve the item asked for
+    /// ([`item_unavailable`](Self::item_unavailable)).
+    #[must_use]
+    pub fn is_item_unavailable(&self) -> bool {
+        self.item_unavailable
     }
 }
 
@@ -242,6 +264,14 @@ mod tests {
         assert_eq!(err.class(), FailureClass::InvalidState);
         // An ordinary failure is not flagged for confirmation.
         assert!(!ProviderError::permanent("550 rejected").requires_confirmation());
+    }
+
+    #[test]
+    fn an_unavailable_item_is_permanent_and_says_so_while_a_plain_permanent_does_not() {
+        let err = ProviderError::item_unavailable("the server cannot give this message back");
+        assert!(err.is_item_unavailable());
+        assert_eq!(err.class(), FailureClass::Permanent);
+        assert!(!ProviderError::permanent("403 Forbidden").is_item_unavailable());
     }
 
     #[test]
