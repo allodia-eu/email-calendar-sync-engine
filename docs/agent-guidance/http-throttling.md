@@ -259,6 +259,14 @@ Consequences:
   is merely slower than it needs to be there.
 - What still meets the `403` is another client of the same user: the app on a second device
   spends the same budget, and no gate in this process can see it.
+- **Three things the pace does not count, each decided rather than overlooked.** A call is
+  charged once, before `send_retrying`, so its retries go out uncharged: they only happen while
+  the server is already refusing, and whether Google bills a refused call is unmeasured. A
+  reservation is not given back when the call that made it is dropped (a page's buffered gets,
+  after a refusal), which errs towards waiting longer than needed. And a call is charged before
+  it takes a lane, so calls whose turn came while every lane was busy go out together when lanes
+  free, at most the lane ceiling's worth (20); holding a lane while waiting on the pace instead
+  would let a queue of Gmail calls starve the account's calendar and contacts of lanes.
 - A quota window is tens of seconds, so when the instant *is* named it is past the absorb
   bound and goes back to the caller rather than being slept on. Proved end to end against the
   live account in `tests/live_quota_throttle.rs` — refused, told 37.5 s, came back then,
