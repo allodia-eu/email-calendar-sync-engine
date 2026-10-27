@@ -178,7 +178,7 @@ async fn sync_email_backfills_again_when_the_history_cursor_expired() {
 async fn a_page_refused_partway_still_hands_on_what_it_fetched() {
     // Gmail refuses once a user's per-minute quota is spent, which a backfill can meet partway
     // through a page. The messages fetched before the refusal are passed on ahead of the error,
-    // so the pass stores them rather than paying for them again next time.
+    // so the pass stores them now rather than only once the page is fetched again.
     let provider = GmailProvider::new(fake_client_fallible(vec![
         ("/profile", Ok(json(PROFILE))),
         (

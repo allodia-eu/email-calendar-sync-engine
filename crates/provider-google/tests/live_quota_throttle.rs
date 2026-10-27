@@ -56,6 +56,11 @@ use provider_google::{GmailProvider, GoogleClient};
 /// Drained windows before giving up on a refusal that names its instant.
 const MAX_PASSES: usize = 12;
 
+/// Rounds of a hundred fetches the outside client spends before giving up on a refusal. At 20
+/// units a fetch, Gmail's 6,000 a minute is gone in four; fifty is far past any quota this test
+/// expects, so a run that reaches it says so rather than spending forever.
+const MAX_ROUNDS: usize = 50;
+
 /// The Gmail API root the outside client calls directly.
 const GMAIL: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -96,7 +101,7 @@ async fn spend_the_quota_elsewhere(token: &str) {
         .iter()
         .filter_map(|m| m["id"].as_str().map(str::to_owned))
         .collect();
-    loop {
+    for _ in 0..MAX_ROUNDS {
         let statuses: Vec<u16> = stream::iter(ids.iter())
             .map(|id| {
                 let request = http
@@ -111,6 +116,10 @@ async fn spend_the_quota_elsewhere(token: &str) {
             return;
         }
     }
+    panic!(
+        "{MAX_ROUNDS} rounds of fetches drew no quota refusal: the project's quota is larger than \
+         Gmail's published 6,000 units a minute, or every fetch failed before reaching it"
+    );
 }
 
 /// One reported throttle, flattened to what this asserts on.

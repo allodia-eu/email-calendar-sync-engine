@@ -123,3 +123,37 @@ async fn a_pass_longer_than_its_lease_keeps_the_scope_to_itself() {
     assert_eq!(applied.upserted(), 120);
     assert_eq!(store.object_keys(&scope).await.unwrap().len(), 120);
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_overdue_renewal_runs_even_when_the_next_chunk_is_already_there() {
+    // A page split into many chunks hands each one over at once, so the time goes on the store's
+    // work between them; a renewal that waited for the pass to wait on its provider never runs.
+    let clock = clock();
+    let store = SqliteStore::open_in_memory(clock.clone()).unwrap();
+    let account = account();
+    let scope = SyncScope::JmapType {
+        account: account.clone(),
+        data_type: JmapDataType::Email,
+    };
+    let claim = store
+        .claim_sync_scope(account.clone(), &scope, LeaseRequest::new(worker(), TTL))
+        .await
+        .unwrap();
+    let mut keep_alive = crate::keep_alive::KeepAlive::new(&store, &claim.lease, TTL);
+
+    // The store's work runs both clocks past the renewal's due time, and the next chunk is ready.
+    tokio::time::advance(TTL / 2).await;
+    clock.advance(TTL / 2);
+    keep_alive.around(async {}).await;
+
+    // Past the claim's own expiry, the scope is still the pass's.
+    clock.advance(TTL / 2 + Duration::from_secs(1));
+    let claim = store
+        .claim_sync_scope(
+            account,
+            &scope,
+            LeaseRequest::new(WorkerId::new("poll"), TTL),
+        )
+        .await;
+    assert_eq!(claim.err(), Some(StoreError::ScopeHeld));
+}
