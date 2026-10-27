@@ -3,8 +3,8 @@
 //! - **Delta** (a synced cursor): `history.list` from the stored historyId, additively.
 //! - **Backfill** (no cursor, or one part way): the window fetched a page at a time, each page
 //!   checkpointed with the token of the next, and a delta from the cursor's historyId before every
-//!   page, so mail arriving during a backfill of hours is not held back until it ends. Additive
-//!   throughout: nothing is tombstoned, so a pass may stop anywhere.
+//!   page but a fresh backfill's first, so mail arriving during a backfill of hours is not held
+//!   back until it ends. Additive throughout: nothing is tombstoned, so a pass may stop anywhere.
 //! - **Reconcile** (every page fetched): the window's ids listed and nothing else, so the store
 //!   tombstones what the server no longer has. A listing costs 5 units for up to 500 ids and a
 //!   message 20 (`crate::quota`), so this costs a fraction of the backfill, and it is a pass of its
@@ -54,16 +54,20 @@ fn additive<'a>(
     Box::pin(async_stream::try_stream! {
         let named = labels.resolved(client).await?;
         // `backfill` is the page the listing goes on from, `Some(None)` its first, and `None`
-        // for a pass that is a delta and nothing more.
-        let (mut history, mut backfill) = match start {
-            Some(GmailCursor::Delta { history }) => (history, None),
-            Some(GmailCursor::Backfill { history, page }) => (history, Some(page)),
-            _ => (fetch::current_history_id(client).await?, Some(None)),
+        // for a pass that is a delta and nothing more. A historyId captured a moment ago has
+        // nothing to report yet, so the first page of a fresh backfill skips its delta.
+        let (mut history, mut backfill, mut skip_delta) = match start {
+            Some(GmailCursor::Delta { history }) => (history, None, false),
+            Some(GmailCursor::Backfill { history, page }) => (history, Some(page), false),
+            _ => (fetch::current_history_id(client).await?, Some(None), true),
         };
         loop {
             let caught_up_from = history.clone();
             let mut history_page: Option<PageToken> = None;
             loop {
+                if skip_delta {
+                    break;
+                }
                 let page = match fetch::delta_page(client, &history, history_page.as_ref(), &named)
                     .await
                 {
@@ -103,6 +107,7 @@ fn additive<'a>(
                     break;
                 }
             }
+            skip_delta = false;
 
             let Some(page) = backfill.clone() else {
                 yield checkpoint(&GmailCursor::Delta { history });
@@ -115,21 +120,23 @@ fn additive<'a>(
                 });
             }
 
-            let (listed, stopped) =
-                match fetch::snapshot_page(client, page.as_ref(), floor, &history, &named).await {
-                    Ok(listed) => listed,
-                    // A token Gmail can no longer read; one it merely does not recognise answers
-                    // the first page by itself (`invalid_page_token.json`).
-                    Err(GoogleError::Status { status: 400, .. }) if page.is_some() => {
-                        backfill = Some(None);
-                        continue;
-                    }
-                    Err(err) => Err(err)?,
-                };
-            let next = listed.next_page;
+            let fetch::ListedPage {
+                messages,
+                next_page: next,
+                stopped,
+            } = match fetch::listed_page(client, page.as_ref(), floor, &named).await {
+                Ok(listed) => listed,
+                // A token Gmail can no longer read; one it merely does not recognise answers
+                // the first page by itself (`invalid_page_token.json`).
+                Err(GoogleError::Status { status: 400, .. }) if page.is_some() => {
+                    backfill = Some(None);
+                    continue;
+                }
+                Err(err) => Err(err)?,
+            };
             let chunks = split_page(
                 PassMode::Additive,
-                listed.changed,
+                messages,
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),

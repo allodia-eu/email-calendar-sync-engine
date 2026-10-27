@@ -175,8 +175,9 @@ part way; `reconcile;h=…` is a backfill finished and not yet reconciled.
   messages out of order on the test account, one by 13 days), so a date boundary skips mail.
   A token Gmail cannot read answers `400 Invalid pageToken` and the backfill starts again from
   the top; a well-formed one it does not recognise answers the first page by itself
-  (`tests/fixtures/error/invalid_page_token.json`). Before every page a **delta** from the
-  cursor's `historyId` runs (2 units), so mail arriving during a backfill of hours is not held
+  (`tests/fixtures/error/invalid_page_token.json`). Before every page but a fresh backfill's
+  first (its `historyId` was captured a moment before) a **delta** from the cursor's `historyId`
+  runs (2 units), so mail arriving during a backfill of hours is not held
   back until it ends, and changes to what is already stored keep arriving. A pass killed
   partway (`tests/live_backfill.rs`) loses at most the page it was on.
 

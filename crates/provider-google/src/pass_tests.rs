@@ -256,3 +256,24 @@ async fn a_synced_cursor_runs_a_delta_and_nothing_more() {
     assert_eq!(fetched(&chunks), ["message-1"]);
     assert_eq!(checkpoints(&chunks), ["1681"]);
 }
+
+#[tokio::test]
+async fn a_fresh_backfill_asks_for_no_history_before_its_first_page() {
+    // The historyId was captured a moment before; a delta from it can only be empty.
+    let mut routes = vec![
+        ("/profile", Ok(fixture(PROFILE))),
+        ("/messages?maxResults", Ok(fixture(LIST))),
+    ];
+    routes.extend(messages());
+    let (client, log) = recording_client(routes);
+    let provider = GmailProvider::new(client);
+
+    let chunks = pass(&provider, None).await;
+
+    assert_eq!(fetched(&chunks), ["message-2", "message-1", "message-0"]);
+    let requests = log.lock().unwrap();
+    assert!(
+        !requests.iter().any(|r| r.url.contains("/history")),
+        "{requests:?}"
+    );
+}

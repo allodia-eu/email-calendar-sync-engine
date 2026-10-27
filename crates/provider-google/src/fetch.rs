@@ -4,7 +4,7 @@
 //! Gmail's sync is **account-global** (`historyId`), not per-folder like Graph, so there
 //! are two shapes rather than one unified delta:
 //!
-//! - **A listed page** ([`snapshot_page`]): `users.messages.list` enumerates `{id, threadId}` refs
+//! - **A listed page** ([`listed_page`]): `users.messages.list` enumerates `{id, threadId}` refs
 //!   (paginated by `pageToken`, optionally windowed by a `q: after:<epoch>` floor); each id is
 //!   fetched full (`messages.get?format=metadata`, [`MAX_CONCURRENT_GETS`] at a time) and
 //!   normalized. A backfill fetches the window this way, a page a pass at a time.
@@ -201,21 +201,27 @@ async fn get_messages(client: &GoogleClient, ids: Vec<String>) -> Fetched {
     }
 }
 
-/// Fetches one snapshot page: a `messages.list` page whose ids are fetched full, concurrently.
-/// `floor` (the sync-window date floor) windows the enumeration to `after:<floor>`;
-/// `history_id` is the account cursor captured before the snapshot, carried as the
-/// page's `next_cursor`.
+/// One listed page of the window, its messages fetched full.
+pub(crate) struct ListedPage {
+    /// The page's messages in list order, short of any the fan-out did not reach.
+    pub(crate) messages: Vec<Message>,
+    /// The token of the next page; `None` on the last.
+    pub(crate) next_page: Option<PageToken>,
+    /// What ended the fan-out early, for the caller to raise once the page is passed on.
+    pub(crate) stopped: Option<GoogleError>,
+}
+
+/// Fetches one listed page: a `messages.list` page whose ids are fetched full, concurrently.
+/// `floor` (the sync-window date floor) windows the enumeration to `after:<floor>`.
 ///
-/// A get that fails partway leaves the page short rather than empty: the page holds what was
-/// fetched ahead of the failure, which comes back beside it for the caller to raise once the
-/// page is passed on.
-pub(crate) async fn snapshot_page(
+/// A get that fails partway leaves the page short rather than empty: it holds what was fetched
+/// ahead of the failure, which comes back beside it in [`ListedPage::stopped`].
+pub(crate) async fn listed_page(
     client: &GoogleClient,
     page: Option<&PageToken>,
     floor: Option<CalendarDate>,
-    history_id: &SyncState,
     named: &NamedLabels,
-) -> Result<(SyncPage<Message>, Option<GoogleError>), GoogleError> {
+) -> Result<ListedPage, GoogleError> {
     let doc = client.get(&list_url(client, page, floor, 100)).await?;
 
     // `messages` is absent on an empty mailbox / final empty page — treat as no rows.
@@ -225,25 +231,17 @@ pub(crate) async fn snapshot_page(
         ids.push(req_str(entry, "id")?.to_owned());
     }
     let Fetched {
-        messages: mut changed,
+        mut messages,
         stopped,
     } = get_messages(client, ids).await;
-    for message in &mut changed {
+    for message in &mut messages {
         named.apply(message);
     }
-    let present = changed.iter().map(|m| m.id.key().clone()).collect();
-
-    let page = SyncPage {
-        kind: SyncKind::Snapshot,
-        changed,
-        patched: Vec::new(),
-        removed: Vec::new(),
-        present,
+    Ok(ListedPage {
+        messages,
         next_page: opt_str(&doc, "nextPageToken").map(PageToken::new),
-        next_cursor: history_id.clone(),
-        total: None,
-    };
-    Ok((page, stopped))
+        stopped,
+    })
 }
 
 /// Fetches one history-delta page from `cursor` (a `historyId`): re-fetches each message
