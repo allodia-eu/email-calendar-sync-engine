@@ -26,7 +26,8 @@ pub(crate) const CALENDAR_LIST_PROPFIND: &str = concat!(
     r#"xmlns:cs="http://calendarserver.org/ns/" xmlns:ic="http://apple.com/ns/ical/">"#,
     r#"<d:prop><d:resourcetype/><d:displayname/><d:sync-token/><cs:getctag/>"#,
     r#"<d:current-user-privilege-set/>"#,
-    r#"<ic:calendar-color/><c:calendar-description/></d:prop></d:propfind>"#,
+    r#"<ic:calendar-color/><c:calendar-description/><c:supported-calendar-component-set/>"#,
+    r#"</d:prop></d:propfind>"#,
 );
 
 /// CardDAV principal/address-book-home discovery. Both properties go in one request: Yahoo
