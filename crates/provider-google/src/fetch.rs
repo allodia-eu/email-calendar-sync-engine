@@ -31,7 +31,7 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{KeywordName, PageToken, SyncKind, SyncPage};
-use futures_util::{StreamExt, TryStreamExt, stream};
+use futures_util::{StreamExt, stream};
 use serde_json::Value;
 
 use crate::{
@@ -162,40 +162,61 @@ async fn get_message(client: &GoogleClient, id: &str) -> Result<Message, GoogleE
     message_from_json(&doc)
 }
 
+/// What a page's fan-out fetched, and what stopped it early if anything did.
+pub(crate) struct Fetched {
+    /// Every message listed ahead of the failure, in list order.
+    pub(crate) messages: Vec<Message>,
+    /// The failure that ended the fan-out, typically Gmail's per-minute quota refusal.
+    pub(crate) stopped: Option<GoogleError>,
+}
+
 /// Fetches every id full, up to [`MAX_CONCURRENT_GETS`] at a time, in the order `ids` gave.
 ///
 /// A `404` is a message deleted in the race between the enumeration and its fetch: it drops
 /// out of the result rather than failing the page, and a later delta reports the removal.
 /// Ordered rather than completion-ordered so a page's rows land in the order the server
 /// listed them however the individual fetches interleave.
-async fn get_messages(
-    client: &GoogleClient,
-    ids: Vec<String>,
-) -> Result<Vec<Message>, GoogleError> {
-    stream::iter(ids)
+///
+/// Any other failure ends the fan-out and keeps what came before it: each get costs quota, and
+/// a refusal partway through a page would otherwise throw away everything the page had paid for.
+async fn get_messages(client: &GoogleClient, ids: Vec<String>) -> Fetched {
+    let mut gets = stream::iter(ids)
         .map(|id| async move { get_message(client, &id).await })
-        .buffered(MAX_CONCURRENT_GETS)
-        .filter_map(|result| async move {
-            match result {
-                Err(GoogleError::Status { status: 404, .. }) => None,
-                other => Some(other),
+        .buffered(MAX_CONCURRENT_GETS);
+    let mut messages = Vec::new();
+    while let Some(result) = gets.next().await {
+        match result {
+            Ok(message) => messages.push(message),
+            Err(GoogleError::Status { status: 404, .. }) => {}
+            Err(err) => {
+                return Fetched {
+                    messages,
+                    stopped: Some(err),
+                };
             }
-        })
-        .try_collect()
-        .await
+        }
+    }
+    Fetched {
+        messages,
+        stopped: None,
+    }
 }
 
 /// Fetches one snapshot page: a `messages.list` page whose ids are fetched full, concurrently.
 /// `floor` (the sync-window date floor) windows the enumeration to `after:<floor>`;
 /// `history_id` is the account cursor captured before the snapshot, carried as the
 /// page's `next_cursor`.
+///
+/// A get that fails partway leaves the page short rather than empty: the page holds what was
+/// fetched ahead of the failure, which comes back beside it for the caller to raise once the
+/// page is passed on.
 pub(crate) async fn snapshot_page(
     client: &GoogleClient,
     page: Option<&PageToken>,
     floor: Option<CalendarDate>,
     history_id: &SyncState,
     named: &NamedLabels,
-) -> Result<SyncPage<Message>, GoogleError> {
+) -> Result<(SyncPage<Message>, Option<GoogleError>), GoogleError> {
     let doc = client.get(&list_url(client, page, floor)).await?;
 
     // `messages` is absent on an empty mailbox / final empty page — treat as no rows.
@@ -204,13 +225,16 @@ pub(crate) async fn snapshot_page(
     for entry in entries.into_iter().flatten() {
         ids.push(req_str(entry, "id")?.to_owned());
     }
-    let mut changed = get_messages(client, ids).await?;
+    let Fetched {
+        messages: mut changed,
+        stopped,
+    } = get_messages(client, ids).await;
     for message in &mut changed {
         named.apply(message);
     }
     let present = changed.iter().map(|m| m.id.key().clone()).collect();
 
-    Ok(SyncPage {
+    let page = SyncPage {
         kind: SyncKind::Snapshot,
         changed,
         patched: Vec::new(),
@@ -219,7 +243,8 @@ pub(crate) async fn snapshot_page(
         next_page: opt_str(&doc, "nextPageToken").map(PageToken::new),
         next_cursor: history_id.clone(),
         total: None,
-    })
+    };
+    Ok((page, stopped))
 }
 
 /// Fetches one history-delta page from `cursor` (a `historyId`): re-fetches each message
@@ -245,7 +270,15 @@ pub(crate) async fn delta_page(
     let history = collect_history(&doc)?;
     // A message changed then deleted inside the same window 404s here and drops out; the
     // page's own tombstone covers it.
-    let mut changed = get_messages(client, history.refetch).await?;
+    // A delta pass replays from its stored cursor whatever it applied, so a short page buys
+    // nothing and the page fails whole.
+    let Fetched {
+        messages: mut changed,
+        stopped,
+    } = get_messages(client, history.refetch).await;
+    if let Some(err) = stopped {
+        return Err(err);
+    }
     for message in &mut changed {
         named.apply(message);
     }

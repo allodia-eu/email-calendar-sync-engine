@@ -207,6 +207,8 @@ impl Provider for GmailProvider {
             let mut snapshot_cursor: Option<SyncState> = None;
             let named = self.labels.resolved(&self.client).await?;
             let final_cursor = loop {
+                // What ended a snapshot page early, raised once the page is passed on.
+                let mut stopped = None;
                 let page = if let Some(delta_cursor) = cursor {
                     match fetch::delta_page(&self.client, delta_cursor, page_token.as_ref(), &named)
                         .await
@@ -235,8 +237,16 @@ impl Provider for GmailProvider {
                         snapshot_cursor = Some(fetch::current_history_id(&self.client).await?);
                     }
                     let history = snapshot_cursor.as_ref().expect("captured above");
-                    fetch::snapshot_page(&self.client, page_token.as_ref(), floor, history, &named)
-                        .await?
+                    let (page, short) = fetch::snapshot_page(
+                        &self.client,
+                        page_token.as_ref(),
+                        floor,
+                        history,
+                        &named,
+                    )
+                    .await?;
+                    stopped = short;
+                    page
                 };
 
                 // Decide the pass mode once, from the first page: a snapshot reconciles
@@ -257,6 +267,9 @@ impl Provider for GmailProvider {
                     chunk_size,
                 ) {
                     yield chunk;
+                }
+                if let Some(err) = stopped {
+                    Err(err)?;
                 }
                 if is_last {
                     break next_cursor;

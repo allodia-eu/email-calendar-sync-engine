@@ -82,7 +82,8 @@ async fn snapshot_page_lists_fetches_each_and_carries_the_history_cursor() {
     let history = SyncState::new("1617");
     let page = snapshot_page(&client, None, None, &history, &NamedLabels::default())
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     assert_eq!(page.kind, SyncKind::Snapshot);
     // All three listed ids are fetched full and present; the cursor is the captured
     // account historyId, not anything the list returned.
@@ -120,7 +121,8 @@ async fn a_junk_message_is_filed_in_spam_and_kept_in_the_present_set() {
         &NamedLabels::default(),
     )
     .await
-    .unwrap();
+    .unwrap()
+    .0;
 
     let message = page.changed.first().expect("the junk message is carried");
     assert!(
@@ -184,7 +186,8 @@ async fn snapshot_skips_a_message_that_404s_between_list_and_get() {
         &NamedLabels::default(),
     )
     .await
-    .unwrap();
+    .unwrap()
+    .0;
     // Only the two fetchable messages survive.
     assert_eq!(page.changed.len(), 2);
     assert_eq!(page.present.len(), 2);
@@ -233,7 +236,8 @@ async fn a_snapshot_page_fetches_its_messages_concurrently() {
         &NamedLabels::default(),
     )
     .await
-    .unwrap();
+    .unwrap()
+    .0;
     assert_eq!(page.changed.len(), 60);
     // One list call plus one get per message.
     assert_eq!(probe.calls(), 61);
@@ -274,7 +278,8 @@ async fn concurrent_fetches_still_land_in_the_order_the_server_listed_them() {
         &NamedLabels::default(),
     )
     .await
-    .unwrap();
+    .unwrap()
+    .0;
     let got: Vec<&str> = page.changed.iter().map(|m| m.id.key().as_str()).collect();
     assert_eq!(got, ids.iter().map(String::as_str).collect::<Vec<_>>());
 }
