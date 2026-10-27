@@ -381,7 +381,8 @@ fn every_contact_kind_has_a_stable_jscontact_name() {
 fn a_name_leaves_out_what_it_does_not_have_rather_than_sending_null() {
     // RFC 9553 gives `full`, `sortAs` and `phoneticSystem` no null value, and Fastmail refuses a
     // card that sends one (`invalidProperties` on `name/phoneticSystem`); a name the user typed
-    // as a given and a surname has none of the three.
+    // as a given and a surname has none of the three. Its components are in reading order,
+    // which `isOrdered` declares: without it Fastmail stores the surname first.
     let mut card = card();
     card.name = Some(ContactName {
         components: vec![
@@ -392,5 +393,10 @@ fn a_name_leaves_out_what_it_does_not_have_rather_than_sending_null() {
     });
     let object = writable_object(&card);
     let name = object["name"].as_object().unwrap();
-    assert_eq!(name.keys().collect::<Vec<_>>(), ["components"], "{name:?}");
+    assert_eq!(
+        name.keys().collect::<Vec<_>>(),
+        ["components", "isOrdered"],
+        "{name:?}"
+    );
+    assert_eq!(name["isOrdered"], true);
 }

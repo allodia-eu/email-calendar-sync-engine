@@ -270,6 +270,12 @@ fn name_value(name: &ContactName) -> Value {
     if let Some(full) = &name.full {
         value.insert("full".into(), json!(full));
     }
+    // The components go in the order they are read in, so the card says so (RFC 9553 §2.2.1):
+    // without `isOrdered` the order is not significant, and Fastmail stores the surname first,
+    // which a reader that joins the components then shows surname first.
+    if !components.is_empty() {
+        value.insert("isOrdered".into(), Value::Bool(true));
+    }
     value.insert("components".into(), Value::Array(components));
     if !name.sort_as.is_empty() {
         value.insert("sortAs".into(), json!(name.sort_as));
