@@ -6,6 +6,11 @@
 //! not something an offline fake can tell you: the fakes answer instantly, so they prove
 //! the fan-out *happens* (`fetch_tests`) but never what it *buys*.
 //!
+//! Past the burst a rested account may spend at once (a tenth of a minute's quota, about 27
+//! messages), the drain runs at the pace the client holds itself to under Gmail's quota
+//! (`src/quota.rs`, about 270 messages a minute), so on a larger mailbox this measures the pace
+//! rather than the fan-out.
+//!
 //! This prints rather than asserts a rate. A wall-clock threshold against someone else's
 //! service, over whatever link the developer is on, is a flake generator; the number is for
 //! a human comparing before and after a change to the fetch shape. The one thing it does
@@ -72,8 +77,11 @@ async fn live_snapshot_throughput() {
         .expect("a concurrent snapshot must not be throttled");
     let elapsed = started.elapsed();
 
-    let SyncUpdate::Snapshot { objects, .. } = &snapshot.update else {
-        panic!("a first sync is a snapshot");
+    let SyncUpdate::Delta {
+        changed: objects, ..
+    } = &snapshot.update
+    else {
+        panic!("a cursorless sync is an additive backfill");
     };
     let count = objects.len();
     assert!(count > 0, "the live account should hold some mail");

@@ -128,9 +128,9 @@ pub use engine_core::{error::FailureClass, mail::MailFlags, search_index::MailRo
 /// [`ThrottleObserver`], because the engine writes no logs of its own.
 ///
 /// [`RequestGate`] is the one with a **per-account** lifetime rather than a per-process one.
-/// A server that limits concurrency counts requests against the account, so one gate is built
-/// per account and cloned to every provider connected for it; the adapter fills in the number,
-/// because only it knows the server. See its docs, and
+/// A server that limits concurrency, or bills a rate, counts against the account, so one gate
+/// is built per account and cloned to every provider connected for it; the adapter fills in
+/// the ceiling and any budget, because only it knows the server. See its docs, and
 /// `docs/agent-guidance/http-throttling.md`.
 pub use engine_http::{
     IgnoreThrottles, RequestGate, RetryConfig, RetryPolicy, ThrottleEvent, ThrottleObserver,
@@ -165,11 +165,11 @@ pub use engine_store::{
 pub use engine_sync::{
     AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,
     ContactSourceReport, ContactSyncReport, ContactWriteOutcome, DraftPut, DrainOutcome,
-    DrainReport, DrainedOp, EventSyncReport, FolderSync, HorizonExpansion, IgnoreCommits,
-    MailEditOutcome, MailEditSent, MailSyncReport, MailboxChange, MailboxEditOutcome,
-    MailboxNameError, MailboxPlace, PeopleRebuildReport, ProgressSnapshot, PutDraftOutcome,
-    ReportOutcome, StreamTuning, SubmitOutcome, SyncCommit, SyncError, SyncObserver, SyncTiming,
-    ThreadRebuildReport, UnexpandableEvent, validate_mailbox_name,
+    DrainReport, DrainedOp, EventScopePass, EventScopeSync, EventSyncReport, FolderSync,
+    HorizonExpansion, IgnoreCommits, MailEditOutcome, MailEditSent, MailSyncReport, MailboxChange,
+    MailboxEditOutcome, MailboxNameError, MailboxPlace, PeopleRebuildReport, ProgressSnapshot,
+    PutDraftOutcome, ReportOutcome, StreamTuning, SubmitOutcome, SyncCommit, SyncError,
+    SyncObserver, SyncTiming, ThreadRebuildReport, UnexpandableEvent, validate_mailbox_name,
 };
 pub use scheduling::InboundScheduling;
 
@@ -251,6 +251,19 @@ impl ApiError {
             Self::Sync(SyncError::Unrecorded(_)) => true,
             _ => false,
         }
+    }
+
+    /// Whether the provider can never serve the one item this call asked for, however often it
+    /// is asked, while the account and its other items are unaffected: a message the server
+    /// stored but cannot give back. A host may stop asking for that item. Any other failure,
+    /// permanent ones included, may be about the account or the request and says nothing about
+    /// the item.
+    ///
+    /// The provider half of this is
+    /// [`ProviderError::is_item_unavailable`](engine_provider::ProviderError::is_item_unavailable).
+    #[must_use]
+    pub fn item_unavailable(&self) -> bool {
+        matches!(self, Self::Sync(SyncError::Provider(err)) if err.is_item_unavailable())
     }
 
     /// Whether this call **never ran** because the runtime it was queued on is shutting
@@ -368,6 +381,21 @@ mod error_tests {
             ApiError::InvalidInput("bad".into()),
         ] {
             assert!(!not_applied.may_have_applied(), "{not_applied}");
+        }
+    }
+
+    #[test]
+    fn an_item_the_provider_can_never_serve_is_told_apart_from_other_permanent_failures() {
+        let unavailable = ApiError::Sync(SyncError::Provider(ProviderError::item_unavailable(
+            "cannot give this message back",
+        )));
+        assert!(unavailable.item_unavailable());
+        for other in [
+            ApiError::Sync(SyncError::Provider(ProviderError::permanent("403"))),
+            ApiError::Sync(SyncError::Provider(ProviderError::retryable("blip"))),
+            ApiError::Busy,
+        ] {
+            assert!(!other.item_unavailable(), "{other}");
         }
     }
 

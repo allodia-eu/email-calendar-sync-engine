@@ -298,3 +298,29 @@ async fn stop_is_a_noop_when_not_idling() {
 
     server.await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_change_reported_before_the_idle_continuation_is_not_lost() {
+    // When the keep-alive re-issues IDLE, the server may report a change ahead of `+ idling`;
+    // once idling it will not say it again.
+    let (client, server) = duplex(4096);
+    let server = tokio::spawn(async move {
+        let mut server = BufReader::new(server);
+        serve_handshake(&mut server).await;
+        assert_eq!(read_line(&mut server).await.trim(), "a5 IDLE");
+        write(&mut server, "+ idling\r\n").await;
+        assert_eq!(read_line(&mut server).await.trim(), "DONE");
+        write(&mut server, "a5 OK IDLE terminated\r\n").await;
+        assert_eq!(read_line(&mut server).await.trim(), "a6 IDLE");
+        write(&mut server, "* 4 EXISTS\r\n+ idling\r\n").await;
+        server
+    });
+
+    let mut watcher = start_watcher(client, DEFAULT_IDLE_KEEPALIVE).await;
+    assert_eq!(watcher.next_event().await.unwrap(), WatchEvent::KeepAlive);
+    assert_eq!(watcher.next_event().await.unwrap(), WatchEvent::Changed);
+    assert!(format!("{watcher:?}").contains("idling: true"));
+
+    drop(watcher);
+    server.await.unwrap();
+}

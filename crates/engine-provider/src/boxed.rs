@@ -6,21 +6,21 @@
 
 use async_trait::async_trait;
 use engine_core::{
-    calendar::{Calendar, Event},
+    calendar::Event,
     contact::{AddressBook, ContactCard, ContactDraft, ContactPatch, ContactResource},
-    ids::{AccountId, ContactId, ProviderKey},
+    ids::{AccountId, CalendarId, ContactId, ProviderKey},
     mail::{Mailbox, Message},
     raw::RawMime,
     sync::{SyncScope, SyncState, SyncWindow},
 };
 
 use crate::{
-    CalendarUserAddresses, CalendarWrites, ConnectionInfo, ContactDestination, ContactPhoto,
-    ContactSourceSync, ContactWriteReceipt, ContactsProvider, Draft, EmailStream, EventDeletion,
-    EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, HandOver, MailEdit,
-    MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport, Provider,
-    ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SharedMailbox,
-    SourceStream, SubmissionReceipt,
+    CalendarListing, CalendarUserAddresses, CalendarWrites, ConnectionInfo, ContactDestination,
+    ContactPhoto, ContactSourceSync, ContactWriteReceipt, ContactsProvider, Draft, EmailStream,
+    EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, HandOver,
+    MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport,
+    Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
+    SharedMailbox, SourceStream, SubmissionReceipt,
 };
 
 /// A boxed provider is itself a [`Provider`], delegating every method to the box's
@@ -168,24 +168,25 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         (**self).calendar_scope(account)
     }
 
-    fn event_scope(&self, account: &AccountId) -> SyncScope {
-        (**self).event_scope(account)
+    fn event_scope(&self, account: &AccountId, calendar: &CalendarId) -> SyncScope {
+        (**self).event_scope(account, calendar)
     }
 
     async fn sync_calendars(
         &self,
         account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Calendar>> {
+    ) -> ProviderResult<CalendarListing> {
         (**self).sync_calendars(account, cursor).await
     }
 
     async fn sync_events(
         &self,
         account: &AccountId,
+        calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
-        (**self).sync_events(account, cursor).await
+        (**self).sync_events(account, calendar, cursor).await
     }
 }
 

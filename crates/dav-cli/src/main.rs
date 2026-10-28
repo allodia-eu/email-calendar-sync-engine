@@ -18,6 +18,8 @@
 //!
 //!   profiles                      what is configured, and where it came from
 //!   info                          connect, and print what discovery concluded
+//!   calendars                     every calendar under the home, with its collection tag
+//!   sync                          the engine's whole calendar pass, twice, per calendar
 //!   list                          events, with each one's stored reply verdict
 //!   get <uid>                     the stored iCalendar document, verbatim
 //!   store <file.eml|.ics>         put an invitation on the calendar (guarded create)
@@ -37,6 +39,7 @@
 mod commands;
 mod profile;
 mod raw;
+mod sync;
 
 use engine_provider::RsvpResponse;
 
@@ -184,14 +187,23 @@ async fn run(args: Vec<String>) -> Result<(), String> {
             commands::describe(&provider);
             Ok(())
         }
+        Some("calendars") => {
+            let (calendars, tags) = commands::calendars(&provider).await?;
+            commands::print_calendars(&calendars, &tags);
+            Ok(())
+        }
+        Some("sync") => sync::sync(&provider).await,
         Some("list") => {
-            let events = commands::events(&provider).await?;
+            let calendar = commands::calendar(&provider, &profile).await?;
+            println!("calendar  {}\n", calendar.as_str());
+            let events = commands::events(&provider, &calendar).await?;
             commands::print_events(&events, &profile.user);
             Ok(())
         }
         Some("get") => {
             let uid = argument(1).ok_or("get needs a UID")?;
-            let events = commands::events(&provider).await?;
+            let calendar = commands::calendar(&provider, &profile).await?;
+            let events = commands::events(&provider, &calendar).await?;
             let event = events
                 .iter()
                 .find(|event| event.uid.as_str() == uid)
@@ -204,7 +216,8 @@ async fn run(args: Vec<String>) -> Result<(), String> {
         }
         Some("store") => {
             let path = argument(1).ok_or("store needs a file")?;
-            commands::store(&provider, path).await
+            let calendar = commands::calendar(&provider, &profile).await?;
+            commands::store(&provider, &calendar, path).await
         }
         Some("rsvp") => {
             let uid = argument(1).ok_or("rsvp needs a UID")?;
@@ -219,7 +232,8 @@ async fn run(args: Vec<String>) -> Result<(), String> {
                     ));
                 }
             };
-            let events = commands::events(&provider).await?;
+            let calendar = commands::calendar(&provider, &profile).await?;
+            let events = commands::events(&provider, &calendar).await?;
             commands::rsvp(&provider, &events, uid, response, &profile.user).await
         }
         other => Err(format!(

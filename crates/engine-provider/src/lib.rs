@@ -101,7 +101,7 @@ pub use submit::{
     ContentIdError, ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition,
     DraftCalendar, SentCopy, SubmissionReceipt,
 };
-pub use sync::ScopeSync;
+pub use sync::{CalendarListing, ScopeSync};
 pub use watch::{Watch, WatchEvent};
 
 /// Default page size [`Provider::sync_email`] uses to drain

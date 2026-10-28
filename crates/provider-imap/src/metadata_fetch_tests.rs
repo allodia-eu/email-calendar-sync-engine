@@ -153,8 +153,12 @@ async fn no_structure_command_names_more_messages_than_the_server_allows() {
     );
 }
 
+/// A row goes out as its headers arrive, an open one as having no attachment, which is how an
+/// open row reads; the settle then sends again only the rows whose structure shows one. Holding
+/// the open rows for the settle kept a first sync's list empty for seconds per group on Yahoo,
+/// where most messages are multipart and the structure fetch is slow.
 #[tokio::test]
-async fn the_streamed_backfill_settles_open_rows_with_a_second_command() {
+async fn the_streamed_backfill_sends_rows_before_settling_and_corrects_only_what_changed() {
     let select = "* 3 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\n* OK [UIDNEXT 4] n\r\n\
                   a2 OK [READ-WRITE] done\r\n";
     let metadata = response(
@@ -180,26 +184,75 @@ async fn the_streamed_backfill_settles_open_rows_with_a_second_command() {
         0,
         1,
     ));
-    let mut attachment = Vec::new();
+    let mut sent_rows = Vec::new();
+    let mut present = Vec::new();
     while let Some(chunk) = stream.next().await {
-        for message in chunk.unwrap().changed {
-            attachment.push((message.id.key().as_str().to_owned(), message.has_attachment));
+        let chunk = chunk.unwrap();
+        present.extend(chunk.present.iter().map(|key| key.as_str().to_owned()));
+        for message in chunk.changed {
+            sent_rows.push((message.id.key().as_str().to_owned(), message.has_attachment));
         }
     }
     drop(stream);
 
-    attachment.sort();
     assert_eq!(
-        attachment,
+        sent_rows,
         [
-            ("imap:v7:u1@INBOX".to_owned(), true),
+            ("imap:v7:u1@INBOX".to_owned(), false),
             ("imap:v7:u2@INBOX".to_owned(), false),
             ("imap:v7:u3@INBOX".to_owned(), false),
+            ("imap:v7:u1@INBOX".to_owned(), true),
         ]
+    );
+    present.sort();
+    assert_eq!(
+        present,
+        ["imap:v7:u1@INBOX", "imap:v7:u2@INBOX", "imap:v7:u3@INBOX"],
+        "a corrected row is counted present once"
     );
     let sent = written(&recorded);
     assert!(
         sent.contains("a4 UID FETCH 1,3 (UID BODYSTRUCTURE)"),
         "{sent}"
+    );
+}
+
+/// With the group in one chunk, a correction finds its first copy still waiting and replaces it:
+/// the chunk names each message once.
+#[tokio::test]
+async fn a_correction_replaces_a_copy_that_has_not_gone_out() {
+    let select = "* 2 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\n* OK [UIDNEXT 3] n\r\n\
+                  a2 OK [READ-WRITE] done\r\n";
+    let metadata = response("a3", &[metadata_row(1, MIXED), metadata_row(2, TEXT)]);
+    let structure = format!("* 1 FETCH (UID 1 BODYSTRUCTURE {WITH_PDF})\r\na4 OK FETCH done\r\n");
+    let (mut conn, _) = logged_in(&[GREETING, LOGIN_OK, select, &metadata, &structure]).await;
+    let mailbox = MailboxId::try_from("INBOX").unwrap();
+
+    let mut stream = Box::pin(stream_email(
+        &mut conn,
+        None,
+        &mailbox,
+        None,
+        SyncWindow::full(),
+        0,
+        0,
+    ));
+    let mut chunks = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        chunks.push(chunk.unwrap());
+    }
+    drop(stream);
+
+    let rows: Vec<_> = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.changed)
+        .map(|message| (message.id.key().as_str().to_owned(), message.has_attachment))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("imap:v7:u1@INBOX".to_owned(), true),
+            ("imap:v7:u2@INBOX".to_owned(), false),
+        ]
     );
 }

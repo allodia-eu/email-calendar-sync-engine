@@ -20,11 +20,11 @@
 //! it, so the short-circuit leaves it unread and [`principal_addresses`] asks for it when a
 //! host does.
 
-use engine_core::calendar::Calendar;
+use engine_core::{calendar::Calendar, version::CollectionTag};
 use engine_provider::{CalendarUserAddresses, ConnectObserver, ConnectStep, IgnoreConnectSteps};
 
 use crate::{
-    calendar::calendar_from_response,
+    calendar::{calendar_from_response, collection_tag},
     dav::MultiStatus,
     error::CalDavError,
     href::{redirect_href, resolve_reference},
@@ -282,7 +282,7 @@ pub(crate) async fn authenticate_before_reading(exec: &dyn DavExecutor, href: &s
     }
 }
 
-/// Lists the calendar collections under `home_href`.
+/// Lists the calendar collections under `home_href`, each with the tag the listing showed.
 ///
 /// # Errors
 ///
@@ -290,7 +290,7 @@ pub(crate) async fn authenticate_before_reading(exec: &dyn DavExecutor, href: &s
 pub(crate) async fn list_calendars(
     exec: &dyn DavExecutor,
     home_href: &str,
-) -> Result<Vec<Calendar>, CalDavError> {
+) -> Result<Vec<(Calendar, Option<CollectionTag>)>, CalDavError> {
     let listing = exec
         .send(
             DavMethod::Propfind,
@@ -303,8 +303,14 @@ pub(crate) async fn list_calendars(
     listing
         .responses
         .iter()
-        .filter(|response| response.props.is_calendar())
-        .map(calendar_from_response)
+        // A collection that cannot hold events (a task list) is not a calendar here.
+        .filter(|response| response.props.is_calendar() && response.props.holds_events())
+        .map(|response| {
+            Ok((
+                calendar_from_response(response)?,
+                collection_tag(&response.props),
+            ))
+        })
         .collect()
 }
 

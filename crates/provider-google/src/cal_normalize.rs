@@ -25,7 +25,7 @@ use engine_core::{
         ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence,
         RecurrenceOverride, VirtualLocation, parse_rrule,
     },
-    ids::{CalendarId, EventId, Uid},
+    ids::{CalendarId, Uid},
     membership::Memberships,
     patch::PatchObject,
     time::{CalendarDate, CalendarDateTime, LocalDateTime, TimeZoneId},
@@ -117,10 +117,11 @@ pub(crate) fn event_from_json(
     calendar: &CalendarId,
     default_zone: Option<&str>,
 ) -> Result<Event, GoogleError> {
-    let id = wrap_id(EventId::try_from(req_str(value, "id")?), "event id")?;
+    let raw_id = req_str(value, "id")?;
+    let id = crate::cal_id::event_id(calendar.key().as_str(), raw_id)?;
     let uid_raw = opt_str(value, "iCalUID")
         .filter(|u| !u.is_empty())
-        .unwrap_or_else(|| id.as_str());
+        .unwrap_or(raw_id);
     let uid =
         Uid::new(uid_raw).map_err(|e| GoogleError::protocol(format!("bad event uid: {e}")))?;
 

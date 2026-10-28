@@ -314,8 +314,9 @@ is authoritative for the `provider-caldav` calendar client.
   one. Yahoo builds
   `BODYSTRUCTURE` at about 25 ms a message, single-part ones included, against under 3 ms for
   the rest of the metadata together, and about half of a typical inbox is one text body. The
-  streamed backfill commits a settled row as it arrives, and a batch's open rows together once
-  their structure is in. Those sets are shared out over up to three **spare** pooled
+  streamed backfill commits every row as it arrives, an open one as having no attachment, and
+  once a batch's structure is in sends again only the open rows it shows carry one, before the
+  batch's checkpoint. Those sets are shared out over up to three **spare** pooled
   connections (`ImapPool::try_acquire_for` lends only a free permit and never waits), one per 20
   open rows beyond the first 20; a helper that fails is discarded and its share asked again on
   the pass's own connection. On Yahoo this took a 2577-message cold pass from about 45 s to about
@@ -884,7 +885,14 @@ folders into Trash is proven offline only: all three servers file a folder insid
   The keep-alive interval is the one host-supplied
   knob (a protocol timer, clamped to a sane range; default 28 min, shorter on mobile to
   detect a dead link sooner), not a product policy — **scheduling and reconnect/backoff
-  live in the host**, not the engine.
+  live in the host**, not the engine. A change the server reports before it accepts an
+  `IDLE` (ahead of the `+` continuation) is not repeated once idling, so it is reported as
+  `Changed` too.
+- **A server's own `IDLE` delay is accepted, not polled around.** Yahoo reports changes over
+  `IDLE` only on a two-minute cycle, so its new mail shows up to two minutes late
+  (`spec-deviations.md`, YAHOO-15). A `NOOP` between short turns would show it sooner, at the
+  cost of a command every few seconds per watched folder per user, the load `IDLE` exists to
+  spare a server; it was tried and withdrawn.
 - **Coverage.** The `idle` primitives (continuation handling, untagged-line
   classification, `DONE` drain) are unit-tested over scripted transcripts; the watcher's
   keep-alive timing and stay-idling-across-events behavior are tested over a real

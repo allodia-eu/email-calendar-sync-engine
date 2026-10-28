@@ -26,8 +26,9 @@ async fn idle_conn(server: &[&str]) -> (Connection<MockStream>, Recorded) {
 #[tokio::test]
 async fn idle_start_consumes_the_continuation_and_returns_the_tag() {
     let (mut conn, recorded) = idle_conn(&["+ idling\r\n"]).await;
-    let tag = idle_start(&mut conn).await.unwrap();
+    let (tag, saw_change) = idle_start(&mut conn).await.unwrap();
     assert_eq!(tag, "a1");
+    assert!(!saw_change);
     assert!(
         written(&recorded).contains("a1 IDLE\r\n"),
         "issues tagged IDLE"
@@ -35,10 +36,19 @@ async fn idle_start_consumes_the_continuation_and_returns_the_tag() {
 }
 
 #[tokio::test]
-async fn idle_start_skips_untagged_status_before_the_continuation() {
-    // A server may interleave an untagged response before `+ idling`; it is tolerated.
+async fn idle_start_reports_a_change_interleaved_before_the_continuation() {
+    // A server may interleave untagged responses before `+ idling`; it will not repeat a
+    // change it reported there, so the change is returned.
     let (mut conn, _) = idle_conn(&["* 4 EXISTS\r\n+ idling\r\n"]).await;
-    assert_eq!(idle_start(&mut conn).await.unwrap(), "a1");
+    assert_eq!(
+        idle_start(&mut conn).await.unwrap(),
+        ("a1".to_owned(), true)
+    );
+    let (mut conn, _) = idle_conn(&["* OK still here\r\n+ idling\r\n"]).await;
+    assert_eq!(
+        idle_start(&mut conn).await.unwrap(),
+        ("a1".to_owned(), false)
+    );
 }
 
 #[tokio::test]

@@ -322,7 +322,7 @@ Two rules that produced this shape, both learned by breaking them:
   report suite's phishing test failed on the runner, and only on the runner, while both
   tests passed locally under `--test-threads=1`.
 
-### Calendar (`seed/calendar/`, via CalDAV into Alice's default calendar)
+### Calendar (`seed/calendar/`, via CalDAV into Alice's `default` and `work` calendars)
 
 | Fixture                  | Invariant it protects |
 | ------------------------ | --------------------- |
@@ -332,6 +332,16 @@ Two rules that produced this shape, both learned by breaking them:
 | `virtual-location.ics`   | RFC 7986 `CONFERENCE` (a virtual location / conference link). |
 | `all-day.ics`            | `DTSTART;VALUE=DATE`: zoneless, no DST, never zone-attached. |
 | `floating.ics`           | Floating wall-clock time (no `TZID`, no `Z`): resolves through the observer's zone. |
+
+A **second calendar**, `work` (display name *Work*), is created with `MKCALENDAR` and holds
+`seed/calendar/work/`. Every account a calendar suite reads therefore has more than one
+calendar, so one provider serving them all, each under a scope of its own, is exercised on
+every run rather than assumed. SabreDAV and Nextcloud seed the same pair.
+
+| Fixture                  | Invariant it protects |
+| ------------------------ | --------------------- |
+| `work/planning.ics`      | A zoned event in the second calendar: it syncs under that calendar's scope and names that calendar, never the first. |
+| `work/offsite.ics`       | An all-day event in the second calendar, so the pair is not one shape twice. |
 
 These map directly onto the requirements in `providers.md` (Stalwart Test Spine)
 and `calendar-semantics.md` (time model, recurrence subset, iTIP/iMIP).

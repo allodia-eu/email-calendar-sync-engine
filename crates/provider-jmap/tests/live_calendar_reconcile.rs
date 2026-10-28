@@ -45,7 +45,7 @@ fn amsterdam(local: &str) -> CalendarDateTime {
 /// A full snapshot, and the state it was taken at — the cursor a first sync persists.
 async fn snapshot(provider: &JmapProvider) -> (Vec<Event>, SyncState) {
     let synced = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &any_calendar(), None)
         .await
         .expect("snapshot");
     let SyncUpdate::Snapshot { objects, .. } = synced.update else {
@@ -60,7 +60,7 @@ async fn delta(
     cursor: &SyncState,
 ) -> (Vec<Event>, Vec<ProviderKey>, SyncState) {
     let synced = provider
-        .sync_events(&account(), Some(cursor))
+        .sync_events(&account(), &any_calendar(), Some(cursor))
         .await
         .expect("delta");
     let SyncUpdate::Delta {
@@ -76,7 +76,8 @@ async fn calendar(provider: &JmapProvider) -> CalendarId {
     let synced = provider
         .sync_calendars(&account(), None)
         .await
-        .expect("calendars");
+        .expect("calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = synced.update else {
         panic!("expected a snapshot");
     };
@@ -187,4 +188,9 @@ async fn a_delta_redelivers_our_own_write() {
         removed.contains(edited.id.key()),
         "our own destroy comes back as a removed id, which is what tombstones the local row"
     );
+}
+
+/// JMAP's event state is account-wide, so which calendar asks for it does not matter.
+fn any_calendar() -> engine_core::ids::CalendarId {
+    engine_core::ids::CalendarId::try_from("any").unwrap()
 }

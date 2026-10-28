@@ -18,21 +18,95 @@
 //! it *drops* shows up as a missing line. See [`write::patched_update_preserves_the_document`].
 
 pub(crate) mod imip;
+pub(crate) mod many_calendars;
 pub(crate) mod reconcile;
 pub(crate) mod recurrence;
 pub(crate) mod survival;
 pub(crate) mod write;
 
 use engine_core::{
-    calendar::Event,
-    ids::{AccountId, Uid},
+    calendar::{Calendar, Event},
+    ids::{AccountId, CalendarId, EventId, Uid},
     raw::RawIcal,
-    sync::SyncUpdate,
+    sync::{SyncScope, SyncState, SyncUpdate},
     version::ETag,
 };
-use engine_provider::{CalendarWrites, EventDeletion, Provider};
-use provider_caldav::CalDavProvider;
+use engine_provider::{CalendarWrites, EventDeletion, Provider, ProviderResult, ScopeSync};
+use provider_caldav::{CalDavError, CalDavProvider};
 use tokio::sync::{Mutex, MutexGuard};
+
+/// A provider, and the one calendar of its account a scenario drives.
+///
+/// The provider serves every calendar under the home; each scenario writes to and reads back
+/// from one of them, named once here so the scenarios need not thread it through.
+pub(crate) struct OnCalendar {
+    pub(crate) provider: CalDavProvider,
+    pub(crate) calendar: CalendarId,
+}
+
+impl core::ops::Deref for OnCalendar {
+    type Target = CalDavProvider;
+
+    fn deref(&self) -> &CalDavProvider {
+        &self.provider
+    }
+}
+
+impl OnCalendar {
+    /// Points `provider` at the calendar whose href ends in `name`, failing when the
+    /// account lists none: a suite that silently drove another calendar proves nothing.
+    pub(crate) async fn named(provider: CalDavProvider, account: &AccountId, name: &str) -> Self {
+        let calendar = calendars(&provider, account)
+            .await
+            .into_iter()
+            .find(|calendar| {
+                calendar
+                    .id
+                    .as_str()
+                    .trim_end_matches('/')
+                    .ends_with(&format!("/{name}"))
+            })
+            .unwrap_or_else(|| panic!("the account lists a calendar named {name}"))
+            .id;
+        Self { provider, calendar }
+    }
+
+    pub(crate) fn calendar_id(&self) -> CalendarId {
+        self.calendar.clone()
+    }
+
+    pub(crate) fn event_href(&self, uid: &Uid) -> Result<EventId, CalDavError> {
+        self.provider.event_href(&self.calendar, uid)
+    }
+
+    pub(crate) fn event_scope(&self, account: &AccountId) -> SyncScope {
+        self.provider.event_scope(account, &self.calendar)
+    }
+
+    pub(crate) async fn sync_events(
+        &self,
+        account: &AccountId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Event>> {
+        self.provider
+            .sync_events(account, &self.calendar, cursor)
+            .await
+    }
+}
+
+/// Every calendar the account lists.
+pub(crate) async fn calendars(provider: &CalDavProvider, account: &AccountId) -> Vec<Calendar> {
+    match provider
+        .sync_calendars(account, None)
+        .await
+        .expect("list calendars")
+        .sync
+        .update
+    {
+        SyncUpdate::Snapshot { objects, .. } => objects,
+        SyncUpdate::Delta { changed, .. } => changed,
+    }
+}
 
 /// Serializes the live tests within one binary: every write scenario transiently adds
 /// an event to the shared calendar, so none may overlap the sync-loop test's exact-count
@@ -46,8 +120,8 @@ pub(crate) async fn serial_guard() -> MutexGuard<'static, ()> {
     SERIAL.lock().await
 }
 
-/// The current snapshot of the bound collection's events (a full re-read).
-async fn snapshot(provider: &CalDavProvider, account: &AccountId) -> Vec<Event> {
+/// The current snapshot of the calendar's events (a full re-read).
+async fn snapshot(provider: &OnCalendar, account: &AccountId) -> Vec<Event> {
     let synced = provider
         .sync_events(account, None)
         .await
@@ -62,11 +136,7 @@ async fn snapshot(provider: &CalDavProvider, account: &AccountId) -> Vec<Event> 
 ///
 /// Every scenario reads its event back through this rather than trusting what it sent:
 /// the whole question these tests exist to answer is what the *server* did with it.
-pub(crate) async fn fetch(
-    provider: &CalDavProvider,
-    account: &AccountId,
-    uid: &str,
-) -> Option<Event> {
+pub(crate) async fn fetch(provider: &OnCalendar, account: &AccountId, uid: &str) -> Option<Event> {
     snapshot(provider, account)
         .await
         .into_iter()
@@ -74,7 +144,7 @@ pub(crate) async fn fetch(
 }
 
 /// Reads the event back, failing with a message naming the scenario's event.
-pub(crate) async fn require(provider: &CalDavProvider, account: &AccountId, uid: &str) -> Event {
+pub(crate) async fn require(provider: &OnCalendar, account: &AccountId, uid: &str) -> Event {
     fetch(provider, account, uid)
         .await
         .unwrap_or_else(|| panic!("event {uid} is present on the server"))
@@ -100,7 +170,7 @@ fn server_etag(event: &Event) -> ETag {
 
 /// Removes any residue of `uid` from a prior interrupted run, so a scenario's create is
 /// a true create (`If-None-Match: *`). Unconditional: the residue's ETag is unknown.
-pub(crate) async fn pre_clean(provider: &CalDavProvider, account: &AccountId, uid: &Uid) {
+pub(crate) async fn pre_clean(provider: &OnCalendar, account: &AccountId, uid: &Uid) {
     let href = provider.event_href(uid).expect("mint event href");
     let _ = provider
         .delete_event(

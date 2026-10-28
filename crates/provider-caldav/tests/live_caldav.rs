@@ -5,8 +5,9 @@
 //! then asserts the calendar seed *in the store*: the six fixtures normalize, the
 //! recurring resource's master + `RECURRENCE-ID` override fold into one event with
 //! an `EXDATE` exclusion, participants merge, the virtual location survives, and
-//! every event materializes occurrences. A second sync proves the held sync-token
-//! yields an idempotent empty delta. Skips with no `STALWART_HTTP_ADDR`, so the
+//! every event materializes occurrences. The seed's second calendar syncs under a scope of
+//! its own from the same provider, and a second sync with nothing changed asks no calendar
+//! anything. Skips with no `STALWART_HTTP_ADDR`, so the
 //! offline `cargo test --workspace` stays green.
 //!
 //! Per the determinism rule, every assertion is on harness-controlled content
@@ -100,7 +101,12 @@ async fn caldav_calendar_sync_loop() {
         "the default calendar synced"
     );
 
-    let event_scope = provider.event_scope(&account);
+    common::many_calendars::the_second_calendar_syncs_under_its_own_scope(
+        &provider, &store, &account, &report,
+    )
+    .await;
+    let default = common::OnCalendar::named(provider, &account, "default").await;
+    let event_scope = default.event_scope(&account);
     let event_keys = store.object_keys(&event_scope).await.unwrap();
     assert_eq!(event_keys.len(), 6, "six seed calendar resources stored");
 
@@ -145,9 +151,9 @@ async fn caldav_calendar_sync_loop() {
     );
     assert_eq!(total, 12);
 
-    // A second sync reuses the held sync-token: an idempotent, empty delta.
+    // A second sync with nothing changed: every calendar's listing tag is as recorded.
     let second = sync_calendar(
-        &provider,
+        &default.provider,
         &store,
         &account,
         WorkerId::new("live"),
@@ -157,14 +163,7 @@ async fn caldav_calendar_sync_loop() {
     )
     .await
     .expect("second sync_calendar");
-    assert_eq!(
-        second.events.applied.upserted, 0,
-        "no event changes on a re-sync"
-    );
-    assert_eq!(
-        second.events.applied.tombstoned, 0,
-        "nothing tombstoned on a re-sync"
-    );
+    common::many_calendars::a_quiet_resync_asks_no_calendar(&second);
     assert_eq!(
         store.object_keys(&event_scope).await.unwrap().len(),
         6,
@@ -172,8 +171,9 @@ async fn caldav_calendar_sync_loop() {
     );
 }
 
-/// Connects a provider to the live Stalwart harness, or `None` to skip (offline gate).
-async fn connect(test: &str) -> Option<(CalDavProvider, AccountId)> {
+/// Connects a provider to the live Stalwart harness, on its `default` calendar, or `None` to
+/// skip (offline gate).
+async fn connect(test: &str) -> Option<(common::OnCalendar, AccountId)> {
     let Some(harness) = Harness::from_env() else {
         eprintln!("skipping {test}: STALWART_HTTP_ADDR unset");
         return None;
@@ -191,7 +191,9 @@ async fn connect(test: &str) -> Option<(CalDavProvider, AccountId)> {
     ))
     .await
     .expect("connect + discover");
-    Some((provider, AccountId::try_from("caldav-write-live").unwrap()))
+    let account = AccountId::try_from("caldav-write-live").unwrap();
+    let provider = common::OnCalendar::named(provider, &account, "default").await;
+    Some((provider, account))
 }
 
 /// The full CalDAV write lifecycle against the real Stalwart, driven off the `ETag`s the
@@ -277,7 +279,7 @@ async fn caldav_storing_an_invitation_is_a_guarded_create() {
 /// (`live_sabredav.rs`); Stalwart's harness account owns everything it can see, so it
 /// cannot produce a collection it may not write.
 #[tokio::test]
-async fn caldav_reports_the_bound_calendar_as_writable() {
+async fn caldav_reports_its_own_calendar_as_writable() {
     let Some((provider, account)) = connect("caldav_reports_the_bound_calendar_as_writable").await
     else {
         return;
@@ -287,20 +289,21 @@ async fn caldav_reports_the_bound_calendar_as_writable() {
     let calendars = provider
         .sync_calendars(&account, None)
         .await
-        .expect("sync_calendars");
+        .expect("sync_calendars")
+        .sync;
     let listed = match calendars.update {
         SyncUpdate::Snapshot { objects, .. } => objects,
         SyncUpdate::Delta { changed, .. } => changed,
     };
-    let bound = listed
+    let own = listed
         .iter()
-        .find(|calendar| calendar.id.as_str() == provider.collection_href())
-        .expect("the bound collection is listed");
+        .find(|calendar| calendar.id == provider.calendar)
+        .expect("the account's own calendar is listed");
     assert!(
-        bound.access.may_write,
+        own.access.may_write,
         "Stalwart grants DAV:write on the account's own calendar"
     );
-    assert!(bound.access.may_read);
+    assert!(own.access.may_read);
 }
 
 /// Read-your-writes (#65): a write reconciles the **store** to the server's copy, so a

@@ -245,7 +245,7 @@ async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
     ]);
     let steps: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
     let recorded = std::sync::Arc::clone(&steps);
-    let provider = crate::CalDavProvider::connect(
+    crate::CalDavProvider::connect(
         crate::CalDavConfig::new(
             base.clone(),
             Credentials::Basic {
@@ -283,10 +283,6 @@ async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
             format!("discovered {base}/dav/cal/alice%40test.local/"),
         ]
     );
-    assert_eq!(
-        provider.collection_href(),
-        "/dav/cal/alice%40test.local/default/"
-    );
 }
 
 #[tokio::test]
@@ -308,9 +304,9 @@ async fn a_connect_without_an_observer_still_discovers() {
     ))
     .await
     .expect("connect");
-    assert_eq!(
-        provider.collection_href(),
-        "/dav/cal/alice%40test.local/default/"
+    assert!(
+        provider.principal_url().is_some(),
+        "discovery read the principal"
     );
 }
 

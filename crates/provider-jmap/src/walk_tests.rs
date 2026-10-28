@@ -221,7 +221,7 @@ async fn an_object_that_moves_behind_the_walk_is_found_by_a_fresh_listing() {
     });
 
     let sync = provider_over(&server)
-        .sync_events(&account(), None)
+        .sync_events(&account(), &any_calendar(), None)
         .await
         .unwrap();
 
@@ -252,7 +252,7 @@ async fn a_listing_that_never_holds_still_fails_the_pass_for_a_retry() {
     }
 
     let error = provider_over(&server)
-        .sync_events(&account(), None)
+        .sync_events(&account(), &any_calendar(), None)
         .await
         .unwrap_err();
 
@@ -330,7 +330,7 @@ async fn a_server_without_query_state_still_finishes_a_snapshot() {
     server.seed("CalendarEvent", (0..1203).map(event));
 
     let sync = provider_over(&server)
-        .sync_events(&account(), None)
+        .sync_events(&account(), &any_calendar(), None)
         .await
         .unwrap();
 
@@ -361,4 +361,9 @@ fn a_destroyed_anchor_is_looked_for_further_back_each_time() {
         anchors(1000).collect::<Vec<_>>(),
         [0, 1, 2, 3, 8, 16, 32, 64, 128, 256, 512, 999]
     );
+}
+
+/// JMAP's event state is account-wide, so which calendar asks for it does not matter.
+fn any_calendar() -> engine_core::ids::CalendarId {
+    engine_core::ids::CalendarId::try_from("any").unwrap()
 }

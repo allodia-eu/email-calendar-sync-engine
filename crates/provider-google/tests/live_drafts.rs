@@ -78,8 +78,11 @@ fn unique_run_id() -> u128 {
 /// for a reason that has nothing to do with drafts.
 async fn snapshot(provider: &GmailProvider) -> Vec<Message> {
     let emails = provider.sync_email(&account(), None).await.expect("sync");
-    let SyncUpdate::Snapshot { objects, .. } = emails.update else {
-        panic!("a cursorless sync is a snapshot");
+    let SyncUpdate::Delta {
+        changed: objects, ..
+    } = emails.update
+    else {
+        panic!("a cursorless sync is an additive backfill");
     };
     objects
 }
@@ -217,8 +220,11 @@ async fn live_gmail_a_saved_draft_is_labelled_a_draft() {
         .expect("the account has a DRAFT label");
 
     let emails = p.sync_email(&account(), None).await.expect("sync");
-    let SyncUpdate::Snapshot { objects, .. } = emails.update else {
-        panic!("a cursorless sync is a snapshot");
+    let SyncUpdate::Delta {
+        changed: objects, ..
+    } = emails.update
+    else {
+        panic!("a cursorless sync is an additive backfill");
     };
     let saved = objects
         .iter()

@@ -7,12 +7,7 @@
 mod common;
 
 use common::*;
-use engine_core::{
-    calendar::ParticipantRole,
-    ids::{CalendarId, Uid},
-    sync::SyncUpdate,
-    time::CalendarDateTime,
-};
+use engine_core::{calendar::ParticipantRole, ids::Uid, sync::SyncUpdate, time::CalendarDateTime};
 use engine_provider::{
     CalendarAddress, CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, Invitee,
     InviteePatch, MeetingDraft, PatchTarget, Provider, SchedulingIdentity,
@@ -26,11 +21,11 @@ async fn live_calendar_lists_syncs_and_writes() {
     };
 
     // List calendars and find the default (the binding used for events + writes).
-    let placeholder = CalendarId::try_from("placeholder").unwrap();
-    let calendars = calendar_provider(&token, placeholder)
+    let calendars = calendar_provider(&token)
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };
@@ -49,12 +44,12 @@ async fn live_calendar_lists_syncs_and_writes() {
     let invitee = CalendarAddress::parse("calendar-engine-live@example.invalid").unwrap();
     let date = time::OffsetDateTime::now_utc().date() + time::Duration::days(60);
 
-    let provider = calendar_provider_around(&token, calendar_id.clone(), date);
+    let provider = calendar_provider_around(&token, date);
 
     // A snapshot of the calendar's events: masters + singles, each zoned in the display
     // zone (proving the Prefer: outlook.timezone request), recurrence mapped for a series.
     let events = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &calendar_id, None)
         .await
         .expect("sync events");
     assert!(events.is_snapshot());
@@ -70,7 +65,7 @@ async fn live_calendar_lists_syncs_and_writes() {
     );
     // A delta from the fresh cursor is a delta, not a snapshot.
     let delta = provider
-        .sync_events(&account(), Some(&events.next_cursor))
+        .sync_events(&account(), &calendar_id, Some(&events.next_cursor))
         .await
         .expect("delta");
     assert!(!delta.is_snapshot());
@@ -107,7 +102,7 @@ async fn live_calendar_lists_syncs_and_writes() {
     );
 
     let events = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &calendar_id, None)
         .await
         .expect("read create");
     let SyncUpdate::Snapshot { objects, .. } = events.update else {
@@ -142,7 +137,7 @@ async fn live_calendar_lists_syncs_and_writes() {
     );
 
     let events = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &calendar_id, None)
         .await
         .expect("read patch");
     let SyncUpdate::Snapshot { objects, .. } = events.update else {

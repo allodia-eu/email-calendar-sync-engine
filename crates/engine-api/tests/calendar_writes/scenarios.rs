@@ -190,7 +190,12 @@ async fn a_write_whose_reconcile_cannot_run_is_still_a_write() {
     let engine = Arc::new(engine);
     let holder = {
         let engine = Arc::clone(&engine);
-        tokio::spawn(async move { engine.reconcile_calendar_events(&blocker, &account()).await })
+        tokio::spawn(async move {
+            let work = CalendarId::try_from("work").unwrap();
+            engine
+                .reconcile_calendar_events(&blocker, &account(), &work)
+                .await
+        })
     };
     wait.await.unwrap();
 

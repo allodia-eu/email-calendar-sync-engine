@@ -255,8 +255,11 @@ Step 6 lands in small, tested slices. Order and status:
      response is a *receipt*, not a document (a CalDAV `PUT` answers with an `ETag` and no
      body; a JMAP `/set` with an id and no object), so the driver alone would leave the row
      holding the **pre-write** projection, `raw_ical` and revision. Each facade write
-     therefore runs `engine_sync::reconcile_calendar_events` — an **event-scope delta**, one
-     round trip, the same primitive a sync reads through — the moment the write lands. The
+     therefore runs `engine_sync::reconcile_calendar_events` — an **event-scope delta** of the
+     calendar the write touched, one round trip, the same primitive a sync reads through —
+     the moment the write lands. A create reconciles its draft's calendar and an edit the
+     calendars of its base event; a write that names only an event id finds its calendars in
+     the store, and reconciles every listed calendar when the store does not hold the event. The
      store then holds what the **server** holds, a delete is tombstoned locally, and an edit
      that moved the event moves its occurrence rows. That is what makes "edit, re-read, edit
      again" work: the second edit's guard is the revision the *server* reported, not the
@@ -370,7 +373,11 @@ facade"*).
   not recorded), `false` for every other failure, which means the write was not applied
   (`providers.md`). For a calendar or contact write and a send it is the same answer on every
   provider, so a host never asks which one it was. Mail and folder edits do not classify a
-  lost answer, so for them `false` does not mean "not applied". The one deliberate exception is `ScopeHeld`,
+  lost answer, so for them `false` does not mean "not applied". A failed read of one item asks
+  `ApiError::item_unavailable()`: `true` only for a `ProviderError::item_unavailable`, an item
+  the provider stored but can never serve, so a host may stop asking for it. Any other
+  permanent failure may be about the account or the request, and says nothing about the item.
+  The one deliberate exception is `ScopeHeld`,
   which `map_sync_error` classifies as `ApiError::Busy` (a retryable race, not a
   failure) — classification, not restringing. Add similar classifications there if
   another error class deserves a distinct host signal.

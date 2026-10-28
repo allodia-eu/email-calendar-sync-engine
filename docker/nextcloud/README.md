@@ -17,13 +17,16 @@ the way a real deployment is, so it exercises what the bare SabreDAV fixture doe
   answer to the SabreDAV fixture's negative one on the same server software.
 - **Verbatim storage.** Like SabreDAV, it hands back the iCalendar bytes it was given.
 
-It is **test infrastructure, not product code**: the stock `nextcloud` image on SQLite with
-its data on a `tmpfs`, so every start is a fresh install.
+It is **test infrastructure, not product code**: the stock `nextcloud` image on the stock
+`postgres` image, both with their data on a `tmpfs`, so every start is a fresh install. Not
+SQLite: Nextcloud writes on every authenticated request, a read included, so two requests at
+once fail one of them with "database is locked", which a slower CI runner meets.
 
 ## What it is
 
-- `docker-compose.yml`: the single service, pinned by digest, published on loopback port
-  18082, health-gated on the seed's marker and on `status.php` reporting an installed server.
+- `docker-compose.yml`: Nextcloud and its PostgreSQL database, each pinned by digest.
+  Nextcloud is published on loopback port 18082 and health-gated on the seed's marker and on
+  `status.php` reporting an installed server; the database is not published.
 - `hooks/seed.sh`: the image's post-installation hook. It gives the account the address
   `alice@test.local`, creates the `harness` calendar and imports the shared
   [`../stalwart/seed/calendar/*.ics`](../stalwart/seed/calendar/) into it, and creates the

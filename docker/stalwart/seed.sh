@@ -34,6 +34,7 @@ SUPPORT_SHARED="Shared%20Folders/support@test.local"
 IMAPS="imaps://127.0.0.1:993"
 HTTP="http://127.0.0.1:8080"
 CAL_COLLECTION="$HTTP/dav/cal/$ALICE/default"
+WORK_COLLECTION="$HTTP/dav/cal/$ALICE/work"
 CONTACT_COLLECTION="$HTTP/dav/card/$ALICE/default"
 
 log() { printf '[seed] %s\n' "$1"; }
@@ -68,10 +69,26 @@ imap_clear() { # mailbox
   imap_cmd "$1" "EXPUNGE" >/dev/null 2>&1 || true
 }
 
-put_calendar() { # file  uid
+put_calendar() { # file  uid  [collection]
   sed 's/$/\r/' "$1" | curl -sk --user "$ALICE:$ALICE_PW" \
     -X PUT -H 'Content-Type: text/calendar; charset=utf-8' \
-    --data-binary @- "$CAL_COLLECTION/$2.ics"
+    --data-binary @- "${3:-$CAL_COLLECTION}/$2.ics"
+}
+
+# Creates a calendar collection with a display name. 201 = created; 405 = it already exists
+# (a re-run). Anything else is a real failure.
+make_calendar() { # collection  display name
+  _status=$(curl -s -o /dev/null -w '%{http_code}' --user "$ALICE:$ALICE_PW" \
+    -X MKCALENDAR -H 'Content-Type: application/xml; charset=utf-8' \
+    --data-binary "<?xml version=\"1.0\" encoding=\"utf-8\"?><C:mkcalendar xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:set><D:prop><D:displayname>$2</D:displayname></D:prop></D:set></C:mkcalendar>" \
+    "$1/")
+  case "$_status" in
+    201 | 405) : ;;
+    *)
+      log "MKCALENDAR $1/ failed: HTTP $_status"
+      exit 1
+      ;;
+  esac
 }
 
 put_contact() { # file  uid
@@ -210,6 +227,11 @@ put_calendar "$CAL_DIR/meeting-attendees.ics" meeting-2003
 put_calendar "$CAL_DIR/virtual-location.ics" virtual-2004
 put_calendar "$CAL_DIR/all-day.ics" allday-2005
 put_calendar "$CAL_DIR/floating.ics" floating-2006
+
+log "creating the second calendar, Work, and putting its fixtures"
+make_calendar "$WORK_COLLECTION" Work
+put_calendar "$CAL_DIR/work/planning.ics" work-2101 "$WORK_COLLECTION"
+put_calendar "$CAL_DIR/work/offsite.ics" work-2102 "$WORK_COLLECTION"
 
 log "putting contact fixtures into the default address book"
 put_contact "$CONTACT_DIR/contact-3001.vcf" contact-3001

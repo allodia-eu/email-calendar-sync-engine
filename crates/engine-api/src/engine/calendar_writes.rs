@@ -22,7 +22,11 @@
 //! The reconcile is a *local* step after a write the server has already accepted, so it
 //! can never fail the write: it is reported as [`Reconciled`], not as an error.
 
-use engine_core::{calendar::Event, ids::AccountId, write::PendingOpId};
+use engine_core::{
+    calendar::Event,
+    ids::{AccountId, CalendarId, EventId},
+    write::PendingOpId,
+};
 use engine_provider::{
     EventDeletion, EventDraft, EventPatch, EventRsvp, EventWrite, PatchTarget, Provider,
 };
@@ -128,7 +132,8 @@ impl Engine {
         )
         .await
         .map_err(map_sync_error)?;
-        Ok(self.reconciling(provider, account, write).await)
+        let calendars = [draft.calendar.clone()];
+        Ok(self.reconciling(provider, account, &calendars, write).await)
     }
 
     /// Edits a stored calendar event through the durable outbox, then reconciles the store
@@ -183,7 +188,8 @@ impl Engine {
         )
         .await
         .map_err(map_sync_error)?;
-        Ok(self.reconciling(provider, account, write).await)
+        let calendars = calendars_of(base);
+        Ok(self.reconciling(provider, account, &calendars, write).await)
     }
 
     /// Replaces a calendar event's whole stored document through the durable outbox, then
@@ -217,7 +223,10 @@ impl Engine {
         )
         .await
         .map_err(map_sync_error)?;
-        Ok(self.reconciling(provider, account, outcome).await)
+        let calendars = self.stored_calendars_of(account, &write.event).await;
+        Ok(self
+            .reconciling(provider, account, &calendars, outcome)
+            .await)
     }
 
     /// Answers an invitation through the durable outbox, then reconciles the store to the
@@ -276,7 +285,8 @@ impl Engine {
         )
         .await
         .map_err(map_sync_error)?;
-        Ok(self.reconciling(provider, account, write).await)
+        let calendars = calendars_of(base);
+        Ok(self.reconciling(provider, account, &calendars, write).await)
     }
 
     /// Deletes a calendar event — or **one of its occurrences** — through the durable outbox,
@@ -309,6 +319,12 @@ impl Engine {
         base: Option<&Event>,
         deletion: &EventDeletion,
     ) -> Result<CalendarDelete, ApiError> {
+        // Read before the delete: the reconcile tombstones the event, and its calendars are
+        // only known while the store still holds it.
+        let calendars = match base {
+            Some(base) => calendars_of(base),
+            None => self.stored_calendars_of(account, &deletion.event).await,
+        };
         let op = delete_calendar_event(
             provider,
             &self.store,
@@ -323,7 +339,9 @@ impl Engine {
         .map_err(map_sync_error)?;
         Ok(CalendarDelete {
             op,
-            reconciled: self.reconcile_after_write(provider, account).await,
+            reconciled: self
+                .reconcile_after_write(provider, account, &calendars)
+                .await,
         })
     }
 
@@ -332,15 +350,30 @@ impl Engine {
         &self,
         provider: &P,
         account: &AccountId,
+        calendars: &[CalendarId],
         write: CalendarWriteOutcome,
     ) -> CalendarWrite {
         CalendarWrite {
-            reconciled: self.reconcile_after_write(provider, account).await,
+            reconciled: self
+                .reconcile_after_write(provider, account, calendars)
+                .await,
             write,
         }
     }
 
-    /// Re-reads the account's events after a write the server has **already accepted**.
+    /// The calendars the store holds `event` in, read for a write that names only the event.
+    /// Empty when the store does not hold it, or cannot be read: the reconcile then covers
+    /// every listed calendar rather than guess one.
+    async fn stored_calendars_of(&self, account: &AccountId, event: &EventId) -> Vec<CalendarId> {
+        self.events_by_keys(account, std::slice::from_ref(event.key()))
+            .await
+            .map(|events| events.iter().flat_map(calendars_of).collect())
+            .unwrap_or_default()
+    }
+
+    /// Re-reads the events of `calendars` after a write the server has **already accepted**:
+    /// one delta per event scope they answer, so a write to one calendar re-reads that one.
+    /// With no calendar named, every listed calendar's scope is re-read.
     ///
     /// Returns [`Reconciled`] rather than a `Result` on purpose: the write is committed and
     /// durable, so a failure here means the local copy is stale — never that the write
@@ -350,11 +383,40 @@ impl Engine {
         &self,
         provider: &P,
         account: &AccountId,
+        calendars: &[CalendarId],
     ) -> Reconciled {
-        match self.reconcile_calendar_events(provider, account).await {
-            Ok(report) => Reconciled::Applied(report),
-            Err(ApiError::Busy) => Reconciled::Busy,
-            Err(err) => Reconciled::Failed(Box::new(err)),
+        let listed: Vec<CalendarId>;
+        let calendars = if calendars.is_empty() {
+            listed = match self.calendars(account).await {
+                Ok(listed) => listed.into_iter().map(|calendar| calendar.id).collect(),
+                Err(err) => return Reconciled::Failed(Box::new(err)),
+            };
+            &listed
+        } else {
+            calendars
+        };
+        let mut scopes = Vec::new();
+        let mut report = EventSyncReport::default();
+        for calendar in calendars {
+            let scope = provider.event_scope(account, calendar);
+            if scopes.contains(&scope) {
+                continue;
+            }
+            scopes.push(scope);
+            match self
+                .reconcile_calendar_events(provider, account, calendar)
+                .await
+            {
+                Ok(one) => report.absorb(&one),
+                Err(ApiError::Busy) => return Reconciled::Busy,
+                Err(err) => return Reconciled::Failed(Box::new(err)),
+            }
         }
+        Reconciled::Applied(report)
     }
+}
+
+/// The calendars an event belongs to.
+fn calendars_of(event: &Event) -> Vec<CalendarId> {
+    event.calendars.iter().cloned().collect()
 }

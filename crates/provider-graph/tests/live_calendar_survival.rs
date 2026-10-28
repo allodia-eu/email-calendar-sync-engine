@@ -39,7 +39,7 @@ async fn live_calendar_override_survival_is_what_the_adapter_advertises() {
         return;
     };
     let calendar_id = default_calendar(&token).await;
-    let provider = calendar_provider(&token, calendar_id.clone());
+    let provider = calendar_provider(&token);
     let declared = provider
         .connection_info()
         .capabilities
@@ -134,7 +134,7 @@ where
         .await
         .expect("edit the series");
 
-    let overrides = overrides_of(provider, &created_id).await;
+    let overrides = overrides_of(provider, calendar_id, &created_id).await;
     let entry = overrides.get(&OVERRIDDEN.parse().unwrap());
     let outcome = Outcome {
         survived: entry.is_some(),
@@ -215,7 +215,7 @@ async fn series_with_an_override(
         .await
         .expect("override one occurrence");
     assert!(
-        overrides_of(provider, &created.event)
+        overrides_of(provider, calendar_id, &created.event)
             .await
             .contains_key(&OVERRIDDEN.parse().unwrap()),
         "the {label} experiment starts from an override that is actually there"
@@ -235,10 +235,11 @@ async fn series_with_an_override(
 /// The override map of one series, read back through the adapter's own sync path.
 async fn overrides_of(
     provider: &GraphCalendarProvider,
+    calendar_id: &CalendarId,
     id: &engine_core::ids::EventId,
 ) -> std::collections::BTreeMap<engine_core::time::LocalDateTime, RecurrenceOverride> {
     let events = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), calendar_id, None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {
@@ -254,11 +255,11 @@ async fn overrides_of(
 
 /// The account's default calendar.
 async fn default_calendar(token: &str) -> CalendarId {
-    let placeholder = CalendarId::try_from("placeholder").unwrap();
-    let calendars = calendar_provider(token, placeholder)
+    let calendars = calendar_provider(token)
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };

@@ -146,6 +146,7 @@ where
     scope_cases::container_and_member_scopes_are_independent(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::scope_lease_is_exclusive_until_released(&store, &clock).await;
+    scope_cases::a_renewed_scope_lease_keeps_a_long_pass_its_own(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::abandon_sync_leases_preserves_cursor_and_fences_old_worker(&store, &clock).await;
     let (store, clock) = make();
@@ -156,6 +157,8 @@ where
     scope_cases::release_with_stale_token_is_noop(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::forget_scope_drops_objects_rows_and_cursor(&store, &clock).await;
+    let (store, clock) = make();
+    scope_cases::collection_tag_travels_with_the_cursor(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::forget_scope_under_a_stale_lease_is_rejected(&store, &clock).await;
     let (store, clock) = make();

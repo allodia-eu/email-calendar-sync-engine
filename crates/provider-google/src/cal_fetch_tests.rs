@@ -35,7 +35,13 @@ async fn events_snapshot_projects_masters_and_singles_with_a_sync_token() {
     assert_eq!(page.changed.len(), 5);
     assert_eq!(page.present.len(), 5);
     assert!(page.removed.is_empty());
-    assert_eq!(page.next_cursor.as_str(), "events-sync-token-1");
+    assert_eq!(page.next_cursor.as_str(), "v1;events-sync-token-1");
+    // Each id names its calendar.
+    assert!(
+        page.changed
+            .iter()
+            .all(|event| event.id.as_str().starts_with("primary/"))
+    );
     assert!(page.next_page.is_none());
 }
 
@@ -45,7 +51,7 @@ async fn events_delta_tombstones_cancelled_and_advances_the_cursor() {
     let page = events_page(
         &client,
         &calendar(),
-        Some(&SyncState::new("events-sync-token-1")),
+        Some(&SyncState::new("v1;events-sync-token-1")),
         None,
         None,
     )
@@ -56,8 +62,33 @@ async fn events_delta_tombstones_cancelled_and_advances_the_cursor() {
     // One updated event; one cancelled → a tombstone.
     assert_eq!(page.changed.len(), 1);
     assert_eq!(page.removed.len(), 1);
+    assert!(
+        page.removed[0].as_str().starts_with("primary/"),
+        "{:?}",
+        page.removed
+    );
     assert!(page.present.is_empty());
-    assert_eq!(page.next_cursor.as_str(), "events-sync-token-2");
+    assert_eq!(page.next_cursor.as_str(), "v1;events-sync-token-2");
+}
+
+/// A cursor from before event ids named their calendar is read as none: a delta on it would
+/// store every changed event a second time, beside its old id.
+#[tokio::test]
+async fn a_cursor_from_before_qualified_ids_syncs_the_calendar_afresh() {
+    let client = fake_client(vec![("/events?singleEvents=false", json(EVENTS))]);
+    let page = events_page(
+        &client,
+        &calendar(),
+        Some(&SyncState::new("events-sync-token-1")),
+        None,
+        None,
+    )
+    .await
+    .unwrap()
+    .page;
+    assert_eq!(page.kind, SyncKind::Snapshot);
+    assert_eq!(page.present.len(), 5);
+    assert_eq!(page.next_cursor.as_str(), "v1;events-sync-token-1");
 }
 
 #[tokio::test]
@@ -66,7 +97,7 @@ async fn a_stale_sync_token_is_needs_resync() {
     let err = events_page(
         &client,
         &calendar(),
-        Some(&SyncState::new("old")),
+        Some(&SyncState::new("v1;old")),
         None,
         None,
     )
@@ -106,7 +137,7 @@ async fn events_snapshot_sets_an_override_aside_and_holds_a_pending_cursor() {
     assert_eq!(read.overrides.len(), 1);
     let page = read.page;
     assert_eq!(page.changed.len(), 1);
-    assert_eq!(page.changed[0].id.as_str(), "master-1");
+    assert_eq!(page.changed[0].id.as_str(), "primary/master-1");
     // No nextSyncToken on this intermediate page → the pending placeholder cursor.
     assert!(page.next_cursor.as_str().contains("pending"));
     assert!(page.next_page.is_some());
@@ -124,13 +155,7 @@ fn page_urls_carry_the_window_sync_and_page_tokens() {
     assert!(first.contains("/calendars/primary/events?singleEvents=false"));
     assert!(first.contains("&timeMin=2026-08-01T00:00:00Z&timeMax=2026-09-01T00:00:00Z"));
     // A delta carries the syncToken (never a window — Google forbids combining them).
-    let delta = page_url(
-        &client,
-        &calendar(),
-        Some(&SyncState::new("TOK")),
-        None,
-        None,
-    );
+    let delta = page_url(&client, &calendar(), Some("TOK"), None, None);
     assert!(delta.contains("?syncToken=TOK") && !delta.contains("timeMin"));
     // A continuation carries the pageToken.
     let cont = page_url(
@@ -141,6 +166,18 @@ fn page_urls_carry_the_window_sync_and_page_tokens() {
         None,
     );
     assert!(cont.contains("?pageToken=P2"));
+}
+
+#[test]
+fn a_calendar_id_is_one_path_segment_however_it_is_spelled() {
+    let client = fake_client(vec![]);
+    let holidays = CalendarId::try_from("nl.dutch#holiday@group.v.calendar.google.com").unwrap();
+    let url = page_url(&client, &holidays, None, None, None);
+    assert!(
+        url.contains("/calendars/nl.dutch%23holiday%40group.v.calendar.google.com/events?"),
+        "{url}"
+    );
+    assert!(!url.contains('#'), "{url}");
 }
 
 #[tokio::test]

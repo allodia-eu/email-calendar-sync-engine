@@ -235,7 +235,7 @@ async fn an_event_scope_larger_than_one_get_syncs_whole() {
     );
 
     let snapshot = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &any_calendar(), None)
         .await
         .expect("snapshot");
     let SyncUpdate::Snapshot { objects, .. } = &snapshot.update else {
@@ -249,7 +249,7 @@ async fn an_event_scope_larger_than_one_get_syncs_whole() {
         &events(&calendar, "scope-delta", count),
     );
     let delta = provider
-        .sync_events(&account(), Some(&snapshot.next_cursor))
+        .sync_events(&account(), &any_calendar(), Some(&snapshot.next_cursor))
         .await
         .expect("delta");
     let SyncUpdate::Delta { changed, .. } = &delta.update else {
@@ -314,4 +314,9 @@ async fn a_contact_scope_larger_than_one_get_syncs_whole() {
         panic!("a cursor gives a delta");
     };
     assert_eq!(in_scope(changed, "scope-delta-"), count);
+}
+
+/// JMAP's event state is account-wide, so which calendar asks for it does not matter.
+fn any_calendar() -> engine_core::ids::CalendarId {
+    engine_core::ids::CalendarId::try_from("any").unwrap()
 }

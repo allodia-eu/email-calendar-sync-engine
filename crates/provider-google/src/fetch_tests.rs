@@ -75,21 +75,15 @@ async fn message_source_decodes_the_base64url_raw() {
 }
 
 #[tokio::test]
-async fn snapshot_page_lists_fetches_each_and_carries_the_history_cursor() {
+async fn a_listed_page_fetches_each_listed_message_full() {
     let mut routes = vec![("/messages?maxResults", json(LIST))];
     routes.extend(message_routes());
     let client = fake_client(routes);
-    let history = SyncState::new("1617");
-    let page = snapshot_page(&client, None, None, &history, &NamedLabels::default())
+    let page = listed_page(&client, None, None, &NamedLabels::default())
         .await
         .unwrap();
-    assert_eq!(page.kind, SyncKind::Snapshot);
-    // All three listed ids are fetched full and present; the cursor is the captured
-    // account historyId, not anything the list returned.
-    assert_eq!(page.changed.len(), 3);
-    assert_eq!(page.present.len(), 3);
-    assert!(page.removed.is_empty());
-    assert_eq!(page.next_cursor.as_str(), "1617");
+    assert_eq!(page.messages.len(), 3);
+    assert!(page.stopped.is_none());
     assert!(page.next_page.is_none());
 }
 
@@ -97,36 +91,26 @@ async fn snapshot_page_lists_fetches_each_and_carries_the_history_cursor() {
 async fn snapshot_windows_by_after_epoch_only_when_a_floor_is_set() {
     let client = fake_client(vec![]);
     let floor = CalendarDate::new(2026, 4, 1).unwrap();
-    let windowed = list_url(&client, None, Some(floor));
+    let windowed = list_url(&client, None, Some(floor), 100);
     // Midnight 2026-04-01 UTC = 1775001600.
     assert!(windowed.contains("&q=after:1775001600"), "{windowed}");
-    assert!(!list_url(&client, None, None).contains("q=after"));
+    assert!(!list_url(&client, None, None, 100).contains("q=after"));
 }
 
 #[tokio::test]
-async fn a_junk_message_is_filed_in_spam_and_kept_in_the_present_set() {
-    // Captured from a real account whose message sat in Junk. `present` is what a
-    // snapshot tombstones against, so a spam message missing from it is not merely
-    // unreported — it is deleted from the store on the next reconcile.
+async fn a_junk_message_is_fetched_and_filed_in_spam() {
+    // Captured from a real account whose message sat in Junk. A listing that left it out
+    // would also leave it out of the reconcile, which would then delete it from the store;
+    // `every_snapshot_page_asks_for_spam_and_trash` pins the request that keeps it in.
     let client = fake_client(vec![
         ("/messages?maxResults", json(LIST_JUNK)),
         ("/messages/message-junk", json(META_JUNK)),
     ]);
-    let page = snapshot_page(
-        &client,
-        None,
-        None,
-        &SyncState::new("1662"),
-        &NamedLabels::default(),
-    )
-    .await
-    .unwrap();
+    let page = listed_page(&client, None, None, &NamedLabels::default())
+        .await
+        .unwrap();
 
-    let message = page.changed.first().expect("the junk message is carried");
-    assert!(
-        page.present.contains(message.id.key()),
-        "a junk message stays in the present set"
-    );
+    let message = page.messages.first().expect("the junk message is carried");
     // `SPAM` is an ordinary place label, so it files like any other folder; `UNREAD`
     // is a keyword and does not.
     let places: Vec<&str> = message.mailboxes.iter().map(MailboxId::as_str).collect();
@@ -144,9 +128,9 @@ async fn every_snapshot_page_asks_for_spam_and_trash() {
     let floor = CalendarDate::new(2026, 4, 1).unwrap();
     let token = PageToken::new("NEXT_PAGE");
     for url in [
-        list_url(&client, None, None),
-        list_url(&client, None, Some(floor)),
-        list_url(&client, Some(&token), Some(floor)),
+        list_url(&client, None, None, 100),
+        list_url(&client, None, Some(floor), 100),
+        list_url(&client, Some(&token), Some(floor), 100),
     ] {
         assert!(url.contains("&includeSpamTrash=true"), "{url}");
     }
@@ -156,7 +140,7 @@ async fn every_snapshot_page_asks_for_spam_and_trash() {
 async fn page_urls_continue_from_a_page_token() {
     let client = fake_client(vec![]);
     let token = PageToken::new("NEXT_PAGE");
-    assert!(list_url(&client, Some(&token), None).contains("&pageToken=NEXT_PAGE"));
+    assert!(list_url(&client, Some(&token), None, 100).contains("&pageToken=NEXT_PAGE"));
     assert!(
         history_url(&client, &SyncState::new("42"), Some(&token)).contains("&pageToken=NEXT_PAGE")
     );
@@ -176,18 +160,12 @@ async fn snapshot_skips_a_message_that_404s_between_list_and_get() {
             Err((404, json(r#"{"error":{"code":404}}"#))),
         ),
     ]);
-    let page = snapshot_page(
-        &client,
-        None,
-        None,
-        &SyncState::new("9"),
-        &NamedLabels::default(),
-    )
-    .await
-    .unwrap();
-    // Only the two fetchable messages survive.
-    assert_eq!(page.changed.len(), 2);
-    assert_eq!(page.present.len(), 2);
+    let page = listed_page(&client, None, None, &NamedLabels::default())
+        .await
+        .unwrap();
+    // Only the two fetchable messages survive, and a deleted one is no failure.
+    assert_eq!(page.messages.len(), 2);
+    assert!(page.stopped.is_none());
 }
 
 /// A list page of `count` ids plus a get route per id, for the fan-out tests. Ids are
@@ -225,16 +203,10 @@ async fn a_snapshot_page_fetches_its_messages_concurrently() {
     // rows reach the list only after the last fetch has returned.
     let (routes, _) = wide_page(60);
     let (client, probe) = probe_client(as_routes(&routes));
-    let page = snapshot_page(
-        &client,
-        None,
-        None,
-        &SyncState::new("7"),
-        &NamedLabels::default(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(page.changed.len(), 60);
+    let page = listed_page(&client, None, None, &NamedLabels::default())
+        .await
+        .unwrap();
+    assert_eq!(page.messages.len(), 60);
     // One list call plus one get per message.
     assert_eq!(probe.calls(), 61);
     assert_eq!(
@@ -249,15 +221,9 @@ async fn a_page_smaller_than_the_window_never_exceeds_its_own_size() {
     // The window is a ceiling, not a target: a page of three does not open twenty requests.
     let (routes, _) = wide_page(3);
     let (client, probe) = probe_client(as_routes(&routes));
-    snapshot_page(
-        &client,
-        None,
-        None,
-        &SyncState::new("7"),
-        &NamedLabels::default(),
-    )
-    .await
-    .unwrap();
+    listed_page(&client, None, None, &NamedLabels::default())
+        .await
+        .unwrap();
     assert_eq!(probe.peak(), 3);
 }
 
@@ -266,16 +232,10 @@ async fn concurrent_fetches_still_land_in_the_order_the_server_listed_them() {
     // Fetches complete in whatever order they finish; the page must not inherit that order.
     let (routes, ids) = wide_page(40);
     let (client, _) = probe_client(as_routes(&routes));
-    let page = snapshot_page(
-        &client,
-        None,
-        None,
-        &SyncState::new("7"),
-        &NamedLabels::default(),
-    )
-    .await
-    .unwrap();
-    let got: Vec<&str> = page.changed.iter().map(|m| m.id.key().as_str()).collect();
+    let page = listed_page(&client, None, None, &NamedLabels::default())
+        .await
+        .unwrap();
+    let got: Vec<&str> = page.messages.iter().map(|m| m.id.key().as_str()).collect();
     assert_eq!(got, ids.iter().map(String::as_str).collect::<Vec<_>>());
 }
 

@@ -19,8 +19,8 @@
 
 use engine_core::{
     calendar::{
-        Calendar, Event, EventStatus, FreeBusyStatus, Location, Participant, ParticipantKind,
-        ParticipantRole, ParticipationStatus, Privacy, VirtualLocation,
+        Calendar, CalendarAccess, Event, EventStatus, FreeBusyStatus, Location, Participant,
+        ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, VirtualLocation,
     },
     ids::{CalendarId, EventId, Uid},
     membership::Memberships,
@@ -77,6 +77,11 @@ pub(crate) fn calendar_from_json(value: &Value) -> Result<Calendar, GraphError> 
         .or_else(|| opt_str(value, "color").filter(|c| *c != "auto"))
         .map(str::to_owned);
     calendar.is_default = bool_field(value, "isDefaultCalendar");
+    // `canEdit` is the signed-in user's right to change the calendar's events. Graph sends it on
+    // every calendar; one without it keeps the owner's access, the model's default.
+    if value.get("canEdit").and_then(Value::as_bool) == Some(false) {
+        calendar.access = CalendarAccess::reader();
+    }
     calendar.owner = value
         .get("owner")
         .and_then(|o| opt_str(o, "address"))

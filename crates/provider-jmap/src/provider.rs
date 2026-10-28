@@ -11,16 +11,16 @@
 
 use async_trait::async_trait;
 use engine_core::{
-    calendar::{Calendar, Event},
-    ids::{AccountId, AddressBookId},
+    calendar::Event,
+    ids::{AccountId, AddressBookId, CalendarId},
     mail::{Mailbox, Message},
     raw::RawMime,
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HandOver, MessageReport,
-    PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
-    SharedMailbox, SourceStream, SubmissionReceipt, SyncKind, split_page,
+    CalendarListing, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HandOver,
+    MessageReport, PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity,
+    SenderIdentityId, SharedMailbox, SourceStream, SubmissionReceipt, SyncKind, split_page,
 };
 use serde_json::json;
 
@@ -277,7 +277,7 @@ impl Provider for JmapProvider {
         &self,
         _account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Calendar>> {
+    ) -> ProviderResult<CalendarListing> {
         let account = self.calendar_account()?;
         Ok(fetch_scope::container_sync(
             self.executor.as_ref(),
@@ -287,12 +287,16 @@ impl Provider for JmapProvider {
             cursor,
             calendar_from_json,
         )
-        .await?)
+        .await?
+        .into())
     }
 
+    /// Every calendar's events, under the account-wide `CalendarEvent` state: whichever
+    /// calendar asks, the answer is the same.
     async fn sync_events(
         &self,
         _account: &AccountId,
+        _calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         let account = self.calendar_account()?;

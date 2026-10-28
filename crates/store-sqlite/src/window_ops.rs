@@ -7,8 +7,14 @@
 //! one changed event clears that event's occurrence rows outright (or a moved event would
 //! ghost), so it has to put back the whole window the host expanded, not whichever horizon
 //! its caller happened to hold.
+//!
+//! The scope's **collection tag** lives here too, for the same reason: it says which state of
+//! the collection the scope's rows are, and it is written with the cursor.
 
-use engine_core::time::{ExpansionWindow, Horizon, TimeZoneId};
+use engine_core::{
+    time::{ExpansionWindow, Horizon, TimeZoneId},
+    version::CollectionTag,
+};
 use engine_store::Result;
 use rusqlite::{Connection, OptionalExtension};
 
@@ -74,4 +80,21 @@ pub(crate) fn expansion_window(
     .map_err(convert::backend)?;
     let zone = TimeZoneId::iana(&zone).map_err(convert::backend)?;
     Ok(Some(ExpansionWindow::new(horizon, zone)))
+}
+
+/// The collection tag recorded with a scope's cursor, if one was.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`] on a backend failure.
+pub(crate) fn collection_tag(conn: &Connection, scope_key: &str) -> Result<Option<CollectionTag>> {
+    let tag: Option<Option<String>> = conn
+        .query_row(
+            "SELECT collection_tag FROM sync_scope WHERE scope_key = ?1",
+            [scope_key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(convert::backend)?;
+    Ok(tag.flatten().map(CollectionTag::new))
 }

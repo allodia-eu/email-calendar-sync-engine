@@ -17,7 +17,7 @@ use engine_core::{
     sync::SyncScope,
     time::TimeZoneId,
 };
-use engine_provider::{CalendarUserAddresses, CalendarWrites, Provider};
+use engine_provider::{CalendarUserAddresses, CalendarWrites};
 use engine_recurrence::Horizon;
 use engine_store::{ManualClock, StoreRead, WorkerId};
 use engine_sync::sync_calendar;
@@ -48,8 +48,7 @@ async fn connect(addr: &str, user: &str, pass: &str) -> CalDavProvider {
             password: pass.to_owned(),
         },
         engine_http::test_server::user_agent(),
-    )
-    .with_calendar(CALENDAR);
+    );
     let mut last_err = None;
     for _ in 0..15 {
         match CalDavProvider::connect(config.clone()).await {
@@ -64,13 +63,17 @@ async fn connect(addr: &str, user: &str, pass: &str) -> CalDavProvider {
 }
 
 /// Connects to the Nextcloud harness, or `None` to skip (offline gate).
-async fn provider(test: &str) -> Option<(CalDavProvider, AccountId)> {
+async fn provider(test: &str) -> Option<(common::OnCalendar, AccountId)> {
     let Some((addr, user, pass)) = harness() else {
         eprintln!("skipping {test}: NEXTCLOUD_HTTP_ADDR unset");
         return None;
     };
+    let account = AccountId::try_from("nextcloud-live").unwrap();
     let provider = connect(&addr, &user, &pass).await;
-    Some((provider, AccountId::try_from("nextcloud-live").unwrap()))
+    Some((
+        common::OnCalendar::named(provider, &account, CALENDAR).await,
+        account,
+    ))
 }
 
 /// The well-known redirect leads to `/remote.php/dav/`, which challenges, and the principal
@@ -134,7 +137,7 @@ async fn nextcloud_calendar_sync_loop() {
     let host_zone = TimeZoneId::iana("Europe/Amsterdam").unwrap();
 
     let report = sync_calendar(
-        &provider,
+        &provider.provider,
         &store,
         &account,
         WorkerId::new("live"),
@@ -146,9 +149,21 @@ async fn nextcloud_calendar_sync_loop() {
     .expect("sync_calendar");
     assert!(
         report.calendars.upserted >= 3,
-        "every calendar in the home is listed, not only the bound one"
+        "every calendar in the home is listed"
+    );
+    assert_eq!(
+        report.scopes.len() as u64,
+        report.calendars.upserted as u64,
+        "and every listed calendar syncs under a scope of its own"
     );
 
+    common::many_calendars::the_second_calendar_syncs_under_its_own_scope(
+        &provider.provider,
+        &store,
+        &account,
+        &report,
+    )
+    .await;
     let event_scope = provider.event_scope(&account);
     let event_keys = store.object_keys(&event_scope).await.unwrap();
     assert_eq!(event_keys.len(), 6, "six seed calendar resources stored");
@@ -184,7 +199,7 @@ async fn nextcloud_calendar_sync_loop() {
     assert_eq!(total, 12);
 
     let second = sync_calendar(
-        &provider,
+        &provider.provider,
         &store,
         &account,
         WorkerId::new("live"),
@@ -194,14 +209,7 @@ async fn nextcloud_calendar_sync_loop() {
     )
     .await
     .expect("second sync_calendar");
-    assert_eq!(
-        second.events.applied.upserted, 0,
-        "no event changes on a re-sync"
-    );
-    assert_eq!(
-        second.events.applied.tombstoned, 0,
-        "nothing tombstoned on a re-sync"
-    );
+    common::many_calendars::a_quiet_resync_asks_no_calendar(&second);
 }
 
 /// Nextcloud loads SabreDAV's scheduling plugin, so its `OPTIONS` reports

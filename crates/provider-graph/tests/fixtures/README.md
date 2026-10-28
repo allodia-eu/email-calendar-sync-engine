@@ -52,6 +52,7 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/draft_patched.json` | `PATCH /me/messages/{id}` on a draft | the in-place rewrite: same `id`, same `internetMessageId`, `hasAttachments` echoed back so the caller can tell whether it had to fall back (see Mail-write finding 15) |
 | `error/draft_delete_not_found.json` | `POST /me/messages/{id}/permanentDelete` on a draft already purged | the `404` a retried draft delete meets (see Mail-write finding 16) |
 | `error/draft_delete_already_deleted.json` | `DELETE /me/messages/{id}` on an already-moved message | the `403 ErrorCannotDeleteObject` that also means "not there" (see Mail-write finding 16) |
+| `error/mime_content_conversion_failed.json` | `GET /me/messages/{id}/$value` on a message Exchange could not convert on arrival | the `500` that is permanent for that message (see `graph.md`, "A message Exchange cannot give back as MIME") |
 | `error/photo_image_not_found.json` | `GET /me/photos/240x240/$value` with no photo set | the 404 that means "there is no image" |
 | `error/photo_invalid_size.json` | `GET /me/photos/999x999/$value` | the 404 that means "that size is not offered" (see Finding 16) |
 | `me.json` | `GET /me` | account identity probe |

@@ -105,6 +105,24 @@ pub trait Store: Send + Sync {
     async fn set_expansion_window(&self, lease: &SyncLease, window: &ExpansionWindow)
     -> Result<()>;
 
+    /// Extends `lease` to `ttl` from now, for as long as its pass is running.
+    ///
+    /// A pass can outlast any fixed lease: a backfill paced under a server's quota runs for as
+    /// long as the mailbox is large. Without renewal its lease lapses mid-pass, the next sync
+    /// claims the scope, and the two passes fence each other out commit by commit. The
+    /// orchestrator renews well inside the TTL. The [`SyncLease`] handle keeps the expiry it was
+    /// claimed with; only the stored lease moves.
+    ///
+    /// # Errors
+    ///
+    /// `StoreError::StaleLease` if `lease`'s token is no longer current (another worker has
+    /// claimed the scope since), or `StoreError::Backend` on a backend failure.
+    async fn renew_sync_scope_lease(
+        &self,
+        lease: &SyncLease,
+        ttl: core::time::Duration,
+    ) -> Result<()>;
+
     /// Releases a scope lease before its TTL so a finished worker does not block
     /// the next sync for the full lease window. Consumes the lease: it must not be
     /// used after release.

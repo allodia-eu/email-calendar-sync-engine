@@ -48,6 +48,7 @@ mod gate;
 mod hand_over;
 mod observed;
 mod observer;
+mod pace;
 mod policy;
 mod send;
 #[cfg(any(test, feature = "test-server"))]
@@ -68,6 +69,8 @@ pub use user_agent::{InvalidUserAgent, UserAgent};
 mod classify_send_tests;
 #[cfg(test)]
 mod gate_tests;
+#[cfg(test)]
+mod pace_tests;
 #[cfg(test)]
 mod send_test_support;
 #[cfg(test)]

@@ -3,13 +3,14 @@
 //!
 //! The collection href is the calendar's stable id (and the membership key its
 //! events reference), mirroring how the JMAP adapter uses the JMAP object id. The
-//! display name, description, color, and **access rights** come from the PROPFIND
-//! props; the remaining richer fields (default reminders, timezone) are left at
+//! display name, description, color, **access rights** and the collection tag come from the
+//! PROPFIND props; the remaining richer fields (default reminders, timezone) are left at
 //! their defaults for this read slice.
 
 use engine_core::{
     calendar::{Calendar, CalendarAccess},
     ids::CalendarId,
+    version::CollectionTag,
 };
 
 use crate::{
@@ -38,6 +39,17 @@ pub(crate) fn calendar_from_response(response: &DavResponse) -> Result<Calendar,
     calendar.color = response.props.get("calendar-color").map(str::to_owned);
     calendar.access = access_from_privileges(&response.props);
     Ok(calendar)
+}
+
+/// The collection's contents marker: its `DAV:sync-token` (RFC 6578 §4), which by definition
+/// is what a `sync-collection` report would answer now, or else the CalendarServer `getctag`
+/// a server without the report keeps. An empty value is no marker.
+pub(crate) fn collection_tag(props: &Props) -> Option<CollectionTag> {
+    ["sync-token", "getctag"]
+        .into_iter()
+        .filter_map(|name| props.get(name))
+        .find(|value| !value.is_empty())
+        .map(CollectionTag::new)
 }
 
 /// Maps the server's `DAV:current-user-privilege-set` (RFC 3744 §5.4) onto the
@@ -144,5 +156,38 @@ mod tests {
         let response = &parse_multistatus(xml).unwrap().responses[0];
         let calendar = calendar_from_response(response).unwrap();
         assert_eq!(calendar.name, "work");
+    }
+
+    /// The tag of a listed collection whose `200` propstat carries `props`.
+    fn listed_tag(props: &str) -> Option<String> {
+        let xml = format!(
+            "<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\" xmlns:CS=\"http://calendarserver.org/ns/\"><D:response><D:href>/dav/cal/u/work/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/><C:calendar/></D:resourcetype>{props}</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"
+        );
+        let response = &parse_multistatus(&xml).unwrap().responses[0];
+        collection_tag(&response.props).map(|tag| tag.as_str().to_owned())
+    }
+
+    #[test]
+    fn the_sync_token_is_the_collection_tag_ahead_of_the_ctag() {
+        assert_eq!(
+            listed_tag(
+                "<D:sync-token>https://x/sync/7</D:sync-token><CS:getctag>\"22\"</CS:getctag>"
+            )
+            .as_deref(),
+            Some("https://x/sync/7"),
+        );
+    }
+
+    #[test]
+    fn a_server_without_a_sync_token_is_tagged_by_its_ctag() {
+        assert_eq!(
+            listed_tag("<D:sync-token/><CS:getctag>\"22\"</CS:getctag>").as_deref(),
+            Some("\"22\""),
+        );
+    }
+
+    #[test]
+    fn a_collection_with_neither_has_no_tag() {
+        assert_eq!(listed_tag(""), None);
     }
 }

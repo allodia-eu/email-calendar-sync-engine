@@ -250,7 +250,7 @@ async fn source_discovery_and_paginated_snapshot_are_complete() {
 }
 
 #[tokio::test]
-async fn deltas_tombstones_token_recovery_and_permissions_are_source_local() {
+async fn deltas_tombstones_and_permissions_are_source_local() {
     let delta = GoogleContactProvider::other_contacts(fake_client(vec![(
         "syncToken=old",
         json!({
@@ -274,30 +274,6 @@ async fn deltas_tombstones_token_recovery_and_permissions_are_source_local() {
             SyncUpdate::Delta { changed, removed, .. }
                 if changed.len() == 1 && removed.len() == 1
         )
-    ));
-
-    let recovered = GoogleContactProvider::connections(fake_client_fallible(vec![
-        (
-            "syncToken=expired",
-            Err((410, json!({"error": {"status": "EXPIRED_SYNC_TOKEN"}}))),
-        ),
-        (
-            "requestSyncToken=true",
-            Ok(json!({
-                "connections": [{"resourceName": "people/recovered"}],
-                "nextSyncToken": "fresh"
-            })),
-        ),
-    ]))
-    .sync_contacts(&account(), Some(&SyncState::new("expired")))
-    .await
-    .unwrap();
-    assert!(matches!(
-        recovered,
-        ContactSourceSync::Available {
-            cursor_recovered: true,
-            sync,
-        } if matches!(sync.update, SyncUpdate::Snapshot { .. })
     ));
 
     let forbidden = vec![(

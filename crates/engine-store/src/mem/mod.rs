@@ -31,6 +31,7 @@ use engine_core::{
     },
     sync::{SyncObject, SyncScope, SyncState},
     time::{ExpansionWindow, UtcDateTime},
+    version::CollectionTag,
     write::{IdempotencyKey, PendingOp, PendingOpId},
 };
 use serde_json::Value;
@@ -84,6 +85,8 @@ pub(super) struct ScopeCell {
     state: Option<SyncState>,
     /// The window this scope's occurrence rows are materialized over (event scopes only).
     window: Option<ExpansionWindow>,
+    /// The collection tag recorded with `state`.
+    collection_tag: Option<CollectionTag>,
     objects: HashMap<ProviderKey, Value>,
     fts: HashMap<ProviderKey, Vec<FtsField>>,
     occurrences: HashMap<ProviderKey, Vec<OccurrenceRow>>,
@@ -104,6 +107,7 @@ impl ScopeCell {
             lease_expiry: None,
             state: None,
             window: None,
+            collection_tag: None,
             objects: HashMap::new(),
             fts: HashMap::new(),
             occurrences: HashMap::new(),

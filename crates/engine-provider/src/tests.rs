@@ -4,7 +4,7 @@
 
 use async_trait::async_trait;
 use engine_core::{
-    ids::{AccountId, MailboxId, MessageId},
+    ids::{AccountId, CalendarId, MailboxId, MessageId, ProviderKey},
     mail::{Mailbox, Message},
     membership::Memberships,
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
@@ -80,6 +80,10 @@ impl CalendarWrites for FakeJmap {}
 
 pub(crate) fn account() -> AccountId {
     AccountId::try_from("acct-1").unwrap()
+}
+
+fn calendar() -> CalendarId {
+    CalendarId::new(ProviderKey::new("/cal/").unwrap())
 }
 
 #[tokio::test]
@@ -239,7 +243,7 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
         }
     );
     assert_eq!(
-        bare.event_scope(&account()),
+        bare.event_scope(&account(), &calendar()),
         SyncScope::JmapType {
             account: account(),
             data_type: JmapDataType::CalendarEvent,
@@ -258,7 +262,9 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
         stream_first,
         bare.sync_email(&account(), None).await.unwrap_err(),
         bare.sync_calendars(&account(), None).await.unwrap_err(),
-        bare.sync_events(&account(), None).await.unwrap_err(),
+        bare.sync_events(&account(), &calendar(), None)
+            .await
+            .unwrap_err(),
     ];
     for err in &rejected {
         assert_eq!(err.class(), FailureClass::InvalidState);
@@ -290,14 +296,14 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
 /// A stored event as a sync hands it back — the base every edit and delete is built from.
 fn stored_event() -> engine_core::calendar::Event {
     use engine_core::{
-        ids::{CalendarId, EventId, ProviderKey, Uid},
+        ids::{EventId, Uid},
         time::{CalendarDateTime, LocalDateTime, TimeZoneId},
     };
 
     engine_core::calendar::Event::new(
         EventId::try_from("/cal/e.ics").unwrap(),
         Uid::new("e@host").unwrap(),
-        Memberships::of_one(CalendarId::new(ProviderKey::new("/cal/").unwrap())),
+        Memberships::of_one(calendar()),
         CalendarDateTime::Zoned {
             local: "2026-08-01T09:00:00".parse::<LocalDateTime>().unwrap(),
             zone: TimeZoneId::iana("Europe/Amsterdam").unwrap(),
@@ -309,17 +315,14 @@ fn stored_event() -> engine_core::calendar::Event {
 async fn calendar_write_rejections<P: Provider>(
     provider: &P,
 ) -> Vec<engine_core::error::FailureClass> {
-    use engine_core::{
-        ids::{CalendarId, ProviderKey},
-        raw::RawIcal,
-    };
+    use engine_core::raw::RawIcal;
 
     use crate::{EventDeletion, EventDraft, EventEdit, EventPatch, EventWrite, PatchTarget};
 
     let base = stored_event();
     let stamp = "2026-07-14T10:00:00Z".parse().unwrap();
     let draft = EventDraft::new(
-        CalendarId::new(ProviderKey::new("/cal/").unwrap()),
+        calendar(),
         base.uid.clone(),
         "Standup",
         base.start.clone(),
@@ -446,14 +449,19 @@ async fn calendar_methods_default_to_unsupported_with_jmap_scopes() {
         }
     );
     assert_eq!(
-        provider.event_scope(&account()),
+        provider.event_scope(&account(), &calendar()),
         SyncScope::JmapType {
             account: account(),
             data_type: JmapDataType::CalendarEvent,
         }
     );
     assert!(provider.sync_calendars(&account(), None).await.is_err());
-    assert!(provider.sync_events(&account(), None).await.is_err());
+    assert!(
+        provider
+            .sync_events(&account(), &calendar(), None)
+            .await
+            .is_err()
+    );
 }
 
 #[test]

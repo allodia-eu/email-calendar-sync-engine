@@ -498,6 +498,17 @@ limitation, not a silent one.
 
 ## Known limitations (documented, not bugs)
 
+- **A message Exchange cannot give back as MIME.** Exchange converts a message to its own
+  format on arrival and rebuilds the MIME for `$value` from that. When the conversion fails on
+  arrival, it keeps the message with an attachment of its own naming the cause, and every
+  `$value` for it, v1.0 and beta alike, answers `500 ErrorMimeContentConversionFailed`. The JSON
+  read of the same message and its attachments works. Seen on two meeting cancellations whose
+  MIME `method=` said `REQUEST` while the iCalendar said `CANCEL`, which RFC 6047 §2.4 forbids
+  ("The value MUST be the same (ignoring case) as the value of the "METHOD" property"); Exchange's
+  attachment read "Inbound Mime method and ICAL method mismatch". The error is permanent for that
+  message, and the only Graph error that is an item the provider can never serve
+  (`ProviderError::item_unavailable`, `error.rs`), so a host stops asking for its body instead
+  of retrying it on every pass.
 - **Editing one occurrence: the same derived id, and Graph flips its `type` to `exception`.** `PATCH /me/events/OID.<seriesMasterId>.<date>` applies to that occurrence alone — measured: `200`, and the series keeps its own subject. The `ETag` the caller read is the *series'*, so it is not sent; the occurrence's own revision is not something a base of the series carries.
 
   ⚠️ **The patch makes `id` opaque, but `occurrenceId` keeps the derived form.** Once an
@@ -552,15 +563,21 @@ limitation, not a silent one.
 
 ## Calendar (implemented)
 
-`GraphCalendarProvider` implements the calendar read/sync **and** write spine, bound to
-one calendar (`SyncScope::GraphCalendar`), with the calendar list under the per-account
-`SyncScope::GraphCalendarList` — the same shape as the mail folder/folder-list split.
+`GraphCalendarProvider` implements the calendar read/sync **and** write spine for every
+calendar of the mailbox: each calendar's events under a `SyncScope::GraphCalendar` of their
+own, with the calendar list under the per-account `SyncScope::GraphCalendarList`, the same
+shape as the mail folder/folder-list split. A create goes to the draft's calendar; a patch or
+delete addresses the event by its mailbox-wide id.
 Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normalize`
 (event/calendar JSON → model) + `cal_recur` (`patternedRecurrence` → `Recurrence`) +
 `cal_override` (changed/removed occurrences → `Recurrence::overrides`), `windows_zones`
 (Windows→IANA), `cal_write` (create/patch/delete), `calendar` (the provider). It advertises
 `calendars` **and** `calendar_writes(WriteGuard::Enforced)`.
 
+- **A calendar's write access is its `canEdit`.** The calendar list reports, per calendar,
+  whether the signed-in user may change its events: false on a calendar shared read-only and
+  on a subscribed one. `false` maps to `CalendarAccess::reader()`, so a host offers no event
+  there; a calendar without the field keeps the owner's access.
 - **`calendarView/delta` is the source, masters + local expansion.** Event delta is
   `GET /me/calendars/{id}/calendarView/delta?startDateTime=…&endDateTime=…` (v1.0's only
   windowed delta; `/me/events` has no v1.0 delta). It returns the series `seriesMaster`

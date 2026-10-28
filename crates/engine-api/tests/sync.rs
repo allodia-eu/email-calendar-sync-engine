@@ -23,9 +23,9 @@ use engine_core::{
     time::{CalendarDateTime, LocalDateTime},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, MailEdit,
-    MessageReport, Provider, ProviderError, ProviderResult, ReportControls, ReportEvidence,
-    ReportVerdict, ReportVerdicts, ScopeSync, SubmissionReceipt,
+    CalendarListing, CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream,
+    MailEdit, MessageReport, Provider, ProviderError, ProviderResult, ReportControls,
+    ReportEvidence, ReportVerdict, ReportVerdicts, ScopeSync, SubmissionReceipt,
 };
 use tokio::sync::oneshot;
 
@@ -209,7 +209,7 @@ impl Provider for FakeProvider {
         &self,
         _account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Calendar>> {
+    ) -> ProviderResult<CalendarListing> {
         if self.fail {
             return Err(ProviderError::retryable("provider is offline"));
         }
@@ -217,18 +217,21 @@ impl Provider for FakeProvider {
             return Ok(ScopeSync::new(
                 SyncUpdate::delta(Vec::new(), Vec::new()),
                 SyncState::new("cal-2"),
-            ));
+            )
+            .into());
         }
         let present = self.calendars.iter().map(|c| c.id.key().clone()).collect();
         Ok(ScopeSync::new(
             SyncUpdate::snapshot(self.calendars.clone(), present),
             SyncState::new("cal-1"),
-        ))
+        )
+        .into())
     }
 
     async fn sync_events(
         &self,
         _account: &AccountId,
+        _calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         if cursor.is_some() {

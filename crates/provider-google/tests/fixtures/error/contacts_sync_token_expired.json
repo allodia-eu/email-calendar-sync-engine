@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": 400,
+    "message": "Sync token is expired. Clear local cache and retry call without the sync token.",
+    "status": "FAILED_PRECONDITION",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "EXPIRED_SYNC_TOKEN",
+        "domain": "people.googleapis.com"
+      }
+    ]
+  }
+}

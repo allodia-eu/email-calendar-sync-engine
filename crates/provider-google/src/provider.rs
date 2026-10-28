@@ -11,7 +11,6 @@ use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use engine_core::{
-    error::FailureClass,
     ids::{AccountId, ProviderKey},
     mail::{Mailbox, Message},
     raw::RawMime,
@@ -19,10 +18,10 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, IdentityControls,
+    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailStream, IdentityControls,
     KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites,
-    PageToken, PassMode, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
-    ScopeSync, SenderIdentity, SenderIdentityId, SubmissionReceipt, SyncKind, split_page,
+    Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts, ScopeSync,
+    SenderIdentity, SenderIdentityId, SubmissionReceipt,
 };
 
 use crate::{fetch, mutate, named_labels::Labels, submit, transport::GoogleClient};
@@ -199,89 +198,18 @@ impl Provider for GmailProvider {
         _fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
-        // A sync-depth window bounds the *snapshot* via `q: after:<floor>`. A delta
+        // A sync-depth window bounds the *backfill* via `q: after:<floor>`. A delta
         // cannot carry one (`history.list` takes a `startHistoryId`, not a query), so a
         // relabelled old message is reported whatever its date; the engine drops it on
         // apply (`SyncWindow::admits`), which is where the delta's bound holds for every
-        // adapter. The snapshot's bound is this query, and is not re-checked there.
-        let floor = window.floor();
-        Box::pin(async_stream::try_stream! {
-            let mut page_token: Option<PageToken> = None;
-            let mut mode: Option<PassMode> = None;
-            // The delta cursor (a historyId); dropped to `None` to restart as a snapshot.
-            let mut cursor = cursor;
-            // The account historyId captured before a snapshot enumeration, carried as
-            // the snapshot's persisted cursor.
-            let mut snapshot_cursor: Option<SyncState> = None;
-            let named = self.labels.resolved(&self.client).await?;
-            let final_cursor = loop {
-                let page = if let Some(delta_cursor) = cursor {
-                    match fetch::delta_page(&self.client, delta_cursor, page_token.as_ref(), &named)
-                        .await
-                    {
-                        Ok(page) => page,
-                        // Gmail has aged the stored historyId out of its window (`404`):
-                        // it cannot produce a delta from that cursor again. Drop it and
-                        // restart the pass as a full snapshot. Only before the first page
-                        // is committed (page_token none) and only on the first call —
-                        // exactly like the Graph 410 restart: restarting mid-pass would
-                        // leave later pages `Delta`, contributing nothing to `present`, and
-                        // the reconcile would tombstone everything they returned.
-                        Err(err)
-                            if page_token.is_none()
-                                && err.failure_class() == FailureClass::NeedsResync =>
-                        {
-                            cursor = None;
-                            continue;
-                        }
-                        Err(err) => Err(err)?,
-                    }
-                } else {
-                    // Snapshot: capture the account cursor once, before the first page, so
-                    // messages arriving mid-snapshot are re-reported by the first delta.
-                    if snapshot_cursor.is_none() {
-                        snapshot_cursor = Some(fetch::current_history_id(&self.client).await?);
-                    }
-                    let history = snapshot_cursor.as_ref().expect("captured above");
-                    fetch::snapshot_page(&self.client, page_token.as_ref(), floor, history, &named)
-                        .await?
-                };
-
-                // Decide the pass mode once, from the first page: a snapshot reconciles
-                // (its present set tombstones absent rows); a delta is additive.
-                let pass_mode = *mode.get_or_insert(match page.kind {
-                    SyncKind::Snapshot => PassMode::Reconcile,
-                    SyncKind::Delta => PassMode::Additive,
-                });
-                let is_last = page.next_page.is_none();
-                let next_cursor = page.next_cursor.clone();
-                for chunk in split_page(
-                    pass_mode,
-                    page.changed,
-                    page.patched,
-                    page.removed,
-                    page.present,
-                    None,
-                    chunk_size,
-                ) {
-                    yield chunk;
-                }
-                if is_last {
-                    break next_cursor;
-                }
-                page_token = page.next_page;
-            };
-            // The final marker carries the cursor (and, for reconcile, tombstones against
-            // the accumulated present set).
-            yield match mode.unwrap_or(PassMode::Additive) {
-                PassMode::Additive => {
-                    EmailChunk::additive(Vec::new(), Vec::new(), None, final_cursor)
-                }
-                PassMode::Reconcile => {
-                    EmailChunk::reconcile_last(Vec::new(), Vec::new(), None, final_cursor)
-                }
-            };
-        })
+        // adapter.
+        crate::pass::stream(
+            &self.client,
+            &self.labels,
+            cursor,
+            window.floor(),
+            chunk_size,
+        )
     }
 
     async fn fetch_message_source(

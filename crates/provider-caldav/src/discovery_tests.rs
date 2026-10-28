@@ -214,8 +214,30 @@ async fn lists_only_calendar_collections() {
     // The home itself is a plain collection and is filtered out.
     assert_eq!(calendars.len(), 1);
     assert_eq!(
-        calendars[0].id.as_str(),
+        calendars[0].0.id.as_str(),
         "/dav/cal/alice%40test.local/default/"
+    );
+}
+
+/// A home the way iCloud lists one: a calendar of events, a reminders list that holds tasks
+/// alone, and a calendar that does not say which components it holds; and one whose component
+/// set is present but empty.
+const HOME_WITH_REMINDERS: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response><D:href>/1/calendars/home/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/><C:calendar/></D:resourcetype><C:supported-calendar-component-set><C:comp name="VEVENT"/></C:supported-calendar-component-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:response><D:href>/1/calendars/tasks/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/><C:calendar/></D:resourcetype><C:supported-calendar-component-set><C:comp name="VTODO"/></C:supported-calendar-component-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:response><D:href>/1/calendars/silent/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/><C:calendar/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat><D:propstat><D:prop><C:supported-calendar-component-set/></D:prop><D:status>HTTP/1.1 404 Not Found</D:status></D:propstat></D:response><D:response><D:href>/1/calendars/empty/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/><C:calendar/></D:resourcetype><C:supported-calendar-component-set/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
+
+#[tokio::test]
+async fn a_collection_of_tasks_alone_is_not_listed_as_a_calendar() {
+    let exec = Replay::new(vec![ok(HOME_WITH_REMINDERS)]);
+    let calendars = list_calendars(&exec, "/1/calendars/").await.unwrap();
+    let hrefs: Vec<&str> = calendars.iter().map(|(c, _)| c.id.as_str()).collect();
+    // One that names no components, absent or empty, holds any of them (RFC 4791 §5.2.3),
+    // events included.
+    assert_eq!(
+        hrefs,
+        [
+            "/1/calendars/home/",
+            "/1/calendars/silent/",
+            "/1/calendars/empty/"
+        ]
     );
 }
 

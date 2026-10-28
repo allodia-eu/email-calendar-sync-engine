@@ -231,37 +231,52 @@ where
         for (index, (spec, group_low)) in groups.into_iter().enumerate() {
             conn.uid_fetch_stream_start(&spec, FETCH_ITEMS).await?;
             let mut buf: Vec<Message> = Vec::new();
-            // The rows whose headers left the attachment flag open wait for the group's
-            // metadata to end, then are settled at once over this connection and any spare
-            // ones (`crate::metadata_fetch`); a row the server returns no structure for goes
-            // out as it is.
+            // A row goes out as its headers arrive, so the list fills before the structure fetch
+            // below has run: on Yahoo most mail is multipart and that fetch takes seconds a
+            // group. One the headers left the attachment flag open for goes out as having none,
+            // which is how an open row reads, and a copy waits for the group's metadata to end;
+            // those are then settled at once over this connection and any spare ones
+            // (`crate::metadata_fetch`), and only a row whose structure shows an attachment goes
+            // out again, before the group's checkpoint.
             let mut open: Vec<FetchRow> = Vec::new();
-            let mut ready: Vec<FetchRow> = Vec::new();
+            let mut corrected: Vec<FetchRow> = Vec::new();
             let mut settled = false;
             loop {
-                let row = match conn.next_fetch_row().await? {
-                    Some(row) if needs_structure(&row) => {
-                        open.push(row);
-                        continue;
+                let (row, first_seen) = match conn.next_fetch_row().await? {
+                    Some(row) => {
+                        if needs_structure(&row) {
+                            open.push(row.clone());
+                        }
+                        (row, true)
                     }
-                    Some(row) => row,
                     None if !settled && !open.is_empty() => {
                         let helpers =
                             spare_helpers(pool, mailbox.as_str(), uid_validity, open.len()).await;
-                        ready = settle_across(conn, helpers, &mut open).await?;
+                        corrected = settle_across(conn, helpers, &mut open).await?;
+                        corrected.retain(|row| row.has_attachment == Some(true));
                         settled = true;
                         continue;
                     }
-                    None => match ready.pop().or_else(|| open.pop()) {
-                        Some(row) => row,
+                    None => match corrected.pop() {
+                        Some(row) => (row, false),
                         None => break,
                     },
                 };
                 let message = message_from_fetch(&row, mailbox, uid_validity);
-                if is_fresh {
+                if is_fresh && first_seen {
                     present.push(message.id.key().clone());
                 }
-                buf.push(message);
+                // A correction whose first copy has not gone out yet takes its place, so one chunk
+                // never names a message twice.
+                let held = if first_seen {
+                    None
+                } else {
+                    buf.iter_mut().find(|held| held.id == message.id)
+                };
+                match held {
+                    Some(held) => *held = message,
+                    None => buf.push(message),
+                }
                 if chunk_size != 0 && buf.len() >= chunk_size {
                     // An intermediate chunk of this group: visible, cursor held.
                     yield EmailChunk::additive_held(core::mem::take(&mut buf), Vec::new(), total);

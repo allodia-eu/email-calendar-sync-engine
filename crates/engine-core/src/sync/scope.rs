@@ -137,8 +137,7 @@ pub enum SyncScope {
     /// Graph calendar sync is per calendar and inherently **time-windowed**
     /// (`/me/calendars/{id}/calendarView/delta` requires a start/end date range, and
     /// the returned `deltaLink` encodes it), so — like [`GraphFolder`](Self::GraphFolder)
-    /// for mail — a Graph calendar provider is bound to one calendar for events; the
-    /// cross-calendar fan-out is the orchestrator's job.
+    /// for mail — each calendar's events sync under a scope of their own.
     GraphCalendar {
         /// The account.
         account: AccountId,
@@ -205,9 +204,8 @@ pub enum SyncScope {
     ///
     /// Google Calendar `events.list` returns a per-calendar `nextSyncToken` cursor and
     /// (unlike Graph's *mandatory* `calendarView` window) an **optional** `timeMin`, so
-    /// — like [`GraphCalendar`](Self::GraphCalendar) — a Google calendar provider is
-    /// bound to one calendar for events; the cross-calendar fan-out is the
-    /// orchestrator's job.
+    /// — like [`GraphCalendar`](Self::GraphCalendar) — each calendar's events sync under a
+    /// scope of their own.
     GoogleCalendar {
         /// The account.
         account: AccountId,
