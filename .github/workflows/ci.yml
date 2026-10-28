@@ -86,7 +86,7 @@ jobs:
       - name: Install nightly rustfmt (pinned)
         uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
         with:
-          toolchain: nightly-2026-07-07
+          toolchain: nightly-2026-10-28
           components: rustfmt
 
       - name: Install the pinned Rust + clippy
@@ -118,7 +118,7 @@ jobs:
         run: scripts/ci/check-fixture-identifiers.sh
 
       - name: Format
-        run: cargo +nightly-2026-07-07 fmt --all --check
+        run: cargo +nightly-2026-10-28 fmt --all --check
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings

@@ -251,7 +251,8 @@ async fn connect_reports_each_hop_then_the_discovered_calendar_home() {
             Credentials::Basic {
                 username: "alice".to_owned(),
                 password: "pw".to_owned(),
-            }, engine_http::test_server::user_agent(),
+            },
+            engine_http::test_server::user_agent(),
         )
         // The blanket `Fn` impl: a host hands over a closure, not a named type.
         .with_connect_observer(std::sync::Arc::new(
