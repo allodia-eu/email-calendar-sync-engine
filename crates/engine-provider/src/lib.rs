@@ -90,7 +90,7 @@ pub use mailbox_write::MailboxWrites;
 pub use page::{PageToken, SyncKind, SyncPage};
 pub use provider::Provider;
 #[cfg(feature = "http")]
-pub use redirect::redirect_target;
+pub use redirect::{redirect_refused, redirect_target};
 pub use report::{
     MessageReport, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
 };

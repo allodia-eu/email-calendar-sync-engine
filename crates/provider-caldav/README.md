@@ -94,8 +94,8 @@ sequenceDiagram
    one, and a client must follow ([RFC 6764] §5). Fastmail redirects to `/dav/calendars` on the
    same host; iCloud answers the well-known path directly. A start URL with a path is asked
    as it is, and one naming only a server is asked at its well-known path. A redirect from TLS
-   to plaintext on the same host, which a server behind a TLS-terminating proxy sends, is
-   followed over TLS; one to any other host fails the walk.
+   to plaintext on the same host and port, which a server behind a TLS-terminating proxy sends, is
+   followed over TLS; one to any other host or port fails the walk.
 2. **Who am I?** The `current-user-principal` ([RFC 5397]). When the walk starts at a stored
    principal, the first answer names it again along with the home.
 3. **Where is my stuff?** The principal's home-set. It is a full URL, and nothing requires it

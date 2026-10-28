@@ -123,7 +123,7 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   origin change the advertised `apiUrl` belongs to the new host, and rebasing it onto
   the old one aims every method call at a server that never had the session. The same
   helper refuses a hop that leaves TLS, since every discovery request carries the
-  account's credentials; one to the same host naming no port of its own is taken over TLS
+  account's credentials; one to the same host and port is taken over TLS
   instead.
 
   ⚠️ **Know what that trust buys and what it costs.** The JMAP transport authenticates

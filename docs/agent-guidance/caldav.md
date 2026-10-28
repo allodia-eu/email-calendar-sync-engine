@@ -217,7 +217,7 @@ are split escape-aware so the writer and the parser agree.
   read only after its origin has the credential (`discovery::authenticate_before_reading`).
   A host resumes at the principal it stored (`with_discovery_path` with the URL
   `principal_url()` reported), never at a home. A plaintext origin after TLS is refused
-  outright (a redirect to the same host naming no port of its own is first taken over TLS,
+  outright (a redirect to the same host and port is first taken over TLS,
   by `engine_provider::redirect_target`), and **that refusal lives in `DavExecutor::trust_origin`, not in
   `redirect_href`**: a walk starts at a bare well-known path, which names no scheme, so on the
   first hop only the connection knows it is being asked to give up TLS. A refusal fails the
