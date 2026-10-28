@@ -116,7 +116,7 @@ async fn live_body_fetch_concurrency() {
             "  {width:>2} in flight: {seconds:6.2}s  {:6.1} bodies/s  {fetched}/{} fetched{}",
             count_as_f64(fetched) / seconds,
             messages.len(),
-            failure.map_or(String::new(), |f| format!("  — first failure {f}")),
+            failure.map_or_default(|f| format!("  — first failure {f}")),
         );
     }
 }

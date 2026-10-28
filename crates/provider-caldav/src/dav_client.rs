@@ -371,7 +371,7 @@ impl DavExecutor for DavClient {
             Ok(bytes)
         } else {
             Err(
-                CalDavError::status(status, String::from_utf8_lossy(&bytes).into_owned())
+                CalDavError::status(status, String::from_utf8_lossy_owned(bytes))
                     .with_retry_after(wait),
             )
         }

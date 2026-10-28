@@ -153,9 +153,8 @@ fn parse(text: &str) -> BTreeMap<String, String> {
         };
         let value = value.trim();
         let value = value
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+            .strip_circumfix('"', '"')
+            .or_else(|| value.strip_circumfix('\'', '\''))
             .unwrap_or(value);
         values.insert(key.trim().to_owned(), value.to_owned());
     }

@@ -356,7 +356,7 @@ fn inbox_hrefs_of(parties: &Parties, who: &ScratchAccount, uid: &str) -> Vec<Str
         .harness
         .dav_propfind_as(who.auth(), &Harness::scheduling_inbox_path_of(&who.address))
         .expect("PROPFIND the scheduling inbox");
-    let body = String::from_utf8_lossy(&listing.body).into_owned();
+    let body = String::from_utf8_lossy_owned(listing.body);
     body.split("<D:href>")
         .skip(1)
         .filter_map(|chunk| chunk.split("</D:href>").next())

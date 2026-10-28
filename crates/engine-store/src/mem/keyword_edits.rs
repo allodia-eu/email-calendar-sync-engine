@@ -46,7 +46,7 @@ impl Inner {
                 continue;
             }
             let server = row_keywords(cell, key);
-            let accepted = observed_from.map_or_else(Vec::new, |since| {
+            let accepted = observed_from.map_or_default(|since| {
                 self.edits(account, key, |op| {
                     op.state == PendingOpState::Succeeded
                         && op.settled_at.is_some_and(|at| at > since)

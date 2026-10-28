@@ -383,7 +383,7 @@ fn inbox_hrefs_of(harness: &Harness, who: (&str, &str), address: &str, uid: &str
     else {
         return Vec::new();
     };
-    let body = String::from_utf8_lossy(&listing.body).into_owned();
+    let body = String::from_utf8_lossy_owned(listing.body);
     body.split("<D:href>")
         .skip(1)
         .filter_map(|chunk| chunk.split("</D:href>").next())

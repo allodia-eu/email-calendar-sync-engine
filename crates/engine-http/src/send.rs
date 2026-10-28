@@ -348,7 +348,7 @@ impl Sent {
             // from a JSON or XML error document, and every provider here serves those as
             // UTF-8. Lossy rather than strict, for the same reason `text` is: a malformed
             // byte in a diagnostic body should not turn into a second failure.
-            return Ok(String::from_utf8_lossy(&body).into_owned());
+            return Ok(String::from_utf8_lossy_owned(body));
         }
         let mut response = self.response;
         let body = drain(&mut response).await?;

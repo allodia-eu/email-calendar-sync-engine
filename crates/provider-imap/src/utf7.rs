@@ -72,14 +72,7 @@ fn decode_base64_run(encoded: &str) -> Option<String> {
         .map(|c| if c == ',' { '/' } else { c })
         .collect();
     let octets = crate::base64::decode(&standard)?;
-    let (pairs, odd) = octets.as_chunks::<2>();
-    if !odd.is_empty() {
-        return None;
-    }
-    let units = pairs.iter().map(|&pair| u16::from_be_bytes(pair));
-    char::decode_utf16(units)
-        .collect::<Result<String, _>>()
-        .ok()
+    String::from_utf16be(&octets).ok()
 }
 
 /// Encodes a UTF-8 mailbox name into IMAP modified UTF-7, for a rev1 wire.

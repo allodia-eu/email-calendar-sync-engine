@@ -4,8 +4,8 @@ This is a Cargo workspace containing the PIM sync engine crates, provider adapte
 
 ## Prerequisites
 
-- **Rust** (stable, **1.96+**, edition 2024) via [rustup](https://rustup.rs/).
-  The repository pins `rust-version = "1.96"`.
+- **Rust** (stable, **1.99+**, edition 2024) via [rustup](https://rustup.rs/).
+  The repository pins `rust-version = "1.99"`.
 - For linting and formatting, the `rustfmt` and `clippy` components:
 
   ```sh

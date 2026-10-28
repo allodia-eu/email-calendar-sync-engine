@@ -404,11 +404,6 @@ pub(super) fn age_blobs(db: &std::path::Path) {
         .unwrap()
         .flatten()
     {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(entry.path())
-            .unwrap()
-            .set_modified(stale)
-            .unwrap();
+        std::fs::set_times(entry.path(), std::fs::FileTimes::new().set_modified(stale)).unwrap();
     }
 }

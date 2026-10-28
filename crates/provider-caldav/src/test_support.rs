@@ -185,7 +185,7 @@ pub(crate) fn mock_server_capturing(
             let request = engine_http::test_server::read_request_blocking(&mut stream);
             sink.lock()
                 .expect("seen lock")
-                .push(String::from_utf8_lossy(&request).into_owned());
+                .push(String::from_utf8_lossy_owned(request));
             let _ = stream.write_all(response.as_bytes());
         }
     });

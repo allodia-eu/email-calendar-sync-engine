@@ -106,10 +106,7 @@ pub fn split_unquoted(text: &str, delim: char) -> Vec<&str> {
 fn parse_param(segment: &str) -> Option<(String, String)> {
     let (key, value) = segment.split_once('=')?;
     let value = value.trim();
-    let value = value
-        .strip_prefix('"')
-        .and_then(|v| v.strip_suffix('"'))
-        .unwrap_or(value);
+    let value = value.strip_circumfix('"', '"').unwrap_or(value);
     Some((key.trim().to_ascii_uppercase(), value.to_owned()))
 }
 
