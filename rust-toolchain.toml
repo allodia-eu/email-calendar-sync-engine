@@ -15,7 +15,7 @@
 # Cargo.toml, and it moves independently.
 #
 # `cargo fmt` is the one exception: rustfmt.toml uses nightly-only options, so formatting runs on
-# the pinned nightly instead — `cargo +nightly-2026-07-07 fmt` (see AGENTS.md).
+# the pinned nightly instead — `cargo +nightly-2026-10-28 fmt` (see AGENTS.md).
 [toolchain]
 channel = "1.99.1"
 components = ["clippy"]

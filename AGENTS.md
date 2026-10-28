@@ -264,7 +264,7 @@ it — hand-wrap those lines yourself.
 Format on **nightly**: the workspace [`rustfmt.toml`](rustfmt.toml) uses nightly-only options
 (crate-granular grouped imports, `wrap_comments`, `style_edition = "2024"`,
 `error_on_line_overflow`, …), so a plain stable `cargo fmt` silently ignores them and leaves the
-repo unformatted. CI runs the fmt check on a **pinned** nightly (`nightly-2026-07-07`, in
+repo unformatted. CI runs the fmt check on a **pinned** nightly (`nightly-2026-10-28`, in
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)) so its output is reproducible against what
 you run locally; bump that pin **and** re-run fmt when intentionally adopting a newer nightly.
 
