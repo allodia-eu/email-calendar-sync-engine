@@ -15,9 +15,13 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Treat warnings (including `missing_docs`) as errors everywhere.
-  RUSTFLAGS: -D warnings
-  RUSTDOCFLAGS: -D warnings
+  # Treat warnings (including `missing_docs`) as errors everywhere: Cargo's `build.warnings`
+  # fails any build, clippy, test or doc run in which one of this workspace's crates emits a lint
+  # warning, and replays a fresh crate's warnings so a cached build fails too. Not
+  # `RUSTFLAGS: -D warnings`, which did the same but is part of every unit's fingerprint,
+  # dependencies included, so it gave each of them a second set of artifacts beside the one a
+  # plain `cargo` command builds (see AGENTS.md → "Required Verification").
+  CARGO_BUILD_WARNINGS: deny
   # `.cargo/config.toml` sends `build.build-dir` outside the checkout so worktrees share one copy
   # of the compile work. A runner has no worktrees, and the caching here is built around `target/`:
   # `Swatinem/rust-cache` saves that directory and a few `~/.cargo` subpaths and knows nothing about

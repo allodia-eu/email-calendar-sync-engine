@@ -8,7 +8,7 @@
 #
 # Bumping is a deliberate, standalone PR: a new stable can add default-warn rustc/clippy lints, and
 # this workspace denies all warnings (`[workspace.lints]` in the root Cargo.toml, plus
-# `RUSTFLAGS: -D warnings` in CI), so the bump is where those surface and get fixed — not a red
+# `CARGO_BUILD_WARNINGS: deny` in CI), so the bump is where those surface and get fixed — not a red
 # build on someone's unrelated change.
 #
 # This is a build pin, not the MSRV. The floor the crates promise is `rust-version` in the root
