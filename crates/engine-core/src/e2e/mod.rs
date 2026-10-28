@@ -8,6 +8,8 @@
 //!
 //! - [`Mechanism`] and [`CertificateId`] name *who* protected a message and *with which
 //!   certificate*, without mixing an OpenPGP fingerprint with anything else.
+//! - [`CertificateFacts`] is what a certificate says about itself at one instant: whether it is
+//!   usable, until when, for which addresses, and for what.
 //! - [`LayerKind`] says what one layer does.
 //! - [`SignatureVerdict`] reports what checking one signature found, as facts: whether a signer is
 //!   *trusted* is the host's decision, never the engine's.
@@ -20,12 +22,16 @@
 
 mod certificate;
 mod decryption;
+mod facts;
 mod summary;
 mod verdict;
 
 pub use certificate::{CertificateId, CertificateIdError, Mechanism};
 pub use decryption::{
     AlgorithmName, Decryption, DecryptionFailure, DecryptionOutcome, Integrity, Warning,
+};
+pub use facts::{
+    CertificateFacts, CertificateProblem, CertificateStatus, Revocation, RevocationReach,
 };
 pub use summary::{LayerKind, LayerSignatures, SignatureForm, Summary};
 pub use verdict::{
