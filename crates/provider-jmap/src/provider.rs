@@ -415,9 +415,7 @@ impl Provider for JmapProvider {
         Ok(crate::identity::set_name(executor, &account, identity, name).await?)
     }
 
-    /// The mailboxes the session lists as shared with this credential (`crate::shared`).
-    /// No request: the accounts map came with the session connect already fetched.
-    /// Resolving an address reads this list through the trait's default.
+    /// The session's shared accounts (`crate::shared`); the session was fetched at connect.
     async fn list_shared_mailboxes(&self) -> ProviderResult<Vec<SharedMailbox>> {
         Ok(crate::shared::list(self.executor.session()))
     }

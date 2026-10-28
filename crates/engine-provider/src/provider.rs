@@ -1,8 +1,4 @@
 //! The [`Provider`] trait: the one seam every adapter implements.
-//!
-//! Lifted out of the crate root purely for size — the trait is the crate's whole surface,
-//! and the root now carries the module docs, the module tree and the re-exports. Nothing
-//! about it changed in the move.
 
 use async_trait::async_trait;
 use engine_core::{
@@ -19,18 +15,14 @@ use crate::{
     ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SharedMailbox,
     SourceStream, SubmissionReceipt, error::unsupported,
 };
-// `Capabilities`, `EmailChunk` and `PageToken` are named only by the doc links here, but
-// rustdoc resolves those against the *module's* scope — a link that worked in the crate root
-// silently breaks on a move, and this crate denies rustdoc warnings, so the move would fail
-// the build rather than quietly produce dead links.
+// Named only by intra-doc links, which rustdoc resolves against this module's scope.
 #[allow(unused_imports, reason = "named by intra-doc links only")]
 use crate::{
     Capabilities, EmailChunk, IdentityControls, PageToken, PassMode, ReportControls, RsvpControls,
     SharedMailboxes,
 };
 
-/// A read/sync provider adapter for one account's mail (and, as slices land,
-/// calendar and submission).
+/// A read/sync provider adapter for one account's mail, calendar and submission.
 ///
 /// Each `sync_*` method fetches the changes for one scope since `cursor` (or a
 /// first full snapshot when `cursor` is `None`) and returns them as a
