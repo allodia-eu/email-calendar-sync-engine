@@ -105,7 +105,7 @@ fn apply_batch_borrows_its_parts() {
     let batch = ApplyBatch::new(&update, &derived, &recs, &next);
     assert!(batch.derived.is_empty());
     assert_eq!(batch.next_state.unwrap().as_str(), "cursor-2");
-    assert!(batch.reconcile.is_empty());
+    assert_eq!(batch.reconcile, []);
 
     // A streaming page leaves the cursor unchanged.
     let held = ApplyBatch::with_cursor(&update, &derived, &recs, None);

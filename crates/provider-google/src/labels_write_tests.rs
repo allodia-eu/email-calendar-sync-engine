@@ -97,7 +97,7 @@ async fn a_folder_that_already_exists_is_not_created_twice() {
     let receipt = edit(&client, &create).await.unwrap();
 
     assert_eq!(receipt.mailbox, Some(id("Label_2")));
-    assert!(writes(&log.lock().unwrap()).is_empty());
+    assert_eq!(writes(&log.lock().unwrap()), []);
 }
 
 #[tokio::test]
@@ -161,7 +161,7 @@ async fn a_name_another_label_holds_is_a_conflict_before_anything_is_written() {
     let err = edit(&client, &clash).await.unwrap_err();
 
     assert_eq!(err.class(), FailureClass::Conflict);
-    assert!(writes(&log.lock().unwrap()).is_empty());
+    assert_eq!(writes(&log.lock().unwrap()), []);
 }
 
 #[tokio::test]
@@ -328,7 +328,7 @@ async fn deleting_a_label_that_is_gone_sends_nothing() {
     .unwrap();
 
     assert_eq!(receipt.mailbox, None);
-    assert!(writes(&log.lock().unwrap()).is_empty());
+    assert_eq!(writes(&log.lock().unwrap()), []);
 }
 
 #[test]

@@ -77,7 +77,7 @@ fn a_server_advertising_no_mechanisms_still_takes_the_login_command() {
     let offer = imap_offer(&atoms("IMAP4rev1 UNSELECT IDLE NAMESPACE"));
     assert!(offer.password);
     assert!(!offer.oauth);
-    assert!(offer.mechanisms.is_empty());
+    assert_eq!(offer.mechanisms, [] as [String; 0]);
 }
 
 #[test]

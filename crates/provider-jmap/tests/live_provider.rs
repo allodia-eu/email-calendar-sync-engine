@@ -243,7 +243,7 @@ async fn live_submit_email() {
         )
         .await
         .expect("submit");
-    assert!(!receipt.email_key.as_str().is_empty());
+    assert_ne!(receipt.email_key.as_str(), "");
     assert_eq!(receipt.message_id.as_str(), "step4-live-send@test.local");
 }
 

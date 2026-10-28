@@ -33,7 +33,7 @@ fn stalwart_puts_its_shares_in_the_other_users_position() {
         }]
     );
     assert_eq!(namespaces.other_users[0].prefix, "Shared Folders");
-    assert!(namespaces.shared.is_empty());
+    assert_eq!(namespaces.shared, []);
     assert_eq!(namespaces.foreign().count(), 1);
 }
 

@@ -205,7 +205,7 @@ fn fetch_parses_uid_flags_internaldate_size_and_envelope() {
     assert_eq!(env.from[0].mailbox.as_deref(), Some("alice"));
     assert_eq!(env.from[0].host.as_deref(), Some("test.local"));
     assert_eq!(env.to[0].mailbox.as_deref(), Some("bob"));
-    assert!(env.cc.is_empty());
+    assert_eq!(env.cc, []);
     assert_eq!(
         env.message_id.as_deref(),
         Some("<baseline-0001@test.local>")
@@ -354,7 +354,7 @@ fn fetch_handles_a_missing_or_empty_references_header() {
 fn fetch_skips_unsolicited_flag_only_rows() {
     // A flag update with no UID is not a usable mail object; skip it, don't error.
     let rows = parse_fetch(&lines(&[r"2 FETCH (FLAGS (\Seen))"])).unwrap();
-    assert!(rows.is_empty());
+    assert_eq!(rows, []);
 }
 
 #[test]

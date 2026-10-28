@@ -82,15 +82,15 @@ async fn forget_account_purges_the_account_and_a_re_add_starts_clean() {
     // Forgetting the account drops its objects and scopes: reads are empty, and search
     // (which ranks over the derived rows) finds nothing.
     engine.forget_account(&account()).await.unwrap();
-    assert!(engine.messages(&account()).await.unwrap().is_empty());
-    assert!(engine.mailboxes(&account()).await.unwrap().is_empty());
-    assert!(
+    assert_eq!(engine.messages(&account()).await.unwrap(), []);
+    assert_eq!(engine.mailboxes(&account()).await.unwrap(), []);
+    assert_eq!(
         engine
             .search_mail(&account(), "report", 10)
             .await
             .unwrap()
-            .hits
-            .is_empty()
+            .hits,
+        []
     );
 
     // Re-adding the same account starts clean: the scopes were forgotten, so the next
@@ -327,20 +327,20 @@ async fn forgetting_the_calendar_keeps_mail_and_its_cursor() {
     sync_fake_mail(&engine).await;
     let first = sync_fake_calendar(&engine).await;
     assert!(first > 0);
-    assert!(!engine.events(&account()).await.unwrap().is_empty());
+    assert_ne!(engine.events(&account()).await.unwrap(), []);
 
     engine
         .forget_account_domain(&account(), SearchDomain::Calendar)
         .await
         .unwrap();
 
-    assert!(engine.events(&account()).await.unwrap().is_empty());
+    assert_eq!(engine.events(&account()).await.unwrap(), []);
     assert_eq!(engine.messages(&account()).await.unwrap().len(), 2);
     // Mail resumes from its cursor: nothing is fetched again.
     assert_eq!(sync_fake_mail(&engine).await, 0, "the mail cursor survived");
     // The calendar starts over from a snapshot.
     assert_eq!(sync_fake_calendar(&engine).await, first);
-    assert!(!engine.events(&account()).await.unwrap().is_empty());
+    assert_ne!(engine.events(&account()).await.unwrap(), []);
 }
 
 #[tokio::test]
@@ -355,8 +355,8 @@ async fn forgetting_mail_keeps_the_calendar() {
         .await
         .unwrap();
 
-    assert!(engine.messages(&account()).await.unwrap().is_empty());
-    assert!(engine.mailboxes(&account()).await.unwrap().is_empty());
+    assert_eq!(engine.messages(&account()).await.unwrap(), []);
+    assert_eq!(engine.mailboxes(&account()).await.unwrap(), []);
     assert_eq!(engine.events(&account()).await.unwrap().len(), events);
     // The calendar resumes from its cursor; mail re-snapshots from scratch.
     assert_eq!(sync_fake_calendar(&engine).await, 0);

@@ -55,7 +55,7 @@ fn mailboxes_map_roles_and_names() {
     assert_eq!(all.len(), 7);
     // Special-use folders carry a normalized role; Stalwart's custom Archive
     // and Projects are roleless (mapped by name).
-    assert!(!mailbox_by_role(&MailboxRole::Inbox).as_str().is_empty());
+    assert_ne!(mailbox_by_role(&MailboxRole::Inbox).as_str(), "");
     assert!(all.iter().any(|m| m.name == "Archive" && m.role.is_none()));
     assert!(all.iter().any(|m| m.name == "Projects" && m.role.is_none()));
     assert!(all.iter().any(|m| m.role == Some(MailboxRole::Sent)));
@@ -110,7 +110,7 @@ fn duplicate_message_id_stays_two_distinct_objects() {
 #[test]
 fn missing_message_id_yields_empty_header_list() {
     let no_msgid = by_subject("Message with no Message-ID");
-    assert!(no_msgid.envelope.message_id.is_empty());
+    assert_eq!(no_msgid.envelope.message_id, []);
     // Still a distinct, fully-normalized object.
     assert_eq!(no_msgid.mailboxes.len().get(), 1);
 }
@@ -145,7 +145,7 @@ fn envelope_addresses_and_dates_normalize() {
     );
     assert_eq!(baseline.envelope.to[0].email, "bob@test.local");
     // cc was null → empty, not an error.
-    assert!(baseline.envelope.cc.is_empty());
+    assert_eq!(baseline.envelope.cc, []);
     // sentAt is the deterministic Date header; receivedAt is the (non-
     // deterministic) delivery time — both parse to instants.
     assert!(baseline.sent_at.is_some());

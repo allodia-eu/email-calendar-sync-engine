@@ -58,7 +58,7 @@ async fn live_calendar_snapshot_then_delta_cycle() {
         .expect("snapshot");
     assert!(snapshot.is_snapshot());
     let cursor = snapshot.next_cursor.clone();
-    assert!(!cursor.as_str().is_empty());
+    assert_ne!(cursor.as_str(), "");
 
     // An immediate delta from that syncToken must not error and must not be a snapshot —
     // proving the real events.list?syncToken request shape is accepted.
@@ -67,7 +67,7 @@ async fn live_calendar_snapshot_then_delta_cycle() {
         .await
         .expect("delta");
     assert!(!delta.is_snapshot(), "a delta from a live syncToken");
-    assert!(!delta.next_cursor.as_str().is_empty());
+    assert_ne!(delta.next_cursor.as_str(), "");
 }
 
 #[tokio::test]

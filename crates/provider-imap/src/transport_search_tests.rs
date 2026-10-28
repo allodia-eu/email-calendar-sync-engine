@@ -14,7 +14,7 @@ use crate::{
 fn spans_cover_the_uid_space_and_none_is_wider_than_the_limit() {
     assert_eq!(uid_spans(2501, 1000), ["1:1000", "1001:2000", "2001:2500"]);
     assert_eq!(uid_spans(2001, 1000), ["1:1000", "1001:2000"]);
-    assert!(uid_spans(1, 1000).is_empty());
+    assert_eq!(uid_spans(1, 1000), [] as [String; 0]);
 }
 
 #[test]
@@ -169,6 +169,6 @@ async fn an_empty_window_is_not_mistaken_for_a_cut_off_one() {
         &["* SEARCH\r\na2 OK done\r\n"],
     )
     .await;
-    assert!(uids.is_empty());
+    assert_eq!(uids, [] as [u32; 0]);
     assert!(!sent.contains("FETCH"), "{sent}");
 }

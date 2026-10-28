@@ -100,7 +100,7 @@ async fn a_draft_with_no_attachments_asks_nothing() {
         .await
         .unwrap();
 
-    assert!(blobs.is_empty());
+    assert_eq!(blobs, [] as [String; 0]);
     assert!(executor.requests.lock().unwrap().is_empty());
 }
 

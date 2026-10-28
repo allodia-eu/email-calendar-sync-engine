@@ -73,7 +73,7 @@ async fn events_snapshot_keeps_masters_and_singles_and_drops_occurrences() {
     assert_eq!(page.kind, SyncKind::Snapshot);
     assert_eq!(page.changed.len(), 3, "master + 2 singles kept");
     assert_eq!(page.present.len(), 3);
-    assert!(page.removed.is_empty());
+    assert_eq!(page.removed, []);
     // Exactly one of the kept events is the recurring master.
     assert_eq!(page.changed.iter().filter(|e| e.is_recurring()).count(), 1);
     // One edited occurrence, plus the two the master says were removed.
@@ -256,7 +256,7 @@ async fn a_delta_tombstones_a_removed_event() {
     .await
     .unwrap();
     assert_eq!(page.kind, SyncKind::Delta);
-    assert!(page.changed.is_empty());
+    assert_eq!(page.changed, []);
     assert!(overrides.is_empty());
     assert_eq!(page.removed.len(), 1);
     assert_eq!(page.removed[0].as_str(), "evt-gone");

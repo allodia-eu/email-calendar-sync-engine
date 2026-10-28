@@ -34,7 +34,7 @@ async fn events_snapshot_projects_masters_and_singles_with_a_sync_token() {
     // All five captured events are masters/singles → kept and present.
     assert_eq!(page.changed.len(), 5);
     assert_eq!(page.present.len(), 5);
-    assert!(page.removed.is_empty());
+    assert_eq!(page.removed, []);
     assert_eq!(page.next_cursor.as_str(), "v1;events-sync-token-1");
     // Each id names its calendar.
     assert!(
@@ -67,7 +67,7 @@ async fn events_delta_tombstones_cancelled_and_advances_the_cursor() {
         "{:?}",
         page.removed
     );
-    assert!(page.present.is_empty());
+    assert_eq!(page.present, []);
     assert_eq!(page.next_cursor.as_str(), "v1;events-sync-token-2");
 }
 

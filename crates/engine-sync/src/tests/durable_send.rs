@@ -200,7 +200,7 @@ async fn a_send_cut_off_before_its_hand_over_goes_out_once_with_the_next_drain()
     let report = drain(&provider, &store).await;
     assert_eq!(report.delivered(), 1);
     assert_eq!(provider.delivered(), 1);
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    assert_eq!(store.list_pending_ops(account()).await.unwrap(), []);
 }
 
 #[tokio::test]
@@ -213,12 +213,12 @@ async fn a_send_cut_off_after_its_hand_over_is_never_sent_again() {
     clock.advance(TTL * 2);
     let row = only_row(&store).await;
     assert_eq!(row.state, PendingOpState::NeedsConfirmation);
-    assert!(drain(&provider, &store).await.attempted.is_empty());
+    assert_eq!(drain(&provider, &store).await.attempted, []);
     assert_eq!(
         store.retry_pending_op_now(account(), row.id).await.unwrap(),
         Some(OpRejection::AwaitingConfirmation)
     );
-    assert!(drain(&provider, &store).await.attempted.is_empty());
+    assert_eq!(drain(&provider, &store).await.attempted, []);
     // Sending the same message again names the same op, which is not run again.
     assert!(
         submit_mail(
@@ -272,7 +272,7 @@ async fn a_slow_send_keeps_its_lease_and_is_attempted_once() {
         }
         while provider.delivered() == 0 {
             tokio::time::sleep(Duration::from_secs(7)).await;
-            assert!(drain(&rival, &store).await.attempted.is_empty());
+            assert_eq!(drain(&rival, &store).await.attempted, []);
             let Some(op) = store
                 .list_pending_ops(account())
                 .await
@@ -305,7 +305,7 @@ async fn a_slow_send_keeps_its_lease_and_is_attempted_once() {
     assert!(tries > 60, "contended for the whole ten minutes: {tries}");
     assert_eq!(provider.delivered(), 1);
     assert_eq!(rival.delivered(), 0);
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    assert_eq!(store.list_pending_ops(account()).await.unwrap(), []);
 }
 
 /// The heartbeat itself: it renews while the work runs and stops with it, so a lease outlives
@@ -436,6 +436,6 @@ async fn a_send_cut_off_after_its_hand_over_is_confirmed_by_its_copy_in_sent() {
         store.pending_op_state(op).await.unwrap(),
         Some(PendingOpState::Succeeded)
     );
-    assert!(drain(&provider, &store).await.attempted.is_empty());
+    assert_eq!(drain(&provider, &store).await.attempted, []);
     assert_eq!(provider.delivered(), 1);
 }

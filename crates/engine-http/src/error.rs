@@ -190,6 +190,6 @@ mod tests {
         assert!(!err.may_have_been_received(), "{err}");
         assert!(!err.is_timeout(), "{err}");
         assert!(std::error::Error::source(&err).is_some());
-        assert!(!err.to_string().is_empty());
+        assert_ne!(err.to_string(), "");
     }
 }

@@ -304,7 +304,7 @@ mod tests {
         let blank = Participant::attendee("   ");
         ev.participants = vec![emailless, informational, blank];
         let p = project_event(&ev, &owner());
-        assert!(p.participants.is_empty());
+        assert_eq!(p.participants, []);
     }
 
     #[test]

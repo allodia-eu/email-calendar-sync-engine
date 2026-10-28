@@ -72,12 +72,11 @@ fn decode_base64_run(encoded: &str) -> Option<String> {
         .map(|c| if c == ',' { '/' } else { c })
         .collect();
     let octets = crate::base64::decode(&standard)?;
-    if octets.len() % 2 != 0 {
+    let (pairs, odd) = octets.as_chunks::<2>();
+    if !odd.is_empty() {
         return None;
     }
-    let units = octets
-        .chunks_exact(2)
-        .map(|pair| u16::from_be_bytes([pair[0], pair[1]]));
+    let units = pairs.iter().map(|&pair| u16::from_be_bytes(pair));
     char::decode_utf16(units)
         .collect::<Result<String, _>>()
         .ok()

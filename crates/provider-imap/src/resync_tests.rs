@@ -82,7 +82,7 @@ async fn without_new_mail_the_delta_reconciles_the_flags_of_what_is_stored() {
         .unwrap();
 
     assert_eq!(page.kind, SyncKind::Snapshot);
-    assert!(page.changed.is_empty());
+    assert_eq!(page.changed, []);
     assert_eq!(page.present.len(), 3);
     let flagged = page
         .patched

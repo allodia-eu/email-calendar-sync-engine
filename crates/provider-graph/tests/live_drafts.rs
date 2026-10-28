@@ -176,7 +176,10 @@ async fn live_graph_replacing_a_draft_leaves_exactly_one() {
         .delete_draft(&account(), &second)
         .await
         .expect("discard");
-    assert!(drafts_carrying(&drafts, message_id).await.is_empty());
+    assert_eq!(
+        drafts_carrying(&drafts, message_id).await,
+        [] as [String; 0]
+    );
 
     // Retried, because the op behind it is retryable: the second call names a message
     // the first one deleted, and has to settle rather than park. This is the assertion

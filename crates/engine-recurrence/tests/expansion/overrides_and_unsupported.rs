@@ -251,7 +251,7 @@ fn standalone_instance_outside_horizon_is_empty() {
         instant("2028-01-01T00:00:00Z"),
     )
     .unwrap();
-    assert!(expand_ok(&ev, horizon).is_empty());
+    assert_eq!(expand_ok(&ev, horizon), []);
 }
 
 #[test]

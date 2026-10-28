@@ -355,7 +355,7 @@ fn an_email_less_nameless_card_has_no_display_name_for_the_engine_to_invent() {
     assert_eq!(built.people[0].display_name, None);
     // The person is still materialized and addressable — only the label is missing.
     assert_eq!(built.people.len(), 1);
-    assert!(built.people[0].names.is_empty());
+    assert_eq!(built.people[0].names, []);
 }
 
 #[test]

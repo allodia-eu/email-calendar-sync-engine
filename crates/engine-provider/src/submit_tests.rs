@@ -22,7 +22,7 @@ fn draft() -> Draft {
 fn new_defaults_the_threading_linkage_to_none() {
     let draft = draft();
     assert_eq!(draft.in_reply_to, None);
-    assert!(draft.references.is_empty());
+    assert_eq!(draft.references, []);
 }
 
 #[test]
@@ -38,8 +38,8 @@ fn in_reply_to_builder_sets_parent_and_references() {
 #[test]
 fn new_defaults_cc_and_bcc_to_empty() {
     let draft = draft();
-    assert!(draft.cc.is_empty());
-    assert!(draft.bcc.is_empty());
+    assert_eq!(draft.cc, []);
+    assert_eq!(draft.bcc, []);
 }
 
 #[test]
@@ -74,8 +74,8 @@ fn a_payload_without_cc_or_bcc_still_deserializes() {
         "text_body": "body"
     }"#;
     let restored: Draft = serde_json::from_str(json).unwrap();
-    assert!(restored.cc.is_empty());
-    assert!(restored.bcc.is_empty());
+    assert_eq!(restored.cc, []);
+    assert_eq!(restored.bcc, []);
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn a_payload_without_the_threading_fields_still_deserializes() {
     }"#;
     let restored: Draft = serde_json::from_str(json).unwrap();
     assert_eq!(restored.in_reply_to, None);
-    assert!(restored.references.is_empty());
+    assert_eq!(restored.references, []);
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn a_payload_without_rich_body_fields_still_deserializes() {
     }"#;
     let restored: Draft = serde_json::from_str(json).unwrap();
     assert_eq!(restored.html_body, None);
-    assert!(restored.attachments.is_empty());
+    assert_eq!(restored.attachments, []);
     assert_eq!(restored.calendar, None);
 }
 

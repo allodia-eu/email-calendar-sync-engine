@@ -187,7 +187,7 @@ async fn reconcile_calendar_events_applies_the_event_delta_without_the_container
     .await
     .unwrap();
     assert_eq!(report.applied.upserted, 1);
-    assert!(report.unexpandable.is_empty());
+    assert_eq!(report.unexpandable, []);
 
     let scope = after.event_scope(&account(), &work());
     let stored: Event = serde_json::from_value(

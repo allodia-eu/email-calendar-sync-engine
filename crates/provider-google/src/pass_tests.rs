@@ -228,7 +228,7 @@ async fn the_reconcile_lists_the_window_without_fetching_a_message() {
 
     let chunks = pass(&provider, Some("reconcile;h=1681")).await;
 
-    assert!(fetched(&chunks).is_empty());
+    assert_eq!(fetched(&chunks), [] as [&str; 0]);
     assert!(chunks.iter().all(|chunk| chunk.mode == PassMode::Reconcile));
     let present: Vec<&str> = chunks
         .iter()

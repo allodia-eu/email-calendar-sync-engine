@@ -249,5 +249,5 @@ async fn an_unparseable_key_is_refused_before_the_wire() {
     let outcomes = run(&pool, &messages).await;
 
     assert_eq!(outcomes, vec![(0, Err(FailureClass::InvalidState))]);
-    assert!(sent(&recordings).is_empty());
+    assert_eq!(sent(&recordings), "");
 }

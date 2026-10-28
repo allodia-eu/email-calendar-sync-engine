@@ -60,7 +60,7 @@ pub(in crate::contract) async fn forget_scope_drops_objects_rows_and_cursor<
         .await
         .expect("forget under the live lease");
 
-    assert!(store.object_keys(&scope).await.unwrap().is_empty());
+    assert_eq!(store.object_keys(&scope).await.unwrap(), []);
     assert!(
         store
             .index_row_counts(&scope, &pk("m1"))

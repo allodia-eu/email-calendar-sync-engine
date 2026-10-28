@@ -258,7 +258,7 @@ async fn a_pre_v14_row_is_listed_and_cancellable_but_never_claimed() {
             .unwrap(),
         PendingOpClaim::Refused(ClaimRejection::Unknown)
     );
-    assert!(
+    assert_eq!(
         store
             .claim_pending_ops(
                 account.clone(),
@@ -266,8 +266,8 @@ async fn a_pre_v14_row_is_listed_and_cancellable_but_never_claimed() {
                 10,
             )
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        []
     );
 
     // And a host can clear it, which is the only way it ever leaves the queue.
@@ -275,7 +275,7 @@ async fn a_pre_v14_row_is_listed_and_cancellable_but_never_claimed() {
         store.cancel_pending_op(account.clone(), op).await.unwrap(),
         None
     );
-    assert!(store.list_pending_ops(account).await.unwrap().is_empty());
+    assert_eq!(store.list_pending_ops(account).await.unwrap(), []);
 }
 
 /// A pre-v14 row an older build left `InFlight` under a lease that has since lapsed: no claim

@@ -124,7 +124,7 @@ async fn an_arrival_still_comes_back_whole() {
     .await
     .unwrap();
 
-    assert!(page.patched.is_empty());
+    assert_eq!(page.patched, []);
     assert_eq!(page.changed.len(), 1);
     assert_eq!(page.changed[0].id.as_str(), "imap:v1000:u11@INBOX");
     assert_eq!(
@@ -168,7 +168,7 @@ async fn an_idle_mailbox_does_not_refetch_its_newest_message() {
     .await
     .unwrap();
 
-    assert!(page.changed.is_empty());
+    assert_eq!(page.changed, []);
     let sent = written(&recorded);
     assert!(
         !sent.contains("10:*"),
@@ -202,7 +202,7 @@ async fn a_mailbox_with_nothing_synced_yet_asks_only_for_arrivals() {
     .unwrap();
 
     assert_eq!(page.changed.len(), 1);
-    assert!(page.patched.is_empty());
+    assert_eq!(page.patched, []);
     let sent = written(&recorded);
     assert!(!sent.contains("1:0"), "no empty state range: {sent}");
     assert!(!sent.contains("CHANGEDSINCE"), "{sent}");
@@ -306,9 +306,9 @@ async fn a_qresync_delta_with_no_changes_is_empty() {
     .await
     .unwrap();
     assert_eq!(page.kind, SyncKind::Delta);
-    assert!(page.changed.is_empty());
-    assert!(page.patched.is_empty());
-    assert!(page.removed.is_empty());
+    assert_eq!(page.changed, []);
+    assert_eq!(page.patched, []);
+    assert_eq!(page.removed, []);
     assert!(page.next_page.is_none());
 }
 
@@ -363,5 +363,5 @@ async fn a_vanished_range_expands_to_every_removed_key() {
             "imap:v1000:u9@INBOX",
         ]
     );
-    assert!(page.changed.is_empty());
+    assert_eq!(page.changed, []);
 }

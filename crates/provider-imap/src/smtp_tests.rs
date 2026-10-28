@@ -224,7 +224,7 @@ async fn send_rejects_a_recipient_address_carrying_crlf() {
         engine_core::error::FailureClass::Permanent
     );
     // Nothing was written — the validation happens before the conversation starts.
-    assert!(written(&recorded).is_empty());
+    assert_eq!(written(&recorded), "");
 }
 
 #[tokio::test]
@@ -282,7 +282,7 @@ async fn a_mail_from_rejection_is_classified_without_recipients() {
         result.disposition,
         Disposition::RejectedTransient(_)
     ));
-    assert!(result.recipients.is_empty());
+    assert_eq!(result.recipients, []);
 }
 
 #[tokio::test]

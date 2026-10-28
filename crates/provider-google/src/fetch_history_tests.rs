@@ -133,7 +133,7 @@ async fn an_absent_resulting_label_set_refetches_rather_than_guessing() {
     .await
     .unwrap();
 
-    assert!(page.patched.is_empty());
+    assert_eq!(page.patched, []);
     assert_eq!(page.changed.len(), 1);
 }
 
@@ -177,7 +177,7 @@ async fn a_new_message_that_also_changed_labels_is_still_fetched_whole() {
     .await
     .unwrap();
 
-    assert!(page.patched.is_empty());
+    assert_eq!(page.patched, []);
     assert_eq!(page.changed.len(), 1);
 }
 

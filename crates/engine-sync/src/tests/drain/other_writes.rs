@@ -51,7 +51,7 @@ async fn a_queued_archive_reaches_the_server_on_the_next_drain() {
     assert_eq!(report.attempted.len(), 1);
     assert_eq!(report.attempted[0].kind, PendingOpKind::MailEdit);
     assert_eq!(report.attempted[0].outcome, DrainOutcome::Succeeded);
-    assert!(store.list_pending_ops(acct).await.unwrap().is_empty());
+    assert_eq!(store.list_pending_ops(acct).await.unwrap(), []);
 }
 /// A queued edit that fails during the pass parks like any other retryable failure: the
 /// archive is still coming.
@@ -150,7 +150,7 @@ async fn a_queued_report_reaches_the_provider_on_the_next_drain() {
     .unwrap();
     assert_eq!(done.attempted[0].kind, PendingOpKind::MailReport);
     assert_eq!(done.attempted[0].outcome, DrainOutcome::Succeeded);
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    assert_eq!(store.list_pending_ops(account()).await.unwrap(), []);
 }
 /// A drain must not lease an op it cannot dispatch. Leasing one and walking away holds its
 /// resource for the whole lease, which is the failure #202 removed from the inline path.

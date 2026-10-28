@@ -48,7 +48,7 @@ async fn forgetting_one_accounts_contacts_leaves_the_person_the_other_account_ho
 
     // No person still lists a card the forgotten account held, without a sync having run.
     assert_eq!(ada_sources(&engine).await, core::slice::from_ref(&second));
-    assert!(engine.address_books(&first).await.unwrap().is_empty());
+    assert_eq!(engine.address_books(&first).await.unwrap(), []);
     assert_eq!(engine.address_books(&second).await.unwrap().len(), 1);
 
     // Syncing the account's contacts again brings its card back.

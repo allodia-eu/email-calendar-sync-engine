@@ -196,12 +196,12 @@ fn internet_message_id_brackets_are_stripped_and_empty_is_dropped() {
     let without = serde_json::json!({
         "id": "m", "parentFolderId": "folder-inbox", "internetMessageId": "<>"
     });
-    assert!(
+    assert_eq!(
         message_from_json(&without, &[])
             .unwrap()
             .envelope
-            .message_id
-            .is_empty()
+            .message_id,
+        []
     );
 }
 

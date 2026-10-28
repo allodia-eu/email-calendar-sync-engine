@@ -281,7 +281,7 @@ async fn a_delta_without_qresync_reconciles_through_the_page_path() {
     assert!(chunks.last().unwrap().is_reconcile_final());
     // The final chunk commits as a snapshot, which carries no partials, so the flags must
     // ride an earlier one.
-    assert!(chunks.last().unwrap().patched.is_empty());
+    assert_eq!(chunks.last().unwrap().patched, []);
     // Advances to the fresh complete cursor.
     assert_eq!(
         chunks.last().unwrap().advance_to.as_ref().unwrap().as_str(),
@@ -369,7 +369,7 @@ async fn an_empty_mailbox_backfill_yields_only_a_completing_marker() {
 
     let chunks = drain(&mut conn, None, 50, 0).await;
     assert_eq!(chunks.len(), 1);
-    assert!(chunks[0].changed.is_empty());
+    assert_eq!(chunks[0].changed, []);
     // A fresh pass reconciles even when empty, so an emptied mailbox tombstones every
     // stale local row against the empty present set.
     assert!(chunks[0].is_reconcile_final());

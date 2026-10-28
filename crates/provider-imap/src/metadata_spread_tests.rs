@@ -102,7 +102,7 @@ async fn each_connection_asks_for_its_own_share_and_the_answers_are_merged() {
 
     let settled = settle_across(&mut conn, helpers, &mut open).await.unwrap();
 
-    assert!(open.is_empty());
+    assert_eq!(open, []);
     let mut uids: Vec<_> = settled
         .iter()
         .map(|row| (row.uid, row.has_attachment))
