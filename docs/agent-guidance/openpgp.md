@@ -196,6 +196,34 @@ gives:
 User IDs follow their own rule: the latest statement about a User ID holds, so a certification
 made after a revocation binds the address again, whatever the revocation's reason.
 
+## Verifying message signatures
+
+`Verifier::new(certificates, sender, now)` checks signatures for one message;
+`.within(SignatureContext::DecryptedWith(id))` says the signatures sit inside encryption the
+reader opened with certificate `id`. `detached(signed, part)` takes the exact bytes the walk hands
+over (`Walked::detached_signatures`) and returns **one verdict per signature packet**, in order,
+so an unknown or malformed one never hides a good one (§5.2.5). The steps, each ending the check
+when it fails:
+
+| Step | Verdict when it fails |
+|---|---|
+| Version 4 or 6 | `Unsupported` |
+| A binary or text document signature, with a hashed creation time, no unknown critical subpacket (§5.2.3.7), and an Issuer Fingerprint of its own version (§5.2.3.35) | `Malformed` |
+| One of `certificates` holds the issuer's key (by fingerprint; by key ID only when no fingerprint is named) | `UnknownSigner`, with the fingerprint or key ID as a handle |
+| An EdDSA hash at least as long as the curve demands (§5.2.3.3 to §5.2.3.5) | `Malformed` |
+| The mathematics (rPGP) | `Bad` |
+| A hash the message policy accepts: never MD5, SHA-1 or RIPEMD-160 | `Unusable(RejectedAlgorithm)` |
+| The certificate, **evaluated when the signature was made**, is usable | `Unusable(Expired / Revoked / RejectedAlgorithm / NotSigningCapable)`; `Malformed` for a signature older than its key |
+| The issuing key is one of that evaluation's signing keys | `Unusable(NotSigningCapable)` |
+| The signature's own expiration has not passed by `now` | `Unusable(Expired)` |
+| Any Intended Recipient Fingerprint names the certificate the reader decrypted with; in cleartext, none may be present (§5.2.3.36) | `NotForThisRecipient` |
+
+What passes is `Good`, carrying the signer, the creation time, the sender binding at that time,
+`ChainStatus::NotApplicable` and every warning the certificate and the key are usable despite.
+Evaluating the certificate at the signature's own time is what keeps a superseded key's earlier
+signatures good while a compromised key's are not, and what keeps a signature good after its key
+has since expired.
+
 ## PGP/MIME recognition
 
 `PgpMime` is the crate's `engine_e2e::LayerRecogniser`:

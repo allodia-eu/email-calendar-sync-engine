@@ -77,7 +77,8 @@ An encapsulated `message/rfc822` is never entered: a forwarded message has its o
 - with every bare LF converted to CRLF (RFC 3156 §5), because mail that crossed an LF-only store
   arrives that way and the signer signed CRLF. Existing CRLF is not doubled; a lone CR is kept.
 
-The caller verifies and records the verdicts with `Walked::record_verdicts(layer, verdicts)`.
+The caller verifies and records the verdicts with `Walked::record_verdicts(layer, verdicts)`; for
+OpenPGP the verdicts come from `engine_openpgp::Verifier::detached` (`openpgp.md`).
 Verification is not a pause step: the payload is readable without it, and classifying a message
 at sync time must not need any key.
 

@@ -11,6 +11,8 @@
 //! - [`Certificate`] reads a certificate and says, at a given instant, whether it is usable, which
 //!   addresses it binds, and which of its keys may sign or be encrypted to. rPGP verifies one
 //!   signature at a time; which signatures *count* is decided here.
+//! - [`Verifier`] checks message signatures against certificates and reports each as an
+//!   [`engine_core::e2e::SignatureVerdict`].
 //!
 //! Every normative statement in RFC 9580 and the RFC 3156 statements about OpenPGP
 //! are rows in `tests/conformance/`, each covered by named tests or openly planned.
@@ -20,9 +22,11 @@ mod certificate;
 mod policy;
 mod recognise;
 mod time;
+mod verify;
 
 pub use address::canonical_address;
 pub use certificate::{
     Certificate, CertificateError, CertificateView, ComponentKey, EncryptionPurpose,
 };
 pub use recognise::PgpMime;
+pub use verify::{SignatureContext, Verifier};
