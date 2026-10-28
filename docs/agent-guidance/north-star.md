@@ -51,6 +51,7 @@ pim-sync-engine/
 │   ├── engine-recurrence/       # Deterministic recurrence -> occurrence expansion (bundled tzdb).
 │   ├── engine-mime/             # MIME/RFC 5322 body extraction (mail-parser) -> MessageBody (implemented).
 │   ├── engine-e2e/              # RFC 9787 layer walk: envelope, payload, errant layers (implemented; e2e.md).
+│   ├── engine-openpgp/          # OpenPGP + PGP/MIME over rPGP: the first mechanism behind engine-e2e (openpgp.md).
 │   ├── engine-index/            # Text extraction, chunks, embedding seam.
 │   ├── engine-cli/              # Headless ingestion/search/maintenance harness (CLI host).
 │   ├── crypto-keystore/         # Platform credential/key abstraction.
