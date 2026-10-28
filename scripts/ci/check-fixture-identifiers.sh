@@ -76,11 +76,12 @@ exempt() {
     # matches because the syntax reuses `@`.
     *@odata.*) return 0 ;;
     # Google's own identifier formats: an event's iCalUID is `<opaque-id>@google.com`, a
-    # calendar id may be `<name>@group.v.calendar.google.com`, and Gmail rewrites a sent
-    # message's `Message-ID` to `<opaque-id>@mail.gmail.com` (which is why the submit path
-    # cannot reconcile by the id it generated). Rewriting these would make the fixtures and
-    # the prose describe a wire format Google does not emit.
-    *@google.com | *@group.v.calendar.google.com | *@mail.gmail.com) return 0 ;;
+    # calendar id may be `<name>@group.v.calendar.google.com`, a calendar created through the
+    # API is `<64 hex digits>@group.calendar.google.com`, and Gmail rewrites a sent message's
+    # `Message-ID` to `<opaque-id>@mail.gmail.com` (which is why the submit path cannot
+    # reconcile by the id it generated). Rewriting these would make the fixtures and the prose
+    # describe a wire format Google does not emit.
+    *@google.com | *@group.v.calendar.google.com | *@group.calendar.google.com | *@mail.gmail.com) return 0 ;;
     # Company-owned mailboxes used by the live provider suites. Real, but ours, and named in
     # the live-test setup docs rather than belonging to a person.
     allodia.e2e@gmail.com | allodia-e2e@outlook.com) return 0 ;;

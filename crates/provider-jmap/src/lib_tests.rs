@@ -112,7 +112,7 @@ fn fuzz_entry_point_runs_without_panicking() {
 
 // A blocking single-shot mock HTTP server lets the live-only transport,
 // session discovery, and `execute` be exercised offline (no harness).
-pub(super) fn mock_server(http_responses: Vec<String>) -> String {
+pub(crate) fn mock_server(http_responses: Vec<String>) -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     std::thread::spawn(move || {
@@ -125,7 +125,7 @@ pub(super) fn mock_server(http_responses: Vec<String>) -> String {
     format!("http://{addr}")
 }
 
-pub(super) fn http_ok(body: &str) -> String {
+pub(crate) fn http_ok(body: &str) -> String {
     format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()

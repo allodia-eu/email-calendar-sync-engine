@@ -13,7 +13,7 @@ const CONTACTS: &str = "urn:ietf:params:jmap:contacts";
 
 fn parse(doc: &Value) -> Session {
     let base = Url::parse("http://127.0.0.1:18080").unwrap();
-    Session::parse(doc, &base, SessionUrlPolicy::RebaseToConnection).unwrap()
+    Session::parse(doc, &base, SessionUrlPolicy::RebaseToConnection, None).unwrap()
 }
 
 /// A server that supports all four domains, with the given primary accounts and accounts.

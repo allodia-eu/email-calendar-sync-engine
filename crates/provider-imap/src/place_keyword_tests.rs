@@ -33,6 +33,10 @@ fn keywords() -> BTreeSet<Keyword> {
     BTreeSet::from([Keyword::new("project-x").unwrap()])
 }
 
+fn own() -> crate::store::MailStore {
+    crate::store::MailStore::own(&crate::store::Namespaces::default())
+}
+
 fn message_id() -> MessageIdHeader {
     MessageIdHeader::new("placed-probe@test.local").unwrap()
 }
@@ -47,7 +51,7 @@ async fn keywords_ride_the_append_where_the_folder_allows_new_ones() {
     ])
     .await;
 
-    let placed = append_to_role_folder(&mut conn, Filing::Sent, b"raw", &keywords())
+    let placed = append_to_role_folder(&mut conn, &own(), Filing::Sent, b"raw", &keywords())
         .await
         .unwrap();
 
@@ -72,7 +76,7 @@ async fn a_folder_that_allows_no_new_keywords_gets_the_copy_without_them() {
     ])
     .await;
 
-    let placed = append_to_role_folder(&mut conn, Filing::Sent, b"raw", &keywords())
+    let placed = append_to_role_folder(&mut conn, &own(), Filing::Sent, b"raw", &keywords())
         .await
         .unwrap();
 
@@ -91,7 +95,7 @@ async fn a_placement_without_keywords_selects_nothing() {
     ])
     .await;
 
-    let placed = append_to_role_folder(&mut conn, Filing::Sent, b"raw", &BTreeSet::new())
+    let placed = append_to_role_folder(&mut conn, &own(), Filing::Sent, b"raw", &BTreeSet::new())
         .await
         .unwrap();
 
@@ -111,9 +115,16 @@ async fn a_copy_already_placed_is_given_the_keywords() {
     ])
     .await;
 
-    let placed = place_if_absent(&mut conn, Filing::Sent, &message_id(), b"raw", &keywords())
-        .await
-        .unwrap();
+    let placed = place_if_absent(
+        &mut conn,
+        &own(),
+        Filing::Sent,
+        &message_id(),
+        b"raw",
+        &keywords(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(placed.append_uid, Some((4242, 17)));
     assert_eq!(placed.keywords, keywords());
@@ -136,9 +147,16 @@ async fn a_retry_appends_with_the_keywords_when_no_copy_is_there() {
     ])
     .await;
 
-    let placed = place_if_absent(&mut conn, Filing::Sent, &message_id(), b"raw", &keywords())
-        .await
-        .unwrap();
+    let placed = place_if_absent(
+        &mut conn,
+        &own(),
+        Filing::Sent,
+        &message_id(),
+        b"raw",
+        &keywords(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(placed.keywords, keywords());
     assert!(written(&recorded).contains("APPEND \"Sent\" (\\Seen project-x) {3}"));

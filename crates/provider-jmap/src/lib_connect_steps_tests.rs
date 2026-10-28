@@ -1,6 +1,8 @@
 //! What a connect through the real client reports to its observer: each well-known hop, the
 //! authentication and the API URL, and never a credential.
 
+use std::sync::Arc;
+
 use super::*;
 
 /// Records connect steps as the log lines a host would emit, so the assertions below

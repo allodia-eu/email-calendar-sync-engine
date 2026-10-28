@@ -1,0 +1,431 @@
+{
+  "methodResponses": [
+    [
+      "Mailbox/get",
+      {
+        "accountId": "c",
+        "state": "s2ica",
+        "list": [
+          {
+            "id": "i",
+            "name": "Projects",
+            "parentId": null,
+            "role": null,
+            "sortOrder": 0,
+            "isSubscribed": false,
+            "totalEmails": 1,
+            "unreadEmails": 0,
+            "totalThreads": 1,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "n",
+            "name": "JmapState",
+            "parentId": null,
+            "role": null,
+            "sortOrder": 0,
+            "isSubscribed": false,
+            "totalEmails": 1,
+            "unreadEmails": 0,
+            "totalThreads": 1,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "j",
+            "name": "Nested",
+            "parentId": "h",
+            "role": null,
+            "sortOrder": 0,
+            "isSubscribed": false,
+            "totalEmails": 0,
+            "unreadEmails": 0,
+            "totalThreads": 0,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "q",
+            "name": "Reported",
+            "parentId": null,
+            "role": null,
+            "sortOrder": 0,
+            "isSubscribed": false,
+            "totalEmails": 2,
+            "unreadEmails": 0,
+            "totalThreads": 2,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "e",
+            "name": "Sent Items",
+            "parentId": null,
+            "role": "sent",
+            "sortOrder": 0,
+            "isSubscribed": true,
+            "totalEmails": 4,
+            "unreadEmails": 0,
+            "totalThreads": 3,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "k",
+            "name": "Deeper",
+            "parentId": "j",
+            "role": null,
+            "sortOrder": 0,
+            "isSubscribed": false,
+            "totalEmails": 0,
+            "unreadEmails": 0,
+            "totalThreads": 0,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "a",
+            "name": "Inbox",
+            "parentId": null,
+            "role": "inbox",
+            "sortOrder": 0,
+            "isSubscribed": true,
+            "totalEmails": 8,
+            "unreadEmails": 0,
+            "totalThreads": 7,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "d",
+            "name": "Drafts",
+            "parentId": null,
+            "role": "drafts",
+            "sortOrder": 0,
+            "isSubscribed": true,
+            "totalEmails": 10,
+            "unreadEmails": 0,
+            "totalThreads": 5,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "r",
+            "name": "\u00dcberweisungen",
+            "parentId": null,
+            "role": null,
+            "sortOrder": 0,
+            "isSubscribed": false,
+            "totalEmails": 0,
+            "unreadEmails": 0,
+            "totalThreads": 0,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "c",
+            "name": "Junk Mail",
+            "parentId": null,
+            "role": "junk",
+            "sortOrder": 0,
+            "isSubscribed": true,
+            "totalEmails": 0,
+            "unreadEmails": 0,
+            "totalThreads": 0,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "p",
+            "name": "JmapSent",
+            "parentId": null,
+            "role": null,
+            "sortOrder": 0,
+            "isSubscribed": false,
+            "totalEmails": 1,
+            "unreadEmails": 0,
+            "totalThreads": 1,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "m",
+            "name": "Idle",
+            "parentId": null,
+            "role": null,
+            "sortOrder": 0,
+            "isSubscribed": false,
+            "totalEmails": 1,
+            "unreadEmails": 0,
+            "totalThreads": 1,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "h",
+            "name": "Archive",
+            "parentId": null,
+            "role": null,
+            "sortOrder": 0,
+            "isSubscribed": false,
+            "totalEmails": 1,
+            "unreadEmails": 0,
+            "totalThreads": 1,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "l",
+            "name": "QResync",
+            "parentId": null,
+            "role": null,
+            "sortOrder": 0,
+            "isSubscribed": false,
+            "totalEmails": 2,
+            "unreadEmails": 0,
+            "totalThreads": 2,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "b",
+            "name": "Deleted Items",
+            "parentId": null,
+            "role": "trash",
+            "sortOrder": 0,
+            "isSubscribed": true,
+            "totalEmails": 0,
+            "unreadEmails": 0,
+            "totalThreads": 0,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          },
+          {
+            "id": "o",
+            "name": "JmapStateArchive",
+            "parentId": null,
+            "role": null,
+            "sortOrder": 0,
+            "isSubscribed": false,
+            "totalEmails": 0,
+            "unreadEmails": 0,
+            "totalThreads": 0,
+            "unreadThreads": 0,
+            "myRights": {
+              "mayReadItems": true,
+              "mayAddItems": true,
+              "mayRemoveItems": true,
+              "maySetSeen": true,
+              "maySetKeywords": true,
+              "mayCreateChild": true,
+              "mayRename": true,
+              "maySubmit": true,
+              "mayDelete": true,
+              "mayShare": true
+            }
+          }
+        ],
+        "notFound": []
+      },
+      "0"
+    ],
+    [
+      "Identity/get",
+      {
+        "accountId": "c",
+        "state": "sxqca",
+        "list": [
+          {
+            "id": "b",
+            "name": "Alice Tester",
+            "email": "support@test.local",
+            "replyTo": null,
+            "bcc": null,
+            "textSignature": "",
+            "htmlSignature": "",
+            "mayDelete": true
+          },
+          {
+            "id": "c",
+            "name": "Alice Tester",
+            "email": "alice@test.local",
+            "replyTo": null,
+            "bcc": null,
+            "textSignature": "",
+            "htmlSignature": "",
+            "mayDelete": true
+          }
+        ],
+        "notFound": []
+      },
+      "1"
+    ]
+  ],
+  "sessionState": "1fd7d549"
+}

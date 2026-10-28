@@ -13,7 +13,7 @@ async fn submit_email_uploads_the_attachment_blob_through_the_real_client() {
     use engine_provider::{Draft, DraftAttachment, HandOver, Provider, Unrecorded};
 
     // connect(session) → resolve_context(Mailbox/Identity) → upload(blob) → send.
-    let context = r#"{"methodResponses":[["Mailbox/get",{"list":[{"id":"d","name":"Drafts","role":"drafts"},{"id":"s","name":"Sent","role":"sent"}]},"0"],["Identity/get",{"list":[{"id":"id1"}]},"1"]]}"#;
+    let context = r#"{"methodResponses":[["Mailbox/get",{"list":[{"id":"d","name":"Drafts","role":"drafts"},{"id":"s","name":"Sent","role":"sent"}]},"0"],["Identity/get",{"list":[{"id":"id1","email":"a@test.local"}]},"1"]]}"#;
     let sent = r#"{"methodResponses":[["Email/set",{"created":{"draft":{"id":"e9"}}},"0"],["EmailSubmission/set",{"created":{"sub":{"id":"sub1"}}},"1"]]}"#;
     let base = mock_server(vec![
         http_ok(RICH_SESSION_DOC),

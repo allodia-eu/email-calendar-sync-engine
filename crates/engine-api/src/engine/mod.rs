@@ -29,6 +29,7 @@ mod forget;
 mod identities;
 mod mailbox_writes;
 mod reads;
+mod shared_mailboxes;
 mod sync;
 mod writes;
 

@@ -53,6 +53,12 @@ pub enum GraphError {
     /// an absent `value` array or `@odata.deltaLink`, …).
     #[error("malformed Graph response: {0}")]
     Protocol(String),
+
+    /// A mailbox address that cannot be put in a Graph URL path, refused before any
+    /// request (`crate::principal`). The reason names what was wrong and never repeats the
+    /// input.
+    #[error("invalid mailbox address: {0}")]
+    InvalidAddress(String),
 }
 
 impl GraphError {
@@ -120,7 +126,7 @@ impl GraphError {
             Self::Transport(err) => err.may_have_been_received(),
             Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
             Self::Json(_) => true,
-            Self::Protocol(_) => false,
+            Self::Protocol(_) | Self::InvalidAddress(_) => false,
         }
     }
 
@@ -166,8 +172,9 @@ impl GraphError {
             _ if self.is_unconvertible_message() => FailureClass::Permanent,
             Self::Status { status, .. } => status_class(*status),
             // Malformed JSON or a structurally invalid response is a protocol-level
-            // incompatibility: retrying the same request will not fix it.
-            Self::Json(_) | Self::Protocol(_) => FailureClass::Permanent,
+            // incompatibility, and a malformed address is the caller's input: retrying the
+            // same request will not fix either.
+            Self::Json(_) | Self::Protocol(_) | Self::InvalidAddress(_) => FailureClass::Permanent,
         }
     }
 }

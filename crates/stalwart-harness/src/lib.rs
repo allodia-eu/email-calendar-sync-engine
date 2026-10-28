@@ -50,6 +50,17 @@ const DEFAULT_PASSWORD: &str = "harness-alice-pw";
 pub const ONE_OFF_EVENT_UID: &str = "oneoff-2001";
 /// Stable file name of the seeded person card.
 pub const CONTACT_UID: &str = "contact-3001";
+/// Address of the credential-less **group** mailbox the seeded account belongs to — the
+/// vendor-neutral analogue of a Microsoft 365 shared mailbox. It has no password: it is
+/// reached through a member's credential, never its own.
+///
+/// Not env-overridable, like [`Harness::scratch`]: it exists only because the bundled
+/// entrypoint provisions it, so another address could only ever fail to resolve.
+pub const SHARED_GROUP_ACCOUNT: &str = "support@test.local";
+/// `Message-ID` of the one message seeded into the group mailbox (`12-shared.eml`) —
+/// content the harness controls, so a shared-mailbox sync is asserted on it rather than on
+/// a server-assigned id.
+pub const SHARED_MESSAGE_ID: &str = "shared-9001@test.local";
 
 /// Errors raised by the harness probes.
 #[derive(Debug, thiserror::Error)]
@@ -183,6 +194,20 @@ impl Harness {
                 ScratchAccount::new("carol@test.local", "harness-carol-pw"),
             ],
         })
+    }
+
+    /// The account that grants [`account`](Self::account) **read-only** (`lr`) access to
+    /// its own INBOX — the half of the shared-mailbox fixture that differs in *rights*.
+    /// Stalwart reports that share as `isReadOnly: false` in the JMAP session while the one
+    /// mailbox it exposes grants read alone, which is what proves rights belong on the
+    /// folder rather than the account.
+    ///
+    /// It is [`scratch`](Self::scratch)`[0]`: the grant is about rights, so its INBOX's
+    /// contents — which the scheduling suite adds to — matter to no assertion made through
+    /// it.
+    #[must_use]
+    pub fn read_only_share_owner(&self) -> &ScratchAccount {
+        &self.scratch[0]
     }
 
     /// Path of the seeded account's default calendar collection.

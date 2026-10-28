@@ -109,6 +109,31 @@ async fn a_watch_spends_one_connection_until_it_is_dropped() {
 }
 
 #[tokio::test]
+async fn a_shared_store_spends_the_budget_of_the_login_that_opens_it() {
+    let (account, recorded) =
+        account_over(&["* OK [UIDVALIDITY 1] ok\r\na3 OK [READ-ONLY] EXAMINE done\r\n"]).await;
+    let handle = engine_core::ids::SharedMailboxId::try_from("Shared Folders/support@test.local");
+    let shared = account.with_shared_mailbox(handle.unwrap());
+    let headroom = account.watch_headroom();
+
+    // The account cannot dial, so the store's watch succeeding means it took the account's
+    // resting connection — a store with a pool of its own would have had to dial one.
+    let watcher = shared
+        .watch(
+            mailbox("Shared Folders/support@test.local/INBOX"),
+            crate::DEFAULT_IDLE_KEEPALIVE,
+        )
+        .await
+        .expect("the store borrowed the account's connection");
+    assert!(written(&recorded).contains("EXAMINE"));
+    assert_eq!(account.watch_headroom(), headroom - 1);
+    assert_eq!(shared.watch_headroom(), headroom - 1);
+
+    drop(watcher);
+    assert_eq!(account.watch_headroom(), headroom);
+}
+
+#[tokio::test]
 async fn a_server_without_idle_refuses_the_watch_and_keeps_the_slot() {
     let (stream, _recorded) = MockStream::new(script(&[
         GREETING,
