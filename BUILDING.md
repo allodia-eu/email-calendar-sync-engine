@@ -42,7 +42,7 @@ Some tests are gated on a live Stalwart Docker harness (JMAP, IMAP, SMTP, CalDAV
 These checks are mandatory before a change lands (see [`AGENTS.md`](AGENTS.md)); CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs them on every push and pull request. Run them with warnings-as-errors to match CI exactly:
 
 ```sh
-export RUSTFLAGS="-D warnings" RUSTDOCFLAGS="-D warnings"
+export CARGO_BUILD_WARNINGS=deny
 
 scripts/ci/check-file-length.sh
 cargo +nightly fmt --all --check

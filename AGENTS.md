@@ -253,7 +253,7 @@ command non-interactively: `view` needs `--json`, `submit` needs `--auto`, and `
 
 **Run this full gate and make it pass before every `git push`** (not only at final hand-off). It
 mirrors the CI **"Format, lint, build, test, docs"** job *exactly* — same commands, same
-warnings-as-errors (`RUSTFLAGS`/`RUSTDOCFLAGS = -D warnings`) — so green here means green there.
+warnings-as-errors (`CARGO_BUILD_WARNINGS=deny`) — so green here means green there.
 Skipping `cargo fmt` (or running `--check` without fixing) has failed this job on many PRs; a
 freshly hand-written line that overflows the width is the usual culprit, and CI catches it even
 though the code compiles. So: **`cargo +nightly fmt --all` first, then verify.** Note that
@@ -282,7 +282,7 @@ scripts/dev/claim-build-dir.sh        # make what follows judge THIS checkout (s
 scripts/ci/check-file-length.sh       # every tracked *.rs must be <= 500 lines
 scripts/ci/check-fixture-identifiers.sh   # no real domains in fixtures or docs
 cargo +nightly fmt --all              # fix formatting first (nightly rustfmt.toml)
-export RUSTFLAGS="-D warnings" RUSTDOCFLAGS="-D warnings"   # match CI: warnings are errors
+export CARGO_BUILD_WARNINGS=deny      # match CI: warnings are errors
 cargo +nightly fmt --all --check      # must now be clean
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo build --workspace --all-features
@@ -306,6 +306,16 @@ and leaves every dependency compiled. So it costs a rebuild of this repository's
 switch, and nothing at all when you built here last. Everything outside the gate — a `cargo test`
 typed by hand — claims nothing and is not covered, so when a result cannot be squared with the diff,
 run the gate, or re-run the step with `CARGO_BUILD_BUILD_DIR` pointed somewhere private.
+
+**Warnings are denied through Cargo, not through `RUSTFLAGS`.** `CARGO_BUILD_WARNINGS=deny`
+(Cargo's `build.warnings`) fails any build, clippy, test or doc run in which one of this
+workspace's crates emits a lint warning, including one replayed from a crate that was already
+built. `RUSTFLAGS="-D warnings"`, which this gate used to export, does the same job but is part of
+every unit's fingerprint, dependencies included: measured on `engine-http`, turning it on
+recompiled all 129 units, and turning it off again compiled none, because the two settings keep
+**two complete sets of artifacts** side by side. So every checkout that ran both the gate and a
+plain `cargo test` held the dependency tree twice. `build.warnings` changes no fingerprint, so the
+gate and a hand-typed command share one set.
 
 **`--all-features` is not decoration on the test line.** A plain `cargo test --workspace` builds 32
 test binaries here; with `--all-features` it builds 91. The difference is whole suites — the scale

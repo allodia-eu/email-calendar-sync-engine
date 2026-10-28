@@ -206,7 +206,7 @@ missing_docs = "warn"
 missing_debug_implementations = "warn"
 unreachable_pub = "warn"
 
-# Rustdoc's lints, denied here rather than only through CI's `RUSTDOCFLAGS: -D warnings`. Without
+# Rustdoc's lints, denied here rather than only through CI's `CARGO_BUILD_WARNINGS: deny`. Without
 # this a broken doc link is a *warning* locally and an error on the runner, so the `cargo doc` line
 # in AGENTS.md — the one that exists to catch exactly this — cannot fail on a developer's machine.
 [workspace.lints.rustdoc]
