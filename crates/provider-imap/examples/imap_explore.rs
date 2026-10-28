@@ -98,10 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let SyncUpdate::Snapshot { objects, .. } = &folders.update {
         println!("\n{} folders:", objects.len());
         for m in objects {
-            let role = m
-                .role
-                .as_ref()
-                .map_or_else(String::new, |r| format!("  [{r}]"));
+            let role = m.role.as_ref().map_or_default(|r| format!("  [{r}]"));
             println!("  {}{role}", m.name);
         }
     }

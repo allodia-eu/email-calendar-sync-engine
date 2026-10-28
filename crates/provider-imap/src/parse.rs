@@ -399,7 +399,7 @@ fn drain_body_section<'a>(key: &str, iter: &mut std::slice::Iter<'a, Item>) -> O
 /// Interprets an `ENVELOPE` list's ten positional fields (RFC 9051 §7.5.2).
 fn envelope_of(fields: &[Item]) -> Envelope {
     let at = |i: usize| fields.get(i);
-    let addrs = |i: usize| at(i).map(addresses_of).unwrap_or_default();
+    let addrs = |i: usize| at(i).map_or_default(addresses_of);
     Envelope {
         subject: at(1).and_then(Item::as_nstring),
         from: addrs(2),

@@ -43,11 +43,7 @@ fn age_blobs(root: &Path) {
             continue;
         };
         for entry in entries.flatten() {
-            let file = fs::OpenOptions::new()
-                .write(true)
-                .open(entry.path())
-                .unwrap();
-            file.set_modified(stale).unwrap();
+            fs::set_times(entry.path(), fs::FileTimes::new().set_modified(stale)).unwrap();
         }
     }
 }

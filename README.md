@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/allodia-eu/email-calendar-sync-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/allodia-eu/email-calendar-sync-engine/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/allodia-eu/email-calendar-sync-engine/graph/badge.svg?token=43R3X4R59A)](https://codecov.io/gh/allodia-eu/email-calendar-sync-engine)
-![Rust 1.96+](https://img.shields.io/badge/rust-1.96%2B-orange.svg)
+![Rust 1.99+](https://img.shields.io/badge/rust-1.99%2B-orange.svg)
 
 A standalone **Rust engine for personal information management (PIM)**: local-first mail,
 calendar, and contact sync, search, indexing, and durable writes. Designed to be embedded by

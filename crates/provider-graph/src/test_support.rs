@@ -274,7 +274,7 @@ pub(crate) fn capturing_server(
     std::thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
             let request = engine_http::test_server::read_request_blocking(&mut stream);
-            let request = String::from_utf8_lossy(&request).into_owned();
+            let request = String::from_utf8_lossy_owned(request);
             let _ = tx.send(request);
             let _ = stream.write_all(response.as_bytes());
         }

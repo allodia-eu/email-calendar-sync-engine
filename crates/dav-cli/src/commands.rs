@@ -261,7 +261,7 @@ pub(crate) async fn store(
 ) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|err| format!("cannot read {path}: {err}"))?;
     let text = if starts_with_calendar(&bytes) {
-        String::from_utf8_lossy(&bytes).into_owned()
+        String::from_utf8_lossy_owned(bytes)
     } else {
         engine_mime::extract_calendar_part(&RawMime::new(bytes))
             .ok_or_else(|| format!("no text/calendar part in {path}"))?

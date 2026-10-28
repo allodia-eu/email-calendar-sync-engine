@@ -164,10 +164,8 @@ pub(crate) fn describe_challenge(challenge: &str) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
-    let decoded = crate::base64::decode(trimmed).map_or_else(
-        || trimmed.to_owned(),
-        |bytes| String::from_utf8_lossy(&bytes).into_owned(),
-    );
+    let decoded = crate::base64::decode(trimmed)
+        .map_or_else(|| trimmed.to_owned(), String::from_utf8_lossy_owned);
     decoded
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })

@@ -92,7 +92,7 @@ thread_local! {
 /// Counts a step a reply took, in a test build ([`PROGRESS`]).
 fn stepped() {
     #[cfg(any(test, feature = "test-server"))]
-    PROGRESS.with(|steps| steps.set(steps.get() + 1));
+    PROGRESS.update(|steps| steps + 1);
 }
 
 /// What a request has shown of its progress: when it last moved, and whether all of it has

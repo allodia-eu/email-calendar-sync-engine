@@ -70,7 +70,7 @@ fn mock_server(responses: Vec<String>) -> (String, Arc<Mutex<Vec<Seen>>>) {
             }
             recorder.lock().unwrap().push(Seen {
                 authorization,
-                body: String::from_utf8_lossy(&body).into_owned(),
+                body: String::from_utf8_lossy_owned(body),
             });
 
             let response = responses

@@ -195,7 +195,7 @@ fn is_calendar_media_type(part: &MessagePart<'_>) -> bool {
 /// The part's `Content-Type` media type with parameters stripped, lowercased.
 fn declared_media_type(part: &MessagePart<'_>) -> String {
     part.content_type()
-        .map_or_else(String::new, |ct| media_type_of(ct).to_ascii_lowercase())
+        .map_or_default(|ct| media_type_of(ct).to_ascii_lowercase())
 }
 
 fn media_type_of(content_type: &ContentType<'_>) -> String {

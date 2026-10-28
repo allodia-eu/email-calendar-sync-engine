@@ -52,7 +52,5 @@ pub(crate) async fn refused_before_delete(
 fn opaque(etag: &str) -> &str {
     let etag = etag.trim();
     let etag = etag.strip_prefix("W/").unwrap_or(etag);
-    etag.strip_prefix('"')
-        .and_then(|inner| inner.strip_suffix('"'))
-        .unwrap_or(etag)
+    etag.strip_circumfix('"', '"').unwrap_or(etag)
 }

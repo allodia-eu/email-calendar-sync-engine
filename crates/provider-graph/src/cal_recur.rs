@@ -112,7 +112,7 @@ fn days_of_week(pattern: &Value, nth: Option<NonZeroI32>) -> Result<Vec<NDay>, G
 /// The `dayOfMonth` as a `BYMONTHDAY` list (Graph uses `0` for "not applicable").
 fn day_of_month(pattern: &Value) -> Vec<i32> {
     match pattern.get("dayOfMonth").and_then(Value::as_i64) {
-        Some(d) if d != 0 => i32::try_from(d).map(|d| vec![d]).unwrap_or_default(),
+        Some(d) if d != 0 => i32::try_from(d).map_or_default(|d| vec![d]),
         _ => Vec::new(),
     }
 }

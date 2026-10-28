@@ -50,7 +50,7 @@ impl HttpResponse {
     /// The compliance classes the `DAV` header lists, trimmed, in the server's order. Empty
     /// when the response carries no such header.
     pub(crate) fn dav_classes(&self) -> Vec<&str> {
-        self.dav.as_deref().map_or_else(Vec::new, |header| {
+        self.dav.as_deref().map_or_default(|header| {
             header
                 .split(',')
                 .map(str::trim)
