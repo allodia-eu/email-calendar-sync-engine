@@ -285,7 +285,9 @@ async fn fetch_session(
             let next = engine_provider::redirect_target(&url, location).ok_or_else(|| {
                 // Unparseable, or a hop off TLS — which these requests may never take,
                 // since every one of them carries the account's credentials.
-                JmapError::session(format!("unresolvable redirect to {location:?}"))
+                JmapError::session(format!(
+                    "redirect to {location:?} not followed: it does not resolve, or it leaves HTTPS"
+                ))
             })?;
             // Both sides resolved, so a host sees the hop it can actually replay —
             // not a bare `Location` path whose origin it would have to reconstruct.

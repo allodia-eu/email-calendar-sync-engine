@@ -22,7 +22,8 @@ contact normalization share only the DAV transport/TLS layer.
 
 ## CardDAV contacts
 
-`CardDavProvider` starts at `/.well-known/carddav`, resolves the current
+`CardDavProvider` starts at the base URL's path, or at `/.well-known/carddav` when the
+base URL names only a server, resolves the current
 principal and `addressbook-home-set`, asks the home with `OPTIONS` whether it
 advertises the `addressbook` class (RFC 6352 §6.1), snapshots address-book
 collections and rights, then binds one adapter to one address book. A home that
@@ -170,8 +171,9 @@ are split escape-aware so the writer and the parser agree.
 
 ## CalDAV specifics implemented
 
-- **Discovery is the two-step RFC 6764 §6 flow.** `PROPFIND` the well-known path
-  (`/.well-known/caldav`) for the `current-user-principal`, then `PROPFIND` *that
+- **Discovery is the two-step RFC 6764 §6 flow.** `PROPFIND` the base URL's own path,
+  or the well-known path (`/.well-known/caldav`) when the base URL names only a server
+  (`href::discovery_start`), for the `current-user-principal`, then `PROPFIND` *that
   principal* for its `calendar-home-set` (the home-set is a property of the
   principal, not the root). A lenient server (Stalwart) returns the home-set
   directly at the well-known, short-circuiting the second step; a strict server
@@ -215,7 +217,8 @@ are split escape-aware so the writer and the parser agree.
   read only after its origin has the credential (`discovery::authenticate_before_reading`).
   A host resumes at the principal it stored (`with_discovery_path` with the URL
   `principal_url()` reported), never at a home. A plaintext origin after TLS is refused
-  outright, and **that refusal lives in `DavExecutor::trust_origin`, not in
+  outright (a redirect to the same host naming no port of its own is first taken over TLS,
+  by `engine_provider::redirect_target`), and **that refusal lives in `DavExecutor::trust_origin`, not in
   `redirect_href`**: a walk starts at a bare well-known path, which names no scheme, so on the
   first hop only the connection knows it is being asked to give up TLS. A refusal fails the
   walk rather than continuing over it. Once the home is found the connection settles on its

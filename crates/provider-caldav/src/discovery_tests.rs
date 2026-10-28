@@ -122,6 +122,41 @@ async fn a_refused_origin_change_fails_the_walk_rather_than_following_it() {
 }
 
 #[tokio::test]
+async fn a_plaintext_redirect_to_the_same_host_is_followed_over_tls() {
+    // Nextcloud behind a TLS-terminating proxy: its `.well-known` rewrite answers with an
+    // `http://` URL on the host that just answered over TLS.
+    let exec = Replay::new(vec![
+        redirect_to("http://dav.example.com/remote.php/dav/"),
+        ok(include_str!("../tests/fixtures/principal.xml")),
+    ]);
+    discover_home(
+        &exec,
+        "https://dav.example.com/.well-known/caldav",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .unwrap();
+    assert_eq!(exec.seen()[1].1, "https://dav.example.com/remote.php/dav/");
+}
+
+#[tokio::test]
+async fn a_plaintext_redirect_to_another_host_says_why_it_is_not_followed() {
+    let exec = Replay::new(vec![redirect_to("http://cal.example.net/dav/")]);
+    let err = discover_home(
+        &exec,
+        "https://dav.example.com/.well-known/caldav",
+        &IgnoreConnectSteps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("leaves HTTPS"),
+        "unexpected: {err}"
+    );
+    assert_eq!(exec.seen().len(), 1);
+}
+
+#[tokio::test]
 async fn a_redirect_target_carrying_credentials_is_scrubbed() {
     // A `Location` is server-controlled and may carry userinfo; these steps are
     // built to be logged (`north-star.md`).

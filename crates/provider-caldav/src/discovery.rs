@@ -190,7 +190,7 @@ async fn propfind_principal(
             // exactly as before.
             if let Some(location) = &response.location {
                 let next = redirect_href(&href, location).ok_or_else(|| {
-                    CalDavError::protocol(format!("unresolvable redirect to {location:?}"))
+                    CalDavError::protocol(format!("redirect to {location:?} not followed: it does not resolve, or it leaves HTTPS"))
                 })?;
                 observer.step(&ConnectStep::redirected(&href, &next));
                 // The account's own server moved the chain, so its target may receive the

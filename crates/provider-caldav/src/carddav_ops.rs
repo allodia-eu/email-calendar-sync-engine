@@ -88,7 +88,9 @@ async fn principal_props(
             // Same rule as the CalDAV walk (`href::redirect_href`): a bare path after
             // an origin change belongs to the new origin, not to the connection base.
             let next = redirect_href(&href, &location).ok_or_else(|| {
-                CalDavError::protocol(format!("unresolvable redirect to {location:?}"))
+                CalDavError::protocol(format!(
+                    "redirect to {location:?} not followed: it does not resolve, or it leaves HTTPS"
+                ))
             })?;
             observer.step(&ConnectStep::redirected(&href, &next));
             if !executor.trust_origin(&next) {

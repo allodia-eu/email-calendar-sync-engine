@@ -29,6 +29,13 @@
 /// `https` → `http` hop would put a password or bearer token on the wire in cleartext.
 /// A chain that began in plaintext (the loopback fixtures) is left alone.
 ///
+/// One `https` → `http` hop is taken over TLS instead: one to the **same host** naming no
+/// port of its own. A server behind a TLS-terminating proxy builds its redirects as if it
+/// were served in plaintext (Nextcloud's `.well-known` rewrite does, out of the box), and
+/// the host has just answered over TLS, so the same place over TLS is where the hop meant
+/// to go. The certificate is verified as on any other hop. Another host, or a port of its
+/// own, says nothing about whether TLS is served there, and is refused.
+///
 /// Any `user:pw@` the `Location` carried is dropped. It is server-controlled, and the
 /// resolved URL is both logged and kept (it becomes the base the JMAP session's
 /// advertised URLs resolve against), so no reader downstream has to remember to scrub.
@@ -43,9 +50,13 @@
 ///     redirect_target("https://mail.example.com/.well-known/jmap", "/jmap/session").as_deref(),
 ///     Some("https://mail.example.com/jmap/session")
 /// );
-/// // Leaving TLS is refused.
+/// // Leaving TLS for the same host stays on TLS; for another host it is refused.
 /// assert_eq!(
-///     redirect_target("https://mail.example.com/x", "http://mail.example.com/y"),
+///     redirect_target("https://mail.example.com/x", "http://mail.example.com/y").as_deref(),
+///     Some("https://mail.example.com/y")
+/// );
+/// assert_eq!(
+///     redirect_target("https://example.com/x", "http://mail.example.com/y"),
 ///     None
 /// );
 /// ```
@@ -57,7 +68,10 @@ pub fn redirect_target(current: &str, location: &str) -> Option<String> {
         return None;
     }
     if current.scheme() == "https" && next.scheme() != "https" {
-        return None;
+        if next.host() != current.host() || next.port().is_some() {
+            return None;
+        }
+        next.set_scheme("https").ok()?;
     }
     // Both setters only fail on a URL that cannot be a base, which the scheme check
     // above has already excluded.
@@ -93,13 +107,45 @@ mod tests {
     }
 
     #[test]
+    fn a_redirect_off_tls_to_the_same_host_is_taken_over_tls() {
+        // A server behind a TLS-terminating proxy builds its redirects as if it were
+        // served in plaintext. The host has just answered over TLS, so the same place
+        // over TLS is where the hop meant to go.
+        assert_eq!(
+            super::redirect_target(
+                "https://dav.example.com/.well-known/caldav",
+                "http://dav.example.com/remote.php/dav/"
+            )
+            .as_deref(),
+            Some("https://dav.example.com/remote.php/dav/")
+        );
+        // Port 80 is the plaintext default, so it names no port of its own.
+        assert_eq!(
+            super::redirect_target(
+                "https://dav.example.com/.well-known/caldav",
+                "http://dav.example.com:80/remote.php/dav/"
+            )
+            .as_deref(),
+            Some("https://dav.example.com/remote.php/dav/")
+        );
+    }
+
+    #[test]
     fn a_redirect_off_tls_is_refused() {
         // The request carries the account's credentials, so a hop that leaves TLS
-        // would put them on the wire in cleartext. No discovery chain needs it.
+        // would put them on the wire in cleartext. Another host, or a port of its
+        // own, says nothing about whether TLS is served there.
+        assert_eq!(
+            super::redirect_target(
+                "https://example.com/.well-known/jmap",
+                "http://mail.example.com/jmap/session"
+            ),
+            None
+        );
         assert_eq!(
             super::redirect_target(
                 "https://mail.example.com/.well-known/jmap",
-                "http://mail.example.com/jmap/session"
+                "http://mail.example.com:8080/jmap/session"
             ),
             None
         );

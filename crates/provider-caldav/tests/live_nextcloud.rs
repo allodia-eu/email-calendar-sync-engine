@@ -10,6 +10,7 @@
 //! `NEXTCLOUD_HTTP_ADDR` is set, so the offline `cargo test --workspace` stays green.
 
 use core::time::Duration;
+use std::sync::{Arc, Mutex};
 
 use engine_core::{
     calendar::Event,
@@ -17,7 +18,7 @@ use engine_core::{
     sync::SyncScope,
     time::TimeZoneId,
 };
-use engine_provider::{CalendarUserAddresses, CalendarWrites};
+use engine_provider::{CalendarUserAddresses, CalendarWrites, ConnectObserver, ConnectStep};
 use engine_recurrence::Horizon;
 use engine_store::{ManualClock, StoreRead, WorkerId};
 use engine_sync::sync_calendar;
@@ -41,14 +42,27 @@ fn harness() -> Option<(String, String, String)> {
 /// Connects from the server's root, as a host given only the server name does, retrying
 /// briefly so a just-started container is tolerated.
 async fn connect(addr: &str, user: &str, pass: &str) -> CalDavProvider {
-    let config = CalDavConfig::new(
-        format!("http://{addr}"),
+    connect_at(&format!("http://{addr}"), user, pass, None).await
+}
+
+/// [`connect`] from `base_url`, reporting the walk to `observer`.
+async fn connect_at(
+    base_url: &str,
+    user: &str,
+    pass: &str,
+    observer: Option<Arc<dyn ConnectObserver>>,
+) -> CalDavProvider {
+    let mut config = CalDavConfig::new(
+        base_url,
         Credentials::Basic {
             username: user.to_owned(),
             password: pass.to_owned(),
         },
         engine_http::test_server::user_agent(),
     );
+    if let Some(observer) = observer {
+        config = config.with_connect_observer(observer);
+    }
     let mut last_err = None;
     for _ in 0..15 {
         match CalDavProvider::connect(config.clone()).await {
@@ -102,6 +116,48 @@ async fn nextcloud_is_discovered_from_the_server_name() {
             .await
             .expect("the principal answers"),
         CalendarUserAddresses::Known(vec!["alice@test.local".to_owned()])
+    );
+}
+
+/// Records every redirect the walk is led through.
+#[derive(Default)]
+struct Hops(Mutex<Vec<String>>);
+
+impl ConnectObserver for Hops {
+    fn step(&self, step: &ConnectStep<'_>) {
+        if let ConnectStep::Redirected { to, .. } = step {
+            self.0.lock().unwrap().push(to.to_string());
+        }
+    }
+}
+
+/// A URL with a path is where discovery starts: the well-known, which would redirect, is never
+/// asked, so a well-known that redirects somewhere unusable cannot stop the connect.
+#[tokio::test]
+async fn nextcloud_is_discovered_from_the_dav_url_it_was_given() {
+    let Some((addr, user, pass)) = harness() else {
+        eprintln!(
+            "skipping nextcloud_is_discovered_from_the_dav_url_it_was_given: NEXTCLOUD_HTTP_ADDR unset"
+        );
+        return;
+    };
+    let hops = Arc::new(Hops::default());
+    let provider = connect_at(
+        &format!("http://{addr}/remote.php/dav"),
+        &user,
+        &pass,
+        Some(hops.clone()),
+    )
+    .await;
+
+    assert_eq!(
+        provider.principal_url(),
+        Some(format!("http://{addr}/remote.php/dav/principals/users/{user}/").as_str())
+    );
+    assert!(
+        hops.0.lock().unwrap().is_empty(),
+        "{:?}",
+        hops.0.lock().unwrap()
     );
 }
 

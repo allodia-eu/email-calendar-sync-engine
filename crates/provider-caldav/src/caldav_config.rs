@@ -17,7 +17,8 @@ pub struct CalDavConfig {
     pub base_url: String,
     /// How to authenticate.
     pub credentials: Credentials,
-    /// The URL to begin discovery at; defaults to the RFC 6764 well-known path.
+    /// The URL to begin discovery at: the base URL's path, or the RFC 6764 well-known path when
+    /// it names only a server.
     pub discovery_path: String,
     /// The TLS trust policy for this account, shared with every other provider
     /// (`docs/agent-guidance/tls.md`). Defaults to the hermetic bundled roots;
@@ -56,17 +57,19 @@ impl core::fmt::Debug for CalDavConfig {
 }
 
 impl CalDavConfig {
-    /// Settings with the RFC 6764 well-known discovery path.
+    /// Settings that begin discovery at `base_url`'s path, or at the RFC 6764 well-known when it
+    /// names only a server.
     #[must_use]
     pub fn new(
         base_url: impl Into<String>,
         credentials: Credentials,
         user_agent: engine_http::UserAgent,
     ) -> Self {
+        let base_url = base_url.into();
         Self {
-            base_url: base_url.into(),
+            discovery_path: crate::href::discovery_start(&base_url, "/.well-known/caldav"),
+            base_url,
             credentials,
-            discovery_path: "/.well-known/caldav".to_owned(),
             tls: TlsClientConfig::default(),
             retry: engine_http::RetryConfig::default(),
             user_agent,

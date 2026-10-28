@@ -8,6 +8,15 @@
 
 use crate::error::CalDavError;
 
+/// Where discovery starts for `base_url`: the path it names, or `well_known` when it names
+/// only a server. A person who entered a path entered the resource to ask.
+pub(crate) fn discovery_start(base_url: &str, well_known: &str) -> String {
+    match reqwest::Url::parse(base_url) {
+        Ok(url) if url.path() != "/" => url.path().to_owned(),
+        _ => well_known.to_owned(),
+    }
+}
+
 /// Resolves a discovery redirect's `Location` against the href that issued it.
 ///
 /// DAV discovery walks in **href space**: most hrefs are server-issued paths that the
