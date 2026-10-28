@@ -178,7 +178,7 @@ async fn a_flag_set_after_the_first_pass_comes_back_on_the_next() {
     if second.iter().any(EmailChunk::is_reconcile_final) {
         // The reconciling form: its present set is the whole inbox, as the snapshot's was.
         assert_eq!(present(&second), held);
-        assert!(second.last().unwrap().patched.is_empty());
+        assert_eq!(second.last().unwrap().patched, []);
     }
 }
 

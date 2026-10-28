@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(rule.interval.get(), 1);
         assert_eq!(rule.first_day_of_week, Weekday::Mo);
         assert_eq!(rule.bound, RecurrenceBound::Unbounded);
-        assert!(rule.by_day.is_empty());
+        assert_eq!(rule.by_day, []);
     }
 
     #[test]

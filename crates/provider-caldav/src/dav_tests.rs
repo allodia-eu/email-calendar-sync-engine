@@ -196,7 +196,7 @@ fn parses_sync_collection_with_etags_and_cdata_calendar_data() {
 fn parses_noop_delta_token_with_no_responses() {
     let xml = include_str!("../tests/fixtures/sync-noop.xml");
     let parsed = parse_multistatus(xml).unwrap();
-    assert!(parsed.responses.is_empty());
+    assert_eq!(parsed.responses, []);
     assert_eq!(
         parsed.sync_token.as_deref(),
         Some("urn:stalwart:davsync:16")

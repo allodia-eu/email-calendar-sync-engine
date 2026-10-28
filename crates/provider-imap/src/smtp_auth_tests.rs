@@ -279,7 +279,7 @@ fn mechanisms_are_read_per_line_and_in_both_spellings() {
     ];
     assert_eq!(advertised_mechanisms(&reply), ["OAUTHBEARER"]);
     // Nothing advertised is an empty list, not a panic.
-    assert!(advertised_mechanisms(&line("PIPELINING")).is_empty());
-    assert!(advertised_mechanisms(&line("")).is_empty());
-    assert!(advertised_mechanisms(&line("AUTH")).is_empty());
+    assert_eq!(advertised_mechanisms(&line("PIPELINING")), [] as [&str; 0]);
+    assert_eq!(advertised_mechanisms(&line("")), [] as [&str; 0]);
+    assert_eq!(advertised_mechanisms(&line("AUTH")), [] as [&str; 0]);
 }

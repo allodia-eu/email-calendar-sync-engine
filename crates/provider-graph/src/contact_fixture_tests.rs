@@ -209,7 +209,7 @@ async fn captured_tombstone_becomes_a_removal_not_a_card() {
     else {
         panic!("expected delta");
     };
-    assert!(changed.is_empty());
+    assert_eq!(changed, []);
     assert_eq!(removed.len(), 1);
     assert_eq!(removed[0].as_str(), "contact-1");
     // The cursor advanced to the fixture's new deltaLink.

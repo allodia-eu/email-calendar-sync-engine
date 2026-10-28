@@ -333,7 +333,7 @@ async fn delete_sends_if_match_when_guarded() {
     let writes = exec.writes();
     assert_eq!(writes[0].method, DavMethod::Delete);
     assert_eq!(writes[0].href, href().as_str());
-    assert!(writes[0].body.is_empty());
+    assert_eq!(writes[0].body, "");
     assert_eq!(
         writes[0].precondition,
         Precondition::IfMatch("\"v2\"".to_owned())

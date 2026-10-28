@@ -112,6 +112,6 @@ mod tests {
             std::collections::BTreeSet::new(),
         ));
         assert_eq!(row.flags.bits(), 0);
-        assert!(row.keywords.is_empty());
+        assert_eq!(row.keywords, [] as [String; 0]);
     }
 }

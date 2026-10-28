@@ -377,7 +377,7 @@ async fn a_failed_send_is_visible_in_the_outbox_and_can_be_withdrawn() {
     );
     let sent = engine.drain_outbox(&healthy, &account()).await.unwrap();
     assert_eq!(sent.delivered(), 1);
-    assert!(engine.outbox(&account()).await.unwrap().is_empty());
+    assert_eq!(engine.outbox(&account()).await.unwrap(), []);
     assert_eq!(
         engine.pending_op_state(queued[0].id).await.unwrap(),
         Some(PendingOpState::Succeeded)
@@ -422,7 +422,7 @@ async fn a_queued_send_can_be_withdrawn_before_it_goes() {
             .unwrap(),
         None
     );
-    assert!(engine.outbox(&account()).await.unwrap().is_empty());
+    assert_eq!(engine.outbox(&account()).await.unwrap(), []);
     assert_eq!(
         engine.pending_op_state(queued[0].id).await.unwrap(),
         Some(PendingOpState::Cancelled)

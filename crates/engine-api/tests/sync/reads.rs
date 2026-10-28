@@ -167,7 +167,7 @@ async fn search_on_an_unsynced_account_is_empty() {
     let engine = Engine::open_in_memory().unwrap();
     // No sync has run, so the account has no scopes: an empty, vacuously complete answer.
     let results = engine.search_mail(&account(), "report", 10).await.unwrap();
-    assert!(results.hits.is_empty());
+    assert_eq!(results.hits, []);
     assert!(results.coverage.is_complete());
 }
 
@@ -200,8 +200,8 @@ async fn lists_synced_mailboxes_and_messages() {
 
     // An account that never synced has neither.
     let other = AccountId::try_from("nobody").unwrap();
-    assert!(engine.mailboxes(&other).await.unwrap().is_empty());
-    assert!(engine.messages(&other).await.unwrap().is_empty());
+    assert_eq!(engine.mailboxes(&other).await.unwrap(), []);
+    assert_eq!(engine.messages(&other).await.unwrap(), []);
 }
 
 #[tokio::test]
@@ -225,8 +225,8 @@ async fn lists_synced_calendars_and_events() {
 
     // An account that never synced has neither.
     let other = AccountId::try_from("nobody").unwrap();
-    assert!(engine.calendars(&other).await.unwrap().is_empty());
-    assert!(engine.events(&other).await.unwrap().is_empty());
+    assert_eq!(engine.calendars(&other).await.unwrap(), []);
+    assert_eq!(engine.events(&other).await.unwrap(), []);
 }
 
 /// `events_by_keys` resolves a *named handful* of events without reading the rest — the
@@ -280,22 +280,16 @@ async fn events_by_keys_resolves_only_the_named_events() {
         .unwrap();
     assert_eq!(mixed.len(), 1);
     assert_eq!(mixed[0].id.key().as_str(), "evt-b");
-    assert!(
-        engine
-            .events_by_keys(&account(), &[])
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(engine.events_by_keys(&account(), &[]).await.unwrap(), []);
 
     // An account that never synced resolves nothing rather than erroring.
     let other = AccountId::try_from("nobody").unwrap();
-    assert!(
+    assert_eq!(
         engine
             .events_by_keys(&other, &[ProviderKey::new("evt-a").unwrap()])
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        []
     );
 }
 

@@ -88,14 +88,14 @@ pub(crate) fn parse_status_unseen(lines: &[Vec<u8>]) -> HashMap<String, u32> {
 /// The `UNSEEN` value from a `STATUS` attribute list, or `None` when the server did
 /// not return that attribute.
 fn unseen_of(attributes: &[Item]) -> Option<u32> {
-    attributes
-        .chunks_exact(2)
-        .find(|pair| {
-            pair[0]
-                .as_atom()
+    let (pairs, _) = attributes.as_chunks::<2>();
+    pairs
+        .iter()
+        .find(|[name, _]| {
+            name.as_atom()
                 .is_some_and(|atom| atom.eq_ignore_ascii_case("UNSEEN"))
         })
-        .and_then(|pair| pair[1].as_atom())
+        .and_then(|[_, value]| value.as_atom())
         .and_then(|value| value.parse().ok())
 }
 

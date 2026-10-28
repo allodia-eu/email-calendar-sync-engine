@@ -199,7 +199,7 @@ where
     let replay = ApplyBatch::new(&update, &derived, &[], &state)
         .with_recipient_observations(std::slice::from_ref(&observation));
     store.apply_sync_update(&claim.lease, replay).await.unwrap();
-    assert!(store.recipient_interactions(None).await.unwrap().is_empty());
+    assert_eq!(store.recipient_interactions(None).await.unwrap(), []);
 
     // No backfill has run yet, so there is no version to read. Callers rely on this
     // being cheap and truthful: it is what lets them skip the whole-mailbox scan that

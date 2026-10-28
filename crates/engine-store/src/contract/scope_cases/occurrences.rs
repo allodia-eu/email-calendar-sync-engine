@@ -249,11 +249,11 @@ pub(in crate::contract) async fn scope_occurrences_keep_overrides_and_drop_with_
     );
 
     // A scope the store has never seen reads back empty rather than erroring.
-    assert!(
+    assert_eq!(
         store
             .scope_occurrences(&event_scope(&acct("acct-occ-none")), week)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        []
     );
 }

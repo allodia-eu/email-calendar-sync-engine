@@ -285,8 +285,8 @@ mod tests {
         else {
             panic!("expected a delta");
         };
-        assert!(changed.is_empty());
-        assert!(removed.is_empty());
+        assert_eq!(changed.as_slice(), []);
+        assert_eq!(removed.as_slice(), []);
     }
 
     #[tokio::test]

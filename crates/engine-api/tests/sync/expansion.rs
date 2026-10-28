@@ -86,21 +86,9 @@ async fn occurrences_expand_a_recurrence_that_the_event_list_reports_once() {
         "2026-06-08T00:00:00Z".parse().unwrap(),
     )
     .unwrap();
-    assert!(
-        engine
-            .occurrences_in(&account(), before)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(engine.occurrences_in(&account(), before).await.unwrap(), []);
     let other = AccountId::try_from("nobody").unwrap();
-    assert!(
-        engine
-            .occurrences_in(&other, week)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(engine.occurrences_in(&other, week).await.unwrap(), []);
 }
 
 /// Widening the horizon and re-syncing does **not** backfill occurrences —
@@ -178,7 +166,7 @@ async fn a_widened_horizon_needs_an_expansion_because_a_resync_will_not_backfill
         .await
         .unwrap();
     assert_eq!(report.occurrences, 12);
-    assert!(report.unexpandable.is_empty());
+    assert_eq!(report.unexpandable, []);
 
     let starts: Vec<String> = engine
         .occurrences_in(&account(), august)
@@ -287,13 +275,7 @@ async fn an_unexpandable_recurrence_is_reported_rather_than_silently_dropped() {
     // whole calendar's sync.
     assert_eq!(engine.events(&account()).await.unwrap().len(), 1);
     // ...but it expands to nothing, so a grid over the whole year shows it nowhere.
-    assert!(
-        engine
-            .occurrences_in(&account(), year)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(engine.occurrences_in(&account(), year).await.unwrap(), []);
     // ...and THAT is reported, by key and reason, rather than silently swallowed.
     assert_eq!(report.events.unexpandable.len(), 1);
     assert_eq!(report.events.unexpandable[0].event.as_str(), "evt-payday");

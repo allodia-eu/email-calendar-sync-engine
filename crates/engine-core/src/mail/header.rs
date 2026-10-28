@@ -74,8 +74,8 @@ mod tests {
     #[test]
     fn envelope_defaults_are_empty() {
         let env = Envelope::default();
-        assert!(env.message_id.is_empty());
-        assert!(env.from.is_empty());
+        assert_eq!(env.message_id, []);
+        assert_eq!(env.from, []);
         assert!(env.subject.is_none());
     }
 

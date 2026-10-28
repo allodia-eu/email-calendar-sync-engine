@@ -152,7 +152,7 @@ async fn a_copy_that_never_turns_up_keeps_nothing_and_patches_nothing() {
         .await;
 
     assert!(kept.is_empty());
-    assert!(patched(&requests).is_empty());
+    assert_eq!(patched(&requests), [] as [Value; 0]);
     let lookups = requests
         .lock()
         .unwrap()

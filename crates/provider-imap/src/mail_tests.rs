@@ -171,7 +171,7 @@ fn an_empty_references_header_yields_no_ids() {
     );
     let rows = parse_fetch(&[line.as_bytes().to_vec()]).unwrap();
     let message = message_from_fetch(&rows[0], &MailboxId::try_from("INBOX").unwrap(), 1);
-    assert!(message.envelope.references.is_empty());
+    assert_eq!(message.envelope.references, []);
 }
 
 #[test]
@@ -421,7 +421,7 @@ fn message_ids_handle_brackets_and_multiples() {
     // A bare (bracket-less) value is accepted as a single id.
     assert_eq!(extract_message_ids("bare@host")[0].as_str(), "bare@host");
     // Empty/garbage yields nothing, never a panic.
-    assert!(extract_message_ids("<>").is_empty());
+    assert_eq!(extract_message_ids("<>"), []);
 }
 
 #[test]

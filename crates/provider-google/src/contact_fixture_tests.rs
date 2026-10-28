@@ -61,8 +61,8 @@ async fn captured_empty_delta_advances_the_cursor_instead_of_failing() {
     else {
         panic!("expected a delta");
     };
-    assert!(changed.is_empty());
-    assert!(removed.is_empty());
+    assert_eq!(changed, []);
+    assert_eq!(removed, []);
     assert_eq!(sync.next_cursor.as_str(), "google-sync-token-3");
 }
 
@@ -140,7 +140,7 @@ async fn captured_delta_reports_the_changed_person() {
         panic!("expected a delta");
     };
     assert_eq!(changed.len(), 1);
-    assert!(removed.is_empty());
+    assert_eq!(removed, []);
     assert!(
         changed[0]
             .titles
@@ -189,7 +189,7 @@ async fn captured_other_contacts_normalize_as_suggestions() {
     let SyncUpdate::Snapshot { objects, .. } = sync.update else {
         panic!("expected snapshot");
     };
-    assert!(!objects.is_empty());
+    assert_ne!(objects, []);
     assert!(
         objects.iter().all(|card| !card.is_writable),
         "Other Contacts are read-only"

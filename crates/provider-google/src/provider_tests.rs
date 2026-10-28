@@ -113,7 +113,7 @@ async fn sync_email_backfills_and_reconciles_on_the_pass_after() {
     let SyncUpdate::Snapshot { objects, present } = &reconcile.update else {
         panic!("a reconcile tombstones what is absent");
     };
-    assert!(objects.is_empty());
+    assert_eq!(objects.as_slice(), []);
     assert_eq!(present.len(), 3);
     assert_eq!(reconcile.next_cursor.as_str(), "1988");
 }
@@ -143,7 +143,7 @@ async fn sync_email_delta_is_additive_and_advances_the_cursor() {
         "message-1 was added, so it is fetched whole"
     );
     assert_eq!(patched.len(), 1, "message-2 only changed labels");
-    assert!(removed.is_empty());
+    assert_eq!(removed.as_slice(), []);
     assert_eq!(sync.next_cursor.as_str(), "1681");
 }
 

@@ -63,7 +63,7 @@ fn a_message_outside_sent_produces_no_observations() {
         message.mailboxes.iter(),
         &BTreeSet::from([MailboxId::try_from("other-sent").unwrap()]),
     );
-    assert!(observations.is_empty());
+    assert_eq!(observations, []);
 }
 
 #[test]
@@ -199,8 +199,14 @@ fn suggestion_matching_covers_token_prefix_substring_priority_and_limit() {
     let empty = rank_recipient_suggestions("", &people, &interactions, 2);
     assert_eq!(empty[0].email.as_str(), "plain@example.test");
     assert_eq!(empty.len(), 2);
-    assert!(rank_recipient_suggestions("", &people, &interactions, 0).is_empty());
-    assert!(rank_recipient_suggestions("missing", &people, &interactions, 10).is_empty());
+    assert_eq!(
+        rank_recipient_suggestions("", &people, &interactions, 0),
+        []
+    );
+    assert_eq!(
+        rank_recipient_suggestions("missing", &people, &interactions, 10),
+        []
+    );
 }
 
 #[test]

@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn empty_subject_and_body_produce_no_fts_fields() {
         let p = project_message(&message());
-        assert!(p.fts.fields.is_empty());
+        assert_eq!(p.fts.fields, []);
         assert_eq!(p.row.date_utc, None);
         assert!(!p.row.has_attachment);
     }

@@ -112,7 +112,7 @@ async fn an_event_the_multiget_returns_without_a_body_stays_present() {
     let SyncUpdate::Snapshot { objects, present } = &result.update else {
         panic!("expected a snapshot");
     };
-    assert!(objects.is_empty());
+    assert_eq!(objects.as_slice(), []);
     assert_eq!(
         present.len(),
         1,
@@ -180,7 +180,7 @@ async fn a_card_the_multiget_returns_without_a_body_stays_present() {
     let SyncUpdate::Snapshot { objects, present } = update else {
         panic!("expected a snapshot");
     };
-    assert!(objects.is_empty());
+    assert_eq!(objects, []);
     assert_eq!(
         present
             .iter()
@@ -206,7 +206,7 @@ async fn a_member_the_multiget_answers_404_for_is_removed() {
     let SyncUpdate::Snapshot { objects, present } = &result.update else {
         panic!("expected a snapshot");
     };
-    assert!(objects.is_empty());
+    assert_eq!(objects.as_slice(), []);
     assert!(
         present.is_empty(),
         "the server said it is gone: {present:?}"

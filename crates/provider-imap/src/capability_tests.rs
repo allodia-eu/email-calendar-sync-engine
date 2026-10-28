@@ -91,7 +91,10 @@ fn one_enable_carries_the_dialect_and_every_extension_that_needs_one() {
     assert_eq!(session.enable_arguments(), ["IMAP4rev2", "QRESYNC"]);
 
     // Nothing to enable at all is an empty list, and the caller issues no command.
-    assert!(caps(&["IMAP4rev1", "IDLE"]).enable_arguments().is_empty());
+    assert_eq!(
+        caps(&["IMAP4rev1", "IDLE"]).enable_arguments(),
+        [] as [&str; 0]
+    );
 }
 
 #[test]

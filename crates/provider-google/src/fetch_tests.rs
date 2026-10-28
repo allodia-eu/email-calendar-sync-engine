@@ -60,7 +60,7 @@ async fn current_history_id_reads_the_profile_cursor() {
     let client = fake_client(vec![("/profile", json(PROFILE))]);
     let cursor = current_history_id(&client).await.unwrap();
     // The scrubbed profile's historyId is the snapshot's delta start cursor.
-    assert!(!cursor.as_str().is_empty());
+    assert_ne!(cursor.as_str(), "");
     assert!(cursor.as_str().chars().all(|c| c.is_ascii_digit()));
 }
 
@@ -287,8 +287,8 @@ async fn delta_page_refetches_changed_and_advances_the_cursor() {
     // history page already answered in full.
     assert_eq!(page.changed.len(), 1);
     assert_eq!(page.patched.len(), 1);
-    assert!(page.present.is_empty()); // a delta carries no present set
-    assert!(page.removed.is_empty());
+    assert_eq!(page.present, []); // a delta carries no present set
+    assert_eq!(page.removed, []);
     // The cursor advances to the response's latest historyId.
     assert_eq!(page.next_cursor.as_str(), "1681");
 }
@@ -306,7 +306,7 @@ async fn delta_page_tombstones_a_deleted_message_without_refetch() {
     )
     .await
     .unwrap();
-    assert!(page.changed.is_empty());
+    assert_eq!(page.changed, []);
     assert_eq!(page.removed.len(), 1);
     assert_eq!(page.removed[0].as_str(), "message-3");
 }

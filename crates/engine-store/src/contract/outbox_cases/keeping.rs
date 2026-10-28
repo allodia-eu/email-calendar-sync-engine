@@ -54,12 +54,12 @@ pub(in crate::contract) async fn a_renewed_lease_keeps_a_slow_attempt_its_own<
                 .unwrap(),
             PendingOpClaim::Refused(ClaimRejection::Busy)
         );
-        assert!(
+        assert_eq!(
             store
                 .claim_pending_ops(account.clone(), lease_request("rival", 30), 10)
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            []
         );
         assert_eq!(
             row(store, &account, op).await.state,
@@ -202,13 +202,7 @@ pub(in crate::contract) async fn a_send_that_failed_stays_listed_until_the_host_
         )
         .await
         .unwrap();
-    assert!(
-        store
-            .list_pending_ops(account.clone())
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(store.list_pending_ops(account.clone()).await.unwrap(), []);
     assert_eq!(
         store.retry_pending_op_now(account, edit).await.unwrap(),
         Some(OpRejection::Settled)

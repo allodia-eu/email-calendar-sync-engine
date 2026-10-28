@@ -210,7 +210,7 @@ fn a_message_filed_nowhere_still_lists() {
     );
     let rows = list_mail(&conn, &[account("a")], &Selector::Newest, usize::MAX).expect("list");
     assert_eq!(keys(&rows), vec!["m1"]);
-    assert!(rows[0].mailboxes.is_empty());
+    assert_eq!(rows[0].mailboxes, []);
 }
 
 #[test]
@@ -257,10 +257,9 @@ fn accounts_merge_into_one_date_order_and_an_unnamed_account_contributes_nothing
     assert_eq!(keys(&rows), vec!["b1", "a1", "b2"]);
     let only_a = list_mail(&conn, &[account("a")], &Selector::Newest, usize::MAX).expect("list");
     assert_eq!(keys(&only_a), vec!["a1"]);
-    assert!(
-        list_mail(&conn, &[], &Selector::Newest, usize::MAX)
-            .expect("list")
-            .is_empty()
+    assert_eq!(
+        list_mail(&conn, &[], &Selector::Newest, usize::MAX).expect("list"),
+        []
     );
 }
 

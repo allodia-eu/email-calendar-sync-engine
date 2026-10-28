@@ -50,7 +50,7 @@ fn neither_not_enabled_nor_unknown_recognises_anything() {
         CalendarUserAddresses::NotEnabled,
         CalendarUserAddresses::Unknown,
     ] {
-        assert!(set.addresses().is_empty());
+        assert_eq!(set.addresses(), [] as [String; 0]);
         assert!(!set.recognises("alice@example.org"));
     }
 }

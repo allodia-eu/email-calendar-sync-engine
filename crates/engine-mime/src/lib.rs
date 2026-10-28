@@ -306,10 +306,14 @@ mod tests {
 
     #[test]
     fn plain_and_html_only_messages_have_no_inline_parts() {
-        assert!(
-            extract_inline_parts(&raw(b"Content-Type: text/plain\r\n\r\njust text")).is_empty()
+        assert_eq!(
+            extract_inline_parts(&raw(b"Content-Type: text/plain\r\n\r\njust text")),
+            []
         );
-        assert!(extract_inline_parts(&raw(b"Content-Type: text/html\r\n\r\n<p>hi</p>")).is_empty());
+        assert_eq!(
+            extract_inline_parts(&raw(b"Content-Type: text/html\r\n\r\n<p>hi</p>")),
+            []
+        );
     }
 
     #[test]
@@ -336,7 +340,7 @@ mod tests {
     fn inline_extraction_never_panics_on_hostile_input() {
         // Same adversarial posture as body extraction: garbage, non-UTF-8, and a
         // never-closed multipart boundary yield an empty list, never a panic.
-        assert!(extract_inline_parts(&raw(b"")).is_empty());
+        assert_eq!(extract_inline_parts(&raw(b"")), []);
         let _ = extract_inline_parts(&raw(b"\xff\xfe \x00 not a message <<< cid:\x01"));
         let _ = extract_inline_parts(&raw(
             b"Content-Type: multipart/related; boundary=\"x\"\r\n\r\n--x\r\n\

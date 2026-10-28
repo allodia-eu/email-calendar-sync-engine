@@ -211,7 +211,7 @@ async fn a_change_made_offline_goes_out_when_the_drain_finds_the_server() {
         .await
         .expect_err("offline");
     assert!(matches!(err, crate::SyncError::Provider(ref e) if e.is_retryable()));
-    assert!(tree.sent().is_empty());
+    assert_eq!(tree.sent(), []);
     assert_eq!(store.list_pending_ops(account()).await.unwrap().len(), 1);
 
     clock.advance(Duration::from_hours(1));
@@ -248,7 +248,7 @@ async fn a_queued_rename_does_not_overwrite_a_rename_made_elsewhere() {
         "nothing was sent over the other rename"
     );
     assert_eq!(tree.folder("work").unwrap().name, "Clients");
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    assert_eq!(store.list_pending_ops(account()).await.unwrap(), []);
 }
 
 #[tokio::test]
@@ -307,8 +307,8 @@ async fn a_name_no_transport_accepts_is_refused_before_anything_is_queued() {
         .expect_err("refused");
     assert!(matches!(err, crate::SyncError::Provider(ref e)
         if e.class() == FailureClass::InvalidState));
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
-    assert!(tree.sent().is_empty());
+    assert_eq!(store.list_pending_ops(account()).await.unwrap(), []);
+    assert_eq!(tree.sent(), []);
 }
 
 #[tokio::test]
@@ -322,5 +322,5 @@ async fn deleting_a_folder_that_is_already_gone_succeeds_without_a_request() {
     let outcome = change(&tree, &store, "delete-gone", &delete).await.unwrap();
 
     assert_eq!(outcome.mailbox, None);
-    assert!(tree.sent().is_empty());
+    assert_eq!(tree.sent(), []);
 }

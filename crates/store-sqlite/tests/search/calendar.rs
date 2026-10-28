@@ -184,5 +184,5 @@ async fn calendar_structured_filters_and_occurrence_range() {
         .search_calendar(&[], &CalendarQuery::parse("review").unwrap(), 10)
         .await
         .unwrap();
-    assert!(none.hits.is_empty());
+    assert_eq!(none.hits, []);
 }

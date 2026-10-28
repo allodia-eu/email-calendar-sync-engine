@@ -365,6 +365,6 @@ mod tests {
     #[test]
     fn a_message_with_no_recipients_yields_empty() {
         let msg = b"From: a@test.local\r\nContent-Type: text/plain\r\n\r\nhi\r\n";
-        assert!(extract_delivery_recipients(&raw(msg)).is_empty());
+        assert_eq!(extract_delivery_recipients(&raw(msg)), [] as [String; 0]);
     }
 }

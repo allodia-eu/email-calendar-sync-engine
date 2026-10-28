@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn hostile_input_never_panics() {
-        assert!(extract_attachments(&raw(b"")).is_empty());
+        assert_eq!(extract_attachments(&raw(b"")), []);
         assert!(extract_attachment(&raw(b"\xff\x00not mime"), AttachmentPartId::new(0)).is_none());
     }
 }

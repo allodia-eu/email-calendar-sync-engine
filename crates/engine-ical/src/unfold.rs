@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn empty_input_yields_no_lines() {
-        assert!(content_lines("").is_empty());
-        assert!(content_lines("\r\n\r\n").is_empty());
+        assert_eq!(content_lines(""), []);
+        assert_eq!(content_lines("\r\n\r\n"), []);
     }
 }

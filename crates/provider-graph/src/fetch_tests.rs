@@ -198,7 +198,7 @@ async fn snapshot_page_yields_full_objects_and_a_delta_cursor() {
     assert_eq!(page.kind, SyncKind::Snapshot);
     assert_eq!(page.changed.len(), 3);
     assert_eq!(page.present.len(), 3);
-    assert!(page.removed.is_empty());
+    assert_eq!(page.removed, []);
     assert!(page.next_page.is_none());
     // The pass ends at the deltaLink, which becomes the persisted cursor.
     assert!(page.next_cursor.as_str().contains("deltatoken"));
@@ -274,8 +274,8 @@ async fn a_lightweight_partial_resolves_to_state_and_removed_tombstones() {
         "the state-only read answers with the etag too, so the row keeps its guard"
     );
     assert!(page.patched[0].state.last_modified.is_some());
-    assert!(page.present.is_empty()); // a delta carries no present set
-    assert!(page.removed.is_empty());
+    assert_eq!(page.present, []); // a delta carries no present set
+    assert_eq!(page.removed, []);
 
     // A removed entry → an inline tombstone, no re-fetch.
     let client = fake_client(vec![("delta-token-1", json(REMOVED))]);
@@ -283,7 +283,7 @@ async fn a_lightweight_partial_resolves_to_state_and_removed_tombstones() {
         .await
         .unwrap();
     assert_eq!(page.removed.len(), 1);
-    assert!(page.changed.is_empty());
+    assert_eq!(page.changed, []);
     assert!(page.next_cursor.as_str().contains("deltatoken"));
 }
 
@@ -305,7 +305,7 @@ async fn a_snapshot_entry_without_an_etag_is_still_a_whole_message() {
         .await
         .unwrap();
     assert_eq!(page.kind, SyncKind::Snapshot);
-    assert!(page.patched.is_empty());
+    assert_eq!(page.patched, []);
     assert_eq!(page.changed.len(), 1);
     assert_eq!(page.present.len(), 1, "and it is covered by the pass");
 }
@@ -447,7 +447,7 @@ async fn delta_refetch_skips_a_message_that_404s() {
     let page = messages_page(&client, &inbox(), Some(&cursor), None, None, &[])
         .await
         .unwrap();
-    assert!(page.changed.is_empty());
+    assert_eq!(page.changed, []);
 }
 
 #[tokio::test]

@@ -323,7 +323,7 @@ fn keyword_update(mail_account: &str, email_id: &str, draft: &Draft) -> Option<V
 /// The keywords the filed copy carries after [`keyword_update`]: every one when the server
 /// applied the update, none when it refused it or answered without reporting it applied.
 fn kept_keywords(result: Result<&Value, JmapError>, draft: &Draft) -> BTreeSet<Keyword> {
-    let applied = result.ok().is_some_and(|result| {
+    let applied = result.is_ok_and(|result| {
         result
             .get("updated")
             .and_then(Value::as_object)

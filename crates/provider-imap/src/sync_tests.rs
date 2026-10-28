@@ -72,7 +72,7 @@ async fn first_sync_snapshots_a_uid_window_newest_first() {
     assert_eq!(page.changed[0].id.as_str(), "imap:v1000:u8@INBOX");
     assert_eq!(page.changed[2].id.as_str(), "imap:v1000:u6@INBOX");
     assert_eq!(page.present.len(), 3);
-    assert!(page.removed.is_empty());
+    assert_eq!(page.removed, []);
     assert_eq!(page.next_cursor.as_str(), "v1000;n9;g1;r");
     // The next window ends just below this one.
     assert_eq!(page_high(page.next_page.as_ref().unwrap()), Some(5));
@@ -185,9 +185,9 @@ async fn an_empty_mailbox_snapshots_to_nothing() {
         .await
         .unwrap();
     assert_eq!(page.kind, SyncKind::Snapshot);
-    assert!(page.changed.is_empty());
+    assert_eq!(page.changed, []);
     // An empty present set tombstones every local row — the mailbox was emptied.
-    assert!(page.present.is_empty());
+    assert_eq!(page.present, []);
     assert_eq!(page.total, Some(0));
     assert_eq!(page.next_cursor.as_str(), "v1000;n1;g1;r");
 }
@@ -235,8 +235,8 @@ async fn a_windowed_snapshot_with_no_matches_fetches_nothing() {
         .await
         .unwrap();
     assert_eq!(page.kind, SyncKind::Snapshot);
-    assert!(page.changed.is_empty());
-    assert!(page.present.is_empty());
+    assert_eq!(page.changed, []);
+    assert_eq!(page.present, []);
     assert_eq!(page.total, Some(0));
     assert_eq!(page.next_cursor.as_str(), "v1000;n9;g1;r");
     assert!(!written(&recorded).contains("UID FETCH"));

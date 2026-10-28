@@ -82,7 +82,7 @@ async fn mailbox_first_sync_snapshots_all_collections() {
     };
     assert_eq!(objects.len(), 7);
     assert_eq!(present.len(), 7);
-    assert!(!sync.next_cursor.as_str().is_empty());
+    assert_ne!(sync.next_cursor.as_str(), "");
 }
 
 #[tokio::test]
@@ -224,8 +224,8 @@ async fn email_delta_with_cursor_uses_changes_then_get() {
     else {
         panic!("expected delta");
     };
-    assert!(changed.is_empty());
-    assert!(removed.is_empty());
+    assert_eq!(changed.as_slice(), []);
+    assert_eq!(removed.as_slice(), []);
     assert_eq!(sync.next_cursor.as_str(), "sb2");
 }
 

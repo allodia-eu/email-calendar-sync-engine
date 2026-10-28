@@ -70,6 +70,9 @@ debug = 0
 # `target/debugger/` rather than `target/debug/`, so turning it on does not evict the warm dev
 # cache — at the cost of a second target dir while it exists, so `cargo clean -p <crate>` it
 # afterwards.
+#
+# Not Cargo's built-in `debug` profile (new in 1.99): that one is `dev` under another name, and
+# writes to `target/debug/` beside it, which is the directory this profile exists to stay out of.
 [profile.debugger]
 inherits = "dev"
 debug = true

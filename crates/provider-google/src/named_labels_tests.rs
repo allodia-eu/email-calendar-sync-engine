@@ -188,7 +188,7 @@ async fn a_label_that_cannot_be_had_or_a_refused_modify_keeps_nothing() {
         .tag_sent_copy(&client, &sent(), &draft())
         .await;
     assert!(kept.is_empty());
-    assert!(posted(&log, "/modify").is_empty());
+    assert_eq!(posted(&log, "/modify"), [] as [Value; 0]);
 
     let refused = Err((403, json!({ "error": { "code": 403 } })));
     let (refusing, _) = routed(captured_list(), Ok(json!({})), refused);

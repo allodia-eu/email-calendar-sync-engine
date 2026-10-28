@@ -146,8 +146,8 @@ mod tests {
     fn empty_changes_is_a_valid_no_op_delta() {
         let result = json!({ "newState": "s1", "created": [], "updated": [], "destroyed": [] });
         let changes = Changes::parse(&result).unwrap();
-        assert!(changes.created.is_empty());
-        assert!(changes.updated.is_empty());
+        assert_eq!(changes.created, []);
+        assert_eq!(changes.updated, []);
         assert_eq!(changes.new_state.as_str(), "s1");
     }
 
@@ -161,7 +161,7 @@ mod tests {
     fn malformed_id_arrays_error_rather_than_panic() {
         assert!(keys(&json!({ "created": [42] }), "created").is_err());
         // Absent array is an empty list, not an error.
-        assert!(keys(&json!({}), "created").unwrap().is_empty());
+        assert_eq!(keys(&json!({}), "created").unwrap(), []);
     }
 
     #[test]

@@ -302,7 +302,7 @@ mod tests {
             ResourceKey::new("message:m1").unwrap(),
             json!({ "op": "setKeywords", "add": ["$seen"] }),
         );
-        assert!(op.depends_on.is_empty());
+        assert_eq!(op.depends_on, []);
         let json = serde_json::to_string(&op).unwrap();
         assert_eq!(serde_json::from_str::<PendingOp>(&json).unwrap(), op);
     }

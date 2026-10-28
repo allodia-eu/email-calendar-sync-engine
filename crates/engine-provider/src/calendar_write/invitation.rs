@@ -411,7 +411,7 @@ mod tests {
         assert_eq!(patch.upserts()[0].role(), InviteeRole::Optional);
 
         let patch = patch.remove(address("GUEST@example.com"));
-        assert!(patch.upserts().is_empty());
+        assert_eq!(patch.upserts(), []);
         assert_eq!(patch.removals().len(), 1);
     }
 }

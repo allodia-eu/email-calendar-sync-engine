@@ -78,7 +78,7 @@ fn recurring_event_maps_rule_and_overrides() {
 #[test]
 fn meeting_maps_participants() {
     let meeting = by_uid("meeting-2003@test.local");
-    assert!(!meeting.participants.is_empty());
+    assert_ne!(meeting.participants, []);
     let alice = meeting
         .participants
         .iter()
@@ -249,7 +249,7 @@ fn nth_weekday_locations_and_keywords() {
     assert_eq!(rule.by_day[0].nth_of_period.unwrap().get(), -1);
     // A nameless location still normalizes; a virtual location without a uri is dropped.
     assert_eq!(event.locations.len(), 1);
-    assert!(event.virtual_locations.is_empty());
+    assert_eq!(event.virtual_locations, []);
     assert!(event.keywords.contains("kw") && event.categories.contains("cat"));
     assert!(event.is_cancelled());
     assert_eq!(event.color.as_deref(), Some("#abc"));

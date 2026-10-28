@@ -82,9 +82,8 @@ fn the_body_warming_list_holds_messages_missing_either_half_of_their_content() {
     let both =
         mail_missing_body(&conn, &[account("a"), account("b")], usize::MAX).expect("missing");
     assert_eq!(keys(&both), vec!["text-only", "warm", "cold"]);
-    assert!(
-        mail_missing_body(&conn, &[], usize::MAX)
-            .expect("missing")
-            .is_empty()
+    assert_eq!(
+        mail_missing_body(&conn, &[], usize::MAX).expect("missing"),
+        []
     );
 }

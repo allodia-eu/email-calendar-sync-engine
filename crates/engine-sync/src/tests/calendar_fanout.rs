@@ -260,7 +260,7 @@ async fn a_calendar_that_leaves_the_list_takes_its_events_with_it() {
     let report = sync(&provider, &store).await;
 
     assert_eq!(report.forgotten, 1);
-    assert!(stored_keys(&provider, &store, "work").await.is_empty());
+    assert_eq!(stored_keys(&provider, &store, "work").await, []);
     assert_eq!(
         stored_keys(&provider, &store, "home").await,
         vec![key("evt-home")]
