@@ -325,6 +325,7 @@ async fn live_each_shared_role_grants_exactly_what_the_engine_says() {
         .sync_calendars(&account(), None)
         .await
         .expect("the grantee's calendar list")
+        .sync
         .update
     else {
         panic!("a calendar list is a snapshot");
