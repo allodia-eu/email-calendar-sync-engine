@@ -217,15 +217,21 @@ pub(super) fn parse_op_row(raw: OpRow) -> Result<LoadedOp> {
 /// The payload of op `id`. An op holds one while something may still dispatch it, which is
 /// every op a claim accepts and every op the queue read lists.
 pub(super) fn load_payload(conn: &Connection, id: i64) -> Result<Value> {
-    let text: String = conn
+    let text: Option<String> = conn
         .query_row(
             "SELECT payload FROM pending_op_payload WHERE op_id = ?1",
             [id],
             |r| r.get(0),
         )
         .optional()
-        .map_err(convert::backend)?
-        .ok_or_else(|| StoreError::Backend(format!("outstanding op {id} has no payload")))?;
+        .map_err(convert::backend)?;
+    parse_payload(id, text)
+}
+
+/// Decodes the stored payload of op `id`, which an outstanding op always has.
+pub(super) fn parse_payload(id: i64, text: Option<String>) -> Result<Value> {
+    let text =
+        text.ok_or_else(|| StoreError::Backend(format!("outstanding op {id} has no payload")))?;
     serde_json::from_str(&text).map_err(convert::backend)
 }
 

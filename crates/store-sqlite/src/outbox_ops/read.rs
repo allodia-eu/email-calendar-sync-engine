@@ -7,7 +7,7 @@ use engine_core::{ids::AccountId, time::UtcDateTime, write::PendingOpId};
 use engine_store::{PendingOpRow, PendingOpState, Result, stays_listed};
 use rusqlite::{Connection, OptionalExtension};
 
-use super::row::{OP_COLUMNS, load_payload, parse_op_row, read_op_row};
+use super::row::{OP_COLUMNS, parse_op_row, parse_payload, read_op_row};
 use crate::convert;
 
 /// The current lifecycle state of an op, or `None` if unknown.
@@ -41,6 +41,9 @@ pub(crate) fn pending_op_state(
 /// `stays_listed` over the stored state; only an `InFlight` row can be shown in another
 /// state, and never in one the clause would drop.
 ///
+/// The payload is joined in the same statement: this runs on a reader beside the writer, and
+/// an op the writer settles between two statements has already lost its payload.
+///
 /// # Errors
 ///
 /// Returns [`engine_store::StoreError::Backend`] on a backend failure.
@@ -50,7 +53,8 @@ pub(crate) fn list_pending_ops(
     now: UtcDateTime,
 ) -> Result<Vec<PendingOpRow>> {
     let sql = format!(
-        "SELECT {OP_COLUMNS} FROM pending_op
+        "SELECT {OP_COLUMNS}, p.payload FROM pending_op
+           LEFT JOIN pending_op_payload p ON p.op_id = id
           WHERE account = ?1
             AND (state IN ('Pending', 'InFlight', 'NeedsConfirmation')
                  OR (state = 'Failed' AND kind = 'MailSubmit'))
@@ -58,13 +62,15 @@ pub(crate) fn list_pending_ops(
     );
     let mut stmt = conn.prepare(&sql).map_err(convert::backend)?;
     let stored = stmt
-        .query_map([account.as_str()], read_op_row)
+        .query_map([account.as_str()], |r| {
+            Ok((read_op_row(r)?, r.get::<_, Option<String>>(15)?))
+        })
         .map_err(convert::backend)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(convert::backend)?;
 
     let mut rows = Vec::with_capacity(stored.len());
-    for raw in stored {
+    for (raw, payload) in stored {
         let op = parse_op_row(raw)?;
         let view = op.view(now)?;
         if !stays_listed(op.kind, view.state) {
@@ -77,7 +83,7 @@ pub(crate) fn list_pending_ops(
                 .map_err(convert::backend)?,
             resource_key: engine_core::write::ResourceKey::new(op.resource_key)
                 .map_err(convert::backend)?,
-            payload: load_payload(conn, op.id)?,
+            payload: parse_payload(op.id, payload)?,
             state: view.state,
             attempts: view.attempts,
             next_attempt_at: view.next_attempt_at,

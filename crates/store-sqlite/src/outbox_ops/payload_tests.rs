@@ -244,9 +244,11 @@ async fn claiming_and_parking_an_op_does_not_write_its_payload_again() {
         .await
         .unwrap();
     let observer = raw(&dir);
-    observer
-        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+    // A busy checkpoint leaves the enqueue's frames in the WAL, so it must not pass silently.
+    let busy: i64 = observer
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
         .unwrap();
+    assert_eq!(busy, 0, "the WAL was not emptied before the claim");
 
     let leased = claim(&store, id).await;
     store
@@ -258,6 +260,57 @@ async fn claiming_and_parking_an_op_does_not_write_its_payload_again() {
     let frames = wal_frames(&observer);
     assert!(frames < 40, "a claim and a mark wrote {frames} pages");
     assert_eq!(stored_payloads(&dir), 1);
+}
+
+/// The trigger's `WHEN` restates `engine_store::stays_listed` in SQL. Pinned for every kind and
+/// state, so the two cannot drift: a payload dropped from an op the queue read still lists
+/// makes that read fail for the whole account.
+#[test]
+fn the_trigger_keeps_a_payload_exactly_while_the_op_stays_listed() {
+    use engine_store::{PendingOpState, stays_listed};
+
+    let mut conn = Connection::open_in_memory().unwrap();
+    crate::pool::tune(&conn, false).unwrap();
+    crate::migrations::migrate(&mut conn).unwrap();
+    let kinds = PendingOpKind::ALL.map(Some).into_iter().chain([None]);
+    for kind in kinds {
+        for state in [
+            PendingOpState::Pending,
+            PendingOpState::InFlight,
+            PendingOpState::NeedsConfirmation,
+            PendingOpState::Succeeded,
+            PendingOpState::Failed,
+            PendingOpState::Cancelled,
+        ] {
+            let text = kind.map(crate::convert::kind_to_text);
+            conn.execute(
+                "INSERT INTO pending_op
+                     (account, kind, idempotency_key, resource_key, depends_on, state, token)
+                 VALUES ('acct', ?1, ?2, 'res', '[]', 'Pending', 0)",
+                (text, format!("{text:?}-{state:?}")),
+            )
+            .unwrap();
+            let id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO pending_op_payload (op_id, payload) VALUES (?1, '{}')",
+                [id],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE pending_op SET state = ?1 WHERE id = ?2",
+                (crate::convert::state_to_text(state), id),
+            )
+            .unwrap();
+            let kept: bool = conn
+                .query_row(
+                    "SELECT EXISTS (SELECT 1 FROM pending_op_payload WHERE op_id = ?1)",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(kept, stays_listed(kind, state), "{kind:?} in {state:?}");
+        }
+    }
 }
 
 #[tokio::test]
