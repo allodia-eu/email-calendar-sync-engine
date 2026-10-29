@@ -968,9 +968,13 @@ one event never race on either provider.
   `PendingOpId` instead of creating a duplicate.
 - ⚠️ **A settled row is the idempotency record — do not prune one.** `UNIQUE (account,
   idempotency_key)` is the whole mechanism above, so deleting a `Succeeded` row re-arms a replay
-  of that op, and the ops include **sends**. Reclaiming the space needs a `settled_at` column and
-  a retention window rather than a `DELETE`, and it buys very little: a production store after a
-  five-account sync of 7,118 messages held **34** `Succeeded` rows in a 235 MB database.
+  of that op, and the ops include **sends**. Its **payload** is another matter: it lives beside
+  the row in `pending_op_payload` and goes when the op reaches a state nothing dispatches from,
+  by a trigger whose condition is `engine_store::stays_listed` negated, so a send that settled
+  `Failed` or awaits confirmation keeps it. The payload is where the size is (a draft carries
+  its attachments): one store with three weeks of drafts held 707 MB of settled payloads in
+  1.5 GB. Beside the row it is also written once, rather than again by every claim and outcome,
+  since SQLite rewrites a whole record on any `UPDATE` (schema v20).
 - **Claim returns only runnable ops.** `claim_pending_ops` excludes any op whose
   `depends_on` are not all in a terminal-success state, and any op whose
   `resource_key` collides with an already-leased op. This both honors offline

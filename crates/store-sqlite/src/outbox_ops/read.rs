@@ -7,7 +7,7 @@ use engine_core::{ids::AccountId, time::UtcDateTime, write::PendingOpId};
 use engine_store::{PendingOpRow, PendingOpState, Result, stays_listed};
 use rusqlite::{Connection, OptionalExtension};
 
-use super::row::{OP_COLUMNS, parse_op_row, read_op_row};
+use super::row::{OP_COLUMNS, load_payload, parse_op_row, read_op_row};
 use crate::convert;
 
 /// The current lifecycle state of an op, or `None` if unknown.
@@ -77,7 +77,7 @@ pub(crate) fn list_pending_ops(
                 .map_err(convert::backend)?,
             resource_key: engine_core::write::ResourceKey::new(op.resource_key)
                 .map_err(convert::backend)?,
-            payload: op.payload,
+            payload: load_payload(conn, op.id)?,
             state: view.state,
             attempts: view.attempts,
             next_attempt_at: view.next_attempt_at,
