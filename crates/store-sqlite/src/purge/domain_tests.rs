@@ -94,8 +94,8 @@ fn seed() -> Connection {
             exec(
                 &conn,
                 "INSERT INTO pending_op
-                     (account, idempotency_key, resource_key, depends_on, payload, state, token, kind)
-                 VALUES (?1, ?2, 'res', '[]', '{}', 'Queued', 1, ?2)",
+                     (account, idempotency_key, resource_key, depends_on, state, token, kind)
+                 VALUES (?1, ?2, 'res', '[]', 'Queued', 1, ?2)",
                 (account, kind_to_text(kind)),
             );
         }
@@ -103,8 +103,8 @@ fn seed() -> Connection {
         exec(
             &conn,
             "INSERT INTO pending_op
-                 (account, idempotency_key, resource_key, depends_on, payload, state, token)
-             VALUES (?1, 'legacy', 'res', '[]', '{}', 'Queued', 1)",
+                 (account, idempotency_key, resource_key, depends_on, state, token)
+             VALUES (?1, 'legacy', 'res', '[]', 'Queued', 1)",
             [account],
         );
     }

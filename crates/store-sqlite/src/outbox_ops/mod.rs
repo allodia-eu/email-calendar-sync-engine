@@ -114,21 +114,27 @@ fn enqueue_in(conn: &mut Connection, account: &AccountId, op: &PendingOp) -> Res
         .map_err(convert::backend)?;
     tx.execute(
         "INSERT INTO pending_op
-             (account, kind, idempotency_key, resource_key, depends_on, payload, state, token,
+             (account, kind, idempotency_key, resource_key, depends_on, state, token,
               lease_expiry, attempts, next_attempt_at, failure_class, detail, keyword_edit)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'Pending', 0, NULL, 0, NULL, NULL, NULL, ?7)",
+         VALUES (?1, ?2, ?3, ?4, ?5, 'Pending', 0, NULL, 0, NULL, NULL, NULL, ?6)",
         (
             account.as_str(),
             convert::kind_to_text(op.kind),
             op.idempotency_key.as_str(),
             op.resource_key.as_str(),
             depends_on,
-            payload,
             keyword_edit,
         ),
     )
     .map_err(convert::backend)?;
     let id = tx.last_insert_rowid();
+    // Beside the row, so the updates every claim and outcome make to it never write the payload
+    // again (schema v20).
+    tx.execute(
+        "INSERT INTO pending_op_payload (op_id, payload) VALUES (?1, ?2)",
+        (id, payload),
+    )
+    .map_err(convert::backend)?;
     // In the same transaction as the op, so a change is never shown without the op that makes
     // it, nor queued without being shown.
     if let Some(edit) = &op.keyword_edit {
@@ -201,7 +207,7 @@ pub(crate) fn claim(
 
         let op_id = convert::op_id_from_i64(op.id)?;
         let lease = OpLease::new(account.clone(), op_id, token, owner.clone(), expiry);
-        result.push(LeasedPendingOp::new(op_id, op.to_pending_op()?, lease));
+        result.push(LeasedPendingOp::new(op_id, op.to_pending_op(&tx)?, lease));
     }
 
     tx.commit().map_err(convert::backend)?;
@@ -290,7 +296,7 @@ fn claim_one_in(
         ),
     )
     .map_err(convert::backend)?;
-    let pending = op.to_pending_op()?;
+    let pending = op.to_pending_op(tx)?;
 
     let lease = OpLease::new(account.clone(), op_id, token, owner.clone(), expiry);
     Ok(PendingOpClaim::Leased(Box::new(LeasedPendingOp::new(
@@ -385,3 +391,7 @@ pub(crate) fn renew(conn: &Connection, lease: &OpLease, expiry: UtcDateTime) -> 
 #[cfg(test)]
 #[path = "restart_tests.rs"]
 mod restart_tests;
+
+#[cfg(test)]
+#[path = "payload_tests.rs"]
+mod payload_tests;

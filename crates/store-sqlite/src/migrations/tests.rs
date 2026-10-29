@@ -165,7 +165,8 @@ fn v14_keeps_the_ops_a_v13_store_held_and_leaves_them_unclassified() {
         i64,
     ) = conn
         .query_row(
-            "SELECT idempotency_key, payload, state, kind, attempts FROM pending_op",
+            "SELECT o.idempotency_key, p.payload, o.state, o.kind, o.attempts
+               FROM pending_op o JOIN pending_op_payload p ON p.op_id = o.id",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )

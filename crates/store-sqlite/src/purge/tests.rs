@@ -84,8 +84,8 @@ fn seed_two_accounts() -> Connection {
         .unwrap();
         conn.execute(
             "INSERT INTO pending_op
-                 (account, idempotency_key, resource_key, depends_on, payload, state, token)
-             VALUES (?1, 'idem', 'res', '[]', '{}', 'Queued', 1)",
+                 (account, idempotency_key, resource_key, depends_on, state, token)
+             VALUES (?1, 'idem', 'res', '[]', 'Queued', 1)",
             [account],
         )
         .unwrap();

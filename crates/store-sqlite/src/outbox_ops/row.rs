@@ -8,8 +8,8 @@ use engine_core::{
     time::UtcDateTime,
     write::{IdempotencyKey, KeywordEdit, PendingOp, PendingOpId, PendingOpKind, ResourceKey},
 };
-use engine_store::{PendingOpState, Result};
-use rusqlite::{OptionalExtension, Transaction};
+use engine_store::{PendingOpState, Result, StoreError};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde_json::Value;
 
 use crate::convert;
@@ -21,7 +21,6 @@ pub(super) struct LoadedOp {
     pub(super) idempotency_key: String,
     pub(super) resource_key: String,
     pub(super) depends_on: Vec<PendingOpId>,
-    pub(super) payload: Value,
     pub(super) state: PendingOpState,
     pub(super) token: u64,
     pub(super) lease_expiry: Option<UtcDateTime>,
@@ -38,19 +37,19 @@ pub(super) struct LoadedOp {
 }
 
 impl LoadedOp {
-    /// Rebuilds the public [`PendingOp`] envelope to hand back in a lease.
+    /// Rebuilds the public [`PendingOp`] envelope to hand back in a lease, with its payload.
     ///
     /// Only ever called for a row a claim accepted, and [`is_runnable`] refuses one
     /// with no kind, so the `expect` cannot fire: a lease is never handed out for an
     /// op nothing can dispatch.
-    pub(super) fn to_pending_op(&self) -> Result<PendingOp> {
+    pub(super) fn to_pending_op(&self, conn: &Connection) -> Result<PendingOp> {
         Ok(PendingOp {
             idempotency_key: IdempotencyKey::new(self.idempotency_key.clone())
                 .map_err(convert::backend)?,
             kind: self.kind.expect("a claimed op has a kind"),
             depends_on: self.depends_on.clone(),
             resource_key: ResourceKey::new(self.resource_key.clone()).map_err(convert::backend)?,
-            payload: self.payload.clone(),
+            payload: load_payload(conn, self.id)?,
             keyword_edit: self.keyword_edit.clone(),
         })
     }
@@ -80,8 +79,11 @@ impl LoadedOp {
 }
 
 /// The `SELECT` list every op load shares, in [`LoadedOp`]'s field order.
+///
+/// The payload is not among them: it is read only where a lease or the queue read hands it out
+/// ([`load_payload`]), so deciding about an op never reads its attachments.
 pub(super) const OP_COLUMNS: &str = "id, kind, idempotency_key, resource_key, depends_on, \
-     payload, state, token, lease_expiry, attempts, next_attempt_at, failure_class, detail, \
+     state, token, lease_expiry, attempts, next_attempt_at, failure_class, detail, \
      handed_over, account, keyword_edit";
 
 /// Loads one op by id, scoped to `account` so an id from another account reads as
@@ -140,7 +142,6 @@ type OpRow = (
     String,
     String,
     String,
-    String,
     i64,
     Option<String>,
     i64,
@@ -170,7 +171,6 @@ pub(super) fn read_op_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<OpRow> {
         r.get(12)?,
         r.get(13)?,
         r.get(14)?,
-        r.get(15)?,
     ))
 }
 
@@ -182,7 +182,6 @@ pub(super) fn parse_op_row(raw: OpRow) -> Result<LoadedOp> {
         idempotency_key,
         resource_key,
         depends_on,
-        payload,
         state,
         token,
         lease_expiry,
@@ -200,7 +199,6 @@ pub(super) fn parse_op_row(raw: OpRow) -> Result<LoadedOp> {
         idempotency_key,
         resource_key,
         depends_on: serde_json::from_str(&depends_on).map_err(convert::backend)?,
-        payload: serde_json::from_str(&payload).map_err(convert::backend)?,
         state: convert::parse_state(&state)?,
         token: convert::generation_from_i64(token)?,
         lease_expiry: convert::parse_opt_instant(lease_expiry)?,
@@ -214,6 +212,27 @@ pub(super) fn parse_op_row(raw: OpRow) -> Result<LoadedOp> {
             .map(|json| serde_json::from_str(&json).map_err(convert::backend))
             .transpose()?,
     })
+}
+
+/// The payload of op `id`. An op holds one while something may still dispatch it, which is
+/// every op a claim accepts and every op the queue read lists.
+pub(super) fn load_payload(conn: &Connection, id: i64) -> Result<Value> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT payload FROM pending_op_payload WHERE op_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(convert::backend)?;
+    parse_payload(id, text)
+}
+
+/// Decodes the stored payload of op `id`, which an outstanding op always has.
+pub(super) fn parse_payload(id: i64, text: Option<String>) -> Result<Value> {
+    let text =
+        text.ok_or_else(|| StoreError::Backend(format!("outstanding op {id} has no payload")))?;
+    serde_json::from_str(&text).map_err(convert::backend)
 }
 
 /// Whether every op in `depends_on` has reached terminal success. Scoped to

@@ -226,13 +226,18 @@ async fn a_pre_v14_row_is_listed_and_cancellable_but_never_claimed() {
         .call(|conn| {
             conn.execute(
                 "INSERT INTO pending_op
-                     (account, idempotency_key, resource_key, depends_on, payload, state, token,
+                     (account, idempotency_key, resource_key, depends_on, state, token,
                       lease_expiry)
                  VALUES ('acct-legacy', 'edit:1757942400:7', 'mail:imap:v1:u42@INBOX', '[]',
-                         'null', 'Pending', 0, NULL)",
+                         'Pending', 0, NULL)",
                 [],
             )
             .expect("seed a pre-v14 row");
+            conn.execute(
+                "INSERT INTO pending_op_payload (op_id, payload) VALUES (last_insert_rowid(), 'null')",
+                [],
+            )
+            .expect("seed its payload");
             Ok(())
         })
         .await
@@ -298,13 +303,18 @@ async fn a_pre_v14_row_left_in_flight_is_released_and_cancellable() {
         .call(|conn| {
             conn.execute(
                 "INSERT INTO pending_op
-                     (account, idempotency_key, resource_key, depends_on, payload, state, token,
+                     (account, idempotency_key, resource_key, depends_on, state, token,
                       lease_expiry)
                  VALUES ('acct-legacy', 'edit:1757942400:7', 'mail:imap:v1:u42@INBOX', '[]',
-                         'null', 'InFlight', 1, '2025-12-31T23:00:00Z')",
+                         'InFlight', 1, '2025-12-31T23:00:00Z')",
                 [],
             )
             .expect("seed a pre-v14 row in flight");
+            conn.execute(
+                "INSERT INTO pending_op_payload (op_id, payload) VALUES (last_insert_rowid(), 'null')",
+                [],
+            )
+            .expect("seed its payload");
             Ok(())
         })
         .await
