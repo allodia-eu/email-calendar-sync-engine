@@ -330,7 +330,9 @@ discovery to is the opposite case: it is that server saying where its resources 
 `provider-caldav` trusts it and sends the credential once it asks with a `401` challenge
 (`DavExecutor::trust_origin`, RFC 9110 §11.5). Both adapters resolve a `Location`
 against the URL that issued it (RFC 9110 §10.2.2, `engine_provider::redirect_target`) and
-refuse a hop that leaves TLS. Resolving a redirect against the *configured base* instead
+refuse a hop that leaves TLS, except one to the same host and port, which is
+taken over TLS instead: a server behind a TLS-terminating proxy builds its redirects as if it
+were served in plaintext, and the host has just answered over TLS. Resolving a redirect against the *configured base* instead
 is what one of these adapters shipped: it turned a provider whose apex redirects to its
 mail host into an unconnectable account.
 

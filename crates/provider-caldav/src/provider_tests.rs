@@ -440,10 +440,15 @@ fn a_redirect_is_resolved_in_href_space() {
 }
 
 #[test]
-fn a_redirect_off_tls_is_refused_in_href_space() {
-    // These requests carry the account's password; nothing may walk them onto http.
+fn a_redirect_off_tls_is_taken_over_tls_on_its_own_host_and_refused_elsewhere() {
+    // These requests carry the account's password; nothing may walk them onto http. The
+    // same host is asked over TLS instead (`engine_provider::redirect_target`).
     assert_eq!(
-        redirect_href("https://dav.example.net/p/", "http://dav.example.net/cal"),
+        redirect_href("https://dav.example.net/p/", "http://dav.example.net/cal").as_deref(),
+        Some("https://dav.example.net/cal")
+    );
+    assert_eq!(
+        redirect_href("https://dav.example.net/p/", "http://cal.example.net/cal"),
         None
     );
     assert_eq!(

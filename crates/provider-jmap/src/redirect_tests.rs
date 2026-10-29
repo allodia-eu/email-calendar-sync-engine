@@ -169,7 +169,7 @@ async fn an_unresolvable_redirect_location_is_reported() {
     .await
     .unwrap_err();
     assert!(
-        err.to_string().contains("unresolvable redirect"),
+        err.to_string().contains("not followed"),
         "unexpected error: {err}"
     );
 }

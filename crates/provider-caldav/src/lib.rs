@@ -82,6 +82,8 @@ mod ctag_sync_tests;
 #[cfg(test)]
 mod delete_guard_tests;
 #[cfg(test)]
+mod discovery_start_tests;
+#[cfg(test)]
 mod double_encoding_tests;
 #[cfg(test)]
 mod vcard_tests;
