@@ -361,6 +361,7 @@ mod stream;
 mod threading;
 mod vanished;
 mod warm;
+mod window_cursor;
 pub use attachment::{
     fetch_message_attachment, fetch_message_attachments, fetch_message_scheduling,
     fetch_message_source,

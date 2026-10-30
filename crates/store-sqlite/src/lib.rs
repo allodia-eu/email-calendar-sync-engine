@@ -239,7 +239,7 @@ impl<C: Clock> SqliteStore<C> {
         search_ops::assemble_results(ranked, scope_count)
     }
 
-    /// Clears every scope's sync cursor (and releases any held lease), so the next sync
+    /// Clears every scope's sync cursor (and fences off any pass holding one), so the next sync
     /// re-snapshots the account from scratch — re-fetching and **re-normalizing** every
     /// object. The durable outbox (queued sends) and the schema are untouched. Backs a
     /// host "reset / full refetch" action; the caller should sync afterwards to
@@ -259,12 +259,11 @@ impl<C: Clock> SqliteStore<C> {
     /// flag/move/expunge changes incrementally — `imap-smtp.md`) or a forced full
     /// re-snapshot.
     ///
-    /// Unlike [`reset_sync`](Self::reset_sync) it **leaves any held lease intact**:
-    /// this clear runs on every refresh, concurrently with fire-and-forget syncs, so it
-    /// must not steal a live lease (it carries no fencing token to check, and clearing
-    /// `lease_expiry` without bumping the generation would let a stolen-then-resumed
-    /// worker commit its cursor back over the clear). An in-flight sync therefore keeps
-    /// its lease; the cleared cursor takes effect on the next claim of the scope. The
+    /// It also takes the scope from any pass holding it, bumping the fencing token and
+    /// freeing the lease, because a host clears a cursor to change what the next pass
+    /// fetches (a wider sync window, an account added again). A pass still running under
+    /// the old terms would otherwise write its cursor back over the clear at its next
+    /// commit; fenced, that commit is refused and the scope can be claimed at once. The
     /// scope row, its objects, and the durable outbox are left in place.
     ///
     /// # Errors
@@ -304,24 +303,25 @@ impl<C: Clock> SqliteStore<C> {
     }
 }
 
-/// Clears every scope's cursor and lease so the next sync re-snapshots from scratch.
+/// Clears every scope's cursor and lease so the next sync re-snapshots from scratch, bumping
+/// each fencing token so a pass still running cannot commit its cursor back over the clear.
 /// Leaves the scope rows (and their stable `scope_key`s) and objects in place — the
 /// re-snapshot overwrites and tombstones them — so no object is orphaned.
 fn clear_sync_cursors(conn: &Connection) -> Result<()> {
     conn.execute(
-        "UPDATE sync_scope SET cursor = NULL, lease_expiry = NULL",
+        "UPDATE sync_scope SET cursor = NULL, token = token + 1, lease_expiry = NULL",
         [],
     )
     .map_err(backend)?;
     Ok(())
 }
 
-/// Clears one scope's cursor (by `scope_key`) so the next sync re-snapshots it. Leaves
-/// `lease_expiry` and the fencing token untouched, so a concurrent in-flight sync's
-/// lease is not stolen (see [`SqliteStore::clear_scope_cursor`]).
+/// Clears one scope's cursor (by `scope_key`) so the next sync re-snapshots it, and fences
+/// off the pass holding it (see [`SqliteStore::clear_scope_cursor`]).
 fn clear_one_cursor(conn: &Connection, scope_key: &str) -> Result<()> {
     conn.execute(
-        "UPDATE sync_scope SET cursor = NULL WHERE scope_key = ?1",
+        "UPDATE sync_scope SET cursor = NULL, token = token + 1, lease_expiry = NULL
+         WHERE scope_key = ?1",
         [scope_key],
     )
     .map_err(backend)?;

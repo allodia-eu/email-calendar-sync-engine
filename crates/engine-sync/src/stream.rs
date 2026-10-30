@@ -32,7 +32,7 @@ use futures_util::StreamExt;
 
 use crate::{
     MAX_STALE_RECLAIMS, SyncCommit, SyncError, SyncObserver, derive_messages,
-    keep_alive::KeepAlive, mail_report::SyncTiming, recipients, sent_copies,
+    keep_alive::KeepAlive, mail_report::SyncTiming, recipients, sent_copies, window_cursor,
 };
 
 /// How a streaming sync runs: the depth window, plus how it separates network
@@ -147,15 +147,27 @@ where
     } = *pass;
     let scope = provider.email_scope(account);
     let mut reclaims = 0u32;
+    // Set when a commit was refused as stale: the cursor this pass had left, and what it applied.
+    let mut fenced: Option<(Option<SyncState>, RunningApplied)> = None;
     'restart: loop {
         let claim = store
             .claim_sync_scope(account.clone(), &scope, req.clone())
             .await?;
         let lease = claim.lease;
+        // A cursor that moved while this pass was fenced off was cleared, or advanced by the
+        // pass that took the scope. A host clears one to change what a pass fetches, so starting
+        // over under this pass's own window would undo the clear; the next pass takes it up.
+        if let Some((left, applied)) = fenced.take()
+            && claim.state != left
+        {
+            store.release_sync_scope(lease).await?;
+            return Ok(applied.into_applied());
+        }
         let mut keep_alive = KeepAlive::new(store, &lease, req.ttl);
         // The cursor each pass resumes the *provider* fetch from; the store advances
         // it per additive checkpoint, or only on the final reconcile chunk.
-        let pass_cursor = claim.state;
+        let mut left = claim.state.clone();
+        let pass_cursor = window_cursor::resume(claim.state, tuning.window);
         let mut present: BTreeSet<ProviderKey> = BTreeSet::new();
         // A message a chunk sends again (an IMAP backfill's settled attachment flag) is written,
         // but counted once, so progress never runs past its total.
@@ -196,6 +208,7 @@ where
             let is_reconcile_final = chunk.is_reconcile_final();
             let projected = Instant::now();
             let (update, advance_to) = build_update(chunk, tuning.window, &mut present);
+            let advance_to = advance_to.map(|cursor| window_cursor::stamp(cursor, tuning.window));
             let mut derived = derive_messages(changed_of(&update));
             for change in update.patched() {
                 derived.push_state_change(project_state_change(change));
@@ -225,6 +238,9 @@ where
             timing.add_storing(stored);
             match applied_result {
                 Ok(mut applied) => {
+                    if advance_to.is_some() {
+                        left.clone_from(&advance_to);
+                    }
                     applied.upserted = applied.upserted.saturating_sub(repeats);
                     totals.add(applied);
                     fetched += count;
@@ -249,6 +265,7 @@ where
                     // transport on the next fetch.
                     reclaims += 1;
                     drop(stream);
+                    fenced = Some((left, totals));
                     continue 'restart;
                 }
                 Err(other) => {
