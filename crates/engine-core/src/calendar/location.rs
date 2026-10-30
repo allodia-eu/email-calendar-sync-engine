@@ -55,34 +55,6 @@ impl Location {
     }
 }
 
-/// A virtual location such as a video call (JSCalendar `VirtualLocation`,
-/// RFC 8984 §4.2.6). The `uri` is mandatory.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VirtualLocation {
-    /// The display name.
-    pub name: Option<String>,
-    /// A free-text description.
-    pub description: Option<String>,
-    /// The join URI (mandatory).
-    pub uri: String,
-    /// Supported features (`audio`, `video`, `chat`, …), preserving unknown
-    /// values.
-    pub features: BTreeSet<String>,
-}
-
-impl VirtualLocation {
-    /// Creates a virtual location for the given join URI.
-    #[must_use]
-    pub fn new(uri: impl Into<String>) -> Self {
-        Self {
-            name: None,
-            description: None,
-            uri: uri.into(),
-            features: BTreeSet::new(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,19 +66,6 @@ mod tests {
         loc.time_zone = Some(TimeZoneId::iana("America/New_York").unwrap());
         let json = serde_json::to_string(&loc).unwrap();
         assert_eq!(serde_json::from_str::<Location>(&json).unwrap(), loc);
-    }
-
-    #[test]
-    fn virtual_location_keeps_uri_and_features() {
-        let mut vloc = VirtualLocation::new("https://meet.example/abc");
-        vloc.features.insert("video".into());
-        vloc.features.insert("audio".into());
-        assert_eq!(vloc.uri, "https://meet.example/abc");
-        let json = serde_json::to_string(&vloc).unwrap();
-        assert_eq!(
-            serde_json::from_str::<VirtualLocation>(&json).unwrap(),
-            vloc
-        );
     }
 
     #[test]

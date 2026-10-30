@@ -329,7 +329,7 @@ Two rules that produced this shape, both learned by breaking them:
 | `one-off.ics`            | A single zoned event with an embedded `VTIMEZONE`; every event materializes occurrences. |
 | `recurring-weekly.ics`   | `RRULE` + `EXDATE` (excluded instance) + `RECURRENCE-ID` (a moved instance): recurrence with exceptions/overrides. |
 | `meeting-attendees.ics`  | `ORGANIZER` + `ATTENDEE` with `ROLE`/`PARTSTAT`/`RSVP`: participants (and the inbound iTIP/iMIP target later). |
-| `virtual-location.ics`   | RFC 7986 `CONFERENCE` (a virtual location / conference link). |
+| `virtual-location.ics`   | RFC 7986 `CONFERENCE`: a join link and its dial-in number, read as one conference. |
 | `all-day.ics`            | `DTSTART;VALUE=DATE`: zoneless, no DST, never zone-attached. |
 | `floating.ics`           | Floating wall-clock time (no `TZID`, no `Z`): resolves through the observer's zone. |
 

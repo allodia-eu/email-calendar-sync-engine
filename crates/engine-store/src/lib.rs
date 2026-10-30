@@ -83,4 +83,10 @@ pub use store::Store;
 ///   folder whose owner granted less, such as each folder of a store shared read-only. A JMAP
 ///   folder list is a delta, so an unchanged mailbox would keep the default indefinitely; the
 ///   re-snapshot is what makes each one say what it really allows.
-pub const NORMALIZER_VERSION: u32 = 6;
+/// - `7`: an event's conference links became [`Conference`](engine_core::calendar::Conference)s:
+///   one meeting with every way in it offers, the service it runs on and how it came to be on the
+///   event, where the projection held bare join links. Google's dial-in numbers, codes and notes
+///   and Graph's dial-in numbers and conference ID were not read at all, and an iCalendar
+///   parameter's RFC 6868 escapes were not decoded. A stored event loads with no conferences until
+///   the re-snapshot re-projects it.
+pub const NORMALIZER_VERSION: u32 = 7;

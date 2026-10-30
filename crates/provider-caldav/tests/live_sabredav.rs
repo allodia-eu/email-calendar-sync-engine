@@ -151,7 +151,7 @@ async fn sabredav_calendar_sync_loop() {
     }
     let by_uid = |uid: &str| events.iter().find(|e| e.uid.as_str() == uid).unwrap();
     assert_eq!(by_uid("meeting-2003@test.local").participants.len(), 3);
-    assert_eq!(by_uid("virtual-2004@test.local").virtual_locations.len(), 1);
+    assert_eq!(by_uid("virtual-2004@test.local").conferences.len(), 1);
     assert!(by_uid("allday-2005@test.local").is_all_day());
     assert!(by_uid("floating-2006@test.local").start.is_floating());
 

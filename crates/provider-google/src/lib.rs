@@ -28,6 +28,7 @@
 
 mod affiliation;
 mod base64url;
+mod cal_conference;
 mod cal_fetch;
 mod cal_id;
 mod cal_invite;

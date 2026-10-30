@@ -342,8 +342,10 @@ read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
 - **IANA-native** (`cal_normalize`): event `start`/`end` are `{ dateTime, timeZone }` with
   an IANA zone (the wall clock is the RFC 3339 value stripped of its offset, paired with
   the `timeZone`) — **no Windows-zone table**. An all-day event is `{ date }`. `location`
-  and `description` are plain strings; `hangoutLink`/`conferenceData` video entry point →
-  a virtual location; the raw event rides `Event::extended` under `"google/event"`.
+  and `description` are plain strings; `conferenceData` (else `hangoutLink`) → one
+  `Conference` with every entry point and its codes (`cal_conference`,
+  `calendar-semantics.md` → "Conferences"); the raw event rides `Event::extended` under
+  `"google/event"`.
 - **RRULE strings → the shared parser.** `recurrence` is an array of RFC 5545 `RRULE`
   strings, parsed through `engine_core::calendar::parse_rrule` — the one shared
   RRULE-string parser (CalDAV delegates to it too). Google returns recurring events as

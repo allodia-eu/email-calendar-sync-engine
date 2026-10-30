@@ -4,7 +4,7 @@
 //! Drives `engine-sync` with the real `CalDavProvider` into a real `SqliteStore`,
 //! then asserts the calendar seed *in the store*: the six fixtures normalize, the
 //! recurring resource's master + `RECURRENCE-ID` override fold into one event with
-//! an `EXDATE` exclusion, participants merge, the virtual location survives, and
+//! an `EXDATE` exclusion, participants merge, the conference survives, and
 //! every event materializes occurrences. The seed's second calendar syncs under a scope of
 //! its own from the same provider, and a second sync with nothing changed asks no calendar
 //! anything. Skips with no `STALWART_HTTP_ADDR`, so the
@@ -117,13 +117,27 @@ async fn caldav_calendar_sync_loop() {
     let by_uid = |uid: &str| events.iter().find(|e| e.uid.as_str() == uid).unwrap();
 
     // The one-off zoned event, the meeting's three merged participants, the
-    // virtual location, and the zoneless all-day event.
+    // conference with its dial-in number, and the zoneless all-day event.
     assert_eq!(
         by_uid("oneoff-2001@test.local").title,
         "One-off zoned event"
     );
     assert_eq!(by_uid("meeting-2003@test.local").participants.len(), 3);
-    assert_eq!(by_uid("virtual-2004@test.local").virtual_locations.len(), 1);
+    let conferences = &by_uid("virtual-2004@test.local").conferences;
+    assert_eq!(
+        conferences.len(),
+        1,
+        "the dial-in joins the meeting: {conferences:?}"
+    );
+    let entry_uris: Vec<&str> = conferences[0]
+        .entry_points
+        .iter()
+        .map(|entry| entry.uri.as_str())
+        .collect();
+    assert_eq!(
+        entry_uris,
+        ["https://meet.example.com/harness-room", "tel:+15555550100"]
+    );
     assert!(by_uid("allday-2005@test.local").is_all_day());
     assert!(by_uid("floating-2006@test.local").start.is_floating());
 

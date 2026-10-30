@@ -5,7 +5,7 @@ use std::borrow::Cow;
 /// The elements whose content is not text: [`mail_parser`]'s converter skips what they hold.
 const NON_TEXT_TAGS: [&str; 4] = ["head", "style", "script", "template"];
 
-/// Renders `html` as text, leaving out the content of [`NON_TEXT_TAGS`].
+/// Renders `html` as text, leaving out the content of `head`, `style`, `script` and `template`.
 ///
 /// [`mail_parser`]'s converter recognises one of those opening tags only when `>` follows its
 /// name directly, so `<style type="text/css">`, a common form in mail, is read as an unknown tag
@@ -14,9 +14,11 @@ const NON_TEXT_TAGS: [&str; 4] = ["head", "style", "script", "template"];
 /// own handling applies.
 ///
 /// mail-parser's `main` recognises these tags with attributes (its 1.0 line); 0.11.9, the newest
-/// release, does not. Once the workspace takes a release that does, this module is redundant and
-/// `extract_body` can go back to `body_text(0)`.
-pub(crate) fn html_to_text(html: &str) -> String {
+/// release, does not. Once the workspace takes a release that does, the rewrite is redundant and
+/// this function can call the converter directly; it stays, because `provider-google` renders a
+/// conference's HTML notes through it.
+#[must_use]
+pub fn html_to_text(html: &str) -> String {
     mail_parser::decoders::html::html_to_text(&bare_non_text_tags(html))
 }
 

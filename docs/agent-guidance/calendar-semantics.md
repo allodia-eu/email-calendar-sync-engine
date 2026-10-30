@@ -598,6 +598,40 @@ tzdata, and a removed occurrence `404`s), so `provider-graph` asks for the maste
 a recurring Graph event is stored in the zone it was **authored** in, unlike every
 non-recurring one, which carries the provider's display zone.
 
+## Conferences
+
+`Event::conferences` holds the meetings an event can be joined at, one
+`Conference` per meeting with every way in it offers (a join link, dial-in numbers, a SIP
+address, each with its codes), the service it runs on and how it came to be on the event.
+The formats split two ways, and the model takes the second shape because it is what a person
+sees:
+
+| Format | Shape | Read by |
+|---|---|---|
+| iCalendar `CONFERENCE` (RFC 7986 §5.11) | flat list of URIs | `engine-ical`'s `party` → `group_flat` |
+| JSCalendar `virtualLocations` (RFC 8984 §4.2.6) | flat map of URIs | `provider-jmap`'s `calendar_conference` → `group_flat` |
+| Google `conferenceData` | one meeting, `entryPoints[]` | `provider-google`'s `cal_conference` |
+| Graph `isOnlineMeeting` + `onlineMeeting` | one meeting, `joinUrl` + numbers | `provider-graph`'s `cal_conference` |
+
+- **Grouping a flat list** (`engine_core::calendar::group_flat`): each web URI starts a
+  meeting; a `tel:` or `sip:` URI joins it when the list holds exactly one web URI and stands
+  alone otherwise, since nothing in either format says which meeting a number dials into.
+- **Origin.** `Native` is a meeting the calendar server made and keeps: Google's
+  `hangoutsMeet` (removable, with `pending`/`failure` read from `createRequest.status`) and
+  any Graph online meeting (never removable: Graph refuses `isOnlineMeeting: false`).
+  `Attached` is a meeting stored in a field built for it that the server did not make:
+  `CONFERENCE`, `virtualLocations`, a Google `addOn`.
+- **Service** comes from the server where it names one (`hangoutsMeet`,
+  `onlineMeetingProvider`) and otherwise from `ConferenceService::recognise`, which matches
+  each service's *meeting* URL shapes only, never its bare domain. `None` means neither said.
+- **`ConferenceUri`** admits `https`, `http`, `tel`, `sip` and `sips`, and a web URI only
+  with a host and no credentials. A host opens this value when a person asks to join, so an
+  entry with any other value is left out of the projection; the raw payload keeps it.
+- **Keys** name a conference for a later edit: the `virtualLocations` map key, the field
+  name where the provider allows one conference (`conferenceData`, `onlineMeeting`), else
+  the first URI.
+- **Occurrences** read the master's conferences; no override carries its own.
+
 ## Supported recurrence subset
 
 The model stores recurrence structurally (all of RFC 5545 `RRULE`), but the

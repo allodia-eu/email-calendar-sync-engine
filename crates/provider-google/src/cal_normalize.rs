@@ -23,7 +23,7 @@ use engine_core::{
     calendar::{
         Calendar, CalendarAccess, Event, EventStatus, FreeBusyStatus, Location, Participant,
         ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence,
-        RecurrenceOverride, VirtualLocation, parse_rrule,
+        RecurrenceOverride, parse_rrule,
     },
     ids::{CalendarId, Uid},
     membership::Memberships,
@@ -35,6 +35,7 @@ use engine_ical::parse_recurrence_dates;
 use serde_json::Value;
 
 use crate::{
+    cal_conference,
     cal_override::local_of,
     error::GoogleError,
     json::{bool_field, datetime, opt_str, req_str, wrap_id},
@@ -159,7 +160,7 @@ pub(crate) fn event_from_json(
     event.recurrence = recurrence(value)?;
     event.participants = participants(value);
     event.locations = locations(value);
-    event.virtual_locations = virtual_locations(value);
+    event.conferences = cal_conference::conferences(value);
     event.revisions = revisions(value);
     // Preserve the provider-native payload beside the projection (Google is neither iCal
     // nor JSCalendar, so it rides `extended`, not `raw_ical`/`raw_jscalendar`).
@@ -367,29 +368,6 @@ fn locations(value: &Value) -> Vec<Location> {
         .filter(|l| !l.is_empty())
         .map(|name| vec![Location::named(name)])
         .unwrap_or_default()
-}
-
-/// The Meet/conference join URL as a virtual location: the `hangoutLink`, else a
-/// `conferenceData.entryPoints` video URI.
-fn virtual_locations(value: &Value) -> Vec<VirtualLocation> {
-    let uri = opt_str(value, "hangoutLink")
-        .filter(|u| !u.is_empty())
-        .or_else(|| entry_point_uri(value));
-    uri.map(|u| vec![VirtualLocation::new(u)])
-        .unwrap_or_default()
-}
-
-/// The first `conferenceData.entryPoints` video URI, if any.
-fn entry_point_uri(value: &Value) -> Option<&str> {
-    value
-        .get("conferenceData")
-        .and_then(|c| c.get("entryPoints"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|e| opt_str(e, "entryPointType") == Some("video"))
-        .and_then(|e| opt_str(e, "uri"))
-        .filter(|u| !u.is_empty())
 }
 
 /// The revision tokens Google supplies: the `etag` (Google exposes no separate change
