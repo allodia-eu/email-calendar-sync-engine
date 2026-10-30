@@ -218,7 +218,7 @@ mod tests {
     fn a_join_url_that_cannot_be_opened_or_no_provider_is_no_conference_not_a_pending_one() {
         let refused = json!({
             "isOnlineMeeting": true, "onlineMeetingProvider": "teamsForBusiness",
-            "onlineMeeting": { "joinUrl": "https://user@teams.microsoft.com/meet/1" }
+            "onlineMeeting": { "joinUrl": "https://user@teams.example.com/meet/1" }
         });
         assert_eq!(conferences(&refused), []);
         let unknown = json!({ "isOnlineMeeting": true, "onlineMeetingProvider": "unknown" });

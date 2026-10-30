@@ -631,6 +631,13 @@ sees:
   name where the provider allows one conference (`conferenceData`, `onlineMeeting`), else
   the first URI.
 - **Occurrences** read the master's conferences; no override carries its own.
+- **Which calendars make one** is the server's to say, per calendar: Graph's
+  `allowedOnlineMeetingProviders`, Google's `conferenceProperties`. Observed live: a
+  work or school calendar lists `teamsForBusiness` and makes the meeting on create; a
+  personal Microsoft account's calendar lists only `unknown`, and a create asking for
+  `teamsForBusiness` succeeds with `isOnlineMeeting: false` and no meeting, without an
+  error. `live_calendar_conference` in `provider-graph` and `provider-google` reads a
+  server-made meeting back through the adapter.
 
 ## Supported recurrence subset
 
