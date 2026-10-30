@@ -55,41 +55,41 @@ fn a_normalizer_version_change_clears_sync_cursors() {
     assert_eq!(cursor, None, "a version bump clears cursors");
 }
 
-#[test]
-fn clear_one_cursor_clears_the_cursor_but_keeps_a_held_lease() {
+/// A scope mid-sync: a cursor plus a live lease under fencing token 5.
+fn scope_mid_sync() -> rusqlite::Connection {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     crate::migrations::migrate(&mut conn).unwrap();
-
-    // A scope mid-sync: a cursor plus a live lease (a fencing token and a future
-    // expiry). The per-scope clear runs concurrently with such syncs, so unlike
-    // reset_sync it must clear ONLY the cursor — stealing the lease would let the
-    // in-flight worker commit its cursor back over the clear.
     conn.execute(
         "INSERT INTO sync_scope (scope_key, account, token, cursor, lease_expiry) \
              VALUES ('s', 'a', 5, 'c1', '2099-01-01T00:00:00Z')",
         [],
     )
     .unwrap();
+    conn
+}
 
+fn cursor_token_lease(conn: &rusqlite::Connection) -> (Option<String>, i64, Option<String>) {
+    conn.query_row(
+        "SELECT cursor, token, lease_expiry FROM sync_scope WHERE scope_key = 's'",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn clearing_a_cursor_fences_off_the_pass_holding_it() {
+    // Freed without a new token, the pass would still commit its cursor back over the clear.
+    let conn = scope_mid_sync();
     super::clear_one_cursor(&conn, "s").unwrap();
+    assert_eq!(cursor_token_lease(&conn), (None, 6, None));
+}
 
-    let (cursor, token, lease): (Option<String>, i64, Option<String>) = conn
-        .query_row(
-            "SELECT cursor, token, lease_expiry FROM sync_scope WHERE scope_key = 's'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        cursor, None,
-        "the cursor is cleared so the next sync snapshots"
-    );
-    assert_eq!(token, 5, "the fencing token is untouched");
-    assert_eq!(
-        lease.as_deref(),
-        Some("2099-01-01T00:00:00Z"),
-        "a live lease is NOT stolen (the contrast with reset_sync)"
-    );
+#[test]
+fn a_reset_fences_off_every_pass_holding_a_scope() {
+    let conn = scope_mid_sync();
+    super::clear_sync_cursors(&conn).unwrap();
+    assert_eq!(cursor_token_lease(&conn), (None, 6, None));
 }
 
 #[tokio::test]

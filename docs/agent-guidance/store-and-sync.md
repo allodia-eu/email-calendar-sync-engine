@@ -192,6 +192,11 @@ are one mechanism here, not alternatives.
   and bumps the generation, and when the suspended worker resumes its apply is
   rejected as stale instead of corrupting state. Workers handle `StaleLease` by
   re-claiming and recomputing — never by retrying the stale write.
+- Clearing a cursor (`reset_sync`, `clear_scope_cursor`) also bumps the generation and frees
+  the lease. A host clears one to change what the next pass fetches, so the pass running under
+  the old terms must not commit its cursor back over the clear. The mail stream ends a pass
+  whose re-claim finds the cursor moved rather than starting it over under the window it
+  began with; the next pass takes the scope up.
 - A pass can outlast its lease: a backfill paced under a server's quota runs for as long as the
   mailbox is large. Unrenewed, its lease lapses mid-pass, the next poll claims the scope, and the
   two passes fence each other out commit by commit. So the mail stream renews its lease every
@@ -443,6 +448,10 @@ are different jobs:
   snapshot/backfill: IMAP `UID SEARCH SINCE`, JMAP an `Email/query` `after`, Graph a
   `receivedDateTime ge` `$filter`, Gmail `q: after:`. **No delta can carry one** — a
   `deltaLink`, a `startHistoryId` and `Email/changes` all take a cursor, not a query.
+- **Where a pass resumes.** The orchestrator stores each email cursor with the floor it was
+  fetched under (`engine_sync::window_cursor`), and a pass asking for an earlier floor starts
+  the folder over, since the cursor knows nothing of the mail between the two. A later floor
+  resumes: a host computes the floor from today, so it moves on every day.
 - **What a `PassMode::Additive` delta stores.** The orchestrator drops any incoming message
   the window does not admit (`SyncWindow::admits`) before the apply. A delta's "new arrival"
   is new to *us*, not recent: IMAP has no in-place edit, so filing a three-year-old message

@@ -173,7 +173,8 @@ impl Engine {
     /// re-normalizes the account from scratch — the host's "reset / full refetch". The
     /// durable outbox (queued sends) is preserved. Sync afterwards to repopulate; until
     /// then the previously-synced objects remain readable and are reconciled by that
-    /// re-snapshot. The same clear happens automatically when the engine's
+    /// re-snapshot. A sync running meanwhile is stopped at its next commit rather than
+    /// writing its cursor back. The same clear happens automatically when the engine's
     /// `NORMALIZER_VERSION` changes (`store-and-sync.md`).
     ///
     /// # Errors
@@ -226,8 +227,10 @@ impl Engine {
     /// account. A plain `sync_mail` delta already reconciles flag, move and expunge changes
     /// on every IMAP server: incrementally with QRESYNC, and without it by reading every
     /// held message's flags and the set still present (`imap-smtp.md`). This is for a host
-    /// that wants to force a full mail re-snapshot; a plain `sync_mail` after it
-    /// reconciles, since the cleared scopes snapshot.
+    /// that wants to force a full mail re-snapshot, or to fetch under a new sync window; a
+    /// plain `sync_mail` after it reconciles, since the cleared scopes snapshot. A mail
+    /// sync running meanwhile is stopped at its next commit rather than writing its
+    /// cursor back, and the scope can be claimed at once.
     ///
     /// # Errors
     ///

@@ -68,6 +68,7 @@ mod submit;
 mod unconfirmed_write;
 mod unrecordable;
 mod vanished;
+mod window_change;
 
 /// A way the fake provider can fail, so a test can drive one failure path without the
 /// provider carrying a flag per path.
