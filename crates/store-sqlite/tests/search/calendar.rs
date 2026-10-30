@@ -4,7 +4,8 @@
 
 use engine_core::{
     calendar::{
-        Event, Location, Participant, ParticipantRole, ParticipationStatus, VirtualLocation,
+        ConferenceUri, Event, FlatEntry, Location, Participant, ParticipantRole,
+        ParticipationStatus, group_flat,
     },
     ids::{CalendarId, EventId, Uid},
     search_index::{OwnerAddresses, project_event},
@@ -104,7 +105,9 @@ async fn calendar_structured_filters_and_occurrence_range() {
     me.roles.insert(ParticipantRole::Owner);
     me.participation_status = ParticipationStatus::Accepted;
     review.participants = vec![me];
-    review.virtual_locations = vec![VirtualLocation::new("https://meet.example/x")];
+    review.conferences = group_flat(vec![FlatEntry::new(
+        ConferenceUri::parse("https://meet.example/x").unwrap(),
+    )]);
     review.locations = vec![Location::named("Boardroom")];
 
     let other = Event::new(

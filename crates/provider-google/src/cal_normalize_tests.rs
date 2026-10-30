@@ -2,8 +2,8 @@
 //! fixtures under `tests/fixtures/calendar/`.
 
 use engine_core::calendar::{
-    EventStatus, FreeBusyStatus, Frequency, ParticipantRole, ParticipationStatus, RecurrenceBound,
-    RecurrenceOverride,
+    ConferenceUri, EventStatus, FreeBusyStatus, Frequency, ParticipantRole, ParticipationStatus,
+    RecurrenceBound, RecurrenceOverride,
 };
 use serde_json::Value;
 
@@ -178,10 +178,16 @@ fn all_day_event_is_a_zoneless_date() {
 }
 
 #[test]
-fn meet_event_projects_the_join_link_as_a_virtual_location() {
+fn meet_event_projects_its_conference() {
     let event = event(MEET);
-    assert_eq!(event.virtual_locations.len(), 1);
-    assert!(event.virtual_locations[0].uri.contains("meet.google.com"));
+    assert_eq!(event.conferences.len(), 1);
+    assert!(
+        event.conferences[0]
+            .join()
+            .unwrap()
+            .as_str()
+            .contains("meet.google.com")
+    );
 }
 
 #[test]
@@ -267,7 +273,7 @@ fn optional_and_resource_attendees_transparency_and_visibility_map() {
 
 #[test]
 fn a_confidential_event_is_secret_and_meet_falls_back_to_an_entry_point() {
-    // No hangoutLink, but a conferenceData video entry point → still a virtual location.
+    // No hangoutLink, but a conferenceData video entry point → still a conference.
     let json = serde_json::json!({
         "id": "e", "summary": "Conf", "visibility": "confidential",
         "start": { "dateTime": "2026-08-03T10:00:00+02:00", "timeZone": "Europe/Amsterdam" },
@@ -279,11 +285,10 @@ fn a_confidential_event_is_secret_and_meet_falls_back_to_an_entry_point() {
     });
     let event = event_from_json(&json, &calendar(), None).unwrap();
     assert_eq!(event.privacy, engine_core::calendar::Privacy::Secret);
-    assert_eq!(event.virtual_locations.len(), 1);
-    assert!(
-        event.virtual_locations[0]
-            .uri
-            .contains("meet.google.com/xyz")
+    assert_eq!(event.conferences.len(), 1);
+    assert_eq!(
+        event.conferences[0].join().map(ConferenceUri::as_str),
+        Some("https://meet.google.com/xyz")
     );
 }
 

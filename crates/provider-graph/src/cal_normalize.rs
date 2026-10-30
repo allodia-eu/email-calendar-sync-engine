@@ -20,7 +20,7 @@
 use engine_core::{
     calendar::{
         Calendar, CalendarAccess, Event, EventStatus, FreeBusyStatus, Location, Participant,
-        ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, VirtualLocation,
+        ParticipantKind, ParticipantRole, ParticipationStatus, Privacy,
     },
     ids::{CalendarId, EventId, Uid},
     membership::Memberships,
@@ -30,6 +30,7 @@ use engine_core::{
 use serde_json::Value;
 
 use crate::{
+    cal_conference,
     cal_recur::parse_recurrence,
     error::GraphError,
     json::{bool_field, datetime, opt_str, req_str, wrap_id},
@@ -136,7 +137,7 @@ pub(crate) fn event_from_json(value: &Value, calendar: &CalendarId) -> Result<Ev
     event.recurrence = parse_recurrence(value)?;
     event.participants = participants(value);
     event.locations = locations(value);
-    event.virtual_locations = virtual_locations(value);
+    event.conferences = cal_conference::conferences(value);
     event.categories = value
         .get("categories")
         .and_then(Value::as_array)
@@ -311,16 +312,6 @@ fn coordinates(loc: &Value) -> Option<String> {
     let lat = coords.get("latitude").and_then(Value::as_f64)?;
     let lon = coords.get("longitude").and_then(Value::as_f64)?;
     Some(format!("geo:{lat},{lon}"))
-}
-
-/// The online-meeting join URL as a virtual location, when the event is an online meeting.
-fn virtual_locations(value: &Value) -> Vec<VirtualLocation> {
-    value
-        .get("onlineMeeting")
-        .and_then(|m| opt_str(m, "joinUrl"))
-        .filter(|u| !u.is_empty())
-        .map(|uri| vec![VirtualLocation::new(uri)])
-        .unwrap_or_default()
 }
 
 /// The revision tokens Graph supplies: the `@odata.etag` and the `changeKey`.
