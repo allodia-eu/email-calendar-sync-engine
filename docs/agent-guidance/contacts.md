@@ -348,6 +348,10 @@ is named by the SHA-256 of its contents, so its name changes when the photo does
 `Engine::cached_contact_photo` is the same read with no provider behind it, for the
 pass that builds a screen and must not grow a network fetch.
 
+The provider a host passes is the one `Engine::contact_source` names: an account connects one
+adapter per contact source, each knows only its own ids, and Graph refuses another source's id as
+`ErrorInvalidIdMalformed`.
+
 ### Photo delivery per provider (surveyed, and each verified live)
 
 | Adapter | Where the image comes from | How "no photo" arrives |

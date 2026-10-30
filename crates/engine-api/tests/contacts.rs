@@ -18,7 +18,7 @@ use engine_core::{
         PropertyId, Title,
     },
     membership::Memberships,
-    sync::{SyncState, SyncUpdate},
+    sync::{SyncScope, SyncState, SyncUpdate},
     version::{ChangeKey, ETag, RevisionTokens},
 };
 use engine_provider::{

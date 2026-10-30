@@ -168,3 +168,120 @@ async fn addresses_resolve_to_people_and_people_to_their_source_cards() {
             .is_none()
     );
 }
+
+/// A second source on the same account: a directory, whose cards live in a scope of their own.
+struct Directory;
+
+#[async_trait]
+impl Provider for Directory {
+    fn connection_info(&self) -> ConnectionInfo {
+        ConnectionInfo::new(Capabilities::none().with_contacts())
+    }
+}
+
+impl engine_provider::MailboxWrites for Directory {}
+impl CalendarWrites for Directory {}
+
+#[async_trait]
+impl ContactsProvider for Directory {
+    fn address_book_scope(&self, account: &AccountId) -> SyncScope {
+        SyncScope::GraphContactFolderList {
+            account: account.clone(),
+        }
+    }
+
+    fn contact_scope(&self, account: &AccountId) -> SyncScope {
+        SyncScope::GraphDirectoryUsers {
+            account: account.clone(),
+        }
+    }
+
+    async fn sync_address_books(
+        &self,
+        _account: &AccountId,
+        _cursor: Option<&SyncState>,
+    ) -> ProviderResult<ContactSourceSync<AddressBook>> {
+        let book = AddressBook::new(
+            AddressBookId::try_from("directory").unwrap(),
+            "Directory",
+            ContactSourceClass::Directory,
+        );
+        Ok(ContactSourceSync::Available {
+            sync: ScopeSync::new(
+                SyncUpdate::snapshot(
+                    vec![book],
+                    [ProviderKey::new("directory").unwrap()]
+                        .into_iter()
+                        .collect(),
+                ),
+                SyncState::new("books-1"),
+            ),
+            cursor_recovered: false,
+        })
+    }
+
+    async fn sync_contacts(
+        &self,
+        _account: &AccountId,
+        _cursor: Option<&SyncState>,
+    ) -> ProviderResult<ContactSourceSync<ContactCard>> {
+        let mut card = FakeContacts::card("d1", "Grace Hopper", "grace@example.test");
+        card.address_books = Memberships::of_one(AddressBookId::try_from("directory").unwrap());
+        Ok(ContactSourceSync::Available {
+            sync: ScopeSync::new(
+                SyncUpdate::snapshot(
+                    vec![card],
+                    [ProviderKey::new("d1").unwrap()].into_iter().collect(),
+                ),
+                SyncState::new("directory-1"),
+            ),
+            cursor_recovered: false,
+        })
+    }
+}
+
+/// An account connects one adapter per contact source, and each knows only its own ids: a
+/// directory card asked of the personal book is refused as a malformed id. So a card's photo is
+/// asked of the adapter whose source holds it.
+#[tokio::test]
+async fn a_card_is_asked_of_the_source_that_holds_it() {
+    let engine = Engine::open_in_memory().unwrap();
+    let account = AccountId::try_from("account-1").unwrap();
+    let providers: Vec<Box<dyn ContactsProvider>> =
+        vec![Box::new(FakeContacts::default()), Box::new(Directory)];
+    for provider in &providers {
+        engine.sync_contacts(provider, &account).await.unwrap();
+    }
+    let source_of = async |id: &str| {
+        engine
+            .contact_source(&providers, &account, &ContactId::try_from(id).unwrap())
+            .await
+            .unwrap()
+            .map(|provider| provider.contact_scope(&account))
+    };
+
+    assert_eq!(
+        source_of("c1").await,
+        Some(providers[0].contact_scope(&account))
+    );
+    assert_eq!(
+        source_of("d1").await,
+        Some(SyncScope::GraphDirectoryUsers {
+            account: account.clone()
+        })
+    );
+    assert_eq!(source_of("never-synced").await, None);
+    assert_eq!(
+        engine
+            .contact_source(
+                &providers[..1],
+                &account,
+                &ContactId::try_from("d1").unwrap()
+            )
+            .await
+            .unwrap()
+            .map(|provider| provider.contact_scope(&account)),
+        None,
+        "a source not connected is not one to ask"
+    );
+}
