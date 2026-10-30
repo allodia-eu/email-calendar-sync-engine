@@ -150,19 +150,25 @@ where
     // Set when a commit was refused as stale: the cursor this pass had left, and what it applied.
     let mut fenced: Option<(Option<SyncState>, RunningApplied)> = None;
     'restart: loop {
-        let claim = store
+        let claimed = store
             .claim_sync_scope(account.clone(), &scope, req.clone())
-            .await?;
-        let lease = claim.lease;
+            .await;
         // A cursor that moved while this pass was fenced off was cleared, or advanced by the
         // pass that took the scope. A host clears one to change what a pass fetches, so starting
         // over under this pass's own window would undo the clear; the next pass takes it up.
-        if let Some((left, applied)) = fenced.take()
-            && claim.state != left
-        {
-            store.release_sync_scope(lease).await?;
-            return Ok(applied.into_applied());
+        // A scope already held is that next pass, and this one ends rather than report busy.
+        if let Some((left, applied)) = fenced.take() {
+            match claimed {
+                Err(StoreError::ScopeHeld) => return Ok(applied.into_applied()),
+                Ok(claim) if claim.state != left => {
+                    store.release_sync_scope(claim.lease).await?;
+                    return Ok(applied.into_applied());
+                }
+                _ => {}
+            }
         }
+        let claim = claimed?;
+        let lease = claim.lease;
         let mut keep_alive = KeepAlive::new(store, &lease, req.ttl);
         // The cursor each pass resumes the *provider* fetch from; the store advances
         // it per additive checkpoint, or only on the final reconcile chunk.

@@ -150,6 +150,51 @@ async fn a_cleared_cursor_stops_the_pass_that_held_it() {
     assert_eq!(store.object_keys(&scope).await.unwrap().len(), 2);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_pass_fenced_off_ends_when_the_next_pass_already_holds_the_scope() {
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    let provider = Backfill::new(6, true);
+    let account = account();
+    let scope = provider.email_scope(&account);
+
+    let host = async {
+        // The host clears the cursor, and its next pass claims the scope at once.
+        tokio::time::sleep(EVERY * 5 / 2).await;
+        store.clear_scope_cursor(&scope).await.unwrap();
+        store
+            .claim_sync_scope(
+                account.clone(),
+                &scope,
+                LeaseRequest::new(WorkerId::new("w-2"), TTL),
+            )
+            .await
+            .unwrap()
+    };
+    let (report, _next) = tokio::join!(
+        sync_mail(
+            core::slice::from_ref(&provider),
+            &store,
+            &account,
+            worker(),
+            TTL,
+            StreamTuning::new(1, 1).within(since(4)),
+            &IgnoreCommits,
+        ),
+        host
+    );
+
+    assert_eq!(
+        report.folders[0]
+            .result
+            .as_ref()
+            .map(|applied| applied.upserted)
+            .ok(),
+        Some(2),
+        "the pass reported the scope its successor holds as busy"
+    );
+    assert_eq!(provider.started.load(Ordering::SeqCst), 1);
+}
+
 #[tokio::test]
 async fn a_pass_asking_for_older_mail_than_its_cursor_covers_starts_over() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();

@@ -196,7 +196,8 @@ are one mechanism here, not alternatives.
   the lease. A host clears one to change what the next pass fetches, so the pass running under
   the old terms must not commit its cursor back over the clear. The mail stream ends a pass
   whose re-claim finds the cursor moved rather than starting it over under the window it
-  began with; the next pass takes the scope up.
+  began with, and one whose re-claim finds the scope held ends the same way, not as busy: the
+  next pass takes the scope up.
 - A pass can outlast its lease: a backfill paced under a server's quota runs for as long as the
   mailbox is large. Unrenewed, its lease lapses mid-pass, the next poll claims the scope, and the
   two passes fence each other out commit by commit. So the mail stream renews its lease every
