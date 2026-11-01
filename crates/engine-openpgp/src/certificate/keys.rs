@@ -44,6 +44,11 @@ impl ComponentKey {
         self.primary
     }
 
+    /// Returns the weaknesses the key is usable despite.
+    pub fn warnings(&self) -> &[Warning] {
+        &self.warnings
+    }
+
     /// Returns when the key expires, if it states an expiry.
     pub fn expires(&self) -> Option<UtcDateTime> {
         self.expires

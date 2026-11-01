@@ -482,8 +482,10 @@
     "excerpt": "The concatenation of the data being signed, the signature data from the version number through the hashed subpacket data (inclusive), and (for signature versions later than 3) a 6-octet trailer (see Section 5.2.4) is hashed. The resulting hash value is what is signed. The high 16 bits (first two octets) of the hash are included in the Signature packet to provide a way to reject some invalid signatures without performing a signature verification. When verifying a version 6 signature, an implementation MUST reject the signature if these octets do not match the first two octets of the computed hash.",
     "scope": "library",
     "area": "verify",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "a_one_byte_change_makes_a_signature_bad"
+    ]
   },
   {
     "id": "rfc9580-5.2.3.7-1",
@@ -492,8 +494,10 @@
     "excerpt": "Bit 7 of the encoded Subpacket Type ID is the \"critical\" bit. If set, it denotes that the subpacket is one that is critical for the evaluator of the signature to recognize. If a subpacket is encountered that is marked critical but is unknown to the evaluating implementation, the evaluator SHOULD consider the signature to be in error.",
     "scope": "library",
     "area": "verify",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "an_unknown_critical_subpacket_makes_a_signature_malformed"
+    ]
   },
   {
     "id": "rfc9580-5.2.3.7-2",
@@ -623,8 +627,10 @@
     "excerpt": "This subpacket MUST be present in the hashed area.",
     "scope": "library",
     "area": "verify",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "a_signature_without_a_creation_time_is_malformed"
+    ]
   },
   {
     "id": "rfc9580-5.2.3.11-2",
@@ -879,8 +885,10 @@
     "excerpt": "Note that the length N of the fingerprint for a version 4 key is 20 octets; for a version 6 key, N is 32. Since the version of the signature is bound to the version of the key, the version octet here MUST match the version of the signature. If the version octet does not match the signature version, the receiving implementation MUST treat it as a malformed signature (see Section 5.2.5).",
     "scope": "library",
     "area": "verify",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "an_issuer_fingerprint_of_another_version_makes_a_signature_malformed"
+    ]
   },
   {
     "id": "rfc9580-5.2.3.36-1",
@@ -890,8 +898,10 @@
     "scope": "policy",
     "area": "verify",
     "note": "A signature naming intended recipients that exclude the reader is NotForThisRecipient.",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "intended_recipients_admit_a_signature_only_inside_their_encryption"
+    ]
   },
   {
     "id": "rfc9580-5.2.3.36-2",
@@ -922,8 +932,10 @@
     "excerpt": "For binary document signatures (Type ID 0x00), the document data is hashed directly. For text document signatures (Type ID 0x01), the implementation MUST first canonicalize the document by converting line endings to <CR><LF> and encoding it in UTF-8 (see [RFC3629]). The resulting UTF-8 byte stream is hashed.",
     "scope": "library",
     "area": "verify",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "a_version_6_signature_is_good"
+    ]
   },
   {
     "id": "rfc9580-5.2.4.1-1",
@@ -941,8 +953,14 @@
     "scope": "policy",
     "area": "verify",
     "note": "A malformed or unknown signature is never good and never stops the others.",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "every_signature_in_a_part_gets_its_own_verdict",
+      "a_part_with_no_signature_in_it_is_malformed",
+      "a_certification_is_not_a_message_signature",
+      "a_signature_older_than_its_key_is_malformed",
+      "a_signature_version_this_engine_does_not_read_is_unsupported"
+    ]
   },
   {
     "id": "rfc9580-5.3.1-1",
@@ -1554,8 +1572,11 @@
     "scope": "policy",
     "area": "verify",
     "note": "MD5, SHA-1 and RIPEMD-160 never validate a message signature; the self-signature cut-off is in openpgp.md.",
-    "status": "planned",
-    "tests": []
+    "status": "covered",
+    "tests": [
+      "a_message_signature_on_sha1_never_validates",
+      "a_sha1_self_signature_counts_only_before_the_cut_off"
+    ]
   },
   {
     "id": "rfc9580-9.6-1",
