@@ -99,4 +99,7 @@ pub use store::Store;
 /// - `10`: a link written inside another (Google Calendar's `google.com/url?q=` wrapper) is no
 ///   meeting of its own, and a Teams link is a meeting only under `/meet/` or `/l/meetup-join/`, so
 ///   an add-in's invitation no longer reads as two meetings.
-pub const NORMALIZER_VERSION: u32 = 10;
+/// - `11`: the re-sync a version change asks for reaches every calendar. Earlier changes cleared
+///   the cursors and kept each calendar's collection tag, so a CalDAV calendar whose tag had not
+///   moved was skipped as unchanged and kept the projection of whichever version first read it.
+pub const NORMALIZER_VERSION: u32 = 11;
