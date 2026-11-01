@@ -197,7 +197,7 @@ fn a_meeting_link_in_a_location_or_the_description_is_detected() {
         found,
         [
             (
-                Some("https://zoom.us/j/987"),
+                Some("https://zoom.us/j/987?pwd=x"),
                 ConferenceOrigin::Detected {
                     place: DetectedIn::Location
                 }

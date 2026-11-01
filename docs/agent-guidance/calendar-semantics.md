@@ -642,7 +642,10 @@ sees:
   and one query holding every parameter of the other), or when it runs on the service of a
   `Native` meeting or one a vendor property names, which is the event's one meeting there:
   a work tenant's Teams `joinUrl` (and `X-MICROSOFT-SKYPETEAMSMEETINGURL`) is the long
-  `meetup-join` link and its body the short `meet/<id>?p=` one. Stalwart, SabreDAV
+  `meetup-join` link and its body the short `meet/<id>?p=` one. A detected meeting takes
+  the fullest link any place writes for it (`ConferenceUri::fuller_than`), so a location's
+  bare Zoom link gives way to the description's one with its `pwd`; a stored or server-made
+  meeting keeps its own. Stalwart, SabreDAV
   and Nextcloud all keep `X-GOOGLE-CONFERENCE` over CalDAV (the seed's
   `meeting-attendees.ics`).
 - **Notes.** `Event::notes()` is the description without the meeting blocks invitations

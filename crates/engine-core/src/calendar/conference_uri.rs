@@ -167,6 +167,22 @@ impl ConferenceUri {
         }
     }
 
+    /// Whether this URI joins the same meeting as `other` ([`Self::same_meeting`]) and carries
+    /// every query parameter `other` does and more, such as the passcode (Zoom's `pwd`) that
+    /// lets a person join without typing it.
+    #[must_use]
+    pub fn fuller_than(&self, other: &Self) -> bool {
+        match (self.meeting_parts(), other.meeting_parts()) {
+            (Some((host, path, query)), Some((other_host, other_path, other_query))) => {
+                host == other_host
+                    && path == other_path
+                    && other_query.is_subset(&query)
+                    && query.len() > other_query.len()
+            }
+            _ => false,
+        }
+    }
+
     /// A web URI's host, path and query parameters as [`Self::same_meeting`] compares them.
     fn meeting_parts(&self) -> Option<(String, String, BTreeSet<String>)> {
         let host = self.host()?;
@@ -329,6 +345,16 @@ mod tests {
         assert_eq!(uri("https://example.com").path(), Some(""));
         assert_eq!(uri("tel:+31201234567").host(), None);
         assert_eq!(uri("sip:room@example.com").path(), None);
+    }
+
+    #[test]
+    fn a_link_with_more_of_the_meetings_parameters_is_fuller() {
+        let bare = uri("https://zoom.us/j/987");
+        let full = uri("https://zoom.us/j/987?pwd=x");
+        assert!(full.fuller_than(&bare));
+        assert!(!bare.fuller_than(&full));
+        assert!(!full.fuller_than(&full));
+        assert!(!uri("https://zoom.us/j/988?pwd=x").fuller_than(&bare));
     }
 
     #[test]

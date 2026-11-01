@@ -94,4 +94,6 @@ pub use store::Store;
 ///   description. Graph's stand-in location for an online meeting ("Microsoft Teams Meeting") is no
 ///   longer a location. A stored event keeps the conferences it had until the re-snapshot
 ///   re-projects it.
-pub const NORMALIZER_VERSION: u32 = 8;
+/// - `9`: a detected meeting takes the fullest link any place writes for it, so a location's
+///   bare Zoom link gives way to the description's one with its passcode.
+pub const NORMALIZER_VERSION: u32 = 9;

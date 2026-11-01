@@ -35,7 +35,10 @@ pub struct DetectionSources<'a> {
 /// server made or a vendor property names: that is the event's one meeting there, and the
 /// server may write it into the text under another link (Teams puts a short `meet/<id>` link
 /// in the body of a meeting whose `joinUrl`, or `X-MICROSOFT-SKYPETEAMSMEETINGURL`, is its
-/// long `meetup-join` one). Each detected meeting is one video way in, keyed by its link.
+/// long `meetup-join` one). Each detected meeting is one video way in, keyed by its link, and
+/// takes the fullest link any place writes for it ([`ConferenceUri::fuller_than`]), so a
+/// location's bare Zoom link gives way to the description's one with its passcode. A meeting
+/// stored in a conference field or made by the server keeps its own link.
 pub fn add_detected(conferences: &mut Vec<Conference>, sources: &DetectionSources<'_>) {
     let vendor = sources
         .vendor
@@ -58,7 +61,7 @@ pub fn add_detected(conferences: &mut Vec<Conference>, sources: &DetectionSource
         if place == DetectedIn::Description && service.is_none() {
             continue;
         }
-        let held = conferences.iter().any(|conference| {
+        let held = conferences.iter_mut().any(|conference| {
             let servers_own = service.is_some()
                 && conference.service == service
                 && matches!(
@@ -68,11 +71,7 @@ pub fn add_detected(conferences: &mut Vec<Conference>, sources: &DetectionSource
                             place: DetectedIn::VendorProperty
                         }
                 );
-            servers_own
-                || conference
-                    .entry_points
-                    .iter()
-                    .any(|entry| entry.uri.same_meeting(&uri))
+            servers_own || hold_same_meeting(conference, &uri)
         });
         if !held {
             conferences.push(Conference {
@@ -86,6 +85,26 @@ pub fn add_detected(conferences: &mut Vec<Conference>, sources: &DetectionSource
             });
         }
     }
+}
+
+/// Whether `conference` already has a way in that joins the meeting at `uri`. A detected
+/// conference whose way in `uri` is fuller than takes `uri` in its place.
+fn hold_same_meeting(conference: &mut Conference, uri: &ConferenceUri) -> bool {
+    let detected = matches!(conference.origin, ConferenceOrigin::Detected { .. });
+    let Some(entry) = conference
+        .entry_points
+        .iter_mut()
+        .find(|entry| entry.uri.same_meeting(uri))
+    else {
+        return false;
+    };
+    if detected && uri.fuller_than(&entry.uri) {
+        if conference.key.as_str() == entry.uri.as_str() {
+            conference.key = ConferenceKey::new(uri.as_str());
+        }
+        entry.uri = uri.clone();
+    }
+    true
 }
 
 /// The meetings a location names: the whole text when it is one web link, else each

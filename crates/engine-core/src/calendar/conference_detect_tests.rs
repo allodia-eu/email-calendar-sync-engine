@@ -228,3 +228,25 @@ fn an_html_space_after_a_link_is_not_part_of_it() {
         [("https://zoom.us/j/1?pwd=x", at(DetectedIn::Description))]
     );
 }
+
+#[test]
+fn a_found_meeting_takes_the_fullest_link_and_a_stored_one_keeps_its_own() {
+    let locations = [Location::named("Zoom: https://zoom.us/j/987")];
+    let sources = DetectionSources {
+        locations: &locations,
+        description: Some("Join https://zoom.us/j/987?pwd=x"),
+        ..DetectionSources::default()
+    };
+    let conferences = detect(Vec::new(), &sources);
+    assert_eq!(
+        found(&conferences),
+        [("https://zoom.us/j/987?pwd=x", at(DetectedIn::Location))]
+    );
+    assert_eq!(conferences[0].key.as_str(), "https://zoom.us/j/987?pwd=x");
+
+    let stored = group_flat(vec![super::super::FlatEntry::new(uri(
+        "https://zoom.us/j/987",
+    ))]);
+    let conferences = detect(stored.clone(), &sources);
+    assert_eq!(conferences, stored);
+}
