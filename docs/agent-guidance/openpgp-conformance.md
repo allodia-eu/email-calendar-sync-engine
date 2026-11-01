@@ -34,6 +34,16 @@ writing, covered:
 
 - RFC 3156 §4 and §5 recognition rules, and the signed-data byte rules the neutral walk enforces.
 - RFC 9580 §3.3 and §14.1: identity is the whole fingerprint, never a key ID.
+- RFC 9580 certificate semantics: back-signatures (§5.2.1.8, §10.1.5), self-signature selection
+  and the v6 Direct Key requirement (§5.2.3.10), the primary User ID (§5.2.3.27), revocation
+  reasons and their reach (§5.2.3.31), hashed-only subpackets (§13.13), and the RSA and DSA
+  refusals (§12.4, §12.5).
+
+The certificate tests draw on three sources, so that no rule is checked only against our own
+reading of it: RFC 9580's Appendix A vectors; certificates GnuPG 2.4 made
+(`tests/fixtures/gnupg/make.sh`, with every timestamp pinned); and certificates forged packet by
+packet with rPGP (`tests/support/forge.rs`) for the cases no tool will produce on request, such as
+a newer self-signature that does not verify or a signing subkey without its back-signature.
 
 ## Recipe
 
