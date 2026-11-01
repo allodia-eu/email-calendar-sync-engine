@@ -28,7 +28,7 @@ The engine never assumes OpenPGP above the mechanism line. Every type a host see
 |---|---|---|
 | `engine-core` (`e2e` module) | `Mechanism`, `CertificateId`, `LayerKind`, `SignatureVerdict` (+ `SenderBinding`, `ChainStatus`, `UnusableReason`, `IssuerHint`), `DecryptionOutcome` (+ `Integrity`, `Warning`), `Summary` and its derivation | No |
 | `engine-e2e` | The layer walk, `LayerRecogniser`, `Envelope`, `Walked`, the exact bytes a detached signature covers | No |
-| a mechanism crate (OpenPGP first) | Recognition of its layers, verification, decryption, composition, certificate semantics | Yes |
+| a mechanism crate: `engine-openpgp` (`openpgp.md`) | Recognition of its layers, verification, decryption, composition, certificate semantics | Yes |
 
 Host-visible facts sit in `engine-core` so a store or a host never has to depend on the walk.
 
