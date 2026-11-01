@@ -81,7 +81,8 @@ pub(crate) fn conferences(value: &Value) -> Vec<Conference> {
 /// provider in the organiser's language ("Microsoft Teams Meeting", "Microsoft
 /// Teams-vergadering"). It is no place: it has no address and no coordinates, and its name
 /// carries the provider's brand, which no language translates. A location a person typed
-/// has the same shape, so the brand is what tells them apart.
+/// has the same shape, so the brand is what tells them apart; a booked room
+/// (`locationType` `conferenceRoom`) is a place whatever it is called.
 pub(crate) fn is_placeholder(value: &Value, location: &Value) -> bool {
     let brand = match opt_str(value, "onlineMeetingProvider") {
         Some("teamsForBusiness") => "Microsoft Teams",
@@ -95,6 +96,7 @@ pub(crate) fn is_placeholder(value: &Value, location: &Value) -> bool {
         })
     };
     bool_field(value, "isOnlineMeeting")
+        && opt_str(location, "locationType").is_none_or(|kind| kind == "default")
         && blank("address")
         && blank("coordinates")
         && opt_str(location, "displayName").is_some_and(|name| name.contains(brand))
@@ -263,6 +265,11 @@ mod tests {
             "displayName": "Microsoft Teams Room 2", "address": { "city": "Amsterdam" }
         });
         assert!(!is_placeholder(&teams, &addressed));
+        let room = json!({
+            "displayName": "Microsoft Teams Room 3F", "locationType": "conferenceRoom",
+            "uniqueIdType": "directory", "address": {}, "coordinates": {}
+        });
+        assert!(!is_placeholder(&teams, &room));
         let offline =
             json!({ "isOnlineMeeting": false, "onlineMeetingProvider": "teamsForBusiness" });
         assert!(!is_placeholder(&offline, &placeholder));

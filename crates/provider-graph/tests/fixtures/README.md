@@ -222,7 +222,9 @@ public repo must not ship a working join link (see Finding 10).
     work tenant's `joinUrl` is the long `meetup-join` link and its body the short
     `meet/<id>?p=` one. Exchange also adds a `location` named after the provider in the
     organiser's language ("Microsoft Teams-vergadering"), with no address or coordinates;
-    the projection leaves it out.
+    the projection leaves it out. The fixture's body is Teams' older block between
+    underscore rules; a work tenant now writes the block with no rule above it, a heading
+    and `Deelnemen: <link>` first, and the meeting-options section last (`conference_block`).
 11. **One MS account owns many calendars** (`GET /me/calendars` → a list). Each is a
     distinct `Calendar` with its own immutable id, `isDefaultCalendar` flag, and colour
     (`hexColor` `#rrggbb` wins over the named `color`). A Graph `event` object does not

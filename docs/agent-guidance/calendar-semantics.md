@@ -639,21 +639,26 @@ sees:
   names counts. Graph's description is its preview, so Graph reads the whole `body`,
   whose HTML holds links in `href`s. A link joins a meeting already held when
   `ConferenceUri::same_meeting` says so (host and path, escapes compared without case,
-  the query unless one side has none), or when it runs on the service of a `Native`
-  meeting, which is the event's one meeting there: a work tenant's Teams `joinUrl` is the
-  long `meetup-join` link and its body the short `meet/<id>?p=` one. Stalwart, SabreDAV
+  and one query holding every parameter of the other), or when it runs on the service of a
+  `Native` meeting or one a vendor property names, which is the event's one meeting there:
+  a work tenant's Teams `joinUrl` (and `X-MICROSOFT-SKYPETEAMSMEETINGURL`) is the long
+  `meetup-join` link and its body the short `meet/<id>?p=` one. Stalwart, SabreDAV
   and Nextcloud all keep `X-GOOGLE-CONFERENCE` over CalDAV (the seed's
   `meeting-attendees.ics`).
 - **Notes.** `Event::notes()` is the description without the meeting blocks invitations
-  write, which repeat the conference: Teams' (a line of underscores, a first line naming
-  "Microsoft Teams", a closing line of underscores) and Google's (`-::~:~::~:~…::-` above
-  and below). A block without its closing line runs to the end, because Graph's preview
-  cuts it off. `description` itself stays the server's text, since edits are computed
+  write, which repeat the conference. Teams writes two shapes: between rules (a line of
+  underscores, a first line naming "Microsoft Teams", a closing line of underscores at least
+  as long as the opening one, since shorter rules separate the block's own sections), and,
+  as a work tenant does today, appended with no rule above it (a heading naming "Microsoft
+  Teams" whose next line holds the meeting link, running to the end of the text). Google's
+  has `-::~:~::~:~…::-` above and below. A block without its closing line runs to the end,
+  because Graph's preview cuts it off. `description` itself stays the server's text, since edits are computed
   against it.
 - **Graph's stand-in location.** Exchange gives an online meeting a location named after the
   provider in the organiser's language ("Microsoft Teams-vergadering") with no address or
-  coordinates. A typed location has the same shape, so the brand in the name is the test,
-  and the projection leaves it out. An iCalendar copy of the invitation carries it as plain
+  coordinates. A typed location has the same shape, so the brand in the name is the test
+  (a booked `conferenceRoom` is always kept), and the projection, an occurrence's
+  included, leaves it out. An iCalendar copy of the invitation carries it as plain
   `LOCATION` text, which is kept, since nothing there tells it from a typed one.
 - **Occurrences** read the master's conferences; no override carries its own.
 - **Which calendars make one** is the server's to say, per calendar: Graph's

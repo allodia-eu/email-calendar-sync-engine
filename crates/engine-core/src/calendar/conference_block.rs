@@ -1,19 +1,24 @@
 //! Recognising the meeting blocks calendar services write into a description.
 //!
-//! An invitation's description carries its meeting as a block of text between two rule
-//! lines, so that a client reading only the description still finds the link. The block
-//! repeats the conference, so [`super::Event::notes`] leaves it out. Two shapes are
-//! recognised, both from live invitations:
+//! An invitation's description carries its meeting as a block of text, so that a client
+//! reading only the description still finds the link. The block repeats the conference, so
+//! [`super::Event::notes`] leaves it out. Three shapes are recognised, all from live
+//! invitations. "Microsoft Teams" is the same in every language Teams writes in.
 //!
-//! - **Microsoft Teams**: a line of underscores, a first line naming "Microsoft Teams" (the brand
-//!   is the same in every language the invitation is written in), and a closing line of
-//!   underscores.
+//! - **Microsoft Teams, between rules**: a line of underscores, a first line naming "Microsoft
+//!   Teams", and a closing line of underscores at least as long as the opening one; the shorter
+//!   rules between the block's own sections (its dial-in numbers) do not close it.
+//! - **Microsoft Teams, appended**: a heading naming "Microsoft Teams" ("Microsoft
+//!   Teams-vergadering") whose next line holds a Teams meeting link, with no rule above it. Teams
+//!   appends this block last, so it runs to the end of the text.
 //! - **Google Calendar**: a line `-::~:~::~:~…::-` above the block and the same line below.
 //!
 //! A block whose closing line is missing runs to the end of the text, because a server's
 //! preview of the description (Graph's `bodyPreview`) cuts it off.
 
 use std::borrow::Cow;
+
+use super::{ConferenceService, conference_detect::links};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Rule {
@@ -66,6 +71,9 @@ pub(super) fn without_blocks(text: &str) -> Cow<'_, str> {
 
 /// How many of `lines` the block they open with spans, or `None` when they open none.
 fn block_len(lines: &[&str]) -> Option<usize> {
+    if opens_appended_teams_block(lines) {
+        return Some(lines.len());
+    }
     let rule = Rule::of(lines.first()?)?;
     let rest = &lines[1..];
     if rule == Rule::Teams {
@@ -74,8 +82,29 @@ fn block_len(lines: &[&str]) -> Option<usize> {
             return None;
         }
     }
-    let close = rest.iter().position(|line| Rule::of(line) == Some(rule));
+    // A Teams block separates its own sections with shorter rules, so only a rule as long as
+    // the opening one closes it.
+    let open = lines[0].trim().len();
+    let close = rest
+        .iter()
+        .position(|line| Rule::of(line) == Some(rule) && line.trim().len() >= open);
     Some(close.map_or(lines.len(), |end| end + 2))
+}
+
+/// Whether `lines` open with the heading of an appended Teams block: a line naming
+/// "Microsoft Teams" whose next non-blank line holds a Teams meeting link.
+fn opens_appended_teams_block(lines: &[&str]) -> bool {
+    let Some((heading, rest)) = lines.split_first() else {
+        return false;
+    };
+    heading.contains("Microsoft Teams")
+        && rest
+            .iter()
+            .find(|line| !line.trim().is_empty())
+            .is_some_and(|next| {
+                links(next)
+                    .any(|uri| ConferenceService::recognise(&uri) == Some(ConferenceService::Teams))
+            })
 }
 
 #[cfg(test)]
@@ -97,6 +126,34 @@ mod tests {
             without_blocks(&text),
             "Agenda: budget\n\nBring the figures."
         );
+    }
+
+    #[test]
+    fn a_shorter_rule_inside_a_teams_block_does_not_close_it() {
+        let section = "_".repeat(32);
+        let text = format!(
+            "Agenda\n{TEAMS_RULE}\nMicrosoft Teams Need help?\nJoin the meeting now\n{section}\n\
+             Dial in by phone\n+31 20 000 0000\n{section}\nFor organizers: Meeting options\n\
+             {TEAMS_RULE}\n"
+        );
+        assert_eq!(without_blocks(&text), "Agenda");
+    }
+
+    #[test]
+    fn an_appended_teams_block_runs_to_the_end_and_a_mention_of_teams_is_kept() {
+        // The shape a work tenant writes today, as plain text (Graph's text body).
+        let section = "_".repeat(32);
+        let text = format!(
+            "Bring the figures.\r\n\r\nMicrosoft Teams-vergadering\r\n\
+             Deelnemen: https://teams.microsoft.com/meet/123456789?p=abc\r\n\
+             Vergadering-id: 123 456 789\r\nWachtwoordcode: abc\r\n\
+             Help: https://aka.ms/JoinTeamsMeeting?omkt=nl-NL\r\n{section}\r\n\r\n{section}\r\n\
+             Voor organisatoren\r\nOpties voor vergadering: https://teams.microsoft.com/meetingOptions/\r\n"
+        );
+        assert_eq!(without_blocks(&text), "Bring the figures.");
+        let mention =
+            "We use Microsoft Teams for this.\nSee https://www.microsoft.com/microsoft-teams\n";
+        assert!(matches!(without_blocks(mention), Cow::Borrowed(_)));
     }
 
     #[test]

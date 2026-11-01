@@ -137,6 +137,26 @@ fn an_exception_carries_its_own_notes_and_room() {
 }
 
 #[test]
+fn an_exception_of_an_online_meeting_carries_no_stand_in_location() {
+    let mut entry = exception_entry();
+    entry["isOnlineMeeting"] = sjson!(true);
+    entry["onlineMeetingProvider"] = sjson!("teamsForBusiness");
+    entry["location"] = sjson!({
+        "displayName": "Microsoft Teams Meeting", "locationType": "default",
+        "uniqueIdType": "private"
+    });
+
+    let mut events = [weekly_master()];
+    fold_into(&mut events, vec![pending_override(&entry).unwrap()]);
+
+    let overrides = &events[0].recurrence.as_ref().unwrap().overrides;
+    let RecurrenceOverride::Patch(patch) = &overrides[&local("2026-08-10T09:00:00")] else {
+        panic!("expected a patch");
+    };
+    assert!(patch.get("locations").is_none(), "{patch:?}");
+}
+
+#[test]
 fn an_organizer_cancelled_occurrence_is_marked_cancelled_in_its_patch() {
     // Graph's `isCancelled` is the organizer calling one occurrence off, which iCalendar
     // states as `STATUS:CANCELLED` on the override — not the same thing as the attendee

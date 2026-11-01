@@ -32,10 +32,10 @@ pub struct DetectionSources<'a> {
 /// link that joins a meeting already held adds nothing, so a meeting keeps the strongest
 /// origin any place gives it. It joins one when it is the same meeting by
 /// [`ConferenceUri::same_meeting`], or when it runs on the service of a meeting the calendar
-/// server made: that is the event's one meeting there, and the server may write it into the
-/// text under another link (Teams puts a short `meet/<id>` link in the body of a meeting whose
-/// `joinUrl` is its long `meetup-join` one). Each detected meeting is one video way in, keyed
-/// by its link.
+/// server made or a vendor property names: that is the event's one meeting there, and the
+/// server may write it into the text under another link (Teams puts a short `meet/<id>` link
+/// in the body of a meeting whose `joinUrl`, or `X-MICROSOFT-SKYPETEAMSMEETINGURL`, is its
+/// long `meetup-join` one). Each detected meeting is one video way in, keyed by its link.
 pub fn add_detected(conferences: &mut Vec<Conference>, sources: &DetectionSources<'_>) {
     let vendor = sources
         .vendor
@@ -52,14 +52,22 @@ pub fn add_detected(conferences: &mut Vec<Conference>, sources: &DetectionSource
         .description
         .into_iter()
         .flat_map(links)
-        .filter(|uri| ConferenceService::recognise(uri).is_some())
         .map(|uri| (uri, DetectedIn::Description));
     for (uri, place) in vendor.chain(located).chain(described) {
         let service = ConferenceService::recognise(&uri);
+        if place == DetectedIn::Description && service.is_none() {
+            continue;
+        }
         let held = conferences.iter().any(|conference| {
             let servers_own = service.is_some()
                 && conference.service == service
-                && matches!(conference.origin, ConferenceOrigin::Native { .. });
+                && matches!(
+                    conference.origin,
+                    ConferenceOrigin::Native { .. }
+                        | ConferenceOrigin::Detected {
+                            place: DetectedIn::VendorProperty
+                        }
+                );
             servers_own
                 || conference
                     .entry_points
@@ -95,9 +103,9 @@ fn location_links(name: &str) -> Vec<ConferenceUri> {
 ///
 /// A link starts at `https://` or `http://` and ends at whitespace or a character no link
 /// holds unescaped: an angle bracket (Exchange's plain text writes `text<https://…>`), a quote
-/// (an HTML attribute) or a pipe. Punctuation that ends a sentence is not part of it, and
-/// `&amp;`, as HTML writes `&` inside a link, is read as `&`.
-fn links(text: &str) -> impl Iterator<Item = ConferenceUri> + '_ {
+/// (an HTML attribute), a pipe or HTML's `&nbsp;`. Punctuation that ends a sentence is not
+/// part of it, and `&amp;`, as HTML writes `&` inside a link, is read as `&`.
+pub(super) fn links(text: &str) -> impl Iterator<Item = ConferenceUri> + '_ {
     let lower = text.to_ascii_lowercase();
     let mut starts: Vec<usize> = lower
         .match_indices("https://")
@@ -110,7 +118,8 @@ fn links(text: &str) -> impl Iterator<Item = ConferenceUri> + '_ {
         let end = tail
             .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '|'))
             .unwrap_or(tail.len());
-        let link = tail[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '*']);
+        let link = tail[..end].split("&nbsp;").next().unwrap_or_default();
+        let link = link.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '*']);
         ConferenceUri::parse(&link.replace("&amp;", "&")).ok()
     })
 }

@@ -1,5 +1,7 @@
 //! The address a conference is joined at.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 /// The URI schemes a conference may be joined through.
@@ -147,32 +149,37 @@ impl ConferenceUri {
     /// Whether `other` joins the same meeting as this URI.
     ///
     /// Two web URIs do when their host and path match, with percent escapes compared without
-    /// regard to case and a trailing `/` ignored, and their queries match too unless one has
-    /// none: services write a link both with and without its passcode (Zoom's `pwd`), while a
-    /// query that differs can name a different meeting (Webex's `MTID`). The scheme and
-    /// fragment are ignored. Any other URI is the same meeting only as the same text.
+    /// regard to case and a trailing `/` ignored, and one's query holds every parameter of
+    /// the other's: services write a link both with and without its passcode (Zoom's `pwd`)
+    /// or an add-on's marker (`from=addon`), while a parameter that differs can name a
+    /// different meeting (Webex's `MTID`). The scheme and fragment are ignored. Any other URI
+    /// is the same meeting only as the same text.
     #[must_use]
     pub fn same_meeting(&self, other: &Self) -> bool {
         match (self.meeting_parts(), other.meeting_parts()) {
             (Some((host, path, query)), Some((other_host, other_path, other_query))) => {
                 host == other_host
                     && path == other_path
-                    && (query.is_empty() || other_query.is_empty() || query == other_query)
+                    && (query.is_subset(&other_query) || other_query.is_subset(&query))
             }
             (None, None) => self.0 == other.0,
             _ => false,
         }
     }
 
-    /// A web URI's host, path and query as [`Self::same_meeting`] compares them.
-    fn meeting_parts(&self) -> Option<(String, String, String)> {
+    /// A web URI's host, path and query parameters as [`Self::same_meeting`] compares them.
+    fn meeting_parts(&self) -> Option<(String, String, BTreeSet<String>)> {
         let host = self.host()?;
         let path = self.path()?.trim_end_matches('/');
-        let query = self
-            .0
+        let without_fragment = self.0.split('#').next().unwrap_or_default();
+        let query = without_fragment
             .split_once('?')
-            .map_or("", |(_, query)| query.split('#').next().unwrap_or(""));
-        Some((host, upper_escapes(path), upper_escapes(query)))
+            .map_or("", |(_, query)| query)
+            .split('&')
+            .filter(|param| !param.is_empty())
+            .map(upper_escapes)
+            .collect();
+        Some((host, upper_escapes(path), query))
     }
 
     /// A web URI's authority and path, or `None` when it has no `//` or is not a web URI.
@@ -335,6 +342,9 @@ mod tests {
         assert!(zoom.same_meeting(&uri("https://zoom.us/j/123")));
         assert!(!zoom.same_meeting(&uri("https://zoom.us/j/123?pwd=xyz")));
         assert!(!zoom.same_meeting(&uri("https://zoom.us/j/124?pwd=abc")));
+        assert!(zoom.same_meeting(&uri("https://zoom.us/j/123?from=addon&pwd=abc")));
+        assert!(!zoom.same_meeting(&uri("https://zoom.us/j/123?pwd=xyz&from=addon")));
+        assert!(uri("https://zoom.us/j/123#a?pwd=x").same_meeting(&zoom));
         assert!(
             !uri("https://meet.example.com/a").same_meeting(&uri("https://meet.example.com/A"))
         );

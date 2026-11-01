@@ -105,6 +105,8 @@ async fn live_a_teams_meeting_reads_back_as_the_calendars_own_conference() {
     );
     // The body's join link is the same meeting, and Exchange's stand-in location is none.
     assert_eq!(event.locations, []);
+    // The body is all Teams block, inner section rules included, so nothing is the person's.
+    assert_eq!(event.notes(), None, "{:?}", event.description);
     assert_eq!(conferences.len(), 1);
     let teams = &conferences[0];
     assert_eq!(teams.service, Some(ConferenceService::Teams));

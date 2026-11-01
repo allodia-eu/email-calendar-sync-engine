@@ -194,3 +194,37 @@ fn a_detected_conference_round_trips_through_its_stored_form() {
         conference
     );
 }
+
+#[test]
+fn a_link_on_the_service_a_vendor_property_names_is_that_meeting() {
+    // An Exchange invitation: the property holds the long `meetup-join` link, the
+    // description the short `meet/` one.
+    let vendor = [uri(
+        "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0?context=%7b%7d",
+    )];
+    let conferences = detect(
+        Vec::new(),
+        &DetectionSources {
+            vendor: &vendor,
+            description: Some("Join: https://teams.microsoft.com/meet/123?p=x"),
+            ..DetectionSources::default()
+        },
+    );
+    assert_eq!(conferences.len(), 1, "{conferences:?}");
+    assert_eq!(conferences[0].origin, at(DetectedIn::VendorProperty));
+}
+
+#[test]
+fn an_html_space_after_a_link_is_not_part_of_it() {
+    let conferences = detect(
+        Vec::new(),
+        &DetectionSources {
+            description: Some("<p>Join: https://zoom.us/j/1?pwd=x&nbsp;</p>"),
+            ..DetectionSources::default()
+        },
+    );
+    assert_eq!(
+        found(&conferences),
+        [("https://zoom.us/j/1?pwd=x", at(DetectedIn::Description))]
+    );
+}
