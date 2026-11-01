@@ -102,4 +102,7 @@ pub use store::Store;
 /// - `11`: the re-sync a version change asks for reaches every calendar. Earlier changes cleared
 ///   the cursors and kept each calendar's collection tag, so a CalDAV calendar whose tag had not
 ///   moved was skipped as unchanged and kept the projection of whichever version first read it.
-pub const NORMALIZER_VERSION: u32 = 11;
+/// - `12`: a Gmail message's inbox category (`CATEGORY_*`), `CHAT` and superstar labels are no
+///   longer memberships, nor mailboxes in the label list. The label list drops them on its next
+///   read; a stored message keeps them as places until the re-snapshot re-reads it.
+pub const NORMALIZER_VERSION: u32 = 12;

@@ -14,9 +14,8 @@
 //! - Spam and Trash are folders of their own, outside All Mail, so the folder a message was read
 //!   from is its `SPAM` or `TRASH` label.
 //!
-//! The inbox categories are in none of them: IMAP does not show them as labels. Gmail's own
-//! search does find them (`X-GM-RAW "category:social"`), so a pass asks once per category and
-//! adds the label to every message the search returned ([`CATEGORIES`]).
+//! The inbox categories are in none of them, and need not be: the API pass drops them too
+//! ([`crate::normalize::is_unfiled_label`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -34,17 +33,6 @@ use crate::{
     normalize::{keywords_from_labels, memberships_of, parse_rfc2822},
     transport::GoogleClient,
 };
-
-/// Each inbox category's label id, and the Gmail search that finds its messages. Primary's
-/// label is `CATEGORY_PERSONAL`, and Gmail's search calls it `personal` too: `category:primary`
-/// matches nothing (measured).
-pub(crate) const CATEGORIES: [(&str, &str); 5] = [
-    ("CATEGORY_PERSONAL", "category:personal"),
-    ("CATEGORY_SOCIAL", "category:social"),
-    ("CATEGORY_PROMOTIONS", "category:promotions"),
-    ("CATEGORY_UPDATES", "category:updates"),
-    ("CATEGORY_FORUMS", "category:forums"),
-];
 
 /// The API id of each system label IMAP names with a backslash.
 const SYSTEM: [(&str, &str); 8] = [
@@ -88,30 +76,8 @@ impl LabelIds {
     }
 }
 
-/// The inbox categories of a folder's messages, by UID.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct Categories(BTreeMap<u32, &'static str>);
-
-impl Categories {
-    /// Records that `uids` are in the category labelled `label`.
-    pub(crate) fn add(&mut self, label: &'static str, uids: &[u32]) {
-        for uid in uids {
-            self.0.insert(*uid, label);
-        }
-    }
-
-    fn of(&self, uid: u32) -> Option<&'static str> {
-        self.0.get(&uid).copied()
-    }
-}
-
 /// The label ids the API would list for `state`, read from `folder`.
-pub(crate) fn label_ids(
-    state: &GmailState,
-    folder: GmailFolder,
-    categories: &Categories,
-    ids: &LabelIds,
-) -> Vec<String> {
+pub(crate) fn label_ids(state: &GmailState, folder: GmailFolder, ids: &LabelIds) -> Vec<String> {
     let mut labels = BTreeSet::new();
     for label in &state.labels {
         let id = SYSTEM
@@ -141,7 +107,6 @@ pub(crate) fn label_ids(
         }
         GmailFolder::All => {}
     }
-    labels.extend(categories.of(state.uid).map(str::to_owned));
     labels.into_iter().collect()
 }
 
@@ -155,11 +120,10 @@ pub(crate) fn key_of(gmail_id: u64) -> Result<ProviderKey, GoogleError> {
 pub(crate) fn message_of(
     read: GmailMessage,
     folder: GmailFolder,
-    categories: &Categories,
     ids: &LabelIds,
     named: &NamedLabels,
 ) -> Result<Message, GoogleError> {
-    let labels = label_ids(&read.state, folder, categories, ids);
+    let labels = label_ids(&read.state, folder, ids);
     let mut message = read.message;
     message.id = MessageId::new(key_of(read.state.gmail_id)?);
     message.mailboxes = memberships_of(&labels)?;
@@ -176,11 +140,10 @@ pub(crate) fn message_of(
 pub(crate) fn state_change_of(
     state: &GmailState,
     folder: GmailFolder,
-    categories: &Categories,
     ids: &LabelIds,
     named: &NamedLabels,
 ) -> Result<MailStateChange, GoogleError> {
-    let labels = label_ids(state, folder, categories, ids);
+    let labels = label_ids(state, folder, ids);
     let mut change = MailStateChange::new(
         key_of(state.gmail_id)?,
         MailState::with_keywords(keywords_from_labels(&labels)).filed_in(memberships_of(&labels)?),

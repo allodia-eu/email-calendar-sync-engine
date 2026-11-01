@@ -10,6 +10,8 @@
 //!   the keyword axis (`$seen` is the *absence* of `UNREAD`; `STARRED` → `$flagged`) and are
 //!   **excluded** from membership and from the label list. `DRAFT` is both a place (the Drafts
 //!   label) *and* the `$draft` state.
+//! - The system labels that mark a message without filing it ([`is_unfiled_label`]: the inbox
+//!   categories, `CHAT`, the superstars) are excluded the same way, and carry no state either.
 //! - `threadId` is the provider-assigned thread ([`ThreadProvenance::ProviderAssigned`]), never
 //!   re-grouped by local derivation.
 //! - The `Message-Id` header is preserved (bracket-stripped) as a threading hint, never identity —
@@ -42,11 +44,37 @@ use crate::{
 /// onto the message's keyword axis and are never emitted as mailboxes.
 pub(crate) const KEYWORD_LABELS: &[&str] = &["UNREAD", "STARRED"];
 
+/// The Gmail system labels besides the inbox categories (`CATEGORY_*`) that mark a message
+/// without filing it: chat history, and the superstars, which Gmail lists in a message's
+/// `labelIds` when the user has turned them on.
+const UNFILED_LABELS: &[&str] = &[
+    "CHAT",
+    "YELLOW_STAR",
+    "ORANGE_STAR",
+    "RED_STAR",
+    "PURPLE_STAR",
+    "BLUE_STAR",
+    "GREEN_STAR",
+    "RED_BANG",
+    "ORANGE_GUILLEMET",
+    "YELLOW_BANG",
+    "GREEN_CHECK",
+    "BLUE_INFO",
+    "PURPLE_QUESTION",
+];
+
+/// Whether `id` is a Gmail system label that is not a place a user files mail in: an inbox
+/// category, `CHAT` or a superstar. It is neither a mailbox nor a membership, so a message
+/// carrying only such labels is in All Mail, as Gmail shows it. `IMPORTANT` is not one: it
+/// has a role of its own.
+pub(crate) fn is_unfiled_label(id: &str) -> bool {
+    id.starts_with("CATEGORY_") || UNFILED_LABELS.contains(&id)
+}
+
 /// The synthetic mailbox id every message with no other label falls back into — Gmail's
-/// implicit "All Mail" (an archived, uncategorized message carries no folder-like
-/// label, but the engine's [`Memberships`] must be non-empty). Gmail exposes no label id
-/// for All Mail, so the adapter reserves this one and emits the matching mailbox in the
-/// label list ([`crate::fetch::labels`]).
+/// implicit "All Mail" (an archived message carries no folder-like label, but the engine's
+/// [`Memberships`] must be non-empty). Gmail exposes no label id for All Mail, so the adapter
+/// reserves this one and emits the matching mailbox in the label list ([`crate::fetch::labels`]).
 pub(crate) const ALL_MAIL_ID: &str = "ALL_MAIL";
 
 /// The header set the metadata fetch requests (`metadataHeaders`) — exactly the fields
@@ -54,8 +82,8 @@ pub(crate) const ALL_MAIL_ID: &str = "ALL_MAIL";
 pub(crate) const METADATA_HEADERS: &[&str] =
     &["From", "To", "Cc", "Bcc", "Subject", "Date", "Message-Id"];
 
-/// The normalized [`MailboxRole`] for a Gmail system label id, or `None` for a
-/// category/chat/custom label (which is a roleless mailbox).
+/// The normalized [`MailboxRole`] for a Gmail system label id, or `None` for a user's label
+/// (a roleless mailbox).
 fn label_role(id: &str) -> Option<MailboxRole> {
     match id {
         "INBOX" => Some(MailboxRole::Inbox),
@@ -69,7 +97,8 @@ fn label_role(id: &str) -> Option<MailboxRole> {
 }
 
 /// Normalizes one Gmail `label` into a [`Mailbox`], or `None` for a keyword-only label
-/// (`UNREAD`/`STARRED`), which is state rather than a place.
+/// (`UNREAD`/`STARRED`), which is state rather than a place, and for an unfiled one
+/// ([`is_unfiled_label`]).
 ///
 /// The name arrives as Gmail stores it, which for a nested label is the whole path
 /// (`Work/Clients`). [`nest_labels`] is what turns that into a parent and a folder's own name,
@@ -80,7 +109,7 @@ fn label_role(id: &str) -> Option<MailboxRole> {
 /// Returns [`GoogleError::Protocol`] if the label lacks a usable `id`.
 pub(crate) fn label_from_json(value: &Value) -> Result<Option<Mailbox>, GoogleError> {
     let id = req_str(value, "id")?;
-    if KEYWORD_LABELS.contains(&id) {
+    if KEYWORD_LABELS.contains(&id) || is_unfiled_label(id) {
         return Ok(None);
     }
     // System labels have an uppercase id as their name; custom labels carry the user's.
@@ -235,13 +264,13 @@ pub(crate) fn label_ids(value: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The membership mailboxes for a label set: every label that is not keyword-only,
-/// falling back to the synthetic All Mail when none remain (an archived, uncategorized
-/// message) so the non-empty [`Memberships`] invariant holds.
+/// The membership mailboxes for a label set: every label that is neither keyword-only nor
+/// unfiled ([`is_unfiled_label`]), falling back to the synthetic All Mail when none remain (an
+/// archived message) so the non-empty [`Memberships`] invariant holds.
 pub(crate) fn memberships_of(labels: &[String]) -> Result<Memberships<MailboxId>, GoogleError> {
     let mut ids = Vec::new();
     for label in labels {
-        if KEYWORD_LABELS.contains(&label.as_str()) {
+        if KEYWORD_LABELS.contains(&label.as_str()) || is_unfiled_label(label) {
             continue;
         }
         ids.push(wrap_id(MailboxId::try_from(label.as_str()), "label id")?);

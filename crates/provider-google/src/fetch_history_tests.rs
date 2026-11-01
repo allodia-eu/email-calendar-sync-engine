@@ -74,15 +74,15 @@ async fn an_archive_is_a_state_change_that_carries_the_new_filing() {
         .mailboxes
         .as_ref()
         .expect("Gmail files in place, so the change says where");
-    assert!(!filing.contains(&MailboxId::try_from("INBOX").unwrap()));
-    assert!(filing.contains(&MailboxId::try_from("CATEGORY_PERSONAL").unwrap()));
-    // `UNREAD` is keyword state, never a place.
-    assert!(!filing.contains(&MailboxId::try_from("UNREAD").unwrap()));
+    // The inbox category the message keeps is no place, and `UNREAD` is keyword state, so what
+    // is left is All Mail.
+    let places: Vec<&str> = filing.iter().map(MailboxId::as_str).collect();
+    assert_eq!(places, ["ALL_MAIL"]);
 }
 
 #[tokio::test]
 async fn a_message_left_with_no_folder_label_is_filed_in_all_mail() {
-    // An archived, uncategorized message carries no folder-like label at all, and the engine's
+    // An archived message can carry no label at all, and the engine's
     // membership set may not be empty — the same synthetic home the whole-object path uses.
     let client = fake_client(vec![(
         "/history?startHistoryId",
