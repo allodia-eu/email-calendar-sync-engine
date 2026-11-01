@@ -48,7 +48,14 @@ impl ConferenceService {
         let first = segments.first().copied();
         let nonempty = !segments.is_empty();
         let service = match host {
-            "teams.microsoft.com" if matches!(first, Some("l" | "meet")) => Self::Teams,
+            // Under `/l/` only a `meetup-join` is a meeting; the meeting's chat (`/l/chat/…`)
+            // and its options page sit beside it in every invitation.
+            "teams.microsoft.com"
+                if first == Some("meet")
+                    || (first == Some("l") && segments.get(1) == Some(&"meetup-join")) =>
+            {
+                Self::Teams
+            }
             "teams.live.com" if first == Some("meet") => Self::Teams,
             "meet.google.com" if first.is_some_and(is_meet_code) => Self::GoogleMeet,
             "meet.jit.si" | "8x8.vc" if nonempty => Self::Jitsi,
@@ -203,6 +210,8 @@ mod tests {
     fn a_vendor_page_that_is_not_a_meeting_names_no_service() {
         for value in [
             "https://teams.microsoft.com/",
+            "https://teams.microsoft.com/l/chat/19:meeting_x%40thread.v2/conversations",
+            "https://teams.microsoft.com/meetingOptions/?organizerId=x",
             "https://meet.google.com/",
             "https://meet.google.com/new",
             "https://zoom.us/download",

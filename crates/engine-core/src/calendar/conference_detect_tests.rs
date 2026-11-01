@@ -250,3 +250,33 @@ fn a_found_meeting_takes_the_fullest_link_and_a_stored_one_keeps_its_own() {
     let conferences = detect(stored.clone(), &sources);
     assert_eq!(conferences, stored);
 }
+
+#[test]
+fn a_link_google_wraps_in_its_own_is_read_once_through_the_plain_one() {
+    // The shape of an invitation a Workspace calendar sends with a Zoom or Teams add-in: the
+    // meeting in the location and as plain text, and again inside Google's redirect links, with
+    // the meeting's chat beside it.
+    let description = "Deelnemen Zoom Meeting\n\
+        https://zoom.us/j/123456789?pwd=Abc.1&jst=2 (Id: 123456789)\n\
+        <a href=\"https://www.google.com/url?q=https://zoom.us/j/123456789?pwd%3DAbc.1%26jst%3D2&amp;sa=D&amp;source=calendar\">\
+        https://zoom.us/j/123456789?pwd=Abc.1&amp;jst=2</a>\n\
+        <a href=\"https://www.google.com/url?q=https://teams.microsoft.com/l/chat/19:meeting_x%40thread.v2/conversations&amp;sa=D\">Chat</a>";
+    let locations = [Location::named(
+        "https://zoom.us/j/123456789?pwd=Abc.1&jst=2",
+    )];
+    let conferences = detect(
+        Vec::new(),
+        &DetectionSources {
+            locations: &locations,
+            description: Some(description),
+            ..DetectionSources::default()
+        },
+    );
+    assert_eq!(
+        found(&conferences),
+        [(
+            "https://zoom.us/j/123456789?pwd=Abc.1&jst=2",
+            at(DetectedIn::Location)
+        )]
+    );
+}

@@ -96,4 +96,7 @@ pub use store::Store;
 ///   re-projects it.
 /// - `9`: a detected meeting takes the fullest link any place writes for it, so a location's bare
 ///   Zoom link gives way to the description's one with its passcode.
-pub const NORMALIZER_VERSION: u32 = 9;
+/// - `10`: a link written inside another (Google Calendar's `google.com/url?q=` wrapper) is no
+///   meeting of its own, and a Teams link is a meeting only under `/meet/` or `/l/meetup-join/`, so
+///   an add-in's invitation no longer reads as two meetings.
+pub const NORMALIZER_VERSION: u32 = 10;

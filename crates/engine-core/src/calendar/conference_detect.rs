@@ -123,7 +123,10 @@ fn location_links(name: &str) -> Vec<ConferenceUri> {
 /// A link starts at `https://` or `http://` and ends at whitespace or a character no link
 /// holds unescaped: an angle bracket (Exchange's plain text writes `text<https://…>`), a quote
 /// (an HTML attribute), a pipe or HTML's `&nbsp;`. Punctuation that ends a sentence is not
-/// part of it, and `&amp;`, as HTML writes `&` inside a link, is read as `&`.
+/// part of it, and `&amp;`, as HTML writes `&` inside a link, is read as `&`. A link written
+/// inside another is part of it, not a link of its own: Google Calendar wraps every link in an
+/// invitation's description as `https://www.google.com/url?q=https://…`, and the copy inside
+/// carries Google's own parameters.
 pub(super) fn links(text: &str) -> impl Iterator<Item = ConferenceUri> + '_ {
     let lower = text.to_ascii_lowercase();
     let mut starts: Vec<usize> = lower
@@ -132,11 +135,16 @@ pub(super) fn links(text: &str) -> impl Iterator<Item = ConferenceUri> + '_ {
         .map(|(at, _)| at)
         .collect();
     starts.sort_unstable();
+    let mut covered = 0;
     starts.into_iter().filter_map(move |at| {
+        if at < covered {
+            return None;
+        }
         let tail = &text[at..];
         let end = tail
             .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '|'))
             .unwrap_or(tail.len());
+        covered = at + end;
         let link = tail[..end].split("&nbsp;").next().unwrap_or_default();
         let link = link.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '*']);
         ConferenceUri::parse(&link.replace("&amp;", "&")).ok()
