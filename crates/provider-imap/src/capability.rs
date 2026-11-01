@@ -59,6 +59,14 @@ pub(crate) enum Extension {
     /// `PARTIAL` (RFC 9394) — a `FETCH` can ask for the first `n` messages of a set, which
     /// pages a mailbox by message count rather than by UID.
     Partial,
+    /// `CONDSTORE` (RFC 7162) — a message carries a mod-sequence, and a `FETCH` can ask for
+    /// only the messages changed since one. Unlike `QRESYNC` it needs no `ENABLE`: a
+    /// `SELECT (CONDSTORE)` or a `CHANGEDSINCE` modifier turns it on (RFC 7162 §3.1).
+    Condstore,
+    /// `X-GM-EXT-1` — Gmail's: every message carries its Gmail id (`X-GM-MSGID`), its
+    /// conversation (`X-GM-THRID`) and its labels (`X-GM-LABELS`), the same in every folder it
+    /// appears in, and `X-GM-RAW` searches with Gmail's own syntax.
+    XGmExt1,
     /// `XYMHIGHESTMODSEQ` — Yahoo's: `SELECT` and `STATUS` report a per-folder
     /// `HIGHESTMODSEQ` without CONDSTORE, and it moves on every change to the folder (an
     /// arrival, a flag, a removal). So an unchanged value means an unchanged folder.
@@ -68,7 +76,7 @@ pub(crate) enum Extension {
 impl Extension {
     /// Every extension, in declaration order — what the `ENABLE` argument list and the
     /// connect trace iterate, so a new one cannot be added here and forgotten there.
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Idle,
         Self::ListStatus,
         Self::SpecialUse,
@@ -78,6 +86,8 @@ impl Extension {
         Self::ListMyrights,
         Self::UidOnly,
         Self::Partial,
+        Self::Condstore,
+        Self::XGmExt1,
         Self::XymHighestModseq,
     ];
 
@@ -93,6 +103,8 @@ impl Extension {
             Self::ListMyrights => "LIST-MYRIGHTS",
             Self::UidOnly => "UIDONLY",
             Self::Partial => "PARTIAL",
+            Self::Condstore => "CONDSTORE",
+            Self::XGmExt1 => "X-GM-EXT-1",
             Self::XymHighestModseq => "XYMHIGHESTMODSEQ",
         }
     }
@@ -111,6 +123,8 @@ impl Extension {
             | Self::ListMyrights
             | Self::UidOnly
             | Self::Partial
+            | Self::Condstore
+            | Self::XGmExt1
             | Self::XymHighestModseq => false,
         }
     }
@@ -128,6 +142,8 @@ impl Extension {
             | Self::Acl
             | Self::ListMyrights
             | Self::Partial
+            | Self::Condstore
+            | Self::XGmExt1
             | Self::XymHighestModseq => false,
         }
     }

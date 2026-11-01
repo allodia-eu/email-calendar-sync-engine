@@ -67,6 +67,8 @@ Auth-Code+PKCE loopback flow and captures fixtures — the exact mirror of
   delta before each page, or the list-only reconcile.
 - **`quota`**: what each Gmail call costs, and the pace that keeps an account under the
   per-user quota (`http-throttling.md`).
+- **`imap_pass`**, **`imap_cursor`**, **`imap_labels`**, **`imap_mail`**: the message sync
+  read over IMAP, when the host connects it (below).
 - **`mutate`/`submit`** — `edit_mail` (label deltas) and `submit_email` (`messages.send`).
 - **`labels_write`**: `edit_mailbox`, the folder changes (below).
 - **`provider`** — `GmailProvider`, the `Provider` impl.
@@ -215,6 +217,35 @@ part way; `reconcile;h=…` is a backfill finished and not yet reconciled.
   the top, in the same additive pass; the reconcile after it tombstones what is gone. Only
   before the first history page is passed on. Gmail always returns the latest `historyId`, so
   the cursor always advances.
+
+## Mail read over IMAP
+
+`GmailProvider::with_imap` takes a `provider_imap::GmailMail` (from `ImapAccount::gmail`,
+offered only on a session advertising `X-GM-EXT-1`) and moves the message sync and every body
+read onto IMAP. Labels, writes, drafts, sending, reports and identities stay on the API. The
+reason is the quota: the API bills a message's metadata 20 units and its body 60 against 6,000
+per user per minute, about 270 messages a minute, and IMAP bills nothing per message.
+
+- **One store, the API's ids.** All Mail, Spam and Trash are read together, each message with
+  `X-GM-MSGID`, `X-GM-THRID` and `X-GM-LABELS`. In hex the first two are the API's message and
+  thread ids, so both modes write the same keys and threads, and an account moves between them
+  without a resync of its rows.
+- **The API's labels, rebuilt.** `imap_labels` turns what IMAP says into the label ids the API
+  would list (a system label from its backslash name, a user label from its name through
+  `labels.list`, `UNREAD` and `STARRED` from the flags, `SPAM` and `TRASH` from the folder) and
+  hands them to `memberships_of` and `keywords_from_labels`, so a label means one thing in both
+  modes. IMAP does not show the inbox categories as labels; a pass finds them with one
+  `X-GM-RAW "category:…"` search each.
+- **Cursor and delta.** The cursor is `imap;a=…;s=…;t=…`, each folder's validity, `UIDNEXT`,
+  mod-sequence and count. A cursor of the other mode starts this one afresh. A delta reads
+  what arrived (UID at or above the last `UIDNEXT`) and what changed (`CHANGEDSINCE`, CONDSTORE).
+  Gmail has no `QRESYNC`, so a folder holding fewer messages than it should is what reveals a
+  removal, and that pass reconciles the window.
+- **Limits.** `connection_info` reports four body reads in flight, fifty sources a request, and
+  Gmail's 2,500 MB daily IMAP download limit (`ConnectionInfo::daily_download_limit`), past
+  which Gmail suspends the account's IMAP access for up to a day.
+- **Parity is a live test.** `tests/live_imap_parity.rs` syncs one account both ways and
+  compares every message's key, thread, memberships and keywords.
 
 ## Writes + submission
 

@@ -7,7 +7,7 @@
 //! list syncs under [`SyncScope::GmailLabelList`]. Labels are multi-membership on each
 //! message, not the scope it was fetched under.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use engine_core::{
@@ -21,10 +21,15 @@ use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailStream, IdentityControls,
     KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites,
     Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts, ScopeSync,
-    SenderIdentity, SenderIdentityId, SubmissionReceipt,
+    SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
 };
+use provider_imap::GmailMail;
+use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{fetch, mutate, named_labels::Labels, submit, transport::GoogleClient};
+use crate::{
+    fetch, imap_mail::ImapMail, mutate, named_labels::Labels, submit,
+    transport::GoogleClient,
+};
 
 /// The label list is re-discovered as a snapshot each pass (`GET /users/me/labels`), so
 /// it carries no provider cursor of its own — like IMAP's folder list.
@@ -45,12 +50,16 @@ pub struct GmailProvider {
     since: Option<CalendarDate>,
     /// The keywords kept as labels ([`GmailProvider::with_keyword_names`]).
     labels: Labels,
+    /// The account's mail read over IMAP, when the host connected it
+    /// ([`GmailProvider::with_imap`]).
+    imap: Option<Arc<dyn ImapMail>>,
 }
 
 impl core::fmt::Debug for GmailProvider {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GmailProvider")
             .field("capabilities", &self.capabilities)
+            .field("imap", &self.imap.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -105,7 +114,30 @@ impl GmailProvider {
                 .with_sender_identities(IdentityControls::Writable),
             since: None,
             labels: Labels::default(),
+            imap: None,
         }
+    }
+
+    /// Reads the account's mail over IMAP rather than the Gmail API: the message sync
+    /// (`crate::imap_pass`) and every body. Labels, writes, drafts, sending, reports and
+    /// identities stay on the API.
+    ///
+    /// The API bills a message's metadata 20 units and its body 60 against 6,000 per user per
+    /// minute (`crate::quota`), which holds a sync to about 270 messages a minute; IMAP bills
+    /// nothing per message and reads a thousand in about a second. Both write the same keys,
+    /// threads, memberships and keywords, so an account moves between them without a resync
+    /// of its rows (`crate::imap_labels`).
+    #[must_use]
+    pub fn with_imap<S>(self, mail: GmailMail<S>) -> Self
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+    {
+        self.with_imap_mail(Arc::new(mail))
+    }
+
+    pub(crate) fn with_imap_mail(mut self, imap: Arc<dyn ImapMail>) -> Self {
+        self.imap = Some(imap);
+        self
     }
 
     /// Sets the default sync-depth cutoff for the whole-scope [`Provider::sync_email`]
@@ -149,8 +181,16 @@ impl Provider for GmailProvider {
             // (`fetch::MAX_CONCURRENT_GETS`), reported so a caller draining a work list of
             // single fetches — warming bodies, most of all — overlaps them the same way
             // instead of paying one round trip per object.
-            ..ConnectionInfo::new(self.capabilities)
-                .with_concurrent_fetches(crate::fetch::MAX_CONCURRENT_GETS)
+            ..match self.imap {
+                // A body read over IMAP carries many sources in one `UID FETCH`; four at a time
+                // leaves the account's fifth connection to the sync pass.
+                Some(_) => ConnectionInfo::new(self.capabilities)
+                    .with_concurrent_fetches(IMAP_CONCURRENT_READS)
+                    .with_sources_per_request(IMAP_SOURCES_PER_REQUEST)
+                    .with_daily_download_limit(IMAP_DAILY_DOWNLOAD),
+                None => ConnectionInfo::new(self.capabilities)
+                    .with_concurrent_fetches(crate::fetch::MAX_CONCURRENT_GETS),
+            }
         }
     }
 
@@ -203,13 +243,23 @@ impl Provider for GmailProvider {
         // relabelled old message is reported whatever its date; the engine drops it on
         // apply (`SyncWindow::admits`), which is where the delta's bound holds for every
         // adapter.
-        crate::pass::stream(
-            &self.client,
-            &self.labels,
-            cursor,
-            window.floor(),
-            chunk_size,
-        )
+        match &self.imap {
+            Some(imap) => crate::imap_pass::stream(
+                imap.as_ref(),
+                &self.client,
+                &self.labels,
+                cursor,
+                window.floor(),
+                chunk_size,
+            ),
+            None => crate::pass::stream(
+                &self.client,
+                &self.labels,
+                cursor,
+                window.floor(),
+                chunk_size,
+            ),
+        }
     }
 
     async fn fetch_message_source(
@@ -217,9 +267,48 @@ impl Provider for GmailProvider {
         _account: &AccountId,
         message: &Message,
     ) -> ProviderResult<RawMime> {
+        if let Some(imap) = &self.imap {
+            let id = gmail_id(message.id.key())?;
+            return imap
+                .sources(&[id])
+                .await?
+                .pop()
+                .map(|(_, source)| source)
+                .ok_or_else(|| gone(message.id.key()));
+        }
         // Gmail streams a message's raw RFC 5322 source from `messages.get?format=raw`
         // (base64url); the message's provider key is the Gmail message id.
         Ok(fetch::message_source(&self.client, message.id.key()).await?)
+    }
+
+    fn fetch_message_sources<'a>(
+        &'a self,
+        account: &'a AccountId,
+        messages: &'a [Message],
+    ) -> SourceStream<'a> {
+        let Some(imap) = &self.imap else {
+            return engine_provider::one_at_a_time(self, account, messages);
+        };
+        Box::pin(async_stream::stream! {
+            let ids: Vec<Option<u64>> = messages.iter().map(|m| gmail_id(m.id.key()).ok()).collect();
+            let wanted: Vec<u64> = ids.iter().flatten().copied().collect();
+            match imap.sources(&wanted).await {
+                Ok(mut found) => {
+                    for (index, message) in messages.iter().enumerate() {
+                        let source = ids[index]
+                            .and_then(|id| found.iter().position(|(have, _)| *have == id))
+                            .map(|at| found.swap_remove(at).1)
+                            .ok_or_else(|| gone(message.id.key()));
+                        yield (index, source);
+                    }
+                }
+                Err(err) => {
+                    for index in 0..messages.len() {
+                        yield (index, Err(engine_provider::ProviderError::new(err.class(), err.detail())));
+                    }
+                }
+            }
+        })
     }
 
     /// Applies a [`MailEdit`] via `messages.modify`/`trash`/`delete` (`mutate`). The
@@ -295,6 +384,33 @@ impl MailboxWrites for GmailProvider {
 }
 
 impl CalendarWrites for GmailProvider {}
+
+/// Body reads in flight at once over IMAP.
+const IMAP_CONCURRENT_READS: usize = 4;
+
+/// What Gmail lets an account download over IMAP in a day, across all its clients: 2,500 MB
+/// (<https://knowledge.workspace.google.com/admin/gmail/gmail-bandwidth-limits>). Passing it
+/// suspends the account's IMAP access for up to a day. Read as decimal megabytes, the smaller
+/// reading.
+const IMAP_DAILY_DOWNLOAD: u64 = 2_500 * 1_000_000;
+
+/// Bodies one IMAP read carries (`provider_imap::GmailMail::sources` searches 50 ids a command).
+const IMAP_SOURCES_PER_REQUEST: usize = 50;
+
+/// The Gmail id a message key names: the key is that id in hex.
+fn gmail_id(key: &ProviderKey) -> ProviderResult<u64> {
+    u64::from_str_radix(key.as_str(), 16).map_err(|_| {
+        engine_provider::ProviderError::invalid_state(format!("not a Gmail message id: {}", key.as_str()))
+    })
+}
+
+/// A message no folder holds any more.
+fn gone(key: &ProviderKey) -> engine_provider::ProviderError {
+    engine_provider::ProviderError::conflict(format!(
+        "message {} is no longer on the server: re-sync before reading it",
+        key.as_str()
+    ))
+}
 
 #[cfg(test)]
 #[path = "provider_tests.rs"]

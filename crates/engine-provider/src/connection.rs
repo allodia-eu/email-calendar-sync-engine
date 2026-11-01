@@ -237,6 +237,11 @@ pub struct ConnectionInfo {
     /// call can bring back in a single request. Always at least 1, which says a batch is
     /// fetched one message at a time and a caller gains nothing by making one larger.
     pub sources_per_request: usize,
+    /// The most octets the server lets this account download in a day, across all its clients,
+    /// or `None` where it states no limit. Passing it shuts the account's access off for hours,
+    /// for every client, so a caller downloading on its own initiative (warming bodies) keeps
+    /// well under it. The adapter that knows the provider's documented figure sets it.
+    pub daily_download_limit: Option<u64>,
 }
 
 impl ConnectionInfo {
@@ -250,7 +255,15 @@ impl ConnectionInfo {
             http_version: None,
             concurrent_fetches: 1,
             sources_per_request: 1,
+            daily_download_limit: None,
         }
+    }
+
+    /// The same connection, reporting that the server lets the account download `octets` a day.
+    #[must_use]
+    pub const fn with_daily_download_limit(mut self, octets: u64) -> Self {
+        self.daily_download_limit = Some(octets);
+        self
     }
 
     /// The same connection, reporting that one source-batch request carries up to `n`

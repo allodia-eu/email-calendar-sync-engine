@@ -1393,6 +1393,7 @@ dependencies = [
  "engine-rfc5322",
  "engine-tls",
  "futures-util",
+ "provider-imap",
  "reqwest",
  "serde",
  "serde_json",
