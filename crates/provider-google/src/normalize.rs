@@ -284,7 +284,7 @@ fn internal_date(value: &Value) -> Result<Option<UtcDateTime>, GoogleError> {
 }
 
 /// Parses an RFC 2822 `Date` header into a UTC instant, or `None` if unparseable.
-fn parse_rfc2822(raw: &str) -> Option<UtcDateTime> {
+pub(crate) fn parse_rfc2822(raw: &str) -> Option<UtcDateTime> {
     let odt =
         time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc2822).ok()?;
     utc_from_offset(odt).ok()

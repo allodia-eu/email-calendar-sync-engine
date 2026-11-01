@@ -259,6 +259,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         Ok((rows, vanished))
     }
 
+    /// `UID FETCH <set> (<items>) (CHANGEDSINCE <modseq>)` — the CONDSTORE form (RFC 7162
+    /// §3.1.4.1): every message in `set` whose mod-sequence is above `modseq`. Unlike
+    /// [`uid_fetch_changedsince`](Self::uid_fetch_changedsince) it names no `VANISHED`, which
+    /// only a QRESYNC session may ask for, so it says nothing of what was expunged.
+    pub(crate) async fn uid_fetch_changed(
+        &mut self,
+        set: &str,
+        items: &str,
+        modseq: u64,
+    ) -> ImapResult<Vec<FetchRow>> {
+        let response = self
+            .command(&format!(
+                "UID FETCH {set} ({items}) (CHANGEDSINCE {modseq})"
+            ))
+            .await?;
+        parse::parse_fetch(&response.untagged)
+    }
+
     /// `UID SEARCH <criteria>` in the selected mailbox — the matched UIDs (empty if none
     /// match), tolerating both the classic `* SEARCH` and the extended `* ESEARCH` reply.
     /// `criteria` is already-formed search syntax; a caller composing in a non-literal value

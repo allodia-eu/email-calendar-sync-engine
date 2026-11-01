@@ -34,6 +34,7 @@ use crate::{
     dial::connect_session,
     error::ImapError,
     filing::{SmtpSender, resolve_smtp},
+    gmail::GmailMail,
     pool::{DEFAULT_MAX_CONNECTIONS, Dial, ImapPool, VALIDATE_AFTER_REST},
     provider::ImapProvider,
     store::Namespaces,
@@ -63,6 +64,8 @@ pub struct ImapAccount<S> {
     /// The server's `NAMESPACE` answer, learned the first time a provider needs it
     /// (`crate::folders`) and kept for every provider of the login, whichever store it covers.
     namespaces: Arc<OnceLock<Namespaces>>,
+    /// Whether the session advertised Gmail's `X-GM-EXT-1` (`crate::gmail`).
+    gmail: bool,
 }
 
 impl<S> core::fmt::Debug for ImapAccount<S> {
@@ -137,6 +140,7 @@ impl<S> ImapAccount<S> {
         tls_version: Option<TlsVersion>,
     ) -> Self {
         let capabilities = capabilities(&connection, smtp.is_some());
+        let gmail = connection.negotiated.has(Extension::XGmExt1);
         let pool = ImapPool::new(dial, DEFAULT_MAX_CONNECTIONS, VALIDATE_AFTER_REST);
         pool.adopt(connection);
         Self {
@@ -149,6 +153,7 @@ impl<S> ImapAccount<S> {
             },
             shared_mailbox: None,
             namespaces: Arc::new(OnceLock::new()),
+            gmail,
         }
     }
 
@@ -194,7 +199,17 @@ impl<S> ImapAccount<S> {
             connection_info: self.connection_info,
             shared_mailbox: Some(handle),
             namespaces: Arc::clone(&self.namespaces),
+            gmail: self.gmail,
         }
+    }
+
+    /// The account's mail read as one Gmail store, when the server is Gmail: `None` unless the
+    /// session advertised `X-GM-EXT-1`, and for a shared mail store, which Gmail does not
+    /// offer over IMAP. Dials nothing.
+    #[must_use]
+    pub fn gmail(&self) -> Option<GmailMail<S>> {
+        (self.gmail && self.shared_mailbox.is_none())
+            .then(|| GmailMail::new(Arc::clone(&self.pool)))
     }
 
     /// A provider bound to `mailbox` for its email scope, drawing its connections from this

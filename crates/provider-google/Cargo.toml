@@ -41,6 +41,10 @@ futures-util = { workspace = true }
 # The generated `Date` header for the assembled `messages.send` message reads the wall
 # clock at submission (engine time types deliberately cannot), mirroring the Graph path.
 time = { workspace = true }
+# Gmail's mail read over IMAP (`imap_pass`): All Mail, Spam and Trash with Gmail's `X-GM-EXT-1`,
+# which carries the same ids the API does without the API's per-message quota cost.
+provider-imap = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 # `time` for the gated live send test's delivery poll (`tokio::time::sleep`); `macros`/`rt`

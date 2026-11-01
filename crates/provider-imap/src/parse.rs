@@ -58,6 +58,8 @@ pub(crate) struct Address {
 /// is not an envelope field; it is left to a later threading slice.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct Envelope {
+    /// The `Date` header as the message gave it.
+    pub date: Option<String>,
     /// The `Subject`.
     pub subject: Option<String>,
     /// The `From` addresses.
@@ -98,6 +100,10 @@ pub(crate) struct FetchRow {
     /// The raw header section from `BODY[HEADER.FIELDS (…)]` (e.g.
     /// `"References: <a@x>\r\nContent-Type: text/plain\r\n\r\n"`), if requested.
     pub header_fields: Option<String>,
+    /// The message's mod-sequence (`MODSEQ`, RFC 7162 §3.1.4.1), if requested.
+    pub modseq: Option<u64>,
+    /// Gmail's `X-GM-EXT-1` items, when any was requested.
+    pub gmail: crate::parse_gmail::GmailItems,
 }
 
 /// One `LIST` row: a mailbox's attributes, hierarchy delimiter, and name
@@ -331,6 +337,8 @@ fn fetch_row(pairs: &[Item], leading_uid: Option<u32>) -> Option<FetchRow> {
     let mut envelope = None;
     let mut structure = None;
     let mut header_fields = None;
+    let mut modseq = None;
+    let mut gmail = crate::parse_gmail::GmailItems::default();
     let mut iter = pairs.iter();
     while let Some(key) = iter.next() {
         let Some(key) = key.as_atom() else { continue };
@@ -359,7 +367,8 @@ fn fetch_row(pairs: &[Item], leading_uid: Option<u32>) -> Option<FetchRow> {
             "RFC822.SIZE" => size = value.as_atom().and_then(|a| a.parse().ok()),
             "ENVELOPE" => envelope = value.as_list().map(envelope_of),
             "BODYSTRUCTURE" => structure = Some(has_downloadable_part(value)),
-            _ => {}
+            "MODSEQ" => modseq = crate::parse_gmail::single_number(value),
+            other => gmail.read(other, value),
         }
     }
     let has_attachment = structure.or_else(|| {
@@ -376,6 +385,8 @@ fn fetch_row(pairs: &[Item], leading_uid: Option<u32>) -> Option<FetchRow> {
         envelope,
         has_attachment,
         header_fields,
+        modseq,
+        gmail,
     })
 }
 
@@ -401,6 +412,7 @@ fn envelope_of(fields: &[Item]) -> Envelope {
     let at = |i: usize| fields.get(i);
     let addrs = |i: usize| at(i).map_or_default(addresses_of);
     Envelope {
+        date: at(0).and_then(Item::as_nstring),
         subject: at(1).and_then(Item::as_nstring),
         from: addrs(2),
         sender: addrs(3),

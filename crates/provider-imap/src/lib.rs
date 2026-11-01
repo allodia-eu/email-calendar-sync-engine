@@ -86,6 +86,8 @@ mod fetch_batch;
 mod fetch_stream;
 pub(crate) mod filing;
 mod folders;
+mod gmail;
+mod gmail_read;
 mod idle;
 mod listing;
 mod mail;
@@ -94,6 +96,7 @@ mod metadata_fetch;
 mod mutate;
 mod parse;
 mod parse_body;
+mod parse_gmail;
 mod parse_qresync;
 mod place;
 mod pool;
@@ -143,6 +146,9 @@ pub use account::ImapAccount;
 pub use config::{ImapConfig, ImapSecurity};
 pub use credentials::{CredentialSource, Credentials};
 pub use error::ImapError;
+pub use gmail::{
+    GmailFolder, GmailFolderState, GmailMail, GmailMessage, GmailQuery, GmailSources, GmailState,
+};
 pub use probe::{AuthOffer, probe_imap_auth, probe_smtp_auth};
 pub use provider::ImapProvider;
 pub use watch::{DEFAULT_IDLE_KEEPALIVE, ImapWatcher};
