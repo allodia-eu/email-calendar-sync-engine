@@ -29,42 +29,24 @@ fn state(labels: &[&str], flags: &[&str]) -> GmailState {
 
 #[test]
 fn imap_says_in_three_places_what_the_api_says_in_one() {
-    let mut categories = Categories::default();
-    categories.add("CATEGORY_UPDATES", &[5]);
     let got = label_ids(
         &state(
             &["\\Inbox", "\\Important", "Reis/été", "Nobody knows me"],
             &[],
         ),
         GmailFolder::All,
-        &categories,
         &ids(),
     );
-    assert_eq!(
-        got,
-        [
-            "CATEGORY_UPDATES",
-            "IMPORTANT",
-            "INBOX",
-            "Label_7",
-            "UNREAD"
-        ]
-    );
+    assert_eq!(got, ["IMPORTANT", "INBOX", "Label_7", "UNREAD"]);
 
     let read_and_starred = label_ids(
         &state(&[], &["\\Seen", "\\Flagged"]),
         GmailFolder::Trash,
-        &Categories::default(),
         &ids(),
     );
     assert_eq!(read_and_starred, ["STARRED", "TRASH"]);
 
-    let spam = label_ids(
-        &state(&[], &["\\Seen"]),
-        GmailFolder::Spam,
-        &Categories::default(),
-        &ids(),
-    );
+    let spam = label_ids(&state(&[], &["\\Seen"]), GmailFolder::Spam, &ids());
     assert_eq!(spam, ["SPAM"]);
 }
 
@@ -78,8 +60,7 @@ fn a_message_read_over_imap_is_the_one_the_api_reads() {
     }))
     .unwrap();
 
-    let mut categories = Categories::default();
-    categories.add("CATEGORY_UPDATES", &[5]);
+    // The API lists the inbox category and IMAP cannot: both drop it, so the two still agree.
     let placeholder = MessageId::new(ProviderKey::new("imap:v1:u5@[Gmail]/All Mail").unwrap());
     let read = GmailMessage {
         state: state(&["\\Inbox", "Reis/été"], &["\\Flagged"]),
@@ -89,14 +70,7 @@ fn a_message_read_over_imap_is_the_one_the_api_reads() {
         ),
         date: Some("Thu, 1 Oct 2026 10:00:00 +0000".to_owned()),
     };
-    let imap = message_of(
-        read,
-        GmailFolder::All,
-        &categories,
-        &ids(),
-        &NamedLabels::default(),
-    )
-    .unwrap();
+    let imap = message_of(read, GmailFolder::All, &ids(), &NamedLabels::default()).unwrap();
 
     assert_eq!(imap.id, api.id);
     assert_eq!(imap.thread, api.thread);
@@ -106,11 +80,10 @@ fn a_message_read_over_imap_is_the_one_the_api_reads() {
 }
 
 #[test]
-fn an_archived_uncategorised_message_lands_in_all_mail_as_on_the_api() {
+fn an_archived_message_lands_in_all_mail_as_on_the_api() {
     let change = state_change_of(
         &state(&[], &["\\Seen"]),
         GmailFolder::All,
-        &Categories::default(),
         &ids(),
         &NamedLabels::default(),
     )

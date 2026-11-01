@@ -98,11 +98,17 @@ Four `SyncScope` variants (`engine-core/src/sync/scope.rs`) mirror the shape:
 
 Gmail labels drive all three of the message's independent axes (`modeling.md`):
 
-- **Membership** = a message's `labelIds`, minus the keyword-only labels. Gmail is
-  **multi-membership** (a message is in `INBOX` *and* `SENT` *and* a custom label at
+- **Membership** = a message's `labelIds`, minus the keyword-only and the unfiled labels.
+  Gmail is **multi-membership** (a message is in `INBOX` *and* `SENT` *and* a custom label at
   once), exactly the shape `engine-core` was built for. A message with no place label (an
-  archived, uncategorized message) falls back to a **synthetic `ALL_MAIL` mailbox** so
-  the non-empty `Memberships` invariant holds; the label list emits that mailbox.
+  archived message) falls back to a **synthetic `ALL_MAIL` mailbox** so the non-empty
+  `Memberships` invariant holds; the label list emits that mailbox.
+- **Unfiled labels** (`normalize::is_unfiled_label`) mark a message without filing it: the
+  inbox categories (`CATEGORY_*`), `CHAT`, and the superstars (`YELLOW_STAR`, `RED_BANG`, …).
+  They are **excluded** from membership and **never emitted as mailboxes**, and they carry no
+  state either. A message in an inbox tab still holds `INBOX`, so it is in the Inbox; one
+  archived from a tab keeps its category and is in All Mail, as Gmail shows it. `IMPORTANT`
+  is not one: it has a role.
 - **Keywords** = `UNREAD`/`STARRED` are *state*, not a place: `$seen` is the **absence**
   of `UNREAD` (an inversion — setting `$seen` *removes* `UNREAD`), `STARRED` → `$flagged`,
   and `DRAFT` sets `$draft` (while also being the Drafts place). Keyword-only labels are
@@ -121,8 +127,8 @@ Gmail labels drive all three of the message's independent axes (`modeling.md`):
   folder pane that opens nothing. `A/B/C` with an `A` but no `A/B` therefore sits under `A`,
   keeping `B/C` as its own name.
 - **Roles** (label list): `INBOX`→Inbox, `SENT`→Sent, `DRAFT`→Drafts, `TRASH`→Trash,
-  `SPAM`→Junk, `IMPORTANT`→Important, plus the synthetic All-Mail→All; category/chat/
-  custom labels are roleless mailboxes.
+  `SPAM`→Junk, `IMPORTANT`→Important, plus the synthetic All-Mail→All; a user's label is a
+  roleless mailbox.
 
 - **A label standing for a keyword** is neither. Gmail stores no free-form keyword, so a host
   that wants one kept registers a `KeywordName` (`GmailProvider::with_keyword_names`): the name
@@ -234,8 +240,8 @@ per user per minute, about 270 messages a minute, and IMAP bills nothing per mes
   would list (a system label from its backslash name, a user label from its name through
   `labels.list`, `UNREAD` and `STARRED` from the flags, `SPAM` and `TRASH` from the folder) and
   hands them to `memberships_of` and `keywords_from_labels`, so a label means one thing in both
-  modes. IMAP does not show the inbox categories as labels; a pass finds them with one
-  `X-GM-RAW "category:…"` search each.
+  modes. IMAP does not show the inbox categories as labels, and need not: they are unfiled
+  labels, which the API pass drops as well.
 - **Cursor and delta.** The cursor is `imap;a=…;s=…;t=…`, each folder's validity, `UIDNEXT`,
   mod-sequence and count. A cursor of the other mode starts this one afresh. A delta reads
   what arrived (UID at or above the last `UIDNEXT`) and what changed (`CHANGEDSINCE`, CONDSTORE).
@@ -257,8 +263,8 @@ per user per minute, about 270 messages a minute, and IMAP bills nothing per mes
   honours the neutral "ends up in exactly the destination" contract (matching JMAP's
   `mailboxIds` replacement): because Gmail is multi-membership and `modify` takes deltas,
   the current place labels are fetched (`format=minimal`) and all bar the destination, the
-  keyword-state labels, and the system labels `modify` cannot touch (`SENT`/`DRAFT`/`CHAT`)
-  are removed while the destination is added. A `MoveTo` to `TRASH` uses `messages.trash`.
+  keyword-state labels, the unfiled labels, and the system labels `modify` cannot touch
+  (`SENT`/`DRAFT`/`CHAT`) are removed while the destination is added. A `MoveTo` to `TRASH` uses `messages.trash`.
   **A `MoveTo` to the synthetic `ALL_MAIL` is the archive, and adds no label at all**:
   Gmail has no Archive place — archiving *is* the absence of `INBOX` — and `ALL_MAIL` is an
   id this adapter reserves for the mailbox it synthesizes (`normalize::ALL_MAIL_ID`), so

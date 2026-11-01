@@ -96,4 +96,7 @@ pub use store::Store;
 ///   re-projects it.
 /// - `9`: a detected meeting takes the fullest link any place writes for it, so a location's bare
 ///   Zoom link gives way to the description's one with its passcode.
-pub const NORMALIZER_VERSION: u32 = 9;
+/// - `10`: a Gmail message's inbox category (`CATEGORY_*`), `CHAT` and superstar labels are no
+///   longer memberships, nor mailboxes in the label list. The label list drops them on its next
+///   read; a stored message keeps them as places until the re-snapshot re-reads it.
+pub const NORMALIZER_VERSION: u32 = 10;

@@ -26,7 +26,6 @@ struct Held {
     gmail_id: u64,
     labels: Vec<&'static str>,
     flags: Vec<&'static str>,
-    category: Option<&'static str>,
     modseq: u64,
 }
 
@@ -133,17 +132,14 @@ impl ImapMail for FakeGmail {
         _validity: u32,
         query: &GmailQuery,
     ) -> ProviderResult<Vec<u32>> {
+        // Gmail's own search (`X-GM-RAW`) is what found the inbox categories, which the pass no
+        // longer reads.
+        assert_eq!(query.raw, None, "the pass asks Gmail's search nothing");
         Ok(self.with(folder, |f| {
             f.messages
                 .iter()
                 .filter(|(uid, _)| query.uids.as_ref().is_none_or(|uids| uids.contains(uid)))
                 .filter(|(uid, _)| query.from_uid.is_none_or(|from| **uid >= from))
-                .filter(|(_, held)| {
-                    query.raw.as_deref().is_none_or(|raw| {
-                        held.category
-                            .is_some_and(|c| raw == format!("category:{c}"))
-                    })
-                })
                 .map(|(uid, _)| *uid)
                 .collect()
         }))
@@ -204,12 +200,11 @@ impl ImapMail for FakeGmail {
     }
 }
 
-fn held(gmail_id: u64, labels: Vec<&'static str>, category: Option<&'static str>) -> Held {
+fn held(gmail_id: u64, labels: Vec<&'static str>) -> Held {
     Held {
         gmail_id,
         labels,
         flags: Vec::new(),
-        category,
         modseq: 0,
     }
 }
@@ -244,12 +239,9 @@ fn places(message: &Message) -> Vec<&str> {
 /// An account with one message in each folder, and the first pass's chunks.
 async fn first_sync() -> (FakeGmail, GmailProvider, Vec<EmailChunk>) {
     let gmail = FakeGmail::new();
-    gmail.deliver(
-        GmailFolder::All,
-        held(0xa1, vec!["\\Inbox", "Work"], Some("social")),
-    );
-    gmail.deliver(GmailFolder::Spam, held(0xb2, vec![], None));
-    gmail.deliver(GmailFolder::Trash, held(0xc3, vec!["\\Important"], None));
+    gmail.deliver(GmailFolder::All, held(0xa1, vec!["\\Inbox", "Work"]));
+    gmail.deliver(GmailFolder::Spam, held(0xb2, vec![]));
+    gmail.deliver(GmailFolder::Trash, held(0xc3, vec!["\\Important"]));
     let provider = provider(&gmail);
     let chunks = pass(&provider, None).await;
     (gmail, provider, chunks)
@@ -266,10 +258,7 @@ async fn a_first_sync_reads_all_three_folders_as_one_reconcile() {
         .flat_map(|c| &c.changed)
         .map(|m| (m.id.key().as_str(), m))
         .collect();
-    assert_eq!(
-        places(messages["a1"]),
-        ["CATEGORY_SOCIAL", "INBOX", "Label_7"]
-    );
+    assert_eq!(places(messages["a1"]), ["INBOX", "Label_7"]);
     assert_eq!(places(messages["b2"]), ["SPAM"]);
     assert_eq!(places(messages["c3"]), ["IMPORTANT", "TRASH"]);
     let present: Vec<&str> = chunks
@@ -285,7 +274,7 @@ async fn arrivals_and_changes_are_an_additive_delta() {
     let (gmail, provider, chunks) = first_sync().await;
     let cursor = last_cursor(&chunks);
     gmail.mark_read(1);
-    gmail.deliver(GmailFolder::All, held(0xd4, vec!["\\Inbox"], None));
+    gmail.deliver(GmailFolder::All, held(0xd4, vec!["\\Inbox"]));
 
     let delta = pass(&provider, Some(&cursor)).await;
     assert!(delta.iter().all(|c| c.mode == PassMode::Additive));

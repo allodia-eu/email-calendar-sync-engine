@@ -22,7 +22,7 @@ use provider_imap::{GmailFolder, GmailFolderState, GmailQuery};
 
 use crate::{
     imap_cursor::{FolderMark, ImapCursor, index},
-    imap_labels::{CATEGORIES, Categories, LabelIds, key_of, message_of, state_change_of},
+    imap_labels::{LabelIds, key_of, message_of, state_change_of},
     imap_mail::ImapMail,
     named_labels::{Labels, NamedLabels},
     transport::GoogleClient,
@@ -62,16 +62,13 @@ pub(crate) fn stream<'a>(
             None => {
                 let mut wanted = Vec::new();
                 for (folder, state) in opened(&now) {
-                    let (uids, categories) = reading.window_and_categories(folder, state).await?;
-                    wanted.push((folder, state, uids, categories));
+                    wanted.push((folder, state, reading.window_of(folder, state).await?));
                 }
-                let total = Some(wanted.iter().map(|(_, _, uids, _)| uids.len()).sum());
-                for (folder, state, uids, categories) in &wanted {
+                let total = Some(wanted.iter().map(|(_, _, uids)| uids.len()).sum());
+                for (folder, state, uids) in &wanted {
                     let reads: Vec<_> = uids
                         .rchunks(BATCH)
-                        .map(|batch| {
-                            reading.messages(*folder, state.uid_validity, batch, categories)
-                        })
+                        .map(|batch| reading.messages(*folder, state.uid_validity, batch))
                         .collect();
                     let mut reads = stream::iter(reads).buffered(BATCHES_IN_FLIGHT);
                     while let Some(messages) = reads.next().await {
@@ -115,13 +112,9 @@ pub(crate) fn stream<'a>(
                     } else {
                         Vec::new()
                     };
-                    let involved: Vec<u32> =
-                        arrivals.iter().copied().chain(states.iter().map(|s| s.uid)).collect();
-                    let categories = reading.categories(folder, validity, Some(involved)).await?;
-                    let arrived = reading.messages(folder, validity, &arrivals, &categories).await?;
-                    changed.extend(arrived);
+                    changed.extend(reading.messages(folder, validity, &arrivals).await?);
                     for state in &states {
-                        patched.push(state_change_of(state, folder, &categories, &ids, &named)?);
+                        patched.push(state_change_of(state, folder, &ids, &named)?);
                     }
                 }
                 if lost {
@@ -161,63 +154,26 @@ struct Reading<'a> {
 }
 
 impl Reading<'_> {
-    /// The sync window, narrowed to `uids` when given.
-    fn window(&self, uids: Option<Vec<u32>>) -> GmailQuery {
+    /// The sync window.
+    fn window(&self) -> GmailQuery {
         GmailQuery {
-            uids,
             since: self.since,
             ..GmailQuery::default()
         }
     }
 
-    /// The UIDs in the window and their inbox categories, asked at once; nothing for a folder
-    /// that holds nothing.
-    async fn window_and_categories(
+    /// The UIDs in the window; nothing for a folder that holds nothing.
+    async fn window_of(
         &self,
         folder: GmailFolder,
         state: GmailFolderState,
-    ) -> ProviderResult<(Vec<u32>, Categories)> {
+    ) -> ProviderResult<Vec<u32>> {
         if state.exists == 0 {
-            return Ok((Vec::new(), Categories::default()));
+            return Ok(Vec::new());
         }
-        let validity = state.uid_validity;
-        let window = self.window(None);
-        futures_util::future::try_join(
-            self.imap.search(folder, validity, &window),
-            self.categories(folder, validity, None),
-        )
-        .await
-    }
-
-    /// The inbox category of each message in the window, or of `uids` alone. The five
-    /// searches go out at once.
-    async fn categories(
-        &self,
-        folder: GmailFolder,
-        validity: u32,
-        uids: Option<Vec<u32>>,
-    ) -> ProviderResult<Categories> {
-        let mut categories = Categories::default();
-        if uids.as_ref().is_some_and(Vec::is_empty) {
-            return Ok(categories);
-        }
-        let queries: Vec<GmailQuery> = CATEGORIES
-            .iter()
-            .map(|(_, search)| GmailQuery {
-                raw: Some((*search).to_owned()),
-                ..self.window(uids.clone())
-            })
-            .collect();
-        let found = try_join_all(
-            queries
-                .iter()
-                .map(|query| self.imap.search(folder, validity, query)),
-        )
-        .await?;
-        for ((label, _), uids) in CATEGORIES.iter().zip(found) {
-            categories.add(label, &uids);
-        }
-        Ok(categories)
+        self.imap
+            .search(folder, state.uid_validity, &self.window())
+            .await
     }
 
     /// The messages `uids` name, as the API pass would write them.
@@ -226,7 +182,6 @@ impl Reading<'_> {
         folder: GmailFolder,
         validity: u32,
         uids: &[u32],
-        categories: &Categories,
     ) -> ProviderResult<Vec<Message>> {
         if uids.is_empty() {
             return Ok(Vec::new());
@@ -234,9 +189,7 @@ impl Reading<'_> {
         let read = self.imap.messages(folder, validity, uids).await?;
         let mut messages = Vec::with_capacity(read.len());
         for message in read {
-            messages.push(message_of(
-                message, folder, categories, self.ids, self.named,
-            )?);
+            messages.push(message_of(message, folder, self.ids, self.named)?);
         }
         Ok(messages)
     }
@@ -247,10 +200,7 @@ impl Reading<'_> {
         folder: GmailFolder,
         validity: u32,
     ) -> ProviderResult<Vec<ProviderKey>> {
-        let uids = self
-            .imap
-            .search(folder, validity, &self.window(None))
-            .await?;
+        let uids = self.imap.search(folder, validity, &self.window()).await?;
         let mut keys = Vec::with_capacity(uids.len());
         for (_, gmail_id) in self.imap.ids(folder, validity, &uids).await? {
             keys.push(key_of(gmail_id)?);

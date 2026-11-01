@@ -45,13 +45,42 @@ fn labels_map_system_ids_to_roles_and_keep_custom_labels_roleless() {
     assert_eq!(role("TRASH"), Some(MailboxRole::Trash));
     assert_eq!(role("SPAM"), Some(MailboxRole::Junk));
     assert_eq!(role("IMPORTANT"), Some(MailboxRole::Important));
-    // Custom label + category labels are roleless mailboxes.
+    // A user's label is a roleless mailbox.
     let custom = all.iter().find(|m| m.name == "Fixture Label").unwrap();
     assert_eq!(custom.role, None);
+}
+
+#[test]
+fn the_inbox_categories_and_chat_are_not_mailboxes() {
+    // The captured labels.list carries `CHAT` and all five `CATEGORY_*`: none is a place a user
+    // files mail in, so none reaches the folder list.
+    let all = labels();
     assert!(
-        all.iter()
-            .any(|m| m.id.as_str() == "CATEGORY_UPDATES" && m.role.is_none())
+        !all.iter()
+            .any(|m| m.id.as_str() == "CHAT" || m.id.as_str().starts_with("CATEGORY_")),
+        "{:?}",
+        all.iter().map(|m| m.id.as_str()).collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn a_category_chat_or_superstar_label_is_no_membership() {
+    let filed = message_from_json(&serde_json::json!({
+        "id": "m", "threadId": "t",
+        "labelIds": ["INBOX", "CATEGORY_PROMOTIONS", "YELLOW_STAR", "STARRED", "Label_1"]
+    }))
+    .unwrap();
+    let places: Vec<&str> = filed.mailboxes.iter().map(MailboxId::as_str).collect();
+    assert_eq!(places, ["INBOX", "Label_1"]);
+    assert!(filed.has_system_keyword(SystemKeyword::Flagged));
+
+    // Archived from a tab, it keeps its category and is in All Mail, as Gmail shows it.
+    let archived = message_from_json(&serde_json::json!({
+        "id": "m", "threadId": "t", "labelIds": ["CATEGORY_SOCIAL", "CHAT", "RED_BANG"]
+    }))
+    .unwrap();
+    let places: Vec<&str> = archived.mailboxes.iter().map(MailboxId::as_str).collect();
+    assert_eq!(places, [ALL_MAIL_ID]);
 }
 
 #[test]

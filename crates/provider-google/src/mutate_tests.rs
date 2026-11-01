@@ -137,7 +137,7 @@ async fn move_to_trash_uses_the_trash_endpoint() {
 #[tokio::test]
 async fn move_to_a_label_replaces_membership_leaving_state_intact() {
     // MoveTo fetches the current labels then replaces: add destination, remove every
-    // other place label (but not UNREAD/STARRED/SENT). The message currently has
+    // other place label (but not UNREAD/STARRED/SENT or a category). The message currently has
     // INBOX + UNREAD + STARRED + CATEGORY_UPDATES.
     let client = fake_client(vec![
         (
@@ -199,7 +199,8 @@ async fn move_to_all_mail_archives_by_removing_place_labels_and_adds_none() {
         "archive adds no label: {modify}"
     );
     assert!(!modify.contains(ALL_MAIL_ID), "{modify}");
-    // It leaves the inbox (and its category), but keeps read/flag state.
+    // It leaves the inbox, but keeps read/flag state and its inbox category, which is no place
+    // (`normalize::is_unfiled_label`): Gmail keeps the category on an archived message too.
     let removed: Vec<&str> = body["removeLabelIds"]
         .as_array()
         .unwrap()
@@ -207,7 +208,7 @@ async fn move_to_all_mail_archives_by_removing_place_labels_and_adds_none() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert!(removed.contains(&"INBOX"), "{removed:?}");
-    assert!(removed.contains(&"CATEGORY_UPDATES"), "{removed:?}");
+    assert!(!removed.contains(&"CATEGORY_UPDATES"), "{removed:?}");
     // Read state and the Sent copy survive the archive — `UNREAD`/`SENT` are system-managed
     // (`UNTOUCHABLE_ON_MOVE`), which the captured response confirms: it comes back holding
     // exactly those two and no `INBOX`.
