@@ -96,7 +96,13 @@ pub use store::Store;
 ///   re-projects it.
 /// - `9`: a detected meeting takes the fullest link any place writes for it, so a location's bare
 ///   Zoom link gives way to the description's one with its passcode.
-/// - `10`: a Gmail message's inbox category (`CATEGORY_*`), `CHAT` and superstar labels are no
+/// - `10`: a link written inside another (Google Calendar's `google.com/url?q=` wrapper) is no
+///   meeting of its own, and a Teams link is a meeting only under `/meet/` or `/l/meetup-join/`, so
+///   an add-in's invitation no longer reads as two meetings.
+/// - `11`: the re-sync a version change asks for reaches every calendar. Earlier changes cleared
+///   the cursors and kept each calendar's collection tag, so a CalDAV calendar whose tag had not
+///   moved was skipped as unchanged and kept the projection of whichever version first read it.
+/// - `12`: a Gmail message's inbox category (`CATEGORY_*`), `CHAT` and superstar labels are no
 ///   longer memberships, nor mailboxes in the label list. The label list drops them on its next
 ///   read; a stored message keeps them as places until the re-snapshot re-reads it.
-pub const NORMALIZER_VERSION: u32 = 10;
+pub const NORMALIZER_VERSION: u32 = 12;

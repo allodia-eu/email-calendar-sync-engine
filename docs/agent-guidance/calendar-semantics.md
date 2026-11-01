@@ -636,7 +636,10 @@ sees:
   (`X-GOOGLE-CONFERENCE`, `X-MICROSOFT-SKYPETEAMSMEETINGURL`; iCalendar only, since JMAP
   does not carry them), then a location that is only a web link, or a meeting link in one,
   then a meeting link in the description. In a description only a link `recognise`
-  names counts. Graph's description is its preview, so Graph reads the whole `body`,
+  names counts, and a link written inside another is part of it: Google Calendar wraps
+  every link in an invitation's description as `https://www.google.com/url?q=https://…`, and
+  the copy inside carries Google's parameters. A Teams link is a meeting only under `/meet/`
+  or `/l/meetup-join/`; the meeting's chat (`/l/chat/`) and options page sit beside it. Graph's description is its preview, so Graph reads the whole `body`,
   whose HTML holds links in `href`s. A link joins a meeting already held when
   `ConferenceUri::same_meeting` says so (host and path, escapes compared without case,
   and one query holding every parameter of the other), or when it runs on the service of a
