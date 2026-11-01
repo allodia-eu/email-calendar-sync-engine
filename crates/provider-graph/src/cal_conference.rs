@@ -77,6 +77,29 @@ pub(crate) fn conferences(value: &Value) -> Vec<Conference> {
     }]
 }
 
+/// Whether `location` is the one Exchange adds to an online meeting, named after the
+/// provider in the organiser's language ("Microsoft Teams Meeting", "Microsoft
+/// Teams-vergadering"). It is no place: it has no address and no coordinates, and its name
+/// carries the provider's brand, which no language translates. A location a person typed
+/// has the same shape, so the brand is what tells them apart.
+pub(crate) fn is_placeholder(value: &Value, location: &Value) -> bool {
+    let brand = match opt_str(value, "onlineMeetingProvider") {
+        Some("teamsForBusiness") => "Microsoft Teams",
+        Some("skypeForBusiness" | "skypeForConsumer") => "Skype",
+        _ => return false,
+    };
+    let blank = |field: &str| {
+        location.get(field).is_none_or(|v| {
+            v.as_object()
+                .is_none_or(|o| o.values().all(|v| v.is_null() || v.as_str() == Some("")))
+        })
+    };
+    bool_field(value, "isOnlineMeeting")
+        && blank("address")
+        && blank("coordinates")
+        && opt_str(location, "displayName").is_some_and(|name| name.contains(brand))
+}
+
 /// Every dial-in number `onlineMeeting` names: `tollNumber`, `tollFreeNumbers` and
 /// `phones[].number`, as written.
 fn dial_in_numbers(meeting: &Value) -> Vec<&str> {
@@ -223,6 +246,26 @@ mod tests {
         assert_eq!(conferences(&refused), []);
         let unknown = json!({ "isOnlineMeeting": true, "onlineMeetingProvider": "unknown" });
         assert_eq!(conferences(&unknown), []);
+    }
+
+    #[test]
+    fn only_the_location_exchange_names_after_the_provider_is_a_placeholder() {
+        let teams = json!({ "isOnlineMeeting": true, "onlineMeetingProvider": "teamsForBusiness" });
+        let placeholder = json!({
+            "displayName": "Microsoft Teams Meeting", "locationType": "default",
+            "uniqueId": "Microsoft Teams Meeting", "uniqueIdType": "private",
+            "address": { "street": "", "city": "" }, "coordinates": {}
+        });
+        assert!(is_placeholder(&teams, &placeholder));
+        let typed = json!({ "displayName": "Room 4", "uniqueIdType": "private" });
+        assert!(!is_placeholder(&teams, &typed));
+        let addressed = json!({
+            "displayName": "Microsoft Teams Room 2", "address": { "city": "Amsterdam" }
+        });
+        assert!(!is_placeholder(&teams, &addressed));
+        let offline =
+            json!({ "isOnlineMeeting": false, "onlineMeetingProvider": "teamsForBusiness" });
+        assert!(!is_placeholder(&offline, &placeholder));
     }
 
     #[test]

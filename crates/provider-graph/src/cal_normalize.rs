@@ -19,8 +19,8 @@
 
 use engine_core::{
     calendar::{
-        Calendar, CalendarAccess, Event, EventStatus, FreeBusyStatus, Location, Participant,
-        ParticipantKind, ParticipantRole, ParticipationStatus, Privacy,
+        Calendar, CalendarAccess, DetectionSources, Event, EventStatus, FreeBusyStatus, Location,
+        Participant, ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, add_detected,
     },
     ids::{CalendarId, EventId, Uid},
     membership::Memberships,
@@ -138,6 +138,19 @@ pub(crate) fn event_from_json(value: &Value, calendar: &CalendarId) -> Result<Ev
     event.participants = participants(value);
     event.locations = locations(value);
     event.conferences = cal_conference::conferences(value);
+    // The whole body, not the preview the description falls back to: an HTML body holds
+    // its links in `href`s the preview leaves out.
+    add_detected(
+        &mut event.conferences,
+        &DetectionSources {
+            locations: &event.locations,
+            description: value
+                .get("body")
+                .and_then(|body| opt_str(body, "content"))
+                .or(event.description.as_deref()),
+            ..DetectionSources::default()
+        },
+    );
     event.categories = value
         .get("categories")
         .and_then(Value::as_array)
@@ -288,7 +301,8 @@ fn address(email: &Value) -> Option<(String, Option<String>)> {
     Some((addr.to_owned(), opt_str(email, "name").map(str::to_owned)))
 }
 
-/// The physical `locations` (falling back to the singular `location`).
+/// The physical `locations` (falling back to the singular `location`), without the one
+/// Exchange adds to an online meeting ([`cal_conference::is_placeholder`]).
 fn locations(value: &Value) -> Vec<Location> {
     let array = value.get("locations").and_then(Value::as_array);
     let items: Vec<&Value> = match array {
@@ -297,6 +311,7 @@ fn locations(value: &Value) -> Vec<Location> {
     };
     items
         .into_iter()
+        .filter(|loc| !cal_conference::is_placeholder(value, loc))
         .filter_map(|loc| {
             let name = opt_str(loc, "displayName").filter(|n| !n.is_empty())?;
             let mut location = Location::named(name);

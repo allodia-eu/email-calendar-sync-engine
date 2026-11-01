@@ -15,9 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use engine_core::{
     calendar::{
-        Calendar, Event, EventStatus, FreeBusyStatus, Frequency, Location, NDay, Participant,
-        ParticipantRole, ParticipationStatus, Privacy, Recurrence, RecurrenceBound,
-        RecurrenceOverride, RecurrenceRule, Weekday,
+        Calendar, DetectionSources, Event, EventStatus, FreeBusyStatus, Frequency, Location, NDay,
+        Participant, ParticipantRole, ParticipationStatus, Privacy, Recurrence, RecurrenceBound,
+        RecurrenceOverride, RecurrenceRule, Weekday, add_detected,
     },
     ids::{CalendarId, EventId, Uid},
     membership::Memberships,
@@ -100,6 +100,14 @@ pub(crate) fn event_from_json(value: &Value) -> Result<Event, JmapError> {
     event.participants = parse_participants(value);
     event.locations = parse_locations(value);
     event.conferences = parse_conferences(value);
+    add_detected(
+        &mut event.conferences,
+        &DetectionSources {
+            locations: &event.locations,
+            description: event.description.as_deref(),
+            ..DetectionSources::default()
+        },
+    );
     event.color = opt_str(value, "color").map(str::to_owned);
     event.keywords = string_set(value, "keywords");
     event.categories = string_set(value, "categories");

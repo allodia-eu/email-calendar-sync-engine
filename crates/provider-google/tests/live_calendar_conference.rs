@@ -1,4 +1,5 @@
-//! Gated live check that a Meet conference Google makes reads back as the calendar's own.
+//! Gated live checks that a Meet conference Google makes reads back as the calendar's own,
+//! and that a meeting only written into the location and description is detected there.
 //!
 //! The event is created by direct HTTP with a `conferenceData.createRequest` under
 //! `conferenceDataVersion=1`, because asking the server for a meeting is not something the
@@ -15,7 +16,9 @@ mod common;
 
 use common::*;
 use engine_core::{
-    calendar::{Conference, ConferenceOrigin, ConferenceService, NativeState},
+    calendar::{
+        Conference, ConferenceOrigin, ConferenceService, ConferenceUri, DetectedIn, NativeState,
+    },
     sync::SyncUpdate,
 };
 use engine_provider::Provider;
@@ -105,6 +108,76 @@ async fn live_a_meet_conference_reads_back_as_the_calendars_own() {
         Some(ConferenceService::GoogleMeet)
     );
     assert!(meet.meeting_id.is_some(), "Google names the conference");
+}
+
+#[tokio::test]
+async fn live_a_meeting_only_in_the_description_and_location_is_detected() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_a_meeting_only_in_the_description...: GOOGLE_ACCESS_TOKEN unset");
+        return;
+    };
+    let stamp = time::OffsetDateTime::now_utc().unix_timestamp_nanos();
+    let date = time::OffsetDateTime::now_utc().date() + time::Duration::days(15);
+    let title = format!("PIM live detected conference {stamp}");
+    let created: serde_json::Value = http()
+        .post(format!("{EVENTS}?sendUpdates=none"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "summary": title,
+            "start": { "dateTime": format!("{date}T10:00:00"), "timeZone": "Europe/Amsterdam" },
+            "end": { "dateTime": format!("{date}T10:30:00"), "timeZone": "Europe/Amsterdam" },
+            "location": "https://video.example.com/room-12",
+            "description": "Agenda first.<br><a href=\"https://teams.microsoft.com/meet/123456789?p=abc\">Join the meeting</a>"
+        }))
+        .send()
+        .await
+        .expect("POST events")
+        .error_for_status()
+        .expect("Google stores the event")
+        .json()
+        .await
+        .expect("created json");
+    let id = created["id"].as_str().expect("an event id").to_owned();
+
+    let provider = calendar_provider(token.clone());
+    let conferences = read_back(&provider, &title).await;
+    http()
+        .delete(format!("{EVENTS}/{id}?sendUpdates=none"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("DELETE the fixture event");
+
+    eprintln!("read back: {conferences:#?}");
+    let found: Vec<_> = conferences
+        .iter()
+        .map(|c| {
+            (
+                c.join().map(ConferenceUri::as_str),
+                c.service.clone(),
+                c.origin,
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (
+                Some("https://video.example.com/room-12"),
+                None,
+                ConferenceOrigin::Detected {
+                    place: DetectedIn::Location
+                }
+            ),
+            (
+                Some("https://teams.microsoft.com/meet/123456789?p=abc"),
+                Some(ConferenceService::Teams),
+                ConferenceOrigin::Detected {
+                    place: DetectedIn::Description
+                }
+            ),
+        ]
+    );
 }
 
 /// The conferences of the event titled `title`, as the adapter's sync reads them.

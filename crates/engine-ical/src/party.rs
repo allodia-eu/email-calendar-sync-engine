@@ -76,6 +76,18 @@ pub(crate) fn parse_conferences(vevent: &Component) -> Vec<Conference> {
     group_flat(entries)
 }
 
+/// The meeting URIs of the vendor properties Google's and Microsoft's invitations carry
+/// (`X-GOOGLE-CONFERENCE`, `X-MICROSOFT-SKYPETEAMSMEETINGURL`), for
+/// [`engine_core::calendar::add_detected`]. A value that is not a URI a person can join
+/// through is left out.
+pub(crate) fn vendor_conference_uris(vevent: &Component) -> Vec<ConferenceUri> {
+    ["X-GOOGLE-CONFERENCE", "X-MICROSOFT-SKYPETEAMSMEETINGURL"]
+        .into_iter()
+        .flat_map(|name| vevent.all_properties(name))
+        .filter_map(|line| ConferenceUri::parse(&line.value).ok())
+        .collect()
+}
+
 /// Finds the participant for `line`'s address (creating one), then records its
 /// role and — for an attendee — its participation status and RSVP flag.
 fn add_party(

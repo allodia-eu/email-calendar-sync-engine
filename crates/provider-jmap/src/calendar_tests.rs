@@ -1,4 +1,4 @@
-use engine_core::calendar::{ConferenceUri, RecurrenceSkip};
+use engine_core::calendar::{ConferenceOrigin, ConferenceUri, DetectedIn, RecurrenceSkip};
 use serde_json::json;
 
 use super::*;
@@ -176,6 +176,39 @@ fn a_jscalendar_1_0_participant_still_has_an_address() {
         event.participants.iter().any(|p| p.email.is_none()),
         "a participant reachable only by a non-mail method has no email address, and saying \
          so is better than inventing one"
+    );
+}
+
+#[test]
+fn a_meeting_link_in_a_location_or_the_description_is_detected() {
+    let event = event_from_json(&json!({
+        "id": "e1", "uid": "e1@test.local", "calendarIds": { "c1": true },
+        "start": "2026-06-01T09:00:00", "timeZone": "Europe/Amsterdam", "duration": "PT1H",
+        "locations": { "l": { "@type": "Location", "name": "Zoom: https://zoom.us/j/987" } },
+        "description": "Or by phone. https://zoom.us/j/987?pwd=x and https://meet.google.com/abc-defg-hij"
+    }))
+    .unwrap();
+    let found: Vec<_> = event
+        .conferences
+        .iter()
+        .map(|c| (c.join().map(ConferenceUri::as_str), c.origin))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (
+                Some("https://zoom.us/j/987"),
+                ConferenceOrigin::Detected {
+                    place: DetectedIn::Location
+                }
+            ),
+            (
+                Some("https://meet.google.com/abc-defg-hij"),
+                ConferenceOrigin::Detected {
+                    place: DetectedIn::Description
+                }
+            ),
+        ]
     );
 }
 
