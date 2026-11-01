@@ -165,7 +165,9 @@ Consequences that the orchestrator must not paper over:
   skips the scope without a request; a tag read after the fetch could claim a change the pass
   never saw. A streaming page leaves the recorded tag alone, a cursor written without one
   clears it, and a forgotten scope loses it. A post-write reconcile records none, so the next
-  pass reads the calendar's new tag rather than trusting the old one.
+  pass reads the calendar's new tag rather than trusting the old one. Clearing a cursor (a
+  `NORMALIZER_VERSION` change, `clear_scope_cursor`) clears the tag with it: an unchanged tag
+  says the server's contents have not moved, never that the stored projection is current.
 - **Referential apply order.** Container scopes (mailboxes, calendars, address
   books) are applied before the member scopes that reference them (emails,
   events, contacts). Membership rows resolve against already-applied containers,

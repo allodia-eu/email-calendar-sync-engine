@@ -303,24 +303,27 @@ impl<C: Clock> SqliteStore<C> {
     }
 }
 
-/// Clears every scope's cursor and lease so the next sync re-snapshots from scratch, bumping
-/// each fencing token so a pass still running cannot commit its cursor back over the clear.
+/// Clears every scope's cursor, collection tag and lease so the next sync re-snapshots from
+/// scratch rather than skipping a calendar whose tag has not moved, bumping each fencing token
+/// so a pass still running cannot commit its cursor back over the clear.
 /// Leaves the scope rows (and their stable `scope_key`s) and objects in place — the
 /// re-snapshot overwrites and tombstones them — so no object is orphaned.
 fn clear_sync_cursors(conn: &Connection) -> Result<()> {
     conn.execute(
-        "UPDATE sync_scope SET cursor = NULL, token = token + 1, lease_expiry = NULL",
+        "UPDATE sync_scope
+         SET cursor = NULL, collection_tag = NULL, token = token + 1, lease_expiry = NULL",
         [],
     )
     .map_err(backend)?;
     Ok(())
 }
 
-/// Clears one scope's cursor (by `scope_key`) so the next sync re-snapshots it, and fences
-/// off the pass holding it (see [`SqliteStore::clear_scope_cursor`]).
+/// Clears one scope's cursor and collection tag (by `scope_key`) so the next sync re-snapshots
+/// it, and fences off the pass holding it (see [`SqliteStore::clear_scope_cursor`]).
 fn clear_one_cursor(conn: &Connection, scope_key: &str) -> Result<()> {
     conn.execute(
-        "UPDATE sync_scope SET cursor = NULL, token = token + 1, lease_expiry = NULL
+        "UPDATE sync_scope
+         SET cursor = NULL, collection_tag = NULL, token = token + 1, lease_expiry = NULL
          WHERE scope_key = ?1",
         [scope_key],
     )

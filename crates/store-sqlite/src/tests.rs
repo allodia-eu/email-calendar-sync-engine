@@ -25,7 +25,8 @@ fn a_normalizer_version_change_clears_sync_cursors() {
     // A synced scope carries a cursor; reconciling at the same version keeps it.
     super::reconcile_normalizer_version(&conn, 1).unwrap();
     conn.execute(
-        "INSERT INTO sync_scope (scope_key, account, token, cursor) VALUES ('s', 'a', 1, 'c1')",
+        "INSERT INTO sync_scope (scope_key, account, token, cursor, collection_tag)
+         VALUES ('s', 'a', 1, 'c1', 't1')",
         [],
     )
     .unwrap();
@@ -43,16 +44,19 @@ fn a_normalizer_version_change_clears_sync_cursors() {
         "unchanged version keeps cursors"
     );
 
-    // A bump clears the cursor, so the next sync re-snapshots + re-normalizes.
+    // A bump clears the cursor, so the next sync re-snapshots + re-normalizes, and the
+    // collection tag with it: a calendar whose tag has not moved is otherwise skipped as
+    // unchanged, and keeps the old projection.
     super::reconcile_normalizer_version(&conn, 2).unwrap();
-    let cursor: Option<String> = conn
+    let (cursor, tag): (Option<String>, Option<String>) = conn
         .query_row(
-            "SELECT cursor FROM sync_scope WHERE scope_key = 's'",
+            "SELECT cursor, collection_tag FROM sync_scope WHERE scope_key = 's'",
             [],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
     assert_eq!(cursor, None, "a version bump clears cursors");
+    assert_eq!(tag, None, "a version bump clears collection tags");
 }
 
 /// A scope mid-sync: a cursor plus a live lease under fencing token 5.
