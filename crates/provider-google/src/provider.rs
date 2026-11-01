@@ -27,8 +27,7 @@ use provider_imap::GmailMail;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    fetch, imap_mail::ImapMail, mutate, named_labels::Labels, submit,
-    transport::GoogleClient,
+    fetch, imap_mail::ImapMail, mutate, named_labels::Labels, submit, transport::GoogleClient,
 };
 
 /// The label list is re-discovered as a snapshot each pass (`GET /users/me/labels`), so
@@ -186,8 +185,7 @@ impl Provider for GmailProvider {
                 // leaves the account's fifth connection to the sync pass.
                 Some(_) => ConnectionInfo::new(self.capabilities)
                     .with_concurrent_fetches(IMAP_CONCURRENT_READS)
-                    .with_sources_per_request(IMAP_SOURCES_PER_REQUEST)
-                    .with_daily_download_limit(IMAP_DAILY_DOWNLOAD),
+                    .with_sources_per_request(IMAP_SOURCES_PER_REQUEST),
                 None => ConnectionInfo::new(self.capabilities)
                     .with_concurrent_fetches(crate::fetch::MAX_CONCURRENT_GETS),
             }
@@ -290,7 +288,8 @@ impl Provider for GmailProvider {
             return engine_provider::one_at_a_time(self, account, messages);
         };
         Box::pin(async_stream::stream! {
-            let ids: Vec<Option<u64>> = messages.iter().map(|m| gmail_id(m.id.key()).ok()).collect();
+            let ids: Vec<Option<u64>> =
+                messages.iter().map(|m| gmail_id(m.id.key()).ok()).collect();
             let wanted: Vec<u64> = ids.iter().flatten().copied().collect();
             match imap.sources(&wanted).await {
                 Ok(mut found) => {
@@ -304,7 +303,8 @@ impl Provider for GmailProvider {
                 }
                 Err(err) => {
                     for index in 0..messages.len() {
-                        yield (index, Err(engine_provider::ProviderError::new(err.class(), err.detail())));
+                        let err = engine_provider::ProviderError::new(err.class(), err.detail());
+                        yield (index, Err(err));
                     }
                 }
             }
@@ -388,19 +388,16 @@ impl CalendarWrites for GmailProvider {}
 /// Body reads in flight at once over IMAP.
 const IMAP_CONCURRENT_READS: usize = 4;
 
-/// What Gmail lets an account download over IMAP in a day, across all its clients: 2,500 MB
-/// (<https://knowledge.workspace.google.com/admin/gmail/gmail-bandwidth-limits>). Passing it
-/// suspends the account's IMAP access for up to a day. Read as decimal megabytes, the smaller
-/// reading.
-const IMAP_DAILY_DOWNLOAD: u64 = 2_500 * 1_000_000;
-
 /// Bodies one IMAP read carries (`provider_imap::GmailMail::sources` searches 50 ids a command).
 const IMAP_SOURCES_PER_REQUEST: usize = 50;
 
 /// The Gmail id a message key names: the key is that id in hex.
 fn gmail_id(key: &ProviderKey) -> ProviderResult<u64> {
     u64::from_str_radix(key.as_str(), 16).map_err(|_| {
-        engine_provider::ProviderError::invalid_state(format!("not a Gmail message id: {}", key.as_str()))
+        engine_provider::ProviderError::invalid_state(format!(
+            "not a Gmail message id: {}",
+            key.as_str()
+        ))
     })
 }
 

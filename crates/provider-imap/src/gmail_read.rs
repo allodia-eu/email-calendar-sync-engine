@@ -34,7 +34,10 @@ const FETCH_BATCH: usize = 500;
 const SOURCE_BATCH: usize = 50;
 
 /// `SELECT (CONDSTORE)` of `name`, reporting the counters a pass plans from.
-pub(crate) async fn open<S>(connection: &mut Connection<S>, name: &str) -> ImapResult<GmailFolderState>
+pub(crate) async fn open<S>(
+    connection: &mut Connection<S>,
+    name: &str,
+) -> ImapResult<GmailFolderState>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
@@ -71,7 +74,10 @@ where
 }
 
 /// `UID SEARCH` for `query` in the open folder.
-pub(crate) async fn search<S>(connection: &mut Connection<S>, query: &GmailQuery) -> ImapResult<Vec<u32>>
+pub(crate) async fn search<S>(
+    connection: &mut Connection<S>,
+    query: &GmailQuery,
+) -> ImapResult<Vec<u32>>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
@@ -109,13 +115,23 @@ where
     let items = format!("{FETCH_ITEMS} {GMAIL_ITEMS}");
     let utf7 = connection.negotiated.names_are_modified_utf7();
     let mut out = Vec::with_capacity(uids.len());
-    for set in batches(uids, connection.negotiated.within_message_limit(FETCH_BATCH)) {
+    for set in batches(
+        uids,
+        connection.negotiated.within_message_limit(FETCH_BATCH),
+    ) {
         let mut rows = connection.uid_fetch(&set, &items).await?;
         connection.settle_attachments(&mut rows).await?;
         out.extend(rows.into_iter().filter_map(|row| {
             let message = message_from_fetch(&row, folder, validity);
-            let date = row.envelope.as_ref().and_then(|envelope| envelope.date.clone());
-            state_of(row, utf7).map(|state| GmailMessage { state, message, date })
+            let date = row
+                .envelope
+                .as_ref()
+                .and_then(|envelope| envelope.date.clone());
+            state_of(row, utf7).map(|state| GmailMessage {
+                state,
+                message,
+                date,
+            })
         }));
     }
     Ok(out)
@@ -135,7 +151,9 @@ where
     }
     let utf7 = connection.negotiated.names_are_modified_utf7();
     let set = format!("1:{}", below_uid - 1);
-    let rows = connection.uid_fetch_changed(&set, STATE_ITEMS, modseq).await?;
+    let rows = connection
+        .uid_fetch_changed(&set, STATE_ITEMS, modseq)
+        .await?;
     // `1:n` names the highest UID even when every UID is above `n` (RFC 9051 §6.4.8).
     Ok(rows
         .into_iter()
@@ -145,7 +163,10 @@ where
 }
 
 /// The Gmail id of each of `uids` in the open folder, as `(uid, id)`.
-pub(crate) async fn ids<S>(connection: &mut Connection<S>, uids: &[u32]) -> ImapResult<Vec<(u32, u64)>>
+pub(crate) async fn ids<S>(
+    connection: &mut Connection<S>,
+    uids: &[u32],
+) -> ImapResult<Vec<(u32, u64)>>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
@@ -162,7 +183,10 @@ where
 
 /// The raw source of each of `ids` the open folder holds, as `(id, bytes)`; an id the folder
 /// does not hold is left out.
-pub(crate) async fn sources<S>(connection: &mut Connection<S>, ids: &[u64]) -> ImapResult<Vec<(u64, Vec<u8>)>>
+pub(crate) async fn sources<S>(
+    connection: &mut Connection<S>,
+    ids: &[u64],
+) -> ImapResult<Vec<(u64, Vec<u8>)>>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
@@ -179,8 +203,14 @@ where
             .into_iter()
             .filter_map(|row| row.gmail.message.map(|id| (row.uid, id)))
             .collect();
-        let response = connection.command(&format!("UID FETCH {set} (UID BODY.PEEK[])")).await?;
-        for (uid, bytes) in response.untagged().iter().filter_map(|line| parse_any_fetch_body(line)) {
+        let response = connection
+            .command(&format!("UID FETCH {set} (UID BODY.PEEK[])"))
+            .await?;
+        for (uid, bytes) in response
+            .untagged()
+            .iter()
+            .filter_map(|line| parse_any_fetch_body(line))
+        {
             if let Some((_, id)) = by_uid.iter().find(|(known, _)| *known == uid) {
                 out.push((*id, bytes));
             }
@@ -229,7 +259,11 @@ fn state_of(row: FetchRow, modified_utf7: bool) -> Option<GmailState> {
 fn batches(uids: &[u32], limit: usize) -> Vec<String> {
     let mut ordered = sorted(uids);
     ordered.reverse();
-    let size = if limit == 0 { ordered.len().max(1) } else { limit };
+    let size = if limit == 0 {
+        ordered.len().max(1)
+    } else {
+        limit
+    };
     ordered
         .chunks(size)
         .map(|chunk| {

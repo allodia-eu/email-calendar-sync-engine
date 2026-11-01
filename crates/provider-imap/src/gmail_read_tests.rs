@@ -35,7 +35,12 @@ async fn open_reports_the_counters_a_pass_plans_from() {
     let state = open(&mut connection, "[Gmail]/All Mail").await.unwrap();
     assert_eq!(
         state,
-        GmailFolderState { uid_validity: 11, uid_next: 6871, highest_modseq: 234_042, exists: 855 }
+        GmailFolderState {
+            uid_validity: 11,
+            uid_next: 6871,
+            highest_modseq: 234_042,
+            exists: 855
+        }
     );
     assert!(written(&recorded).contains("a2 SELECT \"[Gmail]/All Mail\" (CONDSTORE)"));
 }
@@ -43,7 +48,9 @@ async fn open_reports_the_counters_a_pass_plans_from() {
 #[tokio::test]
 async fn a_renumbered_folder_asks_for_a_fresh_sync_rather_than_misfiling() {
     let (mut connection, _) = logged_in(&[SELECT_ALL]).await;
-    let err = ensure_open(&mut connection, "[Gmail]/All Mail", 10).await.unwrap_err();
+    let err = ensure_open(&mut connection, "[Gmail]/All Mail", 10)
+        .await
+        .unwrap_err();
     assert_eq!(err.class(), FailureClass::NeedsResync);
 }
 
@@ -51,8 +58,12 @@ async fn a_renumbered_folder_asks_for_a_fresh_sync_rather_than_misfiling() {
 async fn an_open_folder_at_the_same_validity_is_not_opened_again() {
     let (mut connection, recorded) = logged_in(&[SELECT_ALL, "* SEARCH 4\r\na3 OK done\r\n"]).await;
     open(&mut connection, "[Gmail]/All Mail").await.unwrap();
-    ensure_open(&mut connection, "[Gmail]/All Mail", 11).await.unwrap();
-    search(&mut connection, &GmailQuery::default()).await.unwrap();
+    ensure_open(&mut connection, "[Gmail]/All Mail", 11)
+        .await
+        .unwrap();
+    search(&mut connection, &GmailQuery::default())
+        .await
+        .unwrap();
     let sent = written(&recorded);
     assert_eq!(sent.matches("SELECT").count(), 1, "{sent}");
     assert!(sent.contains("a3 UID SEARCH ALL"), "{sent}");
@@ -60,7 +71,8 @@ async fn an_open_folder_at_the_same_validity_is_not_opened_again() {
 
 #[tokio::test]
 async fn a_search_joins_every_criterion_it_was_given() {
-    let (mut connection, recorded) = logged_in(&["* SEARCH 7 3\r\na2 OK SEARCH completed\r\n"]).await;
+    let (mut connection, recorded) =
+        logged_in(&["* SEARCH 7 3\r\na2 OK SEARCH completed\r\n"]).await;
     let query = GmailQuery {
         uids: Some(vec![3, 1, 2, 7]),
         since: time::Date::from_calendar_date(2026, time::Month::October, 1).ok(),
@@ -68,7 +80,8 @@ async fn a_search_joins_every_criterion_it_was_given() {
     };
     assert_eq!(search(&mut connection, &query).await.unwrap(), vec![3, 7]);
     assert!(
-        written(&recorded).contains(r#"a2 UID SEARCH UID 1:3,7 SINCE 1-Oct-2026 X-GM-RAW "category:social""#),
+        written(&recorded)
+            .contains(r#"a2 UID SEARCH UID 1:3,7 SINCE 1-Oct-2026 X-GM-RAW "category:social""#),
         "{}",
         written(&recorded)
     );
@@ -77,8 +90,14 @@ async fn a_search_joins_every_criterion_it_was_given() {
 #[tokio::test]
 async fn a_search_within_no_uids_asks_the_server_nothing() {
     let (mut connection, recorded) = logged_in(&[]).await;
-    let query = GmailQuery { uids: Some(Vec::new()), ..GmailQuery::default() };
-    assert!(search(&mut connection, &query).await.unwrap().is_empty());
+    let query = GmailQuery {
+        uids: Some(Vec::new()),
+        ..GmailQuery::default()
+    };
+    assert_eq!(
+        search(&mut connection, &query).await.unwrap(),
+        Vec::<u32>::new()
+    );
     assert!(!written(&recorded).contains("SEARCH"));
 }
 
@@ -98,33 +117,57 @@ async fn metadata_carries_the_gmail_ids_and_the_labels_decoded() {
         headers
     );
     let (mut connection, recorded) = logged_in(&[&row]).await;
-    let got = messages(&mut connection, &all_mail(), 11, &[5002]).await.unwrap();
+    let got = messages(&mut connection, &all_mail(), 11, &[5002])
+        .await
+        .unwrap();
     let sent = written(&recorded);
-    assert!(sent.contains("X-GM-MSGID X-GM-THRID X-GM-LABELS)"), "{sent}");
+    assert!(
+        sent.contains("X-GM-MSGID X-GM-THRID X-GM-LABELS)"),
+        "{sent}"
+    );
     assert_eq!(got.len(), 1);
     let state = &got[0].state;
-    assert_eq!((state.uid, state.gmail_id, state.thread_id), (5002, 1_402_140_321_003_522_133, 1_402_140_321_003_522_132));
-    assert_eq!(state.labels, vec!["\\Inbox".to_owned(), "Reis/été".to_owned()]);
+    assert_eq!(
+        (state.uid, state.gmail_id, state.thread_id),
+        (5002, 1_402_140_321_003_522_133, 1_402_140_321_003_522_132)
+    );
+    assert_eq!(
+        state.labels,
+        vec!["\\Inbox".to_owned(), "Reis/été".to_owned()]
+    );
     assert_eq!(state.flags, vec!["\\Seen".to_owned()]);
     assert_eq!(got[0].message.envelope.subject.as_deref(), Some("Hi"));
     assert_eq!(got[0].message.size, Some(420));
-    assert_eq!(got[0].date.as_deref(), Some("Thu, 1 Oct 2026 10:00:00 +0000"));
+    assert_eq!(
+        got[0].date.as_deref(),
+        Some("Thu, 1 Oct 2026 10:00:00 +0000")
+    );
 }
 
 #[tokio::test]
 async fn changes_ask_condstore_alone_and_drop_the_arrivals_above_the_line() {
     let reply = concat!(
-        r#"* 3 FETCH (UID 40 FLAGS () X-GM-MSGID 9 X-GM-THRID 9 X-GM-LABELS ("\\Inbox") MODSEQ (51))"#, "\r\n",
-        r#"* 4 FETCH (UID 99 FLAGS () X-GM-MSGID 10 X-GM-THRID 10 X-GM-LABELS () MODSEQ (52))"#, "\r\n",
+        r#"* 3 FETCH (UID 40 FLAGS () X-GM-MSGID 9 X-GM-THRID 9 X-GM-LABELS ("\\Inbox") MODSEQ (51))"#,
+        "\r\n",
+        r#"* 4 FETCH (UID 99 FLAGS () X-GM-MSGID 10 X-GM-THRID 10 X-GM-LABELS () MODSEQ (52))"#,
+        "\r\n",
         "a2 OK Success\r\n",
     );
     let (mut connection, recorded) = logged_in(&[reply]).await;
     let got = changed(&mut connection, 50, 50).await.unwrap();
     let sent = written(&recorded);
-    assert!(sent.contains("a2 UID FETCH 1:49 (UID FLAGS X-GM-MSGID X-GM-THRID X-GM-LABELS) (CHANGEDSINCE 50)\r\n"), "{sent}");
+    assert!(
+        sent.contains(
+            "a2 UID FETCH 1:49 (UID FLAGS X-GM-MSGID X-GM-THRID X-GM-LABELS) (CHANGEDSINCE 50)\r\n"
+        ),
+        "{sent}"
+    );
     assert!(!sent.contains("VANISHED"), "{sent}");
     assert_eq!(got.len(), 1);
-    assert_eq!((got[0].uid, got[0].gmail_id, got[0].modseq), (40, 9, Some(51)));
+    assert_eq!(
+        (got[0].uid, got[0].gmail_id, got[0].modseq),
+        (40, 9, Some(51))
+    );
 }
 
 #[tokio::test]
@@ -132,15 +175,25 @@ async fn sources_find_messages_by_gmail_id_and_return_each_under_its_id() {
     let body = "Subject: x\r\n\r\nbody\r\n";
     let replies = [
         "* SEARCH 8 5\r\na2 OK done\r\n".to_owned(),
-        "* 1 FETCH (UID 5 X-GM-MSGID 300)\r\n* 2 FETCH (UID 8 X-GM-MSGID 100)\r\na3 OK done\r\n".to_owned(),
-        format!("* 2 FETCH (UID 8 BODY[] {{{}}}\r\n{body})\r\na4 OK done\r\n", body.len()),
+        "* 1 FETCH (UID 5 X-GM-MSGID 300)\r\n* 2 FETCH (UID 8 X-GM-MSGID 100)\r\na3 OK done\r\n"
+            .to_owned(),
+        format!(
+            "* 2 FETCH (UID 8 BODY[] {{{}}}\r\n{body})\r\na4 OK done\r\n",
+            body.len()
+        ),
     ];
     let replies: Vec<&str> = replies.iter().map(String::as_str).collect();
     let (mut connection, recorded) = logged_in(&replies).await;
     let got = sources(&mut connection, &[100, 200, 300]).await.unwrap();
     let sent = written(&recorded);
-    assert!(sent.contains("a2 UID SEARCH OR OR X-GM-MSGID 100 X-GM-MSGID 200 X-GM-MSGID 300\r\n"), "{sent}");
-    assert!(sent.contains("a4 UID FETCH 5,8 (UID BODY.PEEK[])"), "{sent}");
+    assert!(
+        sent.contains("a2 UID SEARCH OR OR X-GM-MSGID 100 X-GM-MSGID 200 X-GM-MSGID 300\r\n"),
+        "{sent}"
+    );
+    assert!(
+        sent.contains("a4 UID FETCH 5,8 (UID BODY.PEEK[])"),
+        "{sent}"
+    );
     assert_eq!(got, vec![(100, body.as_bytes().to_vec())]);
 }
 

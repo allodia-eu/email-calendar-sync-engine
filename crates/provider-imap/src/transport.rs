@@ -270,7 +270,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         modseq: u64,
     ) -> ImapResult<Vec<FetchRow>> {
         let response = self
-            .command(&format!("UID FETCH {set} ({items}) (CHANGEDSINCE {modseq})"))
+            .command(&format!(
+                "UID FETCH {set} ({items}) (CHANGEDSINCE {modseq})"
+            ))
             .await?;
         parse::parse_fetch(&response.untagged)
     }

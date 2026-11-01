@@ -17,7 +17,13 @@ fn reads_gmail_ids_labels_and_modseq_in_any_order() {
     assert_eq!(rows[0].modseq, Some(234_381));
     assert_eq!(
         rows[0].gmail.labels.as_deref(),
-        Some(&["\\Important".to_owned(), "Label one".to_owned(), "plain".to_owned()][..])
+        Some(
+            &[
+                "\\Important".to_owned(),
+                "Label one".to_owned(),
+                "plain".to_owned()
+            ][..]
+        )
     );
     assert_eq!(rows[0].gmail.message, None);
     assert_eq!(rows[1].gmail.message, Some(1_402_140_321_003_522_133));

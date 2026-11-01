@@ -8,12 +8,11 @@
 //!
 //! IMAP states a message's labels in three places, and none of them is the API's ids:
 //!
-//! - `X-GM-LABELS` names a system label with a backslash (`\Inbox`) and a label of the user's
-//!   by its name, which the API's `labels.list` maps to its id.
-//! - The flags carry read and starred: no `\Seen` is the API's `UNREAD`, `\Flagged` its
-//!   `STARRED`.
-//! - Spam and Trash are folders of their own, outside All Mail, so the folder a message was
-//!   read from is its `SPAM` or `TRASH` label.
+//! - `X-GM-LABELS` names a system label with a backslash (`\Inbox`) and a label of the user's by
+//!   its name, which the API's `labels.list` maps to its id.
+//! - The flags carry read and starred: no `\Seen` is the API's `UNREAD`, `\Flagged` its `STARRED`.
+//! - Spam and Trash are folders of their own, outside All Mail, so the folder a message was read
+//!   from is its `SPAM` or `TRASH` label.
 //!
 //! The inbox categories are in none of them: IMAP does not show them as labels. Gmail's own
 //! search does find them (`X-GM-RAW "category:social"`), so a pass asks once per category and
@@ -67,14 +66,23 @@ impl LabelIds {
     /// Reads the account's labels (1 quota unit).
     pub(crate) async fn read(client: &GoogleClient) -> Result<Self, GoogleError> {
         let doc = client.get(&client.url("/gmail/v1/users/me/labels")).await?;
-        Ok(Self::from_list(doc.get("labels").and_then(Value::as_array).map_or(&[][..], Vec::as_slice)))
+        Ok(Self::from_list(
+            doc.get("labels")
+                .and_then(Value::as_array)
+                .map_or(&[][..], Vec::as_slice),
+        ))
     }
 
     pub(crate) fn from_list(labels: &[Value]) -> Self {
         Self(
             labels
                 .iter()
-                .filter_map(|label| Some((opt_str(label, "name")?.to_owned(), opt_str(label, "id")?.to_owned())))
+                .filter_map(|label| {
+                    Some((
+                        opt_str(label, "name")?.to_owned(),
+                        opt_str(label, "id")?.to_owned(),
+                    ))
+                })
                 .collect(),
         )
     }
@@ -98,14 +106,23 @@ impl Categories {
 }
 
 /// The label ids the API would list for `state`, read from `folder`.
-pub(crate) fn label_ids(state: &GmailState, folder: GmailFolder, categories: &Categories, ids: &LabelIds) -> Vec<String> {
+pub(crate) fn label_ids(
+    state: &GmailState,
+    folder: GmailFolder,
+    categories: &Categories,
+    ids: &LabelIds,
+) -> Vec<String> {
     let mut labels = BTreeSet::new();
     for label in &state.labels {
         let id = SYSTEM
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case(label))
             .map(|(_, id)| (*id).to_owned())
-            .or_else(|| (!label.starts_with('\\')).then(|| ids.0.get(label).cloned()).flatten());
+            .or_else(|| {
+                (!label.starts_with('\\'))
+                    .then(|| ids.0.get(label).cloned())
+                    .flatten()
+            });
         labels.extend(id);
     }
     let has_flag = |flag: &str| state.flags.iter().any(|f| f.eq_ignore_ascii_case(flag));
@@ -130,7 +147,8 @@ pub(crate) fn label_ids(state: &GmailState, folder: GmailFolder, categories: &Ca
 
 /// The key the API gives a message: its Gmail id in hex.
 pub(crate) fn key_of(gmail_id: u64) -> Result<ProviderKey, GoogleError> {
-    ProviderKey::new(format!("{gmail_id:x}")).map_err(|e| GoogleError::protocol(format!("gmail id: {e}")))
+    ProviderKey::new(format!("{gmail_id:x}"))
+        .map_err(|e| GoogleError::protocol(format!("gmail id: {e}")))
 }
 
 /// A message read over IMAP, as the API pass would have written it.

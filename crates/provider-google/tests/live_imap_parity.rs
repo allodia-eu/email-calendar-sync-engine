@@ -27,7 +27,9 @@ use provider_google::{GmailProvider, GoogleClient};
 use provider_imap::{Credentials, ImapAccount, ImapConfig};
 
 fn token() -> Option<String> {
-    std::env::var("GOOGLE_ACCESS_TOKEN").ok().filter(|t| !t.is_empty())
+    std::env::var("GOOGLE_ACCESS_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty())
 }
 
 fn client(token: &str) -> GoogleClient {
@@ -54,7 +56,10 @@ async fn address(token: &str) -> String {
         .json()
         .await
         .expect("profile json");
-    profile["emailAddress"].as_str().expect("address").to_owned()
+    profile["emailAddress"]
+        .as_str()
+        .expect("address")
+        .to_owned()
 }
 
 /// What a sync wrote of each message, by key.
@@ -75,7 +80,11 @@ async fn sync(provider: &GmailProvider) -> Written {
 fn facts(message: &Message) -> (Option<ThreadRef>, Vec<String>, Vec<String>) {
     (
         message.thread.clone(),
-        message.mailboxes.iter().map(|m| m.as_str().to_owned()).collect(),
+        message
+            .mailboxes
+            .iter()
+            .map(|m| m.as_str().to_owned())
+            .collect(),
         message.keywords.iter().map(|k| format!("{k:?}")).collect(),
     )
 }
@@ -94,7 +103,9 @@ async fn an_imap_sync_writes_what_the_api_sync_writes() {
     let account = ImapAccount::connect(&config, engine_tls::TlsClientConfig::bundled().connector())
         .await
         .expect("the token must open an IMAP session");
-    let gmail = account.gmail().expect("imap.gmail.com advertises X-GM-EXT-1");
+    let gmail = account
+        .gmail()
+        .expect("imap.gmail.com advertises X-GM-EXT-1");
 
     let started = Instant::now();
     let over_imap = sync(&GmailProvider::new(client(&token)).with_imap(gmail)).await;
@@ -109,14 +120,31 @@ async fn an_imap_sync_writes_what_the_api_sync_writes() {
         api_took.as_secs_f64()
     );
 
-    assert!(!over_api.is_empty(), "the live account should hold some mail");
-    let only_api: Vec<&String> = over_api.keys().filter(|k| !over_imap.contains_key(*k)).collect();
-    let only_imap: Vec<&String> = over_imap.keys().filter(|k| !over_api.contains_key(*k)).collect();
-    assert!(only_api.is_empty() && only_imap.is_empty(), "API only: {only_api:?}; IMAP only: {only_imap:?}");
+    assert!(
+        !over_api.is_empty(),
+        "the live account should hold some mail"
+    );
+    let only_api: Vec<&String> = over_api
+        .keys()
+        .filter(|k| !over_imap.contains_key(*k))
+        .collect();
+    let only_imap: Vec<&String> = over_imap
+        .keys()
+        .filter(|k| !over_api.contains_key(*k))
+        .collect();
+    assert!(
+        only_api.is_empty() && only_imap.is_empty(),
+        "API only: {only_api:?}; IMAP only: {only_imap:?}"
+    );
     let differing: Vec<_> = over_api
         .iter()
         .filter(|(key, api)| over_imap[*key] != **api)
         .map(|(key, api)| (key, api, &over_imap[key]))
         .collect();
-    assert!(differing.is_empty(), "{} differ, e.g. {:#?}", differing.len(), differing.first());
+    assert!(
+        differing.is_empty(),
+        "{} differ, e.g. {:#?}",
+        differing.len(),
+        differing.first()
+    );
 }

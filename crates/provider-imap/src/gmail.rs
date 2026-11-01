@@ -157,7 +157,9 @@ where
             return Ok(None);
         };
         let mut connection = self.pool.acquire_for(name.as_str()).await?;
-        let result = read::open(&mut connection, name.as_str()).await.map_err(Into::into);
+        let result = read::open(&mut connection, name.as_str())
+            .await
+            .map_err(Into::into);
         connection.settle(result).map(Some)
     }
 
@@ -220,7 +222,12 @@ where
     /// # Errors
     ///
     /// As [`search`](Self::search).
-    pub async fn ids(&self, folder: GmailFolder, validity: u32, uids: &[u32]) -> ProviderResult<Vec<(u32, u64)>> {
+    pub async fn ids(
+        &self,
+        folder: GmailFolder,
+        validity: u32,
+        uids: &[u32],
+    ) -> ProviderResult<Vec<(u32, u64)>> {
         self.on(folder, validity, async |connection| {
             Ok(read::ids(connection, uids).await?)
         })

@@ -43,7 +43,11 @@ impl ImapCursor {
         let mut seen = 0;
         for (part, (slot, letter)) in rest.split(';').zip(marks.iter_mut().zip(['a', 's', 't'])) {
             let value = part.strip_prefix(letter)?.strip_prefix('=')?;
-            *slot = if value == "-" { None } else { Some(mark(value)?) };
+            *slot = if value == "-" {
+                None
+            } else {
+                Some(mark(value)?)
+            };
             seen += 1;
         }
         (seen == 3).then_some(Self(marks))
@@ -55,7 +59,10 @@ impl ImapCursor {
             .iter()
             .zip(['a', 's', 't'])
             .map(|(mark, letter)| match mark {
-                Some(m) => format!("{letter}={}.{}.{}.{}", m.uid_validity, m.uid_next, m.highest_modseq, m.exists),
+                Some(m) => format!(
+                    "{letter}={}.{}.{}.{}",
+                    m.uid_validity, m.uid_next, m.highest_modseq, m.exists
+                ),
                 None => format!("{letter}=-"),
             })
             .collect();

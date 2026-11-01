@@ -5,15 +5,15 @@
 //! Every pass opens the three folders first and plans from what that says against the cursor
 //! (`crate::imap_cursor`):
 //!
-//! - **Snapshot** (no cursor of this mode, or a folder renumbered, appeared or gone): every
-//!   message in the window, newest first, as one reconcile, so whatever the store holds that the
-//!   server no longer has is removed at the end.
-//! - **Delta**: the messages that arrived (a UID at or above the last `UIDNEXT`), and the state
-//!   of every older one changed since the last mod-sequence (`CHANGEDSINCE`). Gmail offers no
-//!   `QRESYNC`, so nothing says what was removed; the counts do instead. A folder holding
-//!   fewer messages than it held plus what arrived has lost some, and that pass is a reconcile
-//!   that lists the ids in the window. A message moved between the three keeps its Gmail id,
-//!   so it is listed where it now is and survives the reconcile as the move it was.
+//! - **Snapshot** (no cursor of this mode, or a folder renumbered, appeared or gone): every message
+//!   in the window, newest first, as one reconcile, so whatever the store holds that the server no
+//!   longer has is removed at the end.
+//! - **Delta**: the messages that arrived (a UID at or above the last `UIDNEXT`), and the state of
+//!   every older one changed since the last mod-sequence (`CHANGEDSINCE`). Gmail offers no
+//!   `QRESYNC`, so nothing says what was removed; the counts do instead. A folder holding fewer
+//!   messages than it held plus what arrived has lost some, and that pass is a reconcile that lists
+//!   the ids in the window. A message moved between the three keeps its Gmail id, so it is listed
+//!   where it now is and survives the reconcile as the move it was.
 
 use engine_core::{ids::ProviderKey, mail::Message, sync::SyncState, time::CalendarDate};
 use engine_provider::{EmailChunk, EmailStream, PassMode, ProviderResult, split_page};
@@ -69,13 +69,19 @@ pub(crate) fn stream<'a>(
                 for (folder, state, uids, categories) in &wanted {
                     let reads: Vec<_> = uids
                         .rchunks(BATCH)
-                        .map(|batch| reading.messages(*folder, state.uid_validity, batch, categories))
+                        .map(|batch| {
+                            reading.messages(*folder, state.uid_validity, batch, categories)
+                        })
                         .collect();
                     let mut reads = stream::iter(reads).buffered(BATCHES_IN_FLIGHT);
                     while let Some(messages) = reads.next().await {
                         let messages = messages?;
                         let present = messages.iter().map(|m| m.id.key().clone()).collect();
-                        for chunk in split_page(PassMode::Reconcile, messages, Vec::new(), Vec::new(), present, total, chunk_size) {
+                        let chunks = split_page(
+                            PassMode::Reconcile, messages, Vec::new(), Vec::new(), present, total,
+                            chunk_size,
+                        );
+                        for chunk in chunks {
                             yield chunk;
                         }
                     }
@@ -90,20 +96,27 @@ pub(crate) fn stream<'a>(
                     let before = previous.get(folder).expect("same_folders checked it");
                     let validity = state.uid_validity;
                     let arrivals: Vec<u32> = if state.uid_next > before.uid_next {
-                        let range = GmailQuery { uids: Some((before.uid_next..state.uid_next).collect()), ..GmailQuery::default() };
+                        let range = GmailQuery {
+                            uids: Some((before.uid_next..state.uid_next).collect()),
+                            ..GmailQuery::default()
+                        };
                         imap.search(folder, validity, &range).await?
                     } else {
                         Vec::new()
                     };
-                    lost |= usize::try_from(state.exists).ok() != usize::try_from(before.exists).ok().map(|n| n + arrivals.len());
+                    let expected = usize::try_from(before.exists).ok().map(|n| n + arrivals.len());
+                    lost |= usize::try_from(state.exists).ok() != expected;
                     let states = if state.highest_modseq > before.highest_modseq {
-                        imap.changed(folder, validity, before.uid_next, before.highest_modseq).await?
+                        imap.changed(folder, validity, before.uid_next, before.highest_modseq)
+                            .await?
                     } else {
                         Vec::new()
                     };
-                    let involved: Vec<u32> = arrivals.iter().copied().chain(states.iter().map(|s| s.uid)).collect();
+                    let involved: Vec<u32> =
+                        arrivals.iter().copied().chain(states.iter().map(|s| s.uid)).collect();
                     let categories = reading.categories(folder, validity, Some(involved)).await?;
-                    changed.extend(reading.messages(folder, validity, &arrivals, &categories).await?);
+                    let arrived = reading.messages(folder, validity, &arrivals, &categories).await?;
+                    changed.extend(arrived);
                     for state in &states {
                         patched.push(state_change_of(state, folder, &categories, &ids, &named)?);
                     }
@@ -113,12 +126,20 @@ pub(crate) fn stream<'a>(
                     for (folder, state) in opened(&now) {
                         present.extend(reading.present(folder, state.uid_validity).await?);
                     }
-                    for chunk in split_page(PassMode::Reconcile, changed, patched, Vec::new(), present, None, chunk_size) {
+                    let chunks = split_page(
+                        PassMode::Reconcile, changed, patched, Vec::new(), present, None,
+                        chunk_size,
+                    );
+                    for chunk in chunks {
                         yield chunk;
                     }
                     yield EmailChunk::reconcile_last(Vec::new(), Vec::new(), None, next.state());
                 } else {
-                    for chunk in split_page(PassMode::Additive, changed, patched, Vec::new(), Vec::new(), None, chunk_size) {
+                    let chunks = split_page(
+                        PassMode::Additive, changed, patched, Vec::new(), Vec::new(), None,
+                        chunk_size,
+                    );
+                    for chunk in chunks {
                         yield chunk;
                     }
                     yield EmailChunk::additive(Vec::new(), Vec::new(), None, next.state());
@@ -139,7 +160,11 @@ struct Reading<'a> {
 impl Reading<'_> {
     /// The sync window, narrowed to `uids` when given.
     fn window(&self, uids: Option<Vec<u32>>) -> GmailQuery {
-        GmailQuery { uids, since: self.since, raw: None }
+        GmailQuery {
+            uids,
+            since: self.since,
+            raw: None,
+        }
     }
 
     /// The UIDs in the window and their inbox categories, asked at once; nothing for a folder
@@ -163,16 +188,29 @@ impl Reading<'_> {
 
     /// The inbox category of each message in the window, or of `uids` alone. The five
     /// searches go out at once.
-    async fn categories(&self, folder: GmailFolder, validity: u32, uids: Option<Vec<u32>>) -> ProviderResult<Categories> {
+    async fn categories(
+        &self,
+        folder: GmailFolder,
+        validity: u32,
+        uids: Option<Vec<u32>>,
+    ) -> ProviderResult<Categories> {
         let mut categories = Categories::default();
         if uids.as_ref().is_some_and(Vec::is_empty) {
             return Ok(categories);
         }
         let queries: Vec<GmailQuery> = CATEGORIES
             .iter()
-            .map(|(_, search)| GmailQuery { raw: Some((*search).to_owned()), ..self.window(uids.clone()) })
+            .map(|(_, search)| GmailQuery {
+                raw: Some((*search).to_owned()),
+                ..self.window(uids.clone())
+            })
             .collect();
-        let found = try_join_all(queries.iter().map(|query| self.imap.search(folder, validity, query))).await?;
+        let found = try_join_all(
+            queries
+                .iter()
+                .map(|query| self.imap.search(folder, validity, query)),
+        )
+        .await?;
         for ((label, _), uids) in CATEGORIES.iter().zip(found) {
             categories.add(label, &uids);
         }
@@ -193,14 +231,23 @@ impl Reading<'_> {
         let read = self.imap.messages(folder, validity, uids).await?;
         let mut messages = Vec::with_capacity(read.len());
         for message in read {
-            messages.push(message_of(message, folder, categories, self.ids, self.named)?);
+            messages.push(message_of(
+                message, folder, categories, self.ids, self.named,
+            )?);
         }
         Ok(messages)
     }
 
     /// The keys of every message in the window.
-    async fn present(&self, folder: GmailFolder, validity: u32) -> ProviderResult<Vec<ProviderKey>> {
-        let uids = self.imap.search(folder, validity, &self.window(None)).await?;
+    async fn present(
+        &self,
+        folder: GmailFolder,
+        validity: u32,
+    ) -> ProviderResult<Vec<ProviderKey>> {
+        let uids = self
+            .imap
+            .search(folder, validity, &self.window(None))
+            .await?;
         let mut keys = Vec::with_capacity(uids.len());
         for (_, gmail_id) in self.imap.ids(folder, validity, &uids).await? {
             keys.push(key_of(gmail_id)?);

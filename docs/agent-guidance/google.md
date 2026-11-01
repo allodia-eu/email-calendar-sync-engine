@@ -241,9 +241,11 @@ per user per minute, about 270 messages a minute, and IMAP bills nothing per mes
   what arrived (UID at or above the last `UIDNEXT`) and what changed (`CHANGEDSINCE`, CONDSTORE).
   Gmail has no `QRESYNC`, so a folder holding fewer messages than it should is what reveals a
   removal, and that pass reconciles the window.
-- **Limits.** `connection_info` reports four body reads in flight, fifty sources a request, and
-  Gmail's 2,500 MB daily IMAP download limit (`ConnectionInfo::daily_download_limit`), past
-  which Gmail suspends the account's IMAP access for up to a day.
+- **Limits.** `connection_info` reports four body reads in flight and fifty sources a request.
+  Google documents a 2,500 MB daily IMAP download limit for Workspace accounts and none for
+  personal ones. Neither is enforced at that figure (measured 2026-11-01): a personal account
+  downloaded 7.9 GB in 34 minutes and a Workspace account 6.8 GB in 13, each refused nothing,
+  so no body read is paced against it.
 - **Parity is a live test.** `tests/live_imap_parity.rs` syncs one account both ways and
   compares every message's key, thread, memberships and keywords.
 

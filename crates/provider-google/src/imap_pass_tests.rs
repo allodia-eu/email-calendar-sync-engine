@@ -45,7 +45,16 @@ impl FakeGmail {
     fn new() -> Self {
         let folders = GmailFolder::ALL
             .into_iter()
-            .map(|f| (f, Folder { validity: 1, uid_next: 1, messages: BTreeMap::new() }))
+            .map(|f| {
+                (
+                    f,
+                    Folder {
+                        validity: 1,
+                        uid_next: 1,
+                        messages: BTreeMap::new(),
+                    },
+                )
+            })
             .collect();
         Self(Arc::new(Mutex::new(folders)), Arc::new(Mutex::new(100)))
     }
@@ -68,13 +77,25 @@ impl FakeGmail {
     }
 
     fn take(&self, folder: GmailFolder, uid: u32) -> Held {
-        self.0.lock().unwrap().get_mut(&folder).unwrap().messages.remove(&uid).unwrap()
+        self.0
+            .lock()
+            .unwrap()
+            .get_mut(&folder)
+            .unwrap()
+            .messages
+            .remove(&uid)
+            .unwrap()
     }
 
     fn mark_read(&self, uid: u32) {
         let modseq = self.tick();
         let mut folders = self.0.lock().unwrap();
-        let held = folders.get_mut(&GmailFolder::All).unwrap().messages.get_mut(&uid).unwrap();
+        let held = folders
+            .get_mut(&GmailFolder::All)
+            .unwrap()
+            .messages
+            .get_mut(&uid)
+            .unwrap();
         held.flags.push("\\Seen");
         held.modseq = modseq;
     }
@@ -107,20 +128,33 @@ impl ImapMail for FakeGmail {
         })))
     }
 
-    async fn search(&self, folder: GmailFolder, _validity: u32, query: &GmailQuery) -> ProviderResult<Vec<u32>> {
+    async fn search(
+        &self,
+        folder: GmailFolder,
+        _validity: u32,
+        query: &GmailQuery,
+    ) -> ProviderResult<Vec<u32>> {
         Ok(self.with(folder, |f| {
             f.messages
                 .iter()
                 .filter(|(uid, _)| query.uids.as_ref().is_none_or(|uids| uids.contains(uid)))
                 .filter(|(_, held)| {
-                    query.raw.as_deref().is_none_or(|raw| held.category.is_some_and(|c| raw == format!("category:{c}")))
+                    query.raw.as_deref().is_none_or(|raw| {
+                        held.category
+                            .is_some_and(|c| raw == format!("category:{c}"))
+                    })
                 })
                 .map(|(uid, _)| *uid)
                 .collect()
         }))
     }
 
-    async fn messages(&self, folder: GmailFolder, _validity: u32, uids: &[u32]) -> ProviderResult<Vec<GmailMessage>> {
+    async fn messages(
+        &self,
+        folder: GmailFolder,
+        _validity: u32,
+        uids: &[u32],
+    ) -> ProviderResult<Vec<GmailMessage>> {
         Ok(self.with(folder, |f| {
             uids.iter()
                 .filter_map(|uid| f.messages.get(uid).map(|held| (uid, held)))
@@ -136,7 +170,13 @@ impl ImapMail for FakeGmail {
         }))
     }
 
-    async fn changed(&self, folder: GmailFolder, _validity: u32, below_uid: u32, modseq: u64) -> ProviderResult<Vec<GmailState>> {
+    async fn changed(
+        &self,
+        folder: GmailFolder,
+        _validity: u32,
+        below_uid: u32,
+        modseq: u64,
+    ) -> ProviderResult<Vec<GmailState>> {
         Ok(self.with(folder, |f| {
             f.messages
                 .iter()
@@ -146,9 +186,16 @@ impl ImapMail for FakeGmail {
         }))
     }
 
-    async fn ids(&self, folder: GmailFolder, _validity: u32, uids: &[u32]) -> ProviderResult<Vec<(u32, u64)>> {
+    async fn ids(
+        &self,
+        folder: GmailFolder,
+        _validity: u32,
+        uids: &[u32],
+    ) -> ProviderResult<Vec<(u32, u64)>> {
         Ok(self.with(folder, |f| {
-            uids.iter().filter_map(|uid| f.messages.get(uid).map(|held| (*uid, held.gmail_id))).collect()
+            uids.iter()
+                .filter_map(|uid| f.messages.get(uid).map(|held| (*uid, held.gmail_id)))
+                .collect()
         }))
     }
 
@@ -158,11 +205,20 @@ impl ImapMail for FakeGmail {
 }
 
 fn held(gmail_id: u64, labels: Vec<&'static str>, category: Option<&'static str>) -> Held {
-    Held { gmail_id, labels, flags: Vec::new(), category, modseq: 0 }
+    Held {
+        gmail_id,
+        labels,
+        flags: Vec::new(),
+        category,
+        modseq: 0,
+    }
 }
 
 fn provider(gmail: &FakeGmail) -> GmailProvider {
-    let client = fake_client(vec![("/labels", json!({ "labels": [{ "id": "Label_7", "name": "Work" }] }))]);
+    let client = fake_client(vec![(
+        "/labels",
+        json!({ "labels": [{ "id": "Label_7", "name": "Work" }] }),
+    )]);
     GmailProvider::new(client).with_imap_mail(Arc::new(gmail.clone()))
 }
 
@@ -188,7 +244,10 @@ fn places(message: &Message) -> Vec<&str> {
 /// An account with one message in each folder, and the first pass's chunks.
 async fn first_sync() -> (FakeGmail, GmailProvider, Vec<EmailChunk>) {
     let gmail = FakeGmail::new();
-    gmail.deliver(GmailFolder::All, held(0xa1, vec!["\\Inbox", "Work"], Some("social")));
+    gmail.deliver(
+        GmailFolder::All,
+        held(0xa1, vec!["\\Inbox", "Work"], Some("social")),
+    );
     gmail.deliver(GmailFolder::Spam, held(0xb2, vec![], None));
     gmail.deliver(GmailFolder::Trash, held(0xc3, vec!["\\Important"], None));
     let provider = provider(&gmail);
@@ -202,12 +261,22 @@ async fn a_first_sync_reads_all_three_folders_as_one_reconcile() {
     assert!(chunks.iter().all(|c| c.mode == PassMode::Reconcile));
     assert!(chunks.last().unwrap().is_reconcile_final());
     assert_eq!(chunks[0].total, Some(3));
-    let messages: BTreeMap<&str, &Message> =
-        chunks.iter().flat_map(|c| &c.changed).map(|m| (m.id.key().as_str(), m)).collect();
-    assert_eq!(places(messages["a1"]), ["CATEGORY_SOCIAL", "INBOX", "Label_7"]);
+    let messages: BTreeMap<&str, &Message> = chunks
+        .iter()
+        .flat_map(|c| &c.changed)
+        .map(|m| (m.id.key().as_str(), m))
+        .collect();
+    assert_eq!(
+        places(messages["a1"]),
+        ["CATEGORY_SOCIAL", "INBOX", "Label_7"]
+    );
     assert_eq!(places(messages["b2"]), ["SPAM"]);
     assert_eq!(places(messages["c3"]), ["IMPORTANT", "TRASH"]);
-    let present: Vec<&str> = chunks.iter().flat_map(|c| &c.present).map(ProviderKey::as_str).collect();
+    let present: Vec<&str> = chunks
+        .iter()
+        .flat_map(|c| &c.present)
+        .map(ProviderKey::as_str)
+        .collect();
     assert_eq!(present.len(), 3);
 }
 
@@ -220,14 +289,26 @@ async fn arrivals_and_changes_are_an_additive_delta() {
 
     let delta = pass(&provider, Some(&cursor)).await;
     assert!(delta.iter().all(|c| c.mode == PassMode::Additive));
-    let changed: Vec<&str> = delta.iter().flat_map(|c| &c.changed).map(|m| m.id.key().as_str()).collect();
+    let changed: Vec<&str> = delta
+        .iter()
+        .flat_map(|c| &c.changed)
+        .map(|m| m.id.key().as_str())
+        .collect();
     assert_eq!(changed, ["d4"]);
-    let patched: Vec<&str> = delta.iter().flat_map(|c| &c.patched).map(|p| p.key.as_str()).collect();
+    let patched: Vec<&str> = delta
+        .iter()
+        .flat_map(|c| &c.patched)
+        .map(|p| p.key.as_str())
+        .collect();
     assert_eq!(patched, ["a1"]);
     assert_ne!(last_cursor(&delta), cursor);
 
     let quiet = pass(&provider, Some(&last_cursor(&delta))).await;
-    assert!(quiet.iter().all(|c| c.changed.is_empty() && c.patched.is_empty()));
+    assert!(
+        quiet
+            .iter()
+            .all(|c| c.changed.is_empty() && c.patched.is_empty())
+    );
 }
 
 #[tokio::test]
@@ -238,9 +319,17 @@ async fn a_move_to_trash_reconciles_and_keeps_the_message() {
 
     let delta = pass(&provider, Some(&last_cursor(&chunks))).await;
     assert!(delta.iter().all(|c| c.mode == PassMode::Reconcile));
-    let moved = delta.iter().flat_map(|c| &c.changed).find(|m| m.id.key().as_str() == "a1").unwrap();
+    let moved = delta
+        .iter()
+        .flat_map(|c| &c.changed)
+        .find(|m| m.id.key().as_str() == "a1")
+        .unwrap();
     assert!(places(moved).contains(&"TRASH"));
-    let present: Vec<&str> = delta.iter().flat_map(|c| &c.present).map(ProviderKey::as_str).collect();
+    let present: Vec<&str> = delta
+        .iter()
+        .flat_map(|c| &c.present)
+        .map(ProviderKey::as_str)
+        .collect();
     assert!(present.contains(&"a1"), "{present:?}");
 }
 
@@ -251,7 +340,11 @@ async fn a_deletion_for_good_leaves_the_message_out_of_the_reconcile() {
 
     let delta = pass(&provider, Some(&last_cursor(&chunks))).await;
     assert!(delta.last().unwrap().is_reconcile_final());
-    let present: Vec<&str> = delta.iter().flat_map(|c| &c.present).map(ProviderKey::as_str).collect();
+    let present: Vec<&str> = delta
+        .iter()
+        .flat_map(|c| &c.present)
+        .map(ProviderKey::as_str)
+        .collect();
     assert_eq!(present.len(), 2);
     assert!(!present.contains(&"c3"), "{present:?}");
 }
@@ -259,7 +352,13 @@ async fn a_deletion_for_good_leaves_the_message_out_of_the_reconcile() {
 #[tokio::test]
 async fn a_renumbered_folder_or_an_api_cursor_starts_afresh() {
     let (gmail, provider, chunks) = first_sync().await;
-    gmail.0.lock().unwrap().get_mut(&GmailFolder::Spam).unwrap().validity = 2;
+    gmail
+        .0
+        .lock()
+        .unwrap()
+        .get_mut(&GmailFolder::Spam)
+        .unwrap()
+        .validity = 2;
     let after_reset = pass(&provider, Some(&last_cursor(&chunks))).await;
     assert_eq!(after_reset[0].total, Some(3));
 
@@ -269,11 +368,10 @@ async fn a_renumbered_folder_or_an_api_cursor_starts_afresh() {
 }
 
 #[tokio::test]
-async fn only_the_imap_side_states_a_daily_download_limit() {
+async fn the_imap_side_reads_bodies_in_batches_over_several_connections() {
     let gmail = FakeGmail::new();
     let info = provider(&gmail).connection_info();
-    assert_eq!(info.daily_download_limit, Some(2_500_000_000));
     assert_eq!((info.concurrent_fetches, info.sources_per_request), (4, 50));
     let api = GmailProvider::new(fake_client(Vec::new())).connection_info();
-    assert_eq!(api.daily_download_limit, None);
+    assert_eq!((api.concurrent_fetches, api.sources_per_request), (20, 1));
 }

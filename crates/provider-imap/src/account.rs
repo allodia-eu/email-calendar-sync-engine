@@ -208,7 +208,8 @@ impl<S> ImapAccount<S> {
     /// offer over IMAP. Dials nothing.
     #[must_use]
     pub fn gmail(&self) -> Option<GmailMail<S>> {
-        (self.gmail && self.shared_mailbox.is_none()).then(|| GmailMail::new(Arc::clone(&self.pool)))
+        (self.gmail && self.shared_mailbox.is_none())
+            .then(|| GmailMail::new(Arc::clone(&self.pool)))
     }
 
     /// A provider bound to `mailbox` for its email scope, drawing its connections from this
