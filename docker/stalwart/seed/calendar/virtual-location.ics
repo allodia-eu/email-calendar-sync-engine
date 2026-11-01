@@ -25,7 +25,8 @@ DTSTAMP:20260101T000000Z
 DTSTART;TZID=Europe/Amsterdam:20260312T170000
 DTEND;TZID=Europe/Amsterdam:20260312T173000
 SUMMARY:Video call with a virtual location
-DESCRIPTION:Carries an RFC 7986 CONFERENCE property (a virtual location / conference link).
+DESCRIPTION:Carries RFC 7986 CONFERENCE properties: a join link and its dial-in number.
 CONFERENCE;VALUE=URI;FEATURE=VIDEO;LABEL=Join the meeting:https://meet.example.com/harness-room
+CONFERENCE;VALUE=URI;FEATURE=PHONE;LABEL=Join the meeting:tel:+15555550100
 END:VEVENT
 END:VCALENDAR

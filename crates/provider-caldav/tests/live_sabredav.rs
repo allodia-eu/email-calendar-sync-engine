@@ -151,7 +151,21 @@ async fn sabredav_calendar_sync_loop() {
     }
     let by_uid = |uid: &str| events.iter().find(|e| e.uid.as_str() == uid).unwrap();
     assert_eq!(by_uid("meeting-2003@test.local").participants.len(), 3);
-    assert_eq!(by_uid("virtual-2004@test.local").virtual_locations.len(), 1);
+    let conferences = &by_uid("virtual-2004@test.local").conferences;
+    assert_eq!(
+        conferences.len(),
+        1,
+        "the dial-in joins the meeting: {conferences:?}"
+    );
+    let entry_uris: Vec<&str> = conferences[0]
+        .entry_points
+        .iter()
+        .map(|entry| entry.uri.as_str())
+        .collect();
+    assert_eq!(
+        entry_uris,
+        ["https://meet.example.com/harness-room", "tel:+15555550100"]
+    );
     assert!(by_uid("allday-2005@test.local").is_all_day());
     assert!(by_uid("floating-2006@test.local").start.is_floating());
 

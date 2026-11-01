@@ -2,9 +2,9 @@
 
 use engine_core::{
     calendar::{
-        Alert, AlertAction, Calendar, CalendarAccess, Event, EventKind, EventStatus, Frequency,
-        Location, ParticipantRole, ParticipationStatus, Recurrence, RecurrenceOverride,
-        RecurrenceRule, RelativeTo, Trigger, VirtualLocation,
+        Alert, AlertAction, Calendar, CalendarAccess, ConferenceUri, Event, EventKind, EventStatus,
+        FlatEntry, Frequency, Location, ParticipantRole, ParticipationStatus, Recurrence,
+        RecurrenceOverride, RecurrenceRule, RelativeTo, Trigger, group_flat,
     },
     extended::ExtendedProperties,
     ids::{CalendarId, EventId, Uid},
@@ -94,8 +94,9 @@ fn event_with_participants_locations_and_alerts() {
     ev.participants.push(attendee);
 
     ev.locations.push(Location::named("HQ"));
-    ev.virtual_locations
-        .push(VirtualLocation::new("https://meet.example/x"));
+    ev.conferences = group_flat(vec![FlatEntry::new(
+        ConferenceUri::parse("https://meet.example/x").unwrap(),
+    )]);
     ev.alerts.push(Alert::display(Trigger::before_start(
         "PT10M".parse::<Duration>().unwrap(),
     )));

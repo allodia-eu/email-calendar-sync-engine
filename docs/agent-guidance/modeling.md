@@ -73,6 +73,7 @@ Capture any provider-specific assumption in tests or fixtures. If a provider beh
 - The displayable body is a *derived view*, `MessageBody { plain, html }` (`engine-core`), not stored state: the lossless source is the cached raw RFC 5322 (`RawMime`, Tier-3), and `engine-mime::extract_body` decodes the best `text/plain`/`text/html` parts out of it (content-transfer- and charset-decoded to UTF-8). `plain` is the reading-view text (a text rendering of an HTML-only message when there is no plain part); `html` is the **unsanitized** HTML, present only when a real `text/html` part exists — a host sanitizes before rendering. Its `Debug` is redacted, like the raw payloads.
 - Calendar normalization must support floating times, all-day events, embedded timezones, recurrence overrides, exclusions, and cross-DST expansion.
 - A calendar collection carries access rights, subscription/visibility, owner, default reminders (which events may inherit), and color — not only event membership.
+- An event's conferences are meetings, not links: one `Conference` holds every way into one meeting, the service it runs on and whether the calendar server made it (`calendar-semantics.md` → "Conferences"). The flat formats (iCalendar `CONFERENCE`, JSCalendar `virtualLocations`) are grouped into that shape on read.
 - Events carry a kind discriminator (default, plus provider kinds such as working-location, focus-time, out-of-office, birthday); the model records the kind and preserves its payload even when the JSCalendar projection cannot express the behavior.
 - Recurring event range search uses bounded materialized occurrences.
 - Thread ids carry provenance: provider-assigned or locally-derived.
@@ -86,7 +87,7 @@ Before model implementation, create fixtures for:
 - JMAP Email with multiple `mailboxIds`.
 - JMAP Email keywords with system and arbitrary values.
 - JMAP CalendarEvent with multiple `calendarIds`.
-- JSCalendar recurrence rules, recurrence overrides, excluded overrides, participants, and virtual locations.
+- JSCalendar recurrence rules, recurrence overrides, excluded overrides, participants, and virtual locations (read as conferences).
 - iCalendar RRULE/RDATE/EXDATE/RECURRENCE-ID with embedded VTIMEZONE.
 - IMAP UID identity across folder moves and UIDVALIDITY reset.
 - Duplicate or missing `Message-ID` values.

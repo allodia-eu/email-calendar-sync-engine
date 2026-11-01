@@ -215,10 +215,9 @@ public repo must not ship a working join link (see Finding 10).
 10. **A Teams online meeting carries `isOnlineMeeting: true`, `onlineMeetingProvider:
     "teamsForBusiness"`, and an `onlineMeeting.joinUrl`** (the deprecated
     `onlineMeetingUrl` stays `null`); the join link, meeting-id, and passcodes are also
-    duplicated as HTML in the `body`. The `joinUrl` **is** projected today, as an
-    `Event.virtual_locations` entry. What is *not* modelled yet is the online-meeting
-    **provider identity** (`onlineMeetingProvider`/`isOnlineMeeting`); that stays on the
-    preserved raw payload (`Event.extended`) for a future provider-typing mapper.
+    duplicated as HTML in the `body`. `cal_conference` projects them as one native
+    `Conference` (service from `onlineMeetingProvider`, the dial-in numbers and
+    `conferenceId` beside the `joinUrl`); the body's HTML copy is not read.
 11. **One MS account owns many calendars** (`GET /me/calendars` → a list). Each is a
     distinct `Calendar` with its own immutable id, `isDefaultCalendar` flag, and colour
     (`hexColor` `#rrggbb` wins over the named `color`). A Graph `event` object does not

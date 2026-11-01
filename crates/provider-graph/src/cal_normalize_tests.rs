@@ -115,25 +115,21 @@ fn all_day_event_is_a_zoneless_date_with_a_day_duration() {
 }
 
 #[test]
-fn an_online_meeting_projects_its_join_url_and_preserves_the_teams_payload() {
-    // This fixture is a real Teams "for business" meeting. The join URL is already
-    // projected as a virtual location; the online-meeting *provider identity*
-    // (`onlineMeetingProvider`/`isOnlineMeeting`) is not modelled yet (staged), so the
-    // preserved raw payload is what a future provider-typing mapper reads.
+fn an_online_meeting_projects_its_conference_and_preserves_the_teams_payload() {
+    // This fixture is a real Teams "for business" meeting; `cal_conference` pins its mapping.
     let event = event(ONLINE);
     assert_eq!(event.title, "PIM fixture: Teams online meeting");
     assert!(!event.is_recurring());
     assert!(matches!(event.start, CalendarDateTime::Zoned { .. }));
 
-    // The join URL is surfaced as a virtual location today.
-    assert_eq!(event.virtual_locations.len(), 1);
+    assert_eq!(event.conferences.len(), 1);
     assert!(
-        event.virtual_locations[0]
-            .uri
-            .starts_with("https://teams.live.com/meet/")
+        event.conferences[0]
+            .join()
+            .is_some_and(|uri| uri.as_str().starts_with("https://teams.live.com/meet/"))
     );
 
-    // The provider-typed fields ride the preserved raw payload until they are modelled.
+    // The raw payload rides beside the projection.
     let raw = event
         .extended
         .get("microsoft.graph/event")

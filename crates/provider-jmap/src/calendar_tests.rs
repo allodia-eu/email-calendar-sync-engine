@@ -1,4 +1,4 @@
-use engine_core::calendar::RecurrenceSkip;
+use engine_core::calendar::{ConferenceUri, RecurrenceSkip};
 use serde_json::json;
 
 use super::*;
@@ -180,11 +180,11 @@ fn a_jscalendar_1_0_participant_still_has_an_address() {
 }
 
 #[test]
-fn virtual_location_maps_conference_uri() {
+fn virtual_location_maps_to_a_conference() {
     let virt = by_uid("virtual-2004@test.local");
     assert_eq!(
-        virt.virtual_locations[0].uri,
-        "https://meet.example.com/harness-room"
+        virt.conferences[0].join().map(ConferenceUri::as_str),
+        Some("https://meet.example.com/harness-room")
     );
 }
 
@@ -249,7 +249,7 @@ fn nth_weekday_locations_and_keywords() {
     assert_eq!(rule.by_day[0].nth_of_period.unwrap().get(), -1);
     // A nameless location still normalizes; a virtual location without a uri is dropped.
     assert_eq!(event.locations.len(), 1);
-    assert_eq!(event.virtual_locations, []);
+    assert_eq!(event.conferences, []);
     assert!(event.keywords.contains("kw") && event.categories.contains("cat"));
     assert!(event.is_cancelled());
     assert_eq!(event.color.as_deref(), Some("#abc"));

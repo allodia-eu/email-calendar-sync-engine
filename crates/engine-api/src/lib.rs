@@ -51,9 +51,11 @@ pub use engine::{
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
 pub use engine_core::calendar::{
-    Calendar, Event, EventKind, EventStatus, FreeBusyStatus, Frequency, Location, NDay,
-    Participant, ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence,
-    RecurrenceBound, RecurrenceOverride, RecurrenceRule, RecurrenceSkip, VirtualLocation, Weekday,
+    AccessCodes, Calendar, Conference, ConferenceFeature, ConferenceKey, ConferenceOrigin,
+    ConferenceService, ConferenceUri, ConferenceUriError, EntryKind, EntryPoint, Event, EventKind,
+    EventStatus, FreeBusyStatus, Frequency, Location, NDay, NativeState, Participant,
+    ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence, RecurrenceBound,
+    RecurrenceOverride, RecurrenceRule, RecurrenceSkip, UriScheme, Weekday,
 };
 // The payload of a `RecurrenceOverride::Patch` — what one occurrence changed about itself.
 // The variant is re-exported above, so without this a host can match on it and then not name

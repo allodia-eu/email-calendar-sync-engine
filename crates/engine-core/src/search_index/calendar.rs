@@ -46,7 +46,8 @@ pub struct EventParticipantRow {
 pub struct EventIndexRow {
     /// The event.
     pub key: ProviderKey,
-    /// Whether the event has at least one virtual location (conference link).
+    /// Whether the event has a conference with a way in. A meeting the server is still making,
+    /// or failed to make, has none yet and does not count.
     pub has_conference: bool,
     /// The account owner's participation status, if the owner is a participant.
     pub my_partstat: Option<ParticipationStatus>,
@@ -161,7 +162,10 @@ pub fn project_event(event: &Event, owner: &OwnerAddresses) -> EventProjection {
         fts: FtsRow::new(key.clone(), fields),
         index: EventIndexRow {
             key: key.clone(),
-            has_conference: !event.virtual_locations.is_empty(),
+            has_conference: event
+                .conferences
+                .iter()
+                .any(|conference| !conference.entry_points.is_empty()),
             my_partstat,
         },
         participants,
@@ -204,7 +208,10 @@ fn location_text(event: &Event) -> String {
 mod tests {
     use super::*;
     use crate::{
-        calendar::{Location, Participant, VirtualLocation},
+        calendar::{
+            ConferenceOrigin, ConferenceUri, FlatEntry, Location, NativeState, Participant,
+            group_flat,
+        },
         ids::{CalendarId, EventId, Uid},
         membership::Memberships,
         time::{CalendarDateTime, LocalDateTime, TimeZoneId},
@@ -227,6 +234,20 @@ mod tests {
     }
 
     #[test]
+    fn a_meeting_still_being_made_is_no_conference_to_search_for() {
+        let mut ev = event();
+        ev.conferences = group_flat(vec![FlatEntry::new(
+            ConferenceUri::parse("https://meet.example/x").unwrap(),
+        )]);
+        ev.conferences[0].entry_points.clear();
+        ev.conferences[0].origin = ConferenceOrigin::Native {
+            removable: true,
+            state: NativeState::Pending,
+        };
+        assert!(!project_event(&ev, &owner()).index.has_conference);
+    }
+
+    #[test]
     fn projects_text_membership_and_conference() {
         let mut ev = event();
         ev.title = "Standup".into();
@@ -234,7 +255,9 @@ mod tests {
         let mut room = Location::named("Room 4");
         room.description = Some("3rd floor".into());
         ev.locations = vec![room];
-        ev.virtual_locations = vec![VirtualLocation::new("https://meet.example/x")];
+        ev.conferences = group_flat(vec![FlatEntry::new(
+            ConferenceUri::parse("https://meet.example/x").unwrap(),
+        )]);
 
         let p = project_event(&ev, &owner());
         assert_eq!(

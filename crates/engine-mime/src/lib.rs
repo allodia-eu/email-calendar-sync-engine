@@ -28,6 +28,7 @@ use engine_core::{
     mail::{InlinePart, MessageBody},
     raw::RawMime,
 };
+pub use html_text::html_to_text;
 use mail_parser::{ContentType, GetHeader, HeaderName, HeaderValue, MessageParser, PartType};
 // The mail side of the mail↔calendar bridge: the iMIP `text/calendar` payload, and the
 // addresses the message was delivered to (which is how an invitation to an alias is

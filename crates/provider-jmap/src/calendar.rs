@@ -17,7 +17,7 @@ use engine_core::{
     calendar::{
         Calendar, Event, EventStatus, FreeBusyStatus, Frequency, Location, NDay, Participant,
         ParticipantRole, ParticipationStatus, Privacy, Recurrence, RecurrenceBound,
-        RecurrenceOverride, RecurrenceRule, VirtualLocation, Weekday,
+        RecurrenceOverride, RecurrenceRule, Weekday,
     },
     ids::{CalendarId, EventId, Uid},
     membership::Memberships,
@@ -28,6 +28,7 @@ use engine_core::{
 use serde_json::Value;
 
 use crate::{
+    calendar_conference::parse_conferences,
     error::JmapError,
     json::{datetime, opt_str, req_str, true_keys, wrap_id},
 };
@@ -98,7 +99,7 @@ pub(crate) fn event_from_json(value: &Value) -> Result<Event, JmapError> {
     event.recurrence = parse_recurrence(value)?;
     event.participants = parse_participants(value);
     event.locations = parse_locations(value);
-    event.virtual_locations = parse_virtual_locations(value);
+    event.conferences = parse_conferences(value);
     event.color = opt_str(value, "color").map(str::to_owned);
     event.keywords = string_set(value, "keywords");
     event.categories = string_set(value, "categories");
@@ -415,26 +416,6 @@ fn parse_locations(value: &Value) -> Vec<Location> {
             loc.name = opt_str(location, "name").map(str::to_owned);
             loc.description = opt_str(location, "description").map(str::to_owned);
             loc
-        })
-        .collect()
-}
-
-/// Maps the `virtualLocations` map's values into virtual locations (dropping any
-/// without the mandatory `uri`).
-fn parse_virtual_locations(value: &Value) -> Vec<VirtualLocation> {
-    let Some(map) = value.get("virtualLocations").and_then(Value::as_object) else {
-        return Vec::new();
-    };
-    map.values()
-        .filter_map(|location| {
-            let uri = opt_str(location, "uri")?;
-            let mut vloc = VirtualLocation::new(uri);
-            vloc.name = opt_str(location, "name").map(str::to_owned);
-            vloc.description = opt_str(location, "description").map(str::to_owned);
-            if let Some(features) = location.get("features").and_then(Value::as_object) {
-                vloc.features = features.keys().cloned().collect();
-            }
-            Some(vloc)
         })
         .collect()
 }

@@ -215,7 +215,7 @@ async fn calendar_sync_loop_normalizes_folds_and_expands_the_seed() {
         "every event references the listed calendar (referential integrity)"
     );
 
-    // The meeting normalized its merged participants and the virtual location.
+    // The meeting normalized its merged participants and the conference.
     let meeting = events
         .iter()
         .find(|e| e.uid.as_str() == "meeting-2003@test.local")
@@ -225,7 +225,7 @@ async fn calendar_sync_loop_normalizes_folds_and_expands_the_seed() {
         .iter()
         .find(|e| e.uid.as_str() == "virtual-2004@test.local")
         .unwrap();
-    assert_eq!(virtual_event.virtual_locations.len(), 1);
+    assert_eq!(virtual_event.conferences.len(), 1);
 
     // The recurring resource folded its master + RECURRENCE-ID override into one
     // recurring event whose raw iCalendar is preserved.

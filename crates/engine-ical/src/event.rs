@@ -99,7 +99,7 @@ pub(crate) fn event_from_vevent(
     }
     event.participants = parse_participants(vevent);
     event.locations = parse_locations(vevent);
-    event.virtual_locations = parse_conferences(vevent);
+    event.conferences = parse_conferences(vevent);
     event.categories = category_set(vevent);
     event.color = nonempty(vevent.value("COLOR")).map(str::to_owned);
     event.created = opt_utc(vevent, "CREATED")?;

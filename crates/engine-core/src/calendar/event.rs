@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Alert, EventKind, Location, Participant, Recurrence, VirtualLocation};
+use super::{Alert, Conference, EventKind, Location, Participant, Recurrence};
 use crate::{
     extended::ExtendedProperties,
     ids::{CalendarId, EventId, Uid},
@@ -101,8 +101,10 @@ pub struct Event {
     pub participants: Vec<Participant>,
     /// Physical locations.
     pub locations: Vec<Location>,
-    /// Virtual locations (conference links).
-    pub virtual_locations: Vec<VirtualLocation>,
+    /// The meetings the event can be joined at. A stored event from before the field existed
+    /// reads with none until the next sync re-projects it (`NORMALIZER_VERSION` 7).
+    #[serde(default)]
+    pub conferences: Vec<Conference>,
     /// Alerts/reminders.
     pub alerts: Vec<Alert>,
     /// Whether the calendar's default alerts apply instead of `alerts`.
@@ -155,7 +157,7 @@ impl Event {
             recurrence_id: None,
             participants: Vec::new(),
             locations: Vec::new(),
-            virtual_locations: Vec::new(),
+            conferences: Vec::new(),
             alerts: Vec::new(),
             use_default_alerts: false,
             keywords: BTreeSet::new(),

@@ -215,6 +215,23 @@ async fn live_calendar_fetch() {
     ] {
         assert!(uids.contains(uid), "seed event uid missing: {uid}");
     }
+    // Stalwart serves the seed's two `CONFERENCE` lines as two `virtualLocations`, which
+    // read back as one meeting with its dial-in number.
+    let conferences = &objects
+        .iter()
+        .find(|e| e.uid.as_str() == "virtual-2004@test.local")
+        .unwrap()
+        .conferences;
+    assert_eq!(conferences.len(), 1, "{conferences:?}");
+    let entry_uris: Vec<&str> = conferences[0]
+        .entry_points
+        .iter()
+        .map(|entry| entry.uri.as_str())
+        .collect();
+    assert_eq!(
+        entry_uris,
+        ["https://meet.example.com/harness-room", "tel:+15555550100"]
+    );
 }
 
 #[tokio::test]
