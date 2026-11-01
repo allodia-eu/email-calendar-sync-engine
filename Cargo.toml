@@ -158,7 +158,7 @@ quick-xml = "0.42.0"
 # it is pure Rust so it cross-compiles to mobile like the rest of the stack. The
 # `full_encoding` feature (no longer default since 0.11.2) pulls the full legacy
 # charset tables so non-UTF-8 bodies decode correctly.
-mail-parser = { version = "0.11.4", default-features = false, features = ["full_encoding"] }
+mail-parser = { version = "1.0.0", default-features = false, features = ["full_encoding"] }
 # Content addressing for the on-disk raw-message/attachment blob area
 # (`store-sqlite`): blobs are named by the SHA-256 of their bytes, deduping IMAP
 # copies of one message and giving filesystem-safe, fixed-length names. Pure Rust,
