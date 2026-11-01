@@ -77,6 +77,7 @@ async fn a_search_joins_every_criterion_it_was_given() {
         uids: Some(vec![3, 1, 2, 7]),
         since: time::Date::from_calendar_date(2026, time::Month::October, 1).ok(),
         raw: Some("category:social".to_owned()),
+        ..GmailQuery::default()
     };
     assert_eq!(search(&mut connection, &query).await.unwrap(), vec![3, 7]);
     assert!(
@@ -171,30 +172,60 @@ async fn changes_ask_condstore_alone_and_drop_the_arrivals_above_the_line() {
 }
 
 #[tokio::test]
-async fn sources_find_messages_by_gmail_id_and_return_each_under_its_id() {
-    let body = "Subject: x\r\n\r\nbody\r\n";
+async fn messages_are_located_by_gmail_id() {
     let replies = [
-        "* SEARCH 8 5\r\na2 OK done\r\n".to_owned(),
-        "* 1 FETCH (UID 5 X-GM-MSGID 300)\r\n* 2 FETCH (UID 8 X-GM-MSGID 100)\r\na3 OK done\r\n"
-            .to_owned(),
-        format!(
-            "* 2 FETCH (UID 8 BODY[] {{{}}}\r\n{body})\r\na4 OK done\r\n",
-            body.len()
-        ),
+        "* SEARCH 8 5\r\na2 OK done\r\n",
+        "* 1 FETCH (UID 5 X-GM-MSGID 300)\r\n* 2 FETCH (UID 8 X-GM-MSGID 100)\r\na3 OK done\r\n",
     ];
-    let replies: Vec<&str> = replies.iter().map(String::as_str).collect();
     let (mut connection, recorded) = logged_in(&replies).await;
-    let got = sources(&mut connection, &[100, 200, 300]).await.unwrap();
+    let got = located(&mut connection, &[100, 200, 300]).await.unwrap();
     let sent = written(&recorded);
     assert!(
         sent.contains("a2 UID SEARCH OR OR X-GM-MSGID 100 X-GM-MSGID 200 X-GM-MSGID 300\r\n"),
         "{sent}"
     );
-    assert!(
-        sent.contains("a4 UID FETCH 5,8 (UID BODY.PEEK[])"),
-        "{sent}"
+    assert!(sent.contains("a3 UID FETCH 5,8 (UID X-GM-MSGID)"), "{sent}");
+    assert_eq!(got, vec![(5, 300), (8, 100)]);
+}
+
+#[tokio::test]
+async fn arrivals_are_asked_for_as_a_range_and_the_highest_uid_answer_is_dropped() {
+    // `UID 50:*` with every UID below 50 still names the highest one (RFC 9051 §6.4.8).
+    let (mut connection, recorded) = logged_in(&["* SEARCH 49\r\na2 OK done\r\n"]).await;
+    let query = GmailQuery {
+        from_uid: Some(50),
+        ..GmailQuery::default()
+    };
+    assert_eq!(
+        search(&mut connection, &query).await.unwrap(),
+        Vec::<u32>::new()
     );
-    assert_eq!(got, vec![(100, body.as_bytes().to_vec())]);
+    assert!(written(&recorded).contains("a2 UID SEARCH UID 50:*\r\n"));
+}
+
+#[tokio::test]
+async fn a_long_uid_list_is_asked_about_a_thousand_at_a_time() {
+    let uids: Vec<u32> = (1..=2500).map(|n| n * 2).collect();
+    let replies = [
+        "* SEARCH 2\r\na2 OK done\r\n",
+        "* SEARCH 2002\r\na3 OK done\r\n",
+        "* SEARCH 4002\r\na4 OK done\r\n",
+    ];
+    let (mut connection, recorded) = logged_in(&replies).await;
+    let query = GmailQuery {
+        uids: Some(uids),
+        ..GmailQuery::default()
+    };
+    assert_eq!(
+        search(&mut connection, &query).await.unwrap(),
+        vec![2, 2002, 4002]
+    );
+    let sent = written(&recorded);
+    assert_eq!(sent.matches("UID SEARCH").count(), 3, "{sent}");
+    assert!(
+        sent.lines().all(|line| line.len() < 8192),
+        "every command stays under RFC 7162's 8192 octets"
+    );
 }
 
 #[test]

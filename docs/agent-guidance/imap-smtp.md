@@ -70,7 +70,8 @@ is authoritative for the `provider-caldav` calendar client.
   **SMTP submission**), `smtp_stream` (its framing: reading a reply, writing a command
   or the message), `deadline` (how IMAP and SMTP apply the shared bounds on a silent
   server, `deadlines.md`), `pool` + `account` (the per-account connection budget — see
-  **Connections** below), `provider` (the `Provider` impl).
+  **Connections** below), `provider` (the `Provider` impl), `gmail` + `gmail_read` +
+  `parse_gmail` (Gmail's mail as one store, below).
 
 ## How IMAP differs from JMAP (the shape)
 
@@ -980,6 +981,31 @@ everything below runs against Stalwart and both Dovecots (`live_imap_shared_cont
   even to a grantee with every right — Stalwart `NO [CANNOT]`, Dovecot `NO [NOPERM]` — which is
   what proves the path named the share (`live_imap_shared_contract.rs`): unqualified, the
   `CREATE` succeeds among the credential's own folders.
+
+## Gmail as one store (`GmailMail`)
+
+Gmail files a message under labels and shows each label to IMAP as a folder holding a copy, so
+the per-mailbox shape above downloads a message once per label and stores each copy as its own
+object. `ImapAccount::gmail` (offered only on a session advertising `X-GM-EXT-1`) returns a
+`GmailMail` instead: a reader of All Mail (`\All`), Spam (`\Junk`) and Trash (`\Trash`), the
+three folders that between them hold every message once. It reads and never writes; what a
+label means is `provider-google`'s (`google.md`, "Mail read over IMAP"), which is the only user.
+
+- **Gmail's items.** `X-GM-MSGID`, `X-GM-THRID` and `X-GM-LABELS` (`parse_gmail`) are the same
+  for a message in every folder; a message moving between the three keeps its Gmail id under a
+  new UID, so a caller keys by the id, never the UID. Labels arrive in modified UTF-7 on a rev1
+  session and are decoded; system labels keep their backslash names.
+- **CONDSTORE without QRESYNC.** Gmail offers `CONDSTORE` and no `QRESYNC`, so
+  `Connection::uid_fetch_changed` sends `CHANGEDSINCE` with no `VANISHED`, and opening a folder
+  is `SELECT (CONDSTORE)`. Nothing reports a removal; a caller compares counts.
+- **Every read names the `UIDVALIDITY` it planned against** and fails `NeedsResync` when the
+  folder was renumbered, rather than reading one message's UID as another's.
+- **Bounded commands.** A UID list is sent at most 1,000 UIDs a command, and a body read
+  locates at most 50 Gmail ids a command (`UID SEARCH OR X-GM-MSGID …`), so no command line
+  passes RFC 7162 §4's 8192 octets however scattered the UIDs. Bodies stream off the wire one
+  at a time under the stall bound, as `fetch_batch` does.
+- **Live proof** is `provider-google`'s `tests/live_imap_parity.rs`, which syncs one account
+  over this reader and over the Gmail API and compares every message.
 
 ## Known limitations (documented, not bugs)
 

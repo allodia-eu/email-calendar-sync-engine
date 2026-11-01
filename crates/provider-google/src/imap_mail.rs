@@ -2,10 +2,9 @@
 //! can be tested against an in-memory mailbox.
 
 use async_trait::async_trait;
-use engine_core::raw::RawMime;
 use engine_provider::ProviderResult;
 use provider_imap::{
-    GmailFolder, GmailFolderState, GmailMail, GmailMessage, GmailQuery, GmailState,
+    GmailFolder, GmailFolderState, GmailMail, GmailMessage, GmailQuery, GmailSources, GmailState,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -45,7 +44,7 @@ pub(crate) trait ImapMail: Send + Sync {
         uids: &[u32],
     ) -> ProviderResult<Vec<(u32, u64)>>;
     /// [`GmailMail::sources`].
-    async fn sources(&self, gmail_ids: &[u64]) -> ProviderResult<Vec<(u64, RawMime)>>;
+    fn sources<'a>(&'a self, gmail_ids: &'a [u64]) -> GmailSources<'a>;
 }
 
 #[async_trait]
@@ -94,7 +93,7 @@ where
         GmailMail::ids(self, folder, validity, uids).await
     }
 
-    async fn sources(&self, gmail_ids: &[u64]) -> ProviderResult<Vec<(u64, RawMime)>> {
-        GmailMail::sources(self, gmail_ids).await
+    fn sources<'a>(&'a self, gmail_ids: &'a [u64]) -> GmailSources<'a> {
+        GmailMail::sources(self, gmail_ids)
     }
 }

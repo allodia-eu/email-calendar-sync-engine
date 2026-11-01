@@ -23,6 +23,7 @@ use engine_provider::{
     Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts, ScopeSync,
     SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
 };
+use futures_util::StreamExt;
 use provider_imap::GmailMail;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -266,13 +267,12 @@ impl Provider for GmailProvider {
         message: &Message,
     ) -> ProviderResult<RawMime> {
         if let Some(imap) = &self.imap {
-            let id = gmail_id(message.id.key())?;
-            return imap
-                .sources(&[id])
-                .await?
-                .pop()
-                .map(|(_, source)| source)
-                .ok_or_else(|| gone(message.id.key()));
+            let ids = [gmail_id(message.id.key())?];
+            return match imap.sources(&ids).next().await {
+                Some(Ok((_, source))) => Ok(source),
+                Some(Err(err)) => Err(err),
+                None => Err(gone(message.id.key())),
+            };
         }
         // Gmail streams a message's raw RFC 5322 source from `messages.get?format=raw`
         // (base64url); the message's provider key is the Gmail message id.
@@ -291,21 +291,34 @@ impl Provider for GmailProvider {
             let ids: Vec<Option<u64>> =
                 messages.iter().map(|m| gmail_id(m.id.key()).ok()).collect();
             let wanted: Vec<u64> = ids.iter().flatten().copied().collect();
-            match imap.sources(&wanted).await {
-                Ok(mut found) => {
-                    for (index, message) in messages.iter().enumerate() {
-                        let source = ids[index]
-                            .and_then(|id| found.iter().position(|(have, _)| *have == id))
-                            .map(|at| found.swap_remove(at).1)
-                            .ok_or_else(|| gone(message.id.key()));
-                        yield (index, source);
+            let mut answered = vec![false; messages.len()];
+            let mut sources = imap.sources(&wanted);
+            while let Some(item) = sources.next().await {
+                match item {
+                    Ok((id, source)) => {
+                        let Some(index) =
+                            (0..messages.len()).find(|&at| !answered[at] && ids[at] == Some(id))
+                        else {
+                            continue;
+                        };
+                        answered[index] = true;
+                        yield (index, Ok(source));
+                    }
+                    Err(err) => {
+                        for (index, done) in answered.iter_mut().enumerate() {
+                            if !*done {
+                                *done = true;
+                                let err =
+                                    engine_provider::ProviderError::new(err.class(), err.detail());
+                                yield (index, Err(err));
+                            }
+                        }
                     }
                 }
-                Err(err) => {
-                    for index in 0..messages.len() {
-                        let err = engine_provider::ProviderError::new(err.class(), err.detail());
-                        yield (index, Err(err));
-                    }
+            }
+            for (index, message) in messages.iter().enumerate() {
+                if !answered[index] {
+                    yield (index, Err(gone(message.id.key())));
                 }
             }
         })

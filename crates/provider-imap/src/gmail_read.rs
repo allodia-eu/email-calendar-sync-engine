@@ -15,7 +15,6 @@ use crate::{
     mail::message_from_fetch,
     metadata_fetch::FETCH_ITEMS,
     parse::FetchRow,
-    parse_body::parse_any_fetch_body,
     sync::uid_set_spec,
     transport::Connection,
     transport_command::{format_imap_date, quote},
@@ -31,7 +30,11 @@ const GMAIL_ITEMS: &str = "X-GM-MSGID X-GM-THRID X-GM-LABELS";
 const FETCH_BATCH: usize = 500;
 
 /// Gmail ids per body search: about 1.8 KB of command, far under RFC 7162 §4's 8192 octets.
-const SOURCE_BATCH: usize = 50;
+pub(crate) const SOURCE_BATCH: usize = 50;
+
+/// UIDs one command names when they are listed rather than fetched in full: at worst about 7 KB
+/// of UID set, under RFC 7162 §4's 8192 octets however scattered the UIDs are.
+const ID_BATCH: usize = 1000;
 
 /// `SELECT (CONDSTORE)` of `name`, reporting the counters a pass plans from.
 pub(crate) async fn open<S>(
@@ -73,7 +76,8 @@ where
     }
 }
 
-/// `UID SEARCH` for `query` in the open folder.
+/// `UID SEARCH` for `query` in the open folder, the UIDs ascending. A long `uids` list is asked
+/// about [`ID_BATCH`] at a time.
 pub(crate) async fn search<S>(
     connection: &mut Connection<S>,
     query: &GmailQuery,
@@ -81,12 +85,34 @@ pub(crate) async fn search<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let mut criteria = Vec::new();
-    if let Some(uids) = &query.uids {
-        if uids.is_empty() {
-            return Ok(Vec::new());
+    let mut found = Vec::new();
+    match &query.uids {
+        Some(uids) => {
+            for chunk in sorted(uids).chunks(ID_BATCH) {
+                found.extend(search_once(connection, query, Some(chunk)).await?);
+            }
         }
-        criteria.push(format!("UID {}", uid_set_spec(&sorted(uids))));
+        None => found = search_once(connection, query, None).await?,
+    }
+    found.sort_unstable();
+    found.dedup();
+    Ok(found)
+}
+
+async fn search_once<S>(
+    connection: &mut Connection<S>,
+    query: &GmailQuery,
+    uids: Option<&[u32]>,
+) -> ImapResult<Vec<u32>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut criteria = Vec::new();
+    if let Some(uids) = uids {
+        criteria.push(format!("UID {}", uid_set_spec(uids)));
+    }
+    if let Some(from) = query.from_uid {
+        criteria.push(format!("UID {from}:*"));
     }
     if let Some(since) = query.since {
         criteria.push(format!("SINCE {}", format_imap_date(since)));
@@ -97,9 +123,12 @@ where
     if criteria.is_empty() {
         criteria.push("ALL".to_owned());
     }
-    let mut found = connection.uid_search(&criteria.join(" ")).await?;
-    found.sort_unstable();
-    Ok(found)
+    let found = connection.uid_search(&criteria.join(" ")).await?;
+    // `n:*` names the highest UID even when every UID is below `n` (RFC 9051 §6.4.8).
+    Ok(found
+        .into_iter()
+        .filter(|uid| query.from_uid.is_none_or(|from| *uid >= from))
+        .collect())
 }
 
 /// The whole metadata of `uids` in the open folder, attachment flags settled.
@@ -171,7 +200,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let mut out = Vec::with_capacity(uids.len());
-    for set in batches(uids, connection.negotiated.within_message_limit(0)) {
+    for set in batches(uids, connection.negotiated.within_message_limit(ID_BATCH)) {
         for row in connection.uid_fetch(&set, "UID X-GM-MSGID").await? {
             if let Some(id) = row.gmail.message {
                 out.push((row.uid, id));
@@ -181,42 +210,25 @@ where
     Ok(out)
 }
 
-/// The raw source of each of `ids` the open folder holds, as `(id, bytes)`; an id the folder
-/// does not hold is left out.
-pub(crate) async fn sources<S>(
+/// Where the open folder holds each of `ids` (at most [`SOURCE_BATCH`]), as `(uid, id)`; an id
+/// the folder does not hold is left out.
+pub(crate) async fn located<S>(
     connection: &mut Connection<S>,
     ids: &[u64],
-) -> ImapResult<Vec<(u64, Vec<u8>)>>
+) -> ImapResult<Vec<(u32, u64)>>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let mut out = Vec::new();
-    for batch in ids.chunks(SOURCE_BATCH) {
-        let found = connection.uid_search(&any_of(batch)).await?;
-        if found.is_empty() {
-            continue;
-        }
-        let set = uid_set_spec(&sorted(&found));
-        let by_uid: Vec<(u32, u64)> = connection
-            .uid_fetch(&set, "UID X-GM-MSGID")
-            .await?
-            .into_iter()
-            .filter_map(|row| row.gmail.message.map(|id| (row.uid, id)))
-            .collect();
-        let response = connection
-            .command(&format!("UID FETCH {set} (UID BODY.PEEK[])"))
-            .await?;
-        for (uid, bytes) in response
-            .untagged()
-            .iter()
-            .filter_map(|line| parse_any_fetch_body(line))
-        {
-            if let Some((_, id)) = by_uid.iter().find(|(known, _)| *known == uid) {
-                out.push((*id, bytes));
-            }
-        }
+    let found = connection.uid_search(&any_of(ids)).await?;
+    if found.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(out)
+    Ok(connection
+        .uid_fetch(&uid_set_spec(&sorted(&found)), "UID X-GM-MSGID")
+        .await?
+        .into_iter()
+        .filter_map(|row| row.gmail.message.map(|id| (row.uid, id)))
+        .collect())
 }
 
 /// `OR X-GM-MSGID a OR X-GM-MSGID b X-GM-MSGID c`: a search for any of `ids`.

@@ -11,7 +11,6 @@ use engine_core::{
     ids::{AccountId, MailboxId, MessageId, ProviderKey},
     mail::Message,
     membership::Memberships,
-    raw::RawMime,
     sync::{SyncState, SyncWindow},
 };
 use engine_provider::{EmailChunk, PassMode, Provider, ProviderResult};
@@ -138,6 +137,7 @@ impl ImapMail for FakeGmail {
             f.messages
                 .iter()
                 .filter(|(uid, _)| query.uids.as_ref().is_none_or(|uids| uids.contains(uid)))
+                .filter(|(uid, _)| query.from_uid.is_none_or(|from| **uid >= from))
                 .filter(|(_, held)| {
                     query.raw.as_deref().is_none_or(|raw| {
                         held.category
@@ -199,8 +199,8 @@ impl ImapMail for FakeGmail {
         }))
     }
 
-    async fn sources(&self, _gmail_ids: &[u64]) -> ProviderResult<Vec<(u64, RawMime)>> {
-        Ok(Vec::new())
+    fn sources<'a>(&'a self, _gmail_ids: &'a [u64]) -> provider_imap::GmailSources<'a> {
+        Box::pin(futures_util::stream::empty())
     }
 }
 

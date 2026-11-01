@@ -26,7 +26,12 @@ use tokio::{
     sync::OnceCell,
 };
 
-use crate::{gmail_read as read, mail::mailbox_from_list, pool::ImapPool};
+use crate::{gmail_read as read, mail::mailbox_from_list, pool::ImapPool, sync::uid_set_spec};
+
+/// The bodies [`GmailMail::sources`] hands on, each with its Gmail id, as they arrive.
+pub type GmailSources<'a> = core::pin::Pin<
+    Box<dyn futures_util::Stream<Item = ProviderResult<(u64, RawMime)>> + Send + 'a>,
+>;
 
 /// One of the three folders that together hold every message of a Gmail account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -93,6 +98,8 @@ pub struct GmailMessage {
 pub struct GmailQuery {
     /// Only these UIDs.
     pub uids: Option<Vec<u32>>,
+    /// Only UIDs from this one on.
+    pub from_uid: Option<u32>,
     /// Only messages that arrived on or after this day (`SINCE`).
     pub since: Option<time::Date>,
     /// Only messages Gmail's own search matches (`X-GM-RAW`), e.g. `category:social`.
@@ -235,33 +242,78 @@ where
     }
 
     /// The raw source of each message named by its Gmail id, looked for in All Mail, then
-    /// Trash, then Spam; an id none of them holds is left out.
-    ///
-    /// # Errors
-    ///
-    /// Anything the server or the network answered.
-    pub async fn sources(&self, gmail_ids: &[u64]) -> ProviderResult<Vec<(u64, RawMime)>> {
-        let mut wanted = gmail_ids.to_vec();
-        let mut found = Vec::new();
-        for folder in [GmailFolder::All, GmailFolder::Trash, GmailFolder::Spam] {
-            if wanted.is_empty() {
-                break;
+    /// Trash, then Spam, each handed on as it comes off the wire, so a batch holds one body in
+    /// memory at a time (as `crate::fetch_batch` does). An id none of them holds is left out.
+    /// The stream ends after the first failure, which it yields.
+    pub fn sources<'a>(&'a self, gmail_ids: &'a [u64]) -> GmailSources<'a> {
+        Box::pin(async_stream::stream! {
+            let mut wanted = gmail_ids.to_vec();
+            for folder in [GmailFolder::All, GmailFolder::Trash, GmailFolder::Spam] {
+                if wanted.is_empty() {
+                    break;
+                }
+                let name = match self.name(folder).await {
+                    Ok(Some(name)) => name,
+                    Ok(None) => continue,
+                    Err(err) => {
+                        yield Err(err);
+                        return;
+                    }
+                };
+                let pending = wanted.clone();
+                for batch in pending.chunks(read::SOURCE_BATCH) {
+                    let mut connection = match self.pool.acquire_for(name.as_str()).await {
+                        Ok(connection) => connection,
+                        Err(err) => {
+                            yield Err(err.into());
+                            return;
+                        }
+                    };
+                    let located = async {
+                        connection.examine(name.as_str()).await?;
+                        read::located(&mut connection, batch).await
+                    }
+                    .await;
+                    let located = match located {
+                        Ok(located) if located.is_empty() => continue,
+                        Ok(located) => located,
+                        Err(err) => {
+                            connection.discard();
+                            yield Err(err.into());
+                            return;
+                        }
+                    };
+                    let mut uids: Vec<u32> = located.iter().map(|(uid, _)| *uid).collect();
+                    uids.sort_unstable();
+                    let started = connection
+                        .uid_fetch_stream_start(&uid_set_spec(&uids), "BODY.PEEK[]")
+                        .await;
+                    if let Err(err) = started {
+                        connection.discard();
+                        yield Err(err.into());
+                        return;
+                    }
+                    loop {
+                        match connection.next_fetch_body().await {
+                            Ok(Some((uid, bytes))) => {
+                                let Some(&(_, id)) = located.iter().find(|(known, _)| *known == uid)
+                                else {
+                                    continue;
+                                };
+                                wanted.retain(|want| *want != id);
+                                yield Ok((id, RawMime::new(bytes)));
+                            }
+                            Ok(None) => break,
+                            Err(err) => {
+                                connection.discard();
+                                yield Err(err.into());
+                                return;
+                            }
+                        }
+                    }
+                }
             }
-            let Some(name) = self.name(folder).await? else {
-                continue;
-            };
-            let mut connection = self.pool.acquire_for(name.as_str()).await?;
-            let result = async {
-                connection.examine(name.as_str()).await?;
-                read::sources(&mut connection, &wanted).await
-            }
-            .await
-            .map_err(ProviderError::from);
-            let got = connection.settle(result)?;
-            wanted.retain(|id| got.iter().all(|(have, _)| have != id));
-            found.extend(got.into_iter().map(|(id, bytes)| (id, RawMime::new(bytes))));
-        }
-        Ok(found)
+        })
     }
 
     /// Runs `work` on a connection with `folder` open at `validity`.

@@ -97,7 +97,7 @@ pub(crate) fn stream<'a>(
                     let validity = state.uid_validity;
                     let arrivals: Vec<u32> = if state.uid_next > before.uid_next {
                         let range = GmailQuery {
-                            uids: Some((before.uid_next..state.uid_next).collect()),
+                            from_uid: Some(before.uid_next),
                             ..GmailQuery::default()
                         };
                         imap.search(folder, validity, &range).await?
@@ -106,7 +106,10 @@ pub(crate) fn stream<'a>(
                     };
                     let expected = usize::try_from(before.exists).ok().map(|n| n + arrivals.len());
                     lost |= usize::try_from(state.exists).ok() != expected;
-                    let states = if state.highest_modseq > before.highest_modseq {
+                    // Gmail's mod-sequence is the account's, so it moves in every folder when
+                    // anything changes anywhere; a folder holding nothing has nothing to report.
+                    let moved = state.highest_modseq > before.highest_modseq;
+                    let states = if state.exists > 0 && moved {
                         imap.changed(folder, validity, before.uid_next, before.highest_modseq)
                             .await?
                     } else {
@@ -163,7 +166,7 @@ impl Reading<'_> {
         GmailQuery {
             uids,
             since: self.since,
-            raw: None,
+            ..GmailQuery::default()
         }
     }
 

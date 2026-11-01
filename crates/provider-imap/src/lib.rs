@@ -146,7 +146,9 @@ pub use account::ImapAccount;
 pub use config::{ImapConfig, ImapSecurity};
 pub use credentials::{CredentialSource, Credentials};
 pub use error::ImapError;
-pub use gmail::{GmailFolder, GmailFolderState, GmailMail, GmailMessage, GmailQuery, GmailState};
+pub use gmail::{
+    GmailFolder, GmailFolderState, GmailMail, GmailMessage, GmailQuery, GmailSources, GmailState,
+};
 pub use probe::{AuthOffer, probe_imap_auth, probe_smtp_auth};
 pub use provider::ImapProvider;
 pub use watch::{DEFAULT_IDLE_KEEPALIVE, ImapWatcher};

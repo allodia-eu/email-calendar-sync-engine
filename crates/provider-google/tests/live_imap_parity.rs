@@ -66,15 +66,21 @@ async fn address(token: &str) -> String {
 type Written = BTreeMap<String, (Option<ThreadRef>, Vec<String>, Vec<String>)>;
 
 async fn sync(provider: &GmailProvider) -> Written {
+    sync_messages(provider).await.0
+}
+
+async fn sync_messages(provider: &GmailProvider) -> (Written, Vec<Message>) {
     let account = AccountId::try_from("live").unwrap();
     let mut written = Written::new();
+    let mut messages = Vec::new();
     let mut chunks = provider.stream_email(&account, None, SyncWindow::full(), 0, 0);
     while let Some(chunk) = chunks.next().await {
         for message in chunk.expect("a pass that completes").changed {
             written.insert(message.id.key().as_str().to_owned(), facts(&message));
+            messages.push(message);
         }
     }
-    written
+    (written, messages)
 }
 
 fn facts(message: &Message) -> (Option<ThreadRef>, Vec<String>, Vec<String>) {
@@ -107,9 +113,30 @@ async fn an_imap_sync_writes_what_the_api_sync_writes() {
         .gmail()
         .expect("imap.gmail.com advertises X-GM-EXT-1");
 
+    let imap = GmailProvider::new(client(&token)).with_imap(gmail);
     let started = Instant::now();
-    let over_imap = sync(&GmailProvider::new(client(&token)).with_imap(gmail)).await;
+    let (over_imap, messages) = sync_messages(&imap).await;
     let imap_took = started.elapsed();
+
+    // Bodies arrive one at a time off the wire, each under its own message, all of them.
+    let batch = &messages[..messages.len().min(60)];
+    let started = Instant::now();
+    let account = AccountId::try_from("live").unwrap();
+    let mut seen = vec![0usize; batch.len()];
+    let mut sources = imap.fetch_message_sources(&account, batch);
+    let mut bytes = 0;
+    while let Some((index, source)) = sources.next().await {
+        let source = source.expect("every listed message has a body");
+        assert_ne!(source.as_bytes(), &[] as &[u8]);
+        bytes += source.as_bytes().len();
+        seen[index] += 1;
+    }
+    assert!(seen.iter().all(|&n| n == 1), "each body once: {seen:?}");
+    println!(
+        "{} bodies, {bytes} octets, in {:.2}s",
+        batch.len(),
+        started.elapsed().as_secs_f64()
+    );
     let started = Instant::now();
     let over_api = sync(&GmailProvider::new(client(&token))).await;
     let api_took = started.elapsed();
