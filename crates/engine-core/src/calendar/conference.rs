@@ -151,6 +151,25 @@ pub enum ConferenceOrigin {
     /// The server stores a meeting it did not make, in a field built for it: iCalendar
     /// `CONFERENCE`, JSCalendar `virtualLocations`, a Google add-on conference.
     Attached,
+    /// Found where no field built for a meeting held it (see
+    /// [`add_detected`](super::add_detected)).
+    Detected {
+        /// Where it was found.
+        place: DetectedIn,
+    },
+}
+
+/// Where a detected conference was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DetectedIn {
+    /// A vendor's own iCalendar property: `X-GOOGLE-CONFERENCE`,
+    /// `X-MICROSOFT-SKYPETEAMSMEETINGURL`.
+    VendorProperty,
+    /// A location: one whose whole text is a web link, or a meeting link inside one.
+    Location,
+    /// A meeting link in the description.
+    Description,
 }
 
 /// A meeting a person can join, with every way in it offers.

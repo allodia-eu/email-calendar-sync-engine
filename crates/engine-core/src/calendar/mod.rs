@@ -12,6 +12,8 @@
 mod alert;
 mod calendar_collection;
 mod conference;
+mod conference_block;
+mod conference_detect;
 mod conference_service;
 mod conference_uri;
 mod event;
@@ -27,9 +29,10 @@ mod recurrence_set;
 pub use alert::{Alert, AlertAction, Trigger};
 pub use calendar_collection::{Calendar, CalendarAccess};
 pub use conference::{
-    AccessCodes, Conference, ConferenceFeature, ConferenceKey, ConferenceOrigin, EntryKind,
-    EntryPoint, FlatEntry, NativeState, group_flat,
+    AccessCodes, Conference, ConferenceFeature, ConferenceKey, ConferenceOrigin, DetectedIn,
+    EntryKind, EntryPoint, FlatEntry, NativeState, group_flat,
 };
+pub use conference_detect::{DetectionSources, add_detected};
 pub use conference_service::ConferenceService;
 pub use conference_uri::{ConferenceUri, ConferenceUriError, UriScheme};
 pub use event::{Event, EventStatus, FreeBusyStatus, Privacy};

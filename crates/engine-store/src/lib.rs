@@ -89,4 +89,9 @@ pub use store::Store;
 ///   and Graph's dial-in numbers and conference ID were not read at all, and an iCalendar
 ///   parameter's RFC 6868 escapes were not decoded. A stored event loads with no conferences until
 ///   the re-snapshot re-projects it.
-pub const NORMALIZER_VERSION: u32 = 7;
+/// - `8`: an event's meetings are also read from where no conference field holds them: the vendor
+///   properties Google's and Microsoft's invitations carry, a location, and a meeting link in the
+///   description. Graph's stand-in location for an online meeting ("Microsoft Teams Meeting") is no
+///   longer a location. A stored event keeps the conferences it had until the re-snapshot
+///   re-projects it.
+pub const NORMALIZER_VERSION: u32 = 8;

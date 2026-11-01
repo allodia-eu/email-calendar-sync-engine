@@ -1,6 +1,6 @@
 //! The normalized calendar event.
 
-use std::collections::BTreeSet;
+use std::{borrow::Cow, collections::BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -198,6 +198,16 @@ impl Event {
     pub fn is_cancelled(&self) -> bool {
         self.status == EventStatus::Cancelled
     }
+
+    /// The person's own notes: the description without the meeting blocks an invitation
+    /// writes into it (Microsoft Teams', Google Calendar's), which repeat a conference.
+    /// `None` when nothing else is left. [`Self::description`] stays the server's text,
+    /// because an edit is computed against it.
+    #[must_use]
+    pub fn notes(&self) -> Option<Cow<'_, str>> {
+        let notes = super::conference_block::without_blocks(self.description.as_deref()?);
+        (!notes.is_empty()).then_some(notes)
+    }
 }
 
 #[cfg(test)]
@@ -258,5 +268,18 @@ mod tests {
         ev.raw_ical = Some(RawIcal::new("BEGIN:VEVENT\r\nUID:uid-1\r\nEND:VEVENT"));
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), ev);
+    }
+
+    #[test]
+    fn the_notes_are_the_description_without_its_meeting_block() {
+        let mut ev = event();
+        assert_eq!(ev.notes(), None);
+        let rule = "_".repeat(80);
+        ev.description = Some(format!("{rule}\nMicrosoft Teams meeting\nJoin\n{rule}\n"));
+        assert_eq!(ev.notes(), None);
+        ev.description = Some(format!(
+            "Bring the figures.\n\n{rule}\nMicrosoft Teams meeting\n{rule}"
+        ));
+        assert_eq!(ev.notes().as_deref(), Some("Bring the figures."));
     }
 }

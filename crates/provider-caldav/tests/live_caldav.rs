@@ -123,21 +123,7 @@ async fn caldav_calendar_sync_loop() {
         "One-off zoned event"
     );
     assert_eq!(by_uid("meeting-2003@test.local").participants.len(), 3);
-    let conferences = &by_uid("virtual-2004@test.local").conferences;
-    assert_eq!(
-        conferences.len(),
-        1,
-        "the dial-in joins the meeting: {conferences:?}"
-    );
-    let entry_uris: Vec<&str> = conferences[0]
-        .entry_points
-        .iter()
-        .map(|entry| entry.uri.as_str())
-        .collect();
-    assert_eq!(
-        entry_uris,
-        ["https://meet.example.com/harness-room", "tel:+15555550100"]
-    );
+    common::conferences::the_seeds_meetings_read_as_one_conference_each(&events);
     assert!(by_uid("allday-2005@test.local").is_all_day());
     assert!(by_uid("floating-2006@test.local").start.is_floating());
 

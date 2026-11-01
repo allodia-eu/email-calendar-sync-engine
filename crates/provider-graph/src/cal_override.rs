@@ -31,6 +31,7 @@ use engine_core::{
 use serde_json::Value;
 
 use crate::{
+    cal_conference,
     cal_normalize::parse_endpoint,
     error::GraphError,
     json::{bool_field, opt_str, req_str},
@@ -155,19 +156,18 @@ fn notes_of(entry: &Value) -> Option<&str> {
 }
 
 /// The instance's own location name, from the singular `location` or the first of the
-/// `locations` array Graph populates beside it.
+/// `locations` array Graph populates beside it, unless it is the one Exchange adds to an
+/// online meeting ([`cal_conference::is_placeholder`]), which the series leaves out too.
 fn location_name(entry: &Value) -> Option<&str> {
     entry
         .get("location")
-        .and_then(|l| opt_str(l, "displayName"))
+        .and_then(|l| opt_str(l, "displayName").map(|name| (l, name)))
         .or_else(|| {
-            entry
-                .get("locations")
-                .and_then(Value::as_array)
-                .and_then(|list| list.first())
-                .and_then(|l| opt_str(l, "displayName"))
+            let l = entry.get("locations")?.as_array()?.first()?;
+            Some((l, opt_str(l, "displayName")?))
         })
-        .filter(|name| !name.is_empty())
+        .filter(|(l, name)| !name.is_empty() && !cal_conference::is_placeholder(entry, l))
+        .map(|(_, name)| name)
 }
 
 /// Folds every collected override into the event it belongs to.

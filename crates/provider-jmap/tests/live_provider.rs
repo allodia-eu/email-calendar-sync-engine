@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use engine_core::{
+    calendar::{ConferenceOrigin, DetectedIn},
     ids::{AccountId, MailboxId, MessageIdHeader},
     mail::{EmailAddress, Message, SystemKeyword},
     sync::{JmapDataType, SyncUpdate},
@@ -231,6 +232,30 @@ async fn live_calendar_fetch() {
     assert_eq!(
         entry_uris,
         ["https://meet.example.com/harness-room", "tel:+15555550100"]
+    );
+    // JMAP carries no `X-GOOGLE-CONFERENCE`, so the Google-shaped invitation's meeting is the
+    // one its description's block links to, and the notes leave the block out.
+    let invitation = objects
+        .iter()
+        .find(|e| e.uid.as_str() == "meeting-2003@test.local")
+        .unwrap();
+    let found: Vec<_> = invitation
+        .conferences
+        .iter()
+        .map(|c| (c.join().map(ToString::to_string), c.origin))
+        .collect();
+    assert_eq!(
+        found,
+        [(
+            Some("https://meet.google.com/abc-defg-hij".to_owned()),
+            ConferenceOrigin::Detected {
+                place: DetectedIn::Description
+            }
+        )]
+    );
+    assert_eq!(
+        invitation.notes().as_deref(),
+        Some("Bring the quarterly figures.")
     );
 }
 

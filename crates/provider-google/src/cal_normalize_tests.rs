@@ -2,8 +2,8 @@
 //! fixtures under `tests/fixtures/calendar/`.
 
 use engine_core::calendar::{
-    ConferenceUri, EventStatus, FreeBusyStatus, Frequency, ParticipantRole, ParticipationStatus,
-    RecurrenceBound, RecurrenceOverride,
+    ConferenceOrigin, ConferenceUri, DetectedIn, EventStatus, FreeBusyStatus, Frequency,
+    ParticipantRole, ParticipationStatus, RecurrenceBound, RecurrenceOverride,
 };
 use serde_json::Value;
 
@@ -187,6 +187,40 @@ fn meet_event_projects_its_conference() {
             .unwrap()
             .as_str()
             .contains("meet.google.com")
+    );
+}
+
+#[test]
+fn a_meeting_named_only_in_the_location_or_description_is_detected() {
+    let json = serde_json::json!({
+        "id": "evt-1", "iCalUID": "evt-1@example.com", "summary": "Pasted",
+        "start": { "dateTime": "2026-08-03T10:00:00+02:00", "timeZone": "Europe/Amsterdam" },
+        "end": { "dateTime": "2026-08-03T11:00:00+02:00", "timeZone": "Europe/Amsterdam" },
+        "location": "https://video.example.com/room-12",
+        "description": "<a href=\"https://teams.microsoft.com/meet/123?p=x\">Join</a>"
+    });
+    let event = event_from_json(&json, &calendar(), None).unwrap();
+    let found: Vec<_> = event
+        .conferences
+        .iter()
+        .map(|c| (c.join().map(ConferenceUri::as_str), c.origin))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (
+                Some("https://video.example.com/room-12"),
+                ConferenceOrigin::Detected {
+                    place: DetectedIn::Location
+                }
+            ),
+            (
+                Some("https://teams.microsoft.com/meet/123?p=x"),
+                ConferenceOrigin::Detected {
+                    place: DetectedIn::Description
+                }
+            ),
+        ]
     );
 }
 

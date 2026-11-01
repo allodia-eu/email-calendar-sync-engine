@@ -21,9 +21,9 @@
 
 use engine_core::{
     calendar::{
-        Calendar, CalendarAccess, Event, EventStatus, FreeBusyStatus, Location, Participant,
-        ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence,
-        RecurrenceOverride, parse_rrule,
+        Calendar, CalendarAccess, DetectionSources, Event, EventStatus, FreeBusyStatus, Location,
+        Participant, ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence,
+        RecurrenceOverride, add_detected, parse_rrule,
     },
     ids::{CalendarId, Uid},
     membership::Memberships,
@@ -161,6 +161,14 @@ pub(crate) fn event_from_json(
     event.participants = participants(value);
     event.locations = locations(value);
     event.conferences = cal_conference::conferences(value);
+    add_detected(
+        &mut event.conferences,
+        &DetectionSources {
+            locations: &event.locations,
+            description: event.description.as_deref(),
+            ..DetectionSources::default()
+        },
+    );
     event.revisions = revisions(value);
     // Preserve the provider-native payload beside the projection (Google is neither iCal
     // nor JSCalendar, so it rides `extended`, not `raw_ical`/`raw_jscalendar`).

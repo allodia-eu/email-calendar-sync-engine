@@ -1,5 +1,6 @@
-//! Gated live check that an online meeting Exchange makes reads back as the calendar's own
-//! conference.
+//! Gated live checks that an online meeting Exchange makes reads back as the calendar's own
+//! conference, without Exchange's stand-in location, and that a meeting only written into
+//! the location and body is detected there.
 //!
 //! The event is created by direct HTTP with `isOnlineMeeting: true`, because asking the
 //! server for a meeting is not something the adapter writes yet; it is the fixture. Reading it
@@ -16,7 +17,10 @@ mod common;
 
 use common::*;
 use engine_core::{
-    calendar::{ConferenceOrigin, ConferenceService, EntryKind, NativeState},
+    calendar::{
+        ConferenceOrigin, ConferenceService, ConferenceUri, DetectedIn, EntryKind, Event,
+        NativeState,
+    },
     sync::SyncUpdate,
 };
 use engine_provider::Provider;
@@ -93,8 +97,16 @@ async fn live_a_teams_meeting_reads_back_as_the_calendars_own_conference() {
         .await
         .expect("DELETE the fixture event");
 
-    let conferences = outcome.expect("the created event syncs");
-    eprintln!("read back: {conferences:#?}");
+    let event = outcome.expect("the created event syncs");
+    let conferences = &event.conferences;
+    eprintln!(
+        "read back: {conferences:#?}, locations {:?}",
+        event.locations
+    );
+    // The body's join link is the same meeting, and Exchange's stand-in location is none.
+    assert_eq!(event.locations, []);
+    // The body is all Teams block, inner section rules included, so nothing is the person's.
+    assert_eq!(event.notes(), None, "{:?}", event.description);
     assert_eq!(conferences.len(), 1);
     let teams = &conferences[0];
     assert_eq!(teams.service, Some(ConferenceService::Teams));
@@ -113,11 +125,78 @@ async fn live_a_teams_meeting_reads_back_as_the_calendars_own_conference() {
     assert_eq!(teams.entry_points[0].kind, EntryKind::Video);
 }
 
-/// The conferences of the event titled `title`, once the adapter's sync finds it.
-async fn read_back(
-    provider: &provider_graph::GraphCalendarProvider,
-    title: &str,
-) -> Option<Vec<engine_core::calendar::Conference>> {
+#[tokio::test]
+async fn live_a_meeting_only_in_the_body_and_location_is_detected() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_a_meeting_only_in_the_body...: GRAPH_ACCESS_TOKEN unset");
+        return;
+    };
+    let date = time::OffsetDateTime::now_utc().date() + time::Duration::days(15);
+    let title = format!(
+        "PIM live detected conference {}",
+        time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+    );
+    let created: serde_json::Value = http()
+        .post(format!("{GRAPH}/me/events"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "subject": title,
+            "start": { "dateTime": format!("{date}T10:00:00"), "timeZone": "Europe/Amsterdam" },
+            "end": { "dateTime": format!("{date}T10:30:00"), "timeZone": "Europe/Amsterdam" },
+            "location": { "displayName": "https://video.example.com/room-12" },
+            "body": {
+                "contentType": "html",
+                "content": "<p>Agenda first.</p><p><a href=\"https://zoom.us/j/123456789?pwd=abc&amp;from=addon\">Join Zoom Meeting</a></p>"
+            }
+        }))
+        .send()
+        .await
+        .expect("POST /me/events")
+        .error_for_status()
+        .expect("the server stores the event")
+        .json()
+        .await
+        .expect("created json");
+    let id = created["id"].as_str().expect("an event id").to_owned();
+
+    let provider = calendar_provider_around(&token, date);
+    let outcome = read_back(&provider, &title).await;
+    http()
+        .delete(format!("{GRAPH}/me/events/{id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("DELETE the fixture event");
+
+    let event = outcome.expect("the created event syncs");
+    eprintln!("read back: {:#?}", event.conferences);
+    let found: Vec<_> = event
+        .conferences
+        .iter()
+        .map(|c| (c.join().map(ConferenceUri::as_str), c.origin))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (
+                Some("https://video.example.com/room-12"),
+                ConferenceOrigin::Detected {
+                    place: DetectedIn::Location
+                }
+            ),
+            (
+                Some("https://zoom.us/j/123456789?pwd=abc&from=addon"),
+                ConferenceOrigin::Detected {
+                    place: DetectedIn::Description
+                }
+            ),
+        ]
+    );
+    assert_eq!(event.conferences[1].service, Some(ConferenceService::Zoom));
+}
+
+/// The event titled `title`, once the adapter's sync finds it.
+async fn read_back(provider: &provider_graph::GraphCalendarProvider, title: &str) -> Option<Event> {
     let calendars = provider
         .sync_calendars(&account(), None)
         .await
@@ -139,8 +218,5 @@ async fn read_back(
     let SyncUpdate::Snapshot { objects, .. } = events.update else {
         panic!("expected an event snapshot");
     };
-    objects
-        .into_iter()
-        .find(|event| event.title == title)
-        .map(|event| event.conferences)
+    objects.into_iter().find(|event| event.title == title)
 }

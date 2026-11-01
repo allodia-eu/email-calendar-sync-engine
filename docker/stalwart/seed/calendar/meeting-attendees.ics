@@ -25,6 +25,12 @@ DTSTAMP:20260101T000000Z
 DTSTART;TZID=Europe/Amsterdam:20260310T150000
 DTEND;TZID=Europe/Amsterdam:20260310T160000
 SUMMARY:Planning meeting with attendees
+DESCRIPTION:Bring the quarterly figures.\n\n-::~:~::~:~:~:~:~:~:~:~:~:~:~:~
+ :~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~::~:~::-\nJoin wit
+ h Google Meet: https://meet.google.com/abc-defg-hij\n\nPlease do not edit 
+ this section.\n-::~:~::~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~
+ :~:~:~:~:~:~:~:~:~:~:~:~:~:~::~:~::-
+X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij
 ORGANIZER;CN=Alice Tester:mailto:alice@test.local
 ATTENDEE;CN=Alice Tester;ROLE=CHAIR;PARTSTAT=ACCEPTED;RSVP=FALSE:mailto:alice@test.local
 ATTENDEE;CN=Bob Tester;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:bob@test.local

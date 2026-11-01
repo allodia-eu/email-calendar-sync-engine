@@ -2,7 +2,10 @@
 //! Graph responses (`tests/fixtures/calendar/`).
 
 use engine_core::{
-    calendar::{EventStatus, Frequency, ParticipantRole, RecurrenceBound, Weekday},
+    calendar::{
+        ConferenceOrigin, ConferenceService, DetectedIn, EventStatus, Frequency, ParticipantRole,
+        RecurrenceBound, Weekday,
+    },
     time::{CalendarDateTime, Duration, TimeZoneId},
 };
 use serde_json::Value;
@@ -122,12 +125,16 @@ fn an_online_meeting_projects_its_conference_and_preserves_the_teams_payload() {
     assert!(!event.is_recurring());
     assert!(matches!(event.start, CalendarDateTime::Zoned { .. }));
 
+    // The body's join link is the same meeting, so it adds no second conference.
     assert_eq!(event.conferences.len(), 1);
     assert!(
         event.conferences[0]
             .join()
             .is_some_and(|uri| uri.as_str().starts_with("https://teams.live.com/meet/"))
     );
+    // "Microsoft Teams-vergadering" is the meeting, not a place; the preview is all block.
+    assert_eq!(event.locations, []);
+    assert_eq!(event.notes(), None);
 
     // The raw payload rides beside the projection.
     let raw = event
@@ -136,6 +143,41 @@ fn an_online_meeting_projects_its_conference_and_preserves_the_teams_payload() {
         .expect("raw Graph event preserved");
     assert_eq!(raw["isOnlineMeeting"], Value::Bool(true));
     assert_eq!(raw["onlineMeetingProvider"], "teamsForBusiness");
+}
+
+#[test]
+fn a_meeting_link_in_an_html_body_is_detected_and_a_typed_location_kept() {
+    let mut value = json(SINGLE);
+    value["isOnlineMeeting"] = Value::Bool(false);
+    value["body"] = serde_json::json!({
+        "contentType": "html",
+        "content": "<p>Agenda</p><a href=\"https://us02web.zoom.us/j/123?pwd=abc&amp;uname=x\">Join Zoom Meeting</a>"
+    });
+    value["locations"] =
+        serde_json::json!([{ "displayName": "Room 4", "uniqueIdType": "private" }]);
+    let event = event_from_json(&value, &calendar_id()).unwrap();
+    let found: Vec<_> = event
+        .conferences
+        .iter()
+        .map(|c| {
+            (
+                c.join().map(ToString::to_string),
+                c.service.clone(),
+                c.origin,
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [(
+            Some("https://us02web.zoom.us/j/123?pwd=abc&uname=x".to_owned()),
+            Some(ConferenceService::Zoom),
+            ConferenceOrigin::Detected {
+                place: DetectedIn::Description
+            }
+        )]
+    );
+    assert_eq!(event.locations.len(), 1);
 }
 
 #[test]

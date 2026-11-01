@@ -620,7 +620,8 @@ sees:
   `hangoutsMeet` (removable, with `pending`/`failure` read from `createRequest.status`) and
   any Graph online meeting (never removable: Graph refuses `isOnlineMeeting: false`).
   `Attached` is a meeting stored in a field built for it that the server did not make:
-  `CONFERENCE`, `virtualLocations`, a Google `addOn`.
+  `CONFERENCE`, `virtualLocations`, a Google `addOn`. `Detected` is one found elsewhere
+  (below).
 - **Service** comes from the server where it names one (`hangoutsMeet`,
   `onlineMeetingProvider`) and otherwise from `ConferenceService::recognise`, which matches
   each service's *meeting* URL shapes only, never its bare domain. `None` means neither said.
@@ -630,6 +631,35 @@ sees:
 - **Keys** name a conference for a later edit: the `virtualLocations` map key, the field
   name where the provider allows one conference (`conferenceData`, `onlineMeeting`), else
   the first URI.
+- **Detection** (`engine_core::calendar::add_detected`, run by every adapter after its
+  conference fields): the vendor properties Google's and Microsoft's invitations carry
+  (`X-GOOGLE-CONFERENCE`, `X-MICROSOFT-SKYPETEAMSMEETINGURL`; iCalendar only, since JMAP
+  does not carry them), then a location that is only a web link, or a meeting link in one,
+  then a meeting link in the description. In a description only a link `recognise`
+  names counts. Graph's description is its preview, so Graph reads the whole `body`,
+  whose HTML holds links in `href`s. A link joins a meeting already held when
+  `ConferenceUri::same_meeting` says so (host and path, escapes compared without case,
+  and one query holding every parameter of the other), or when it runs on the service of a
+  `Native` meeting or one a vendor property names, which is the event's one meeting there:
+  a work tenant's Teams `joinUrl` (and `X-MICROSOFT-SKYPETEAMSMEETINGURL`) is the long
+  `meetup-join` link and its body the short `meet/<id>?p=` one. Stalwart, SabreDAV
+  and Nextcloud all keep `X-GOOGLE-CONFERENCE` over CalDAV (the seed's
+  `meeting-attendees.ics`).
+- **Notes.** `Event::notes()` is the description without the meeting blocks invitations
+  write, which repeat the conference. Teams writes two shapes: between rules (a line of
+  underscores, a first line naming "Microsoft Teams", a closing line of underscores at least
+  as long as the opening one, since shorter rules separate the block's own sections), and,
+  as a work tenant does today, appended with no rule above it (a heading naming "Microsoft
+  Teams" whose next line holds the meeting link, running to the end of the text). Google's
+  has `-::~:~::~:~…::-` above and below. A block without its closing line runs to the end,
+  because Graph's preview cuts it off. `description` itself stays the server's text, since edits are computed
+  against it.
+- **Graph's stand-in location.** Exchange gives an online meeting a location named after the
+  provider in the organiser's language ("Microsoft Teams-vergadering") with no address or
+  coordinates. A typed location has the same shape, so the brand in the name is the test
+  (a booked `conferenceRoom` is always kept), and the projection, an occurrence's
+  included, leaves it out. An iCalendar copy of the invitation carries it as plain
+  `LOCATION` text, which is kept, since nothing there tells it from a typed one.
 - **Occurrences** read the master's conferences; no override carries its own.
 - **Which calendars make one** is the server's to say, per calendar: Graph's
   `allowedOnlineMeetingProviders`, Google's `conferenceProperties`. Observed live: a
@@ -637,7 +667,8 @@ sees:
   personal Microsoft account's calendar lists only `unknown`, and a create asking for
   `teamsForBusiness` succeeds with `isOnlineMeeting: false` and no meeting, without an
   error. `live_calendar_conference` in `provider-graph` and `provider-google` reads a
-  server-made meeting back through the adapter.
+  server-made meeting back through the adapter, and a meeting written only into the
+  location and description.
 
 ## Supported recurrence subset
 

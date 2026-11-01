@@ -1,5 +1,7 @@
 //! The address a conference is joined at.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 /// The URI schemes a conference may be joined through.
@@ -144,6 +146,42 @@ impl ConferenceUri {
         self.web_parts().map(|(_, path)| path)
     }
 
+    /// Whether `other` joins the same meeting as this URI.
+    ///
+    /// Two web URIs do when their host and path match, with percent escapes compared without
+    /// regard to case and a trailing `/` ignored, and one's query holds every parameter of
+    /// the other's: services write a link both with and without its passcode (Zoom's `pwd`)
+    /// or an add-on's marker (`from=addon`), while a parameter that differs can name a
+    /// different meeting (Webex's `MTID`). The scheme and fragment are ignored. Any other URI
+    /// is the same meeting only as the same text.
+    #[must_use]
+    pub fn same_meeting(&self, other: &Self) -> bool {
+        match (self.meeting_parts(), other.meeting_parts()) {
+            (Some((host, path, query)), Some((other_host, other_path, other_query))) => {
+                host == other_host
+                    && path == other_path
+                    && (query.is_subset(&other_query) || other_query.is_subset(&query))
+            }
+            (None, None) => self.0 == other.0,
+            _ => false,
+        }
+    }
+
+    /// A web URI's host, path and query parameters as [`Self::same_meeting`] compares them.
+    fn meeting_parts(&self) -> Option<(String, String, BTreeSet<String>)> {
+        let host = self.host()?;
+        let path = self.path()?.trim_end_matches('/');
+        let without_fragment = self.0.split('#').next().unwrap_or_default();
+        let query = without_fragment
+            .split_once('?')
+            .map_or("", |(_, query)| query)
+            .split('&')
+            .filter(|param| !param.is_empty())
+            .map(upper_escapes)
+            .collect();
+        Some((host, upper_escapes(path), query))
+    }
+
     /// A web URI's authority and path, or `None` when it has no `//` or is not a web URI.
     fn web_parts(&self) -> Option<(&str, &str)> {
         let rest = self
@@ -157,6 +195,25 @@ impl ConferenceUri {
             None => (rest, ""),
         })
     }
+}
+
+/// `text` with the two hex digits after each `%` in upper case, so `%3a` and `%3A` compare
+/// equal.
+fn upper_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut upper = 0;
+    for c in text.chars() {
+        if upper > 0 {
+            out.push(c.to_ascii_uppercase());
+            upper -= 1;
+        } else {
+            out.push(c);
+            if c == '%' {
+                upper = 2;
+            }
+        }
+    }
+    out
 }
 
 impl TryFrom<String> for ConferenceUri {
@@ -272,6 +329,27 @@ mod tests {
         assert_eq!(uri("https://example.com").path(), Some(""));
         assert_eq!(uri("tel:+31201234567").host(), None);
         assert_eq!(uri("sip:room@example.com").path(), None);
+    }
+
+    #[test]
+    fn the_same_meeting_is_the_same_host_path_and_query_however_written() {
+        let teams =
+            uri("https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0?context=%7b%7d");
+        assert!(teams.same_meeting(&uri(
+            "https://Teams.Microsoft.com/l/meetup-join/19%3Ameeting_x/0/?context=%7B%7D#x"
+        )));
+        let zoom = uri("https://zoom.us/j/123?pwd=abc");
+        assert!(zoom.same_meeting(&uri("https://zoom.us/j/123")));
+        assert!(!zoom.same_meeting(&uri("https://zoom.us/j/123?pwd=xyz")));
+        assert!(!zoom.same_meeting(&uri("https://zoom.us/j/124?pwd=abc")));
+        assert!(zoom.same_meeting(&uri("https://zoom.us/j/123?from=addon&pwd=abc")));
+        assert!(!zoom.same_meeting(&uri("https://zoom.us/j/123?pwd=xyz&from=addon")));
+        assert!(uri("https://zoom.us/j/123#a?pwd=x").same_meeting(&zoom));
+        assert!(
+            !uri("https://meet.example.com/a").same_meeting(&uri("https://meet.example.com/A"))
+        );
+        assert!(uri("tel:+3120").same_meeting(&uri("tel:+31 20")));
+        assert!(!uri("tel:+3120").same_meeting(&uri("https://meet.example.com/a")));
     }
 
     #[test]

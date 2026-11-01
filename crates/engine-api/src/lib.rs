@@ -52,8 +52,8 @@ pub use engine::{
 // `engine-api` alone (the providers themselves still come from the adapter crates).
 pub use engine_core::calendar::{
     AccessCodes, Calendar, Conference, ConferenceFeature, ConferenceKey, ConferenceOrigin,
-    ConferenceService, ConferenceUri, ConferenceUriError, EntryKind, EntryPoint, Event, EventKind,
-    EventStatus, FreeBusyStatus, Frequency, Location, NDay, NativeState, Participant,
+    ConferenceService, ConferenceUri, ConferenceUriError, DetectedIn, EntryKind, EntryPoint, Event,
+    EventKind, EventStatus, FreeBusyStatus, Frequency, Location, NDay, NativeState, Participant,
     ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence, RecurrenceBound,
     RecurrenceOverride, RecurrenceRule, RecurrenceSkip, UriScheme, Weekday,
 };
