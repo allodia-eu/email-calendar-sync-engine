@@ -425,3 +425,7 @@ fn gone(key: &ProviderKey) -> engine_provider::ProviderError {
 #[cfg(test)]
 #[path = "provider_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "imap_bodies_tests.rs"]
+mod imap_bodies_tests;

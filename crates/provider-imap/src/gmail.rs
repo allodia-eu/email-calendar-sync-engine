@@ -370,3 +370,7 @@ where
         })
     }
 }
+
+#[cfg(test)]
+#[path = "gmail_tests.rs"]
+mod tests;
