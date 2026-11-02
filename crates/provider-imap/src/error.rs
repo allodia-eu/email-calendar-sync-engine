@@ -13,8 +13,6 @@
 use engine_core::error::FailureClass;
 use engine_provider::ProviderError;
 
-use crate::transport::opens_with_code;
-
 /// An IMAP (or SMTP) protocol or transport failure.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -80,6 +78,27 @@ impl ImapError {
         Self::No(detail.into())
     }
 
+    /// Classes a `NO` to `LOGIN` or `AUTHENTICATE`, the two ways into a session.
+    ///
+    /// It is an authentication failure unless its code says the credential was never judged:
+    /// `[LIMIT]` is the server refusing sessions for the account ([`ImapError::RateLimited`]),
+    /// and a temporary code stays the retryable `NO` it is (`[UNAVAILABLE]` is RFC 5530 §3's
+    /// own example: the directory that checks passwords is down).
+    ///
+    /// `LIMIT` is read this way only here, because RFC 5530's `LIMIT` is any implementation
+    /// limit: on `STORE` it can mean too many keywords, which no wait will fix. Before a
+    /// session exists, the only limit left to hit is on sessions.
+    pub(crate) fn refused_sign_in(detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        if opens_with_code(&detail, "LIMIT") {
+            Self::RateLimited(detail)
+        } else if opens_with_temporary_code(&detail) {
+            Self::No(detail)
+        } else {
+            Self::Auth(detail)
+        }
+    }
+
     /// Builds an [`ImapError::Bad`].
     pub(crate) fn bad(detail: impl Into<String>) -> Self {
         Self::Bad(detail.into())
@@ -135,6 +154,16 @@ pub(crate) fn opens_with_temporary_code(detail: &str) -> bool {
         .any(|code| opens_with_code(detail, code))
 }
 
+/// Whether a completion's text opens with the argument-less response code `code`. A code
+/// is only a code at the start of the text (RFC 3501 `resp-text`), and it is an atom, so
+/// case does not matter.
+pub(crate) fn opens_with_code(detail: &str, code: &str) -> bool {
+    detail
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+        .is_some_and(|(found, _)| found.eq_ignore_ascii_case(code))
+}
+
 /// The result type the IMAP client's internal operations return.
 pub(crate) type ImapResult<T> = Result<T, ImapError>;
 
@@ -159,6 +188,10 @@ mod tests {
         assert_eq!(
             ImapError::no("SELECT nonexistent").failure_class(),
             FailureClass::InvalidState
+        );
+        assert_eq!(
+            ImapError::no("[INUSE] SELECT").failure_class(),
+            FailureClass::Retryable
         );
         assert_eq!(
             ImapError::bad("syntax").failure_class(),

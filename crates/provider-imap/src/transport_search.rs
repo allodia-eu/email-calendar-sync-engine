@@ -19,9 +19,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     capability::Extension,
-    error::{ImapError, ImapResult},
+    error::{ImapError, ImapResult, opens_with_code},
     parse::{self, FetchRow},
-    transport::{Connection, opens_with_code},
+    transport::Connection,
     transport_command::imap_day,
 };
 

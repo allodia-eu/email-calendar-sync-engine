@@ -153,9 +153,9 @@ is authoritative for the `provider-caldav` calendar client.
   number, and the server's limit is shared with every other client of the user's. A caller
   whose dial fails while another *worker* holds a connection waits for one to come back
   rather than failing; it fails only once no worker is left. When the server *answered*
-  (`LOGIN` `NO`, `NO [LIMIT]`, `BYE` at the greeting) the ceiling also drops by that
-  connection, since a `NO` to a credential other sessions are logged in with right now is
-  a session limit, not a verdict on the credential; `ImapAccount::invalidate` restores it,
+  (`LOGIN` `NO`, with or without a code, `BYE` at the greeting) the ceiling also drops by
+  that connection, since a `NO` to a credential other sessions are logged in with right now
+  is a session limit, not a verdict on the credential; `ImapAccount::invalidate` restores it,
   a new network being a new address. An unanswered dial (the network) lowers nothing.
   A refused **token** first gets its one renewal (**Authentication** below), so an expired
   token that a fresh one replaces never reaches the pool as a refusal; only a fresh token
