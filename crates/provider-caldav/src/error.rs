@@ -175,6 +175,9 @@ fn status_class(status: u16, body: &str) -> FailureClass {
         // §5.3.2); a `409 Conflict` without the sync-token precondition is a
         // write-ordering conflict.
         409 | 412 => FailureClass::Conflict,
+        // `501 Not Implemented`: the server does not do what was asked (RFC 9110 §15.6.2), which a
+        // retry asks again. Before the server errors, which may pass.
+        501 => FailureClass::Permanent,
         423 | 500..=599 => FailureClass::Retryable, // Locked (RFC 4918 §11.3), or server error.
         429 => FailureClass::RateLimited,
         // A plain `403`, `404`, and anything else will not succeed unchanged.
@@ -242,6 +245,21 @@ mod tests {
         assert_eq!(
             CalDavError::status(404, "gone").failure_class(),
             FailureClass::Permanent
+        );
+    }
+
+    /// A `501 Not Implemented` is the server saying it does not do what was asked (RFC 9110
+    /// §15.6.2): a CardDAV `PROPFIND` to a server with no address books. Asking again is asking
+    /// for the same refusal, so it is no server error that may pass.
+    #[test]
+    fn a_method_the_server_does_not_implement_is_permanent() {
+        assert_eq!(
+            CalDavError::status(501, "").failure_class(),
+            FailureClass::Permanent
+        );
+        assert_eq!(
+            CalDavError::status(500, "").failure_class(),
+            FailureClass::Retryable
         );
     }
 
