@@ -331,7 +331,7 @@ async fn a_qresync_delta_surfaces_a_fetch_error() {
     .unwrap_err();
     assert_eq!(
         err.failure_class(),
-        engine_core::error::FailureClass::InvalidState
+        engine_core::error::FailureClass::Retryable
     );
 }
 

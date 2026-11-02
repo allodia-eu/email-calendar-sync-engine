@@ -13,6 +13,8 @@
 use engine_core::error::FailureClass;
 use engine_provider::ProviderError;
 
+use crate::transport::opens_with_code;
+
 /// An IMAP (or SMTP) protocol or transport failure.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -38,8 +40,10 @@ pub enum ImapError {
     #[error("no credential to sign in with: {0}")]
     Credential(ProviderError),
 
-    /// A command returned a tagged `NO`: it is invalid in the resource's current
-    /// state (e.g. `SELECT` of a missing mailbox), not retryable as-is.
+    /// A command returned a tagged `NO`, leaving the session usable. Its response code
+    /// decides the class: one RFC 5530 calls temporary (`UNAVAILABLE`, `INUSE`,
+    /// `SERVERBUG`) may pass if asked again, and any other `NO` is invalid in the
+    /// resource's current state (e.g. `SELECT` of a missing mailbox).
     #[error("IMAP command rejected: {0}")]
     No(String),
 
@@ -100,7 +104,8 @@ impl ImapError {
             Self::Auth(_) => FailureClass::Authentication,
             Self::RateLimited(_) => FailureClass::RateLimited,
             Self::Credential(source) => source.class(),
-            // `NO` means "not now, in this state" — recompute, do not blind-retry.
+            Self::No(detail) if opens_with_temporary_code(detail) => FailureClass::Retryable,
+            // Any other `NO` means "not in this state": recompute, do not blind-retry.
             Self::No(_) => FailureClass::InvalidState,
             // `BAD`/malformed is a protocol-level incompatibility: the same request
             // will not start working.
@@ -115,6 +120,19 @@ impl From<ImapError> for ProviderError {
         let detail = err.to_string();
         ProviderError::new(class, detail).with_source(err)
     }
+}
+
+/// Whether a `NO`'s text opens with a response code that says the refusal is temporary: the
+/// server is short of something (`UNAVAILABLE`), another session holds what the command needs
+/// (`INUSE`), or the server failed on its own account (`SERVERBUG`), RFC 5530 §3. The command
+/// took no effect, so asking again later is safe and may pass.
+///
+/// `LIMIT` is not among them: it is any implementation limit, so on `STORE` it can mean too
+/// many keywords, which no wait fixes. Only a sign-in reads it as a limit on sessions.
+pub(crate) fn opens_with_temporary_code(detail: &str) -> bool {
+    ["UNAVAILABLE", "INUSE", "SERVERBUG"]
+        .iter()
+        .any(|code| opens_with_code(detail, code))
 }
 
 /// The result type the IMAP client's internal operations return.

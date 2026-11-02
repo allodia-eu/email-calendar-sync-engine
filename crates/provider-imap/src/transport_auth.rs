@@ -12,7 +12,7 @@
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    error::{ImapError, ImapResult},
+    error::{ImapError, ImapResult, opens_with_temporary_code},
     sasl::{self, Mechanism},
     transport::{Connection, opens_with_code, strip_ascii_prefix},
 };
@@ -178,8 +178,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 ///
 /// A `NO` is an authentication failure (as it is for `LOGIN`), so a host is told to
 /// refresh rather than to retry, unless it carries `[LIMIT]` (RFC 5530): as for `LOGIN`,
-/// the server is refusing sessions and never judged the token. A `BAD` is neither: it means
-/// the command itself was refused, which no new token fixes.
+/// the server is refusing sessions and never judged the token. Nor did it under a temporary
+/// code, which stays the retryable `NO` it is. A `BAD` is neither: it means the command
+/// itself was refused, which no new token fixes.
 fn complete(status: &str, detail: &str, challenge: &str) -> ImapResult<()> {
     let described = if challenge.is_empty() {
         detail.to_owned()
@@ -189,6 +190,7 @@ fn complete(status: &str, detail: &str, challenge: &str) -> ImapResult<()> {
     match status.to_ascii_uppercase().as_str() {
         "OK" => Ok(()),
         "NO" if opens_with_code(detail, "LIMIT") => Err(ImapError::rate_limited(described)),
+        "NO" if opens_with_temporary_code(detail) => Err(ImapError::no(described)),
         "NO" => Err(ImapError::auth(described)),
         "BAD" => Err(ImapError::bad(described)),
         other => Err(ImapError::protocol(format!(

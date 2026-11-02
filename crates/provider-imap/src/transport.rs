@@ -14,7 +14,7 @@ use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use crate::{
     capability::Negotiated,
     deadline::{self, BOUNDS},
-    error::{ImapError, ImapResult},
+    error::{ImapError, ImapResult, opens_with_temporary_code},
     parse::{self, FetchRow, ListRow},
     transport_command::{ListReturn, list_command, quote},
 };
@@ -174,7 +174,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 
     /// `LOGIN user password`. A `NO` here is an authentication failure, not a
     /// generic invalid-state error, unless it carries `[LIMIT]`: the server is refusing
-    /// sessions for this account, and the credential was never judged.
+    /// sessions for this account, and the credential was never judged. Nor was it judged
+    /// under a temporary code (`[UNAVAILABLE]` is RFC 5530's own example: the directory
+    /// that checks passwords is down), which stays the retryable `NO` it is.
     ///
     /// Only here, because RFC 5530's `LIMIT` is any implementation limit: on `STORE` it can
     /// mean too many keywords, which no wait will fix. Before a session exists, the only
@@ -185,6 +187,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             Ok(_) => Ok(()),
             Err(ImapError::No(detail)) if opens_with_code(&detail, "LIMIT") => {
                 Err(ImapError::rate_limited(detail))
+            }
+            Err(ImapError::No(detail)) if opens_with_temporary_code(&detail) => {
+                Err(ImapError::no(detail))
             }
             Err(ImapError::No(detail)) => Err(ImapError::auth(detail)),
             Err(other) => Err(other),
@@ -414,3 +419,7 @@ mod tests;
 #[cfg(test)]
 #[path = "transport_negotiate_tests.rs"]
 mod negotiate_tests;
+
+#[cfg(test)]
+#[path = "transport_refusal_tests.rs"]
+mod refusal_tests;
