@@ -49,18 +49,17 @@ pub(super) fn without_blocks(text: &str, repeats: impl Fn(&str) -> bool) -> Cow<
     let mut found = false;
     let mut at = 0;
     while at < lines.len() {
-        if let Some(len) = block_len(&lines[at..])
-            && repeats(&lines[at..at + len].concat())
-        {
+        // A block that is kept is kept whole, so its closing rule is not read as the opening
+        // of another.
+        let len = block_len(&lines[at..]).unwrap_or(1);
+        let block = lines[at..at + len].concat();
+        if len > 1 && repeats(&block) {
             found = true;
             passages.push(String::new());
-            at += len;
-        } else {
-            if let Some(passage) = passages.last_mut() {
-                passage.push_str(lines[at]);
-            }
-            at += 1;
+        } else if let Some(passage) = passages.last_mut() {
+            passage.push_str(&block);
         }
+        at += len;
     }
     if !found {
         return Cow::Borrowed(text.trim());
@@ -177,6 +176,19 @@ mod tests {
         let preview =
             format!("{TEAMS_RULE}\r\nMicrosoft Teams-vergadering\r\nNeem deel vanaf uw computer");
         assert_eq!(without_blocks(&preview, |_| true), "");
+    }
+
+    #[test]
+    fn a_block_that_is_kept_is_kept_whole() {
+        let text = format!(
+            "Agenda\n{GOOGLE_RULE}\nJoin: https://meet.example.com/a\n{GOOGLE_RULE}\nAfter\n"
+        );
+        assert_eq!(without_blocks(&text, |_| false), text.trim());
+        let teams = format!("{TEAMS_RULE}\nMicrosoft Teams meeting\n{TEAMS_RULE}\n");
+        assert_eq!(
+            without_blocks(&format!("{text}{teams}"), |block| !block.contains("meet.")),
+            text.trim()
+        );
     }
 
     #[test]
