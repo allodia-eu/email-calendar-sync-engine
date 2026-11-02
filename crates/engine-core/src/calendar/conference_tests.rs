@@ -110,3 +110,45 @@ fn a_conference_round_trips_through_its_stored_form() {
     );
     assert_eq!(serde_json::from_value::<Conference>(json).unwrap(), meeting);
 }
+
+#[test]
+fn a_link_joins_a_meeting_that_has_it_or_that_is_the_events_one_on_its_service() {
+    let mut teams = group_flat(vec![entry(
+        "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0",
+    )])
+    .remove(0);
+    let short = ConferenceUri::parse("https://teams.microsoft.com/meet/123?p=x").unwrap();
+    assert!(
+        teams.joined_at(
+            &ConferenceUri::parse("https://Teams.microsoft.com/l/meetup-join/19%3Ameeting_x/0/")
+                .unwrap()
+        )
+    );
+    assert!(
+        !teams.joined_at(&short),
+        "an attached meeting is not the service's only one"
+    );
+    teams.origin = ConferenceOrigin::Native {
+        removable: false,
+        state: NativeState::Ready,
+    };
+    assert!(
+        teams.joined_at(&short),
+        "the server's own meeting is the event's one on Teams"
+    );
+    assert!(!teams.joined_at(&ConferenceUri::parse("https://zoom.us/j/1").unwrap()));
+}
+
+#[test]
+fn a_dial_in_number_is_the_label_when_it_is_written_as_one() {
+    let mut point = EntryPoint::at(ConferenceUri::parse("tel:+14255550100,,123456789#").unwrap());
+    assert_eq!(point.phone_number(), Some("+14255550100"));
+    point.label = Some("+1 425-555-0100".into());
+    assert_eq!(point.phone_number(), Some("+1 425-555-0100"));
+    point.label = Some("(020) 555.0100".into());
+    assert_eq!(point.phone_number(), Some("(020) 555.0100"));
+    point.label = Some("Dial in".into());
+    assert_eq!(point.phone_number(), Some("+14255550100"));
+    let web = EntryPoint::at(ConferenceUri::parse("https://zoom.us/j/1").unwrap());
+    assert_eq!(web.phone_number(), None);
+}

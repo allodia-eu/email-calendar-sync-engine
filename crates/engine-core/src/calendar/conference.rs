@@ -122,6 +122,32 @@ impl EntryPoint {
             access: AccessCodes::default(),
         }
     }
+
+    /// The number a person reads for a `tel:` way in: the server's label when it is written
+    /// as a phone number, else the URI's own ([`ConferenceUri::phone_number`]). `None` for any
+    /// other scheme. A label such as "Dial in" names the way in rather than the number, so it
+    /// is not one.
+    #[must_use]
+    pub fn phone_number(&self) -> Option<&str> {
+        let number = self.uri.phone_number()?;
+        Some(
+            self.label
+                .as_deref()
+                .map(str::trim)
+                .filter(|label| reads_as_phone_number(label))
+                .unwrap_or(number),
+        )
+    }
+}
+
+/// Whether `text` is a phone number as people write one: digits, an optional leading `+`, and
+/// spaces or the separators `-`, `.`, `(` and `)` between them.
+fn reads_as_phone_number(text: &str) -> bool {
+    let digits = text.strip_prefix('+').unwrap_or(text);
+    digits.bytes().any(|b| b.is_ascii_digit())
+        && digits
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b' ' | b'-' | b'.' | b'(' | b')'))
 }
 
 /// Where a calendar server's own meeting stands.
@@ -203,6 +229,35 @@ impl Conference {
             .iter()
             .find(|entry| entry.kind == EntryKind::Video)
             .map(|entry| &entry.uri)
+    }
+
+    /// Whether following `uri` joins this meeting: one of its ways in is the same meeting
+    /// ([`ConferenceUri::same_meeting`]), or `uri` runs on its service and this is the event's
+    /// one meeting there, which the calendar server made or a vendor property names. The
+    /// server may write such a meeting into the text under another link than its own (Teams
+    /// puts a short `meet/<id>` link in the body of a meeting whose `joinUrl`, or
+    /// `X-MICROSOFT-SKYPETEAMSMEETINGURL`, is its long `meetup-join` one).
+    #[must_use]
+    pub fn joined_at(&self, uri: &ConferenceUri) -> bool {
+        self.claims_service(ConferenceService::recognise(uri).as_ref())
+            || self
+                .entry_points
+                .iter()
+                .any(|entry| entry.uri.same_meeting(uri))
+    }
+
+    /// Whether this is the event's one meeting on `service`, so that any link to `service`
+    /// joins it (see [`Self::joined_at`]).
+    pub(super) fn claims_service(&self, service: Option<&ConferenceService>) -> bool {
+        service.is_some()
+            && self.service.as_ref() == service
+            && matches!(
+                self.origin,
+                ConferenceOrigin::Native { .. }
+                    | ConferenceOrigin::Detected {
+                        place: DetectedIn::VendorProperty
+                    }
+            )
     }
 }
 

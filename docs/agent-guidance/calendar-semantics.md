@@ -640,10 +640,11 @@ sees:
   every link in an invitation's description as `https://www.google.com/url?q=https://…`, and
   the copy inside carries Google's parameters. A Teams link is a meeting only under `/meet/`
   or `/l/meetup-join/`; the meeting's chat (`/l/chat/`) and options page sit beside it. Graph's description is its preview, so Graph reads the whole `body`,
-  whose HTML holds links in `href`s. A link joins a meeting already held when
-  `ConferenceUri::same_meeting` says so (host and path, escapes compared without case,
-  and one query holding every parameter of the other), or when it runs on the service of a
-  `Native` meeting or one a vendor property names, which is the event's one meeting there:
+  whose HTML holds links in `href`s. A link joins a meeting already held
+  (`Conference::joined_at`) when `ConferenceUri::same_meeting` says so (host and path,
+  escapes compared without case, and one query holding every parameter of the other), or
+  when it runs on the service of a `Native` meeting or one a vendor property names, which is
+  the event's one meeting there:
   a work tenant's Teams `joinUrl` (and `X-MICROSOFT-SKYPETEAMSMEETINGURL`) is the long
   `meetup-join` link and its body the short `meet/<id>?p=` one. A detected meeting takes
   the fullest link any place writes for it (`ConferenceUri::fuller_than`), so a location's
@@ -651,8 +652,11 @@ sees:
   meeting keeps its own. Stalwart, SabreDAV
   and Nextcloud all keep `X-GOOGLE-CONFERENCE` over CalDAV (the seed's
   `meeting-attendees.ics`).
-- **Notes.** `Event::notes()` is the description without the meeting blocks invitations
-  write, which repeat the conference. Teams writes two shapes: between rules (a line of
+- **Notes.** `Event::notes(shown)` is the description without each meeting block an
+  invitation writes that repeats a conference the caller shows: a block goes when a link in it
+  joins such a conference (`Conference::joined_at`), or when it holds no link at all. Any
+  other block stays, because it is then the only place its meeting appears, so the caller
+  passes the same rule it uses to show a conference. Teams writes two shapes: between rules (a line of
   underscores, a first line naming "Microsoft Teams", a closing line of underscores at least
   as long as the opening one, since shorter rules separate the block's own sections), and,
   as a work tenant does today, appended with no rule above it (a heading naming "Microsoft
@@ -666,6 +670,11 @@ sees:
   (a booked `conferenceRoom` is always kept), and the projection, an occurrence's
   included, leaves it out. An iCalendar copy of the invitation carries it as plain
   `LOCATION` text, which is kept, since nothing there tells it from a typed one.
+- **Dial-in numbers.** `EntryPoint::phone_number` is the number a person reads for a `tel:`
+  way in: the server's label when it is written as a number (Google's and Graph's are), else
+  the URI's number without its parameters and without what is dialled after the call connects
+  (`tel:+14255550100,,123456789#`). A JSCalendar `name` such as "Dial in" names the way in,
+  not the number.
 - **Occurrences** read the master's conferences; no override carries its own.
 - **Which calendars make one** is the server's to say, per calendar: Graph's
   `allowedOnlineMeetingProviders`, Google's `conferenceProperties`. Observed live: a
