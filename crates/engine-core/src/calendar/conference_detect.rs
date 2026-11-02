@@ -30,15 +30,11 @@ pub struct DetectionSources<'a> {
 /// one), then a meeting link in the description. In a description only a link
 /// [`ConferenceService::recognise`] names counts, since a description links to anything. A
 /// link that joins a meeting already held adds nothing, so a meeting keeps the strongest
-/// origin any place gives it. It joins one when it is the same meeting by
-/// [`ConferenceUri::same_meeting`], or when it runs on the service of a meeting the calendar
-/// server made or a vendor property names: that is the event's one meeting there, and the
-/// server may write it into the text under another link (Teams puts a short `meet/<id>` link
-/// in the body of a meeting whose `joinUrl`, or `X-MICROSOFT-SKYPETEAMSMEETINGURL`, is its
-/// long `meetup-join` one). Each detected meeting is one video way in, keyed by its link, and
-/// takes the fullest link any place writes for it ([`ConferenceUri::fuller_than`]), so a
-/// location's bare Zoom link gives way to the description's one with its passcode. A meeting
-/// stored in a conference field or made by the server keeps its own link.
+/// origin any place gives it; which meeting it joins is [`Conference::joined_at`]. Each
+/// detected meeting is one video way in, keyed by its link, and takes the fullest link any
+/// place writes for it ([`ConferenceUri::fuller_than`]), so a location's bare Zoom link gives
+/// way to the description's one with its passcode. A meeting stored in a conference field or
+/// made by the server keeps its own link.
 pub fn add_detected(conferences: &mut Vec<Conference>, sources: &DetectionSources<'_>) {
     let vendor = sources
         .vendor
@@ -62,16 +58,7 @@ pub fn add_detected(conferences: &mut Vec<Conference>, sources: &DetectionSource
             continue;
         }
         let held = conferences.iter_mut().any(|conference| {
-            let servers_own = service.is_some()
-                && conference.service == service
-                && matches!(
-                    conference.origin,
-                    ConferenceOrigin::Native { .. }
-                        | ConferenceOrigin::Detected {
-                            place: DetectedIn::VendorProperty
-                        }
-                );
-            servers_own || hold_same_meeting(conference, &uri)
+            conference.claims_service(service.as_ref()) || hold_same_meeting(conference, &uri)
         });
         if !held {
             conferences.push(Conference {

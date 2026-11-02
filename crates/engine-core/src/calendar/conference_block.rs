@@ -2,8 +2,9 @@
 //!
 //! An invitation's description carries its meeting as a block of text, so that a client
 //! reading only the description still finds the link. The block repeats the conference, so
-//! [`super::Event::notes`] leaves it out. Three shapes are recognised, all from live
-//! invitations. "Microsoft Teams" is the same in every language Teams writes in.
+//! [`super::Event::notes`] leaves it out when that conference is shown. Three shapes are
+//! recognised, all from live invitations. "Microsoft Teams" is the same in every language Teams
+//! writes in.
 //!
 //! - **Microsoft Teams, between rules**: a line of underscores, a first line naming "Microsoft
 //!   Teams", and a closing line of underscores at least as long as the opening one; the shorter
@@ -39,15 +40,18 @@ impl Rule {
     }
 }
 
-/// `text` without the meeting blocks it holds, trimmed, with one blank line where a block
-/// stood between two passages.
-pub(super) fn without_blocks(text: &str) -> Cow<'_, str> {
+/// `text` without each meeting block it holds that `repeats`, given the block's text, says
+/// repeats a meeting shown elsewhere; trimmed, with one blank line where a block stood between
+/// two passages.
+pub(super) fn without_blocks(text: &str, repeats: impl Fn(&str) -> bool) -> Cow<'_, str> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let mut passages = vec![String::new()];
     let mut found = false;
     let mut at = 0;
     while at < lines.len() {
-        if let Some(len) = block_len(&lines[at..]) {
+        if let Some(len) = block_len(&lines[at..])
+            && repeats(&lines[at..at + len].concat())
+        {
             found = true;
             passages.push(String::new());
             at += len;
@@ -123,7 +127,7 @@ mod tests {
              {TEAMS_RULE}\r\n\r\nBring the figures.\r\n"
         );
         assert_eq!(
-            without_blocks(&text),
+            without_blocks(&text, |_| true),
             "Agenda: budget\n\nBring the figures."
         );
     }
@@ -136,7 +140,7 @@ mod tests {
              Dial in by phone\n+31 20 000 0000\n{section}\nFor organizers: Meeting options\n\
              {TEAMS_RULE}\n"
         );
-        assert_eq!(without_blocks(&text), "Agenda");
+        assert_eq!(without_blocks(&text, |_| true), "Agenda");
     }
 
     #[test]
@@ -150,10 +154,13 @@ mod tests {
              Help: https://aka.ms/JoinTeamsMeeting?omkt=nl-NL\r\n{section}\r\n\r\n{section}\r\n\
              Voor organisatoren\r\nOpties voor vergadering: https://teams.microsoft.com/meetingOptions/\r\n"
         );
-        assert_eq!(without_blocks(&text), "Bring the figures.");
+        assert_eq!(without_blocks(&text, |_| true), "Bring the figures.");
         let mention =
             "We use Microsoft Teams for this.\nSee https://www.microsoft.com/microsoft-teams\n";
-        assert!(matches!(without_blocks(mention), Cow::Borrowed(_)));
+        assert!(matches!(
+            without_blocks(mention, |_| true),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]
@@ -162,21 +169,21 @@ mod tests {
             "{GOOGLE_RULE}\nDeelnemen met Google Meet: https://meet.google.com/abc-defg-hij\n\n\
              Wijzig dit gedeelte niet.\n{GOOGLE_RULE}\n"
         );
-        assert_eq!(without_blocks(&text), "");
+        assert_eq!(without_blocks(&text, |_| true), "");
     }
 
     #[test]
     fn a_block_cut_off_by_a_preview_runs_to_the_end() {
         let preview =
             format!("{TEAMS_RULE}\r\nMicrosoft Teams-vergadering\r\nNeem deel vanaf uw computer");
-        assert_eq!(without_blocks(&preview), "");
+        assert_eq!(without_blocks(&preview, |_| true), "");
     }
 
     #[test]
     fn a_rule_that_opens_no_meeting_is_the_persons_own() {
         let text = format!("Minutes\n{TEAMS_RULE}\nAction points\n{TEAMS_RULE}\n");
-        assert!(matches!(without_blocks(&text), Cow::Borrowed(_)));
-        assert_eq!(without_blocks(&text), text.trim());
-        assert_eq!(without_blocks("  Plain notes \n"), "Plain notes");
+        assert!(matches!(without_blocks(&text, |_| true), Cow::Borrowed(_)));
+        assert_eq!(without_blocks(&text, |_| true), text.trim());
+        assert_eq!(without_blocks("  Plain notes \n", |_| true), "Plain notes");
     }
 }

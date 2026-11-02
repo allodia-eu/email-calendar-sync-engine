@@ -49,7 +49,7 @@ pub(crate) fn the_seeds_meetings_read_as_one_conference_each(events: &[Event]) {
         "the server keeps the vendor property, and the block's link is the same meeting"
     );
     assert_eq!(
-        invitation.notes().as_deref(),
+        invitation.notes(|_| true).as_deref(),
         Some("Bring the quarterly figures.")
     );
 }

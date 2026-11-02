@@ -134,7 +134,7 @@ fn an_online_meeting_projects_its_conference_and_preserves_the_teams_payload() {
     );
     // "Microsoft Teams-vergadering" is the meeting, not a place; the preview is all block.
     assert_eq!(event.locations, []);
-    assert_eq!(event.notes(), None);
+    assert_eq!(event.notes(|_| true), None);
 
     // The raw payload rides beside the projection.
     let raw = event

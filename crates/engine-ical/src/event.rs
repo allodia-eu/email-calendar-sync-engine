@@ -247,7 +247,7 @@ mod tests {
                 place: DetectedIn::VendorProperty
             }
         );
-        assert_eq!(event.notes().as_deref(), Some("Bring the figures."));
+        assert_eq!(event.notes(|_| true).as_deref(), Some("Bring the figures."));
     }
 
     #[test]
@@ -275,7 +275,7 @@ mod tests {
                 }
             )]
         );
-        assert_eq!(event.notes(), None);
+        assert_eq!(event.notes(|_| true), None);
     }
 
     #[test]

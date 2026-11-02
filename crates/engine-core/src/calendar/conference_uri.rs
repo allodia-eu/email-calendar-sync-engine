@@ -146,6 +146,17 @@ impl ConferenceUri {
         self.web_parts().map(|(_, path)| path)
     }
 
+    /// The number a `tel:` URI dials, as a person reads it: without its parameters (`;ext=`,
+    /// RFC 3966 §5.4) and without what is dialled once the call connects, which services
+    /// write after a `,` or `;` pause (`tel:+14255550100,,123456789#`). `None` for any other
+    /// scheme, or when nothing comes before the first separator.
+    #[must_use]
+    pub fn phone_number(&self) -> Option<&str> {
+        let number = self.0.strip_prefix("tel:")?;
+        let number = number.split([';', ',']).next().unwrap_or_default();
+        (!number.is_empty()).then_some(number)
+    }
+
     /// Whether `other` joins the same meeting as this URI.
     ///
     /// Two web URIs do when their host and path match, with percent escapes compared without
@@ -345,6 +356,24 @@ mod tests {
         assert_eq!(uri("https://example.com").path(), Some(""));
         assert_eq!(uri("tel:+31201234567").host(), None);
         assert_eq!(uri("sip:room@example.com").path(), None);
+    }
+
+    #[test]
+    fn a_phone_number_is_read_without_its_parameters_or_what_is_dialled_after_it() {
+        assert_eq!(
+            uri("tel:+1-425-555-0100;ext=12").phone_number(),
+            Some("+1-425-555-0100")
+        );
+        assert_eq!(
+            uri("tel:+14255550100,,123456789#").phone_number(),
+            Some("+14255550100")
+        );
+        assert_eq!(
+            uri("tel:+31 20 555 0100").phone_number(),
+            Some("+31205550100")
+        );
+        assert_eq!(uri("tel:,,123#").phone_number(), None);
+        assert_eq!(uri("https://zoom.us/j/1").phone_number(), None);
     }
 
     #[test]

@@ -254,7 +254,7 @@ async fn live_calendar_fetch() {
         )]
     );
     assert_eq!(
-        invitation.notes().as_deref(),
+        invitation.notes(|_| true).as_deref(),
         Some("Bring the quarterly figures.")
     );
 }
