@@ -280,8 +280,9 @@ async fn live_stalwart_bounds_rate_under_a_steady_load() {
     measure(target).await;
 }
 
-/// SabreDAV: a second implementation, so "CalDAV does not bound concurrency" rests on more
-/// than one server's habits. It refuses nothing, which is why it cannot carry the proof alone.
+/// SabreDAV: a second implementation, so "a steady rate is not refused for its width" rests on
+/// more than one server's habits. It refuses nothing, which is why it cannot carry the proof
+/// alone — and, like every arm here, it says nothing about a cap on requests in flight.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn live_sabredav_bounds_neither() {
     let Some(target) = sabredav() else {
