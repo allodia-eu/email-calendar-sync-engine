@@ -232,10 +232,9 @@ impl Session {
         // `Email/set` part of the mail capability itself. That gates only what the
         // *account* permits: which folders take a write is each folder's `myRights`
         // (`crate::mail`), and a write the server refuses anyway fails with a `forbidden`
-        // `SetError` (→ `Permanent`), so over-advertising is safe. Under-advertising is not
-        // (it hides writes a folder allows), but it needs a server reporting `isReadOnly`
-        // for an account it lets you write, which RFC 8620 §2 rules out ("the entire account
-        // is read-only"); Stalwart v1.0.2 reports `false` for a mixed share.
+        // `SetError` (→ `Permanent`), so over-advertising is safe. Under-advertising would
+        // hide writes a folder allows, but RFC 8620 §2 reserves `isReadOnly` for "the entire
+        // account" (Stalwart v1.0.2 says `false` for a mixed share).
         let read_only = |id: Option<&str>| {
             id.and_then(|id| accounts.iter().flatten().find(|account| account.id == id))
                 .is_some_and(|account| account.read_only)
