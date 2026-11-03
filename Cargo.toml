@@ -158,7 +158,12 @@ quick-xml = "0.42.0"
 # it is pure Rust so it cross-compiles to mobile like the rest of the stack. The
 # `full_encoding` feature (no longer default since 0.11.2) pulls the full legacy
 # charset tables so non-UTF-8 bodies decode correctly.
-mail-parser = { version = "0.11.4", default-features = false, features = ["full_encoding"] }
+mail-parser = { version = "1.0.0", default-features = false, features = ["full_encoding"] }
+# The RFC 2047 encoded-word decoder mail-parser itself runs on header text
+# (`engine-mime::encoded_word`), with mail-parser's charset table plugged in. 1.0 moved
+# the codecs out of mail-parser into this crate, which it already depends on, so this adds
+# nothing to the tree; it is kept on the same version mail-parser resolves.
+encodify = "1.0.2"
 # Content addressing for the on-disk raw-message/attachment blob area
 # (`store-sqlite`): blobs are named by the SHA-256 of their bytes, deduping IMAP
 # copies of one message and giving filesystem-safe, fixed-length names. Pure Rust,

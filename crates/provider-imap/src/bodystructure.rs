@@ -8,11 +8,33 @@
 use crate::tokenize::Item;
 
 /// Returns true when an IMAP BODYSTRUCTURE item describes at least one user-visible,
-/// downloadable attachment. Multipart structures are recursive; single parts are considered
-/// downloadable when the disposition is `attachment`, or when filename/name parameters carry
-/// a file name and the part is not a CID inline resource. A `text/plain`/`text/html` body part
-/// is never counted on a bare `name` parameter alone — that is the message body, not a download.
+/// downloadable attachment: a part `engine_mime::extract_attachments` would list once the
+/// message is opened, so the list-time flag and the opened message agree.
+///
+/// That rule is RFC 8621's classification plus the engine's own exceptions, read here from
+/// the structure alone. A leaf part counts unless it is
+///
+/// - a `text/plain` or `text/html` part of the body: the first child of its multipart (or the
+///   message itself), a version of a `multipart/alternative`, or an unnamed part elsewhere outside
+///   a `multipart/related`;
+/// - an undispositioned `text/calendar`, the iMIP payload rendered as an invitation card;
+/// - a non-text, non-message part carrying a `Content-ID`, a `cid:` resource of the HTML.
+///
+/// `Content-Disposition: attachment` always counts. Every other leaf counts, named or not: an
+/// image shown inside the body, an unnamed `application/pdf`, a forwarded `message/rfc822`.
+/// A nested message is one part; its own parts are not read.
 pub(crate) fn has_downloadable_part(item: &Item) -> bool {
+    counts(item, None)
+}
+
+/// Where a part sits: the subtype of its multipart and its position among the children.
+#[derive(Clone, Copy)]
+struct Place<'a> {
+    parent: &'a str,
+    index: usize,
+}
+
+fn counts(item: &Item, place: Option<Place<'_>>) -> bool {
     let Some(list) = item.as_list() else {
         return false;
     };
@@ -20,19 +42,32 @@ pub(crate) fn has_downloadable_part(item: &Item) -> bool {
         return false;
     }
     if is_multipart_body(list) {
-        return list
+        let children = list
             .iter()
             .take_while(|part| part.as_list().is_some())
-            .any(has_downloadable_part);
+            .count();
+        let subtype = list
+            .get(children)
+            .and_then(Item::as_nstring)
+            .unwrap_or_default();
+        return list[..children].iter().enumerate().any(|(index, child)| {
+            counts(
+                child,
+                Some(Place {
+                    parent: &subtype,
+                    index,
+                }),
+            )
+        });
     }
-    single_part_is_downloadable(list)
+    single_part_is_downloadable(list, place)
 }
 
 fn is_multipart_body(list: &[Item]) -> bool {
     matches!(list.first(), Some(Item::List(_)))
 }
 
-fn single_part_is_downloadable(list: &[Item]) -> bool {
+fn single_part_is_downloadable(list: &[Item], place: Option<Place<'_>>) -> bool {
     let disposition = body_disposition(list);
     if disposition
         .as_deref()
@@ -40,23 +75,37 @@ fn single_part_is_downloadable(list: &[Item]) -> bool {
     {
         return true;
     }
-    // A `text/plain`/`text/html` part with no `attachment` disposition is the message body
-    // (or its inline text rendering), even if it carries a stray `name=` parameter. mail-parser
-    // classifies it as body, so this flag must not mislabel a bodied message as carrying a
-    // download.
     if is_body_text(list) {
-        return false;
+        return text_is_an_attachment(list, place);
     }
-    let has_filename = params_contain_name(list.get(2))
-        || body_disposition_params(list).is_some_and(params_contain_name_in);
-    if !has_filename {
+    let kind = list.first().and_then(Item::as_nstring).unwrap_or_default();
+    let subtype = list.get(1).and_then(Item::as_nstring).unwrap_or_default();
+    if kind.eq_ignore_ascii_case("text")
+        && subtype.eq_ignore_ascii_case("calendar")
+        && disposition.is_none()
+    {
         return false;
     }
     let cid = list
         .get(3)
         .and_then(Item::as_nstring)
         .is_some_and(|value| !value.trim().is_empty());
-    !cid
+    !(cid && !kind.eq_ignore_ascii_case("text") && !kind.eq_ignore_ascii_case("message"))
+}
+
+/// Whether an undispositioned (or inline) `text/plain`/`text/html` part is offered as a file
+/// rather than read as the body: RFC 8621 `isInline` fails for it, and it is not a version of
+/// a `multipart/alternative`, which is the body whatever it carries.
+fn text_is_an_attachment(list: &[Item], place: Option<Place<'_>>) -> bool {
+    let Some(place) = place else {
+        return false;
+    };
+    if place.index == 0 || place.parent.eq_ignore_ascii_case("alternative") {
+        return false;
+    }
+    place.parent.eq_ignore_ascii_case("related")
+        || params_contain_name(list.get(2))
+        || body_disposition_params(list).is_some_and(params_contain_name_in)
 }
 
 fn is_body_text(list: &[Item]) -> bool {
@@ -159,11 +208,12 @@ mod tests {
     }
 
     #[test]
-    fn an_undisposed_unnamed_part_is_not_downloadable() {
-        // No disposition, no name, no Content-ID — nothing marks it as a download.
+    fn an_undisposed_unnamed_file_is_still_a_download() {
+        // No disposition, no name, no Content-ID: RFC 8621 offers it as an attachment and the
+        // opened message lists it, so the flag counts it too.
         let part =
             structure(b"(\"APPLICATION\" \"OCTET-STREAM\" NIL NIL NIL \"BASE64\" 100 NIL NIL NIL)");
-        assert!(!has_downloadable_part(&part));
+        assert!(has_downloadable_part(&part));
     }
 
     #[test]
@@ -177,3 +227,7 @@ mod tests {
         ]));
     }
 }
+
+#[cfg(test)]
+#[path = "bodystructure_agreement_tests.rs"]
+mod agreement_tests;

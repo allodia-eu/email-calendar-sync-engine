@@ -1,0 +1,19 @@
+From: sender@test.local
+To: alice@test.local
+Subject: shape
+Date: Mon, 2 Nov 2026 10:00:00 +0000
+Message-ID: <01-named-pdf-attachment@test.local>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="m"
+
+--m
+Content-Type: text/plain; charset=utf-8
+
+body text
+--m
+Content-Type: application/pdf; name="report.pdf"
+Content-Disposition: attachment; filename="report.pdf"
+Content-Transfer-Encoding: base64
+
+UERG
+--m--

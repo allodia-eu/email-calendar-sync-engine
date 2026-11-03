@@ -1,0 +1,27 @@
+From: sender@test.local
+To: alice@test.local
+Subject: shape
+Date: Mon, 2 Nov 2026 10:00:00 +0000
+Message-ID: <16-alternative-with-related-html@test.local>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="a"
+
+--a
+Content-Type: text/plain; charset=utf-8
+
+body text
+--a
+Content-Type: multipart/related; boundary="r"
+
+--r
+Content-Type: text/html; charset=utf-8
+
+<p>body html</p>
+--r
+Content-Type: image/gif
+Content-ID: <g@test.local>
+Content-Transfer-Encoding: base64
+
+aGVsbG8=
+--r--
+--a--

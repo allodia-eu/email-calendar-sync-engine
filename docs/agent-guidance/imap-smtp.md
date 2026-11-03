@@ -335,11 +335,17 @@ is authoritative for the `provider-caldav` calendar client.
   open rows beyond the first 20; a helper that fails is discarded and its share asked again on
   the pass's own connection. On Yahoo this took a 2577-message cold pass from about 45 s to about
   34 s, with no session refused.
-  `BODYSTRUCTURE` feeds `Message.has_attachment` without downloading parts: explicit
-  attachments or named non-CID parts count; CID inline resources do not, a `text/plain`/
-  `text/html` body part is never counted on a bare `name=` alone, RFC 2231 split/encoded
-  filenames (`name*0*`) are recognized, and `message/global` is read like `message/rfc822`.
-  This keeps the list-time flag in step with `engine-mime::extract_attachments`. Flags → keywords:
+  `BODYSTRUCTURE` feeds `Message.has_attachment` without downloading parts, by the rule
+  `engine-mime::extract_attachments` applies to the bytes (RFC 8621's classification plus the
+  engine's exceptions, `bodystructure.rs`): every leaf counts, named or not, except a
+  `text/plain`/`text/html` body part (the first child, a version of an alternative, or an
+  unnamed part outside a `related`), an undispositioned `text/calendar` (the invitation
+  card), and a non-text, non-message part with a `Content-ID` (a `cid:` resource);
+  `Content-Disposition: attachment` always counts. RFC 2231 split/encoded filenames
+  (`name*0*`) are recognized, `message/global` is read like `message/rfc822`, and a nested
+  message is one part. The two agree on every shape in
+  `provider-imap/tests/fixtures/attachment-shapes/` (real Stalwart structures), which a test
+  enforces. Flags → keywords:
   `\Seen`/`\Flagged`/
   `\Answered`/`\Draft` map to their `$`-keywords; `\Deleted`/`\Recent` are
   deliberately not keywords (expunge/session model); custom keywords pass through.

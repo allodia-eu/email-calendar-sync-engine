@@ -1,0 +1,23 @@
+From: sender@test.local
+To: alice@test.local
+Subject: shape
+Date: Mon, 2 Nov 2026 10:00:00 +0000
+Message-ID: <03-photo-between-paragraphs@test.local>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="m"
+
+--m
+Content-Type: text/plain; charset=utf-8
+
+body text
+--m
+Content-Type: image/jpeg; name="IMG_1.jpg"
+Content-Disposition: inline; filename="IMG_1.jpg"
+Content-Transfer-Encoding: base64
+
+aGVsbG8=
+--m
+Content-Type: text/plain; charset=utf-8
+
+after
+--m--
