@@ -16,9 +16,10 @@
 //! has to mean in practice.
 //!
 //! What is deliberately *not* read off an entry for anything but the write capabilities is
-//! `isReadOnly`. Live against Stalwart, a share whose only mailbox is read-only reports
-//! `isReadOnly: false`, so the flag cannot say whether a given folder takes a write; the
-//! folder's own `myRights` does (`crate::mail`).
+//! `isReadOnly`. Live against Stalwart v1.0.2, a share mixing a writable and a read-only folder
+//! reports `isReadOnly: false` (v0.16 said `false` even when its only mailbox was read-only),
+//! so the flag cannot say whether a given folder takes a write; the folder's own `myRights`
+//! does (`crate::mail`).
 
 use std::collections::BTreeSet;
 

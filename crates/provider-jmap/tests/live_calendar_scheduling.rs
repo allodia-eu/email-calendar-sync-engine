@@ -18,7 +18,7 @@
 //! and attributed it to Stalwart. That was wrong, and the way it was wrong is why these docs
 //! are this long.
 //!
-//! `sendSchedulingMessages` (draft-ietf-jmap-calendars §5.3, default **`false`**) is what
+//! `sendSchedulingMessages` (draft-ietf-jmap-calendars §5.9, default **`false`**) is what
 //! makes a server derive an iTIP message from a `/set`. The adapter never sent it. So the
 //! server did exactly what it was asked — store the change, tell nobody — and the test
 //! recorded that silence as *Stalwart's* behaviour, because the only request shape it ever
@@ -44,7 +44,7 @@
 //! adapter. [`jmap_cancelling_a_meeting_reaches_the_attendee`] does the same job for the
 //! write verbs, which carry the flag unconditionally.
 //!
-//! The full history is #102 (which inverts #93). The harness pins **v0.16.24**.
+//! The full history is #102 (which inverts #93). The harness pins **v1.0.2**.
 //!
 //! Every scenario leaves the harness exactly as it found it.
 

@@ -32,7 +32,7 @@ pub use imap::{ImapProbe, run_probe};
 pub const GATE_VAR: &str = "STALWART_HTTP_ADDR";
 
 // Defaults match the host port mapping in docker/stalwart/docker-compose.yml.
-// IMAP is implicit-TLS (Stalwart's v0.16 default), so its address is the TLS
+// IMAP is implicit-TLS (Stalwart's default since v0.16), so its address is the TLS
 // port; SMTP is plaintext.
 const DEFAULT_IMAP_ADDR: &str = "127.0.0.1:11993";
 const DEFAULT_SMTP_ADDR: &str = "127.0.0.1:11025";
@@ -198,9 +198,10 @@ impl Harness {
 
     /// The account that grants [`account`](Self::account) **read-only** (`lr`) access to
     /// its own INBOX — the half of the shared-mailbox fixture that differs in *rights*.
-    /// Stalwart reports that share as `isReadOnly: false` in the JMAP session while the one
-    /// mailbox it exposes grants read alone, which is what proves rights belong on the
-    /// folder rather than the account.
+    /// Since v1 Stalwart reports that share as `isReadOnly: true` in the JMAP session (v0.16
+    /// said `false`), while the group share, writable throughout, says `false`; the smoke
+    /// suite pins both. The folder is still where rights live: a share mixing writable and
+    /// read-only folders says `false` at the account.
     ///
     /// It is [`scratch`](Self::scratch)`[0]`: the grant is about rights, so its INBOX's
     /// contents — which the scheduling suite adds to — matter to no assertion made through

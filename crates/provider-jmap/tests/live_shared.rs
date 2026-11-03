@@ -157,20 +157,23 @@ async fn live_a_group_mailbox_syncs_its_own_folders_and_mail() {
 }
 
 #[tokio::test]
-async fn live_a_read_only_share_says_so_on_its_folder_and_not_its_account() {
-    let Some(harness) = ready("live_a_read_only_share_says_so_on_its_folder_and_not_its_account")
+async fn live_a_read_only_share_says_so_on_its_folder_and_its_account() {
+    let Some(harness) = ready("live_a_read_only_share_says_so_on_its_folder_and_its_account")
     else {
         return;
     };
     let owner = harness.read_only_share_owner().address.clone();
     let (_, shared) = bound_to(&harness, &owner).await;
 
-    // The account flag says writable — asserted rather than assumed, because it is the
-    // behaviour the per-folder design rests on.
+    // Since v1 the account says read-only too (`isReadOnly: true`, and no `submission`), so
+    // neither writes nor sending are offered. v0.16 said writable; asserted rather than
+    // assumed, because the per-folder design is argued from what this flag can and cannot say.
+    let capabilities = shared.connection_info().capabilities;
     assert!(
-        shared.connection_info().capabilities.mail_writes(),
-        "if Stalwart reports this share's account read-only, revisit modeling.md's rationale"
+        !capabilities.mail_writes(),
+        "if Stalwart reports this share's account writable again, revisit modeling.md's rationale"
     );
+    assert!(!capabilities.submission());
     let folders = snapshot(
         shared
             .sync_mailboxes(&account(), None)

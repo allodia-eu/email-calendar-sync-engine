@@ -34,7 +34,7 @@
 //! Stalwart's own handling of it changed under us, and neither state changes the above.
 //! v0.16.11 through v0.16.13 parsed `ifInState` and never compared it (a stale-state `/set`
 //! was applied and returned a fresh `newState`, where RFC 8620 §5.3 requires a
-//! `stateMismatch`); v0.16.14 fixed that, and the harness pins v0.16.24 — so a
+//! `stateMismatch`); v0.16.14 fixed that, and the harness pins v1.0.2 — so a
 //! stale-but-well-formed token is refused with `stateMismatch` and the write does not land on
 //! the server our live tests meet. Which only sharpens reason 2: the probe's state had moved
 //! because of an edit to a *different* property of a *different* event, exactly the spurious
@@ -303,7 +303,8 @@ fn draft_to_json(draft: &EventDraft, organiser_id: Option<&str>) -> Result<Value
     object.insert("@type".to_owned(), json!("Event"));
     // JSCalendar 2.0 (draft-ietf-calext-jscalendarbis) makes `version` required, and Fastmail
     // refuses a create without it as `invalidProperties`; Stalwart accepts it and stores the same
-    // object. Everything else this sends is already 2.0-shaped (the singular `recurrenceRule`).
+    // object (v1 keeps and returns it). Everything else this sends is already 2.0-shaped (the
+    // singular `recurrenceRule`).
     object.insert("version".to_owned(), json!("2.0"));
     object.insert("uid".to_owned(), json!(draft.uid.as_str()));
     object.insert(

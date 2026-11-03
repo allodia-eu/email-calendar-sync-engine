@@ -7,7 +7,7 @@
 # CardDAV for contacts. No Rust
 # provider client and no extra binary.
 #
-# Transport (v0.16 defaults): IMAP is implicit-TLS on 993 — `-k` accepts the
+# Transport (Stalwart defaults, v0.16 and v1 alike): IMAP is implicit-TLS on 993 — `-k` accepts the
 # server's self-signed test certificate (this never touches a host trust store).
 # CalDAV/CardDAV ride the plaintext HTTP listener on 8080.
 #

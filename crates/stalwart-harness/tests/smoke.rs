@@ -130,13 +130,21 @@ fn jmap_session_lists_the_shared_accounts() {
     );
     assert_eq!(flag(by_name(&owner), "isPersonal"), Some(false));
 
-    // The finding the engine's design rests on: bob's share says *writable* at the account
-    // level although the one mailbox it exposes grants read alone. If Stalwart ever says
-    // otherwise, the rationale in docs/agent-guidance/stalwart-harness.md needs revisiting.
+    // The account flag, pinned in both directions. Bob's share exposes one mailbox that
+    // grants read alone, and since v1 Stalwart says so on the account (v0.16 said
+    // `isReadOnly: false`); the group, every folder of which alice may write, says writable.
+    // The flag still cannot replace per-folder rights — a share mixing a writable and a
+    // read-only folder says `false` — so if either value moves, revisit the rationale in
+    // docs/agent-guidance/stalwart-harness.md and modeling.md.
     assert_eq!(
         flag(by_name(&owner), "isReadOnly"),
-        Some(false),
+        Some(true),
         "the read-only share's account flag changed; revisit the per-folder-rights rationale"
+    );
+    assert_eq!(
+        flag(by_name(SHARED_GROUP_ACCOUNT), "isReadOnly"),
+        Some(false),
+        "the writable share's account flag changed; revisit the per-folder-rights rationale"
     );
 }
 
