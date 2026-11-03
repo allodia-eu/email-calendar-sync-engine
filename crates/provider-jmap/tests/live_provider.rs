@@ -1,12 +1,12 @@
 //! Gated live provider-level checks against the Stalwart harness: session
-//! discovery, mail/calendar fetch, and submission through the real HTTP client.
+//! discovery, mail fetch, and submission through the real HTTP client.
 //! Skips with no `STALWART_HTTP_ADDR`, so the offline suite stays green. The
-//! full sync-loop-through-store integration is in `live_sync.rs`.
+//! calendar fetch is in `live_calendar_fetch.rs`, and the full
+//! sync-loop-through-store integration in `live_sync.rs`.
 
 use std::time::Duration;
 
 use engine_core::{
-    calendar::{ConferenceOrigin, DetectedIn},
     ids::{AccountId, MailboxId, MessageIdHeader},
     mail::{EmailAddress, Message, SystemKeyword},
     sync::{JmapDataType, SyncUpdate},
@@ -174,88 +174,6 @@ async fn live_message_source() {
     assert!(
         text.to_ascii_lowercase().contains("from:"),
         "raw source has envelope headers: {text}"
-    );
-}
-
-#[tokio::test]
-async fn live_calendar_fetch() {
-    let Some(harness) = Harness::from_env() else {
-        eprintln!("skipping live_calendar_fetch: STALWART_HTTP_ADDR unset");
-        return;
-    };
-    harness
-        .wait_until_ready(std::time::Duration::from_secs(30))
-        .expect("ready");
-    let provider = connect(&harness).await;
-
-    assert!(
-        provider
-            .sync_calendars(&account(), None)
-            .await
-            .unwrap()
-            .sync
-            .is_snapshot()
-    );
-    let events = provider
-        .sync_events(&account(), &any_calendar(), None)
-        .await
-        .unwrap();
-    let SyncUpdate::Snapshot { objects, .. } = &events.update else {
-        panic!("expected snapshot");
-    };
-    let uids: std::collections::BTreeSet<&str> = objects.iter().map(|e| e.uid.as_str()).collect();
-    for uid in [
-        "oneoff-2001@test.local",
-        "weekly-2002@test.local",
-        "meeting-2003@test.local",
-        "virtual-2004@test.local",
-        "allday-2005@test.local",
-        "floating-2006@test.local",
-        "work-2101@test.local",
-        "work-2102@test.local",
-    ] {
-        assert!(uids.contains(uid), "seed event uid missing: {uid}");
-    }
-    // Stalwart serves the seed's two `CONFERENCE` lines as two `virtualLocations`, which
-    // read back as one meeting with its dial-in number.
-    let conferences = &objects
-        .iter()
-        .find(|e| e.uid.as_str() == "virtual-2004@test.local")
-        .unwrap()
-        .conferences;
-    assert_eq!(conferences.len(), 1, "{conferences:?}");
-    let entry_uris: Vec<&str> = conferences[0]
-        .entry_points
-        .iter()
-        .map(|entry| entry.uri.as_str())
-        .collect();
-    assert_eq!(
-        entry_uris,
-        ["https://meet.example.com/harness-room", "tel:+15555550100"]
-    );
-    // JMAP carries no `X-GOOGLE-CONFERENCE`, so the Google-shaped invitation's meeting is the
-    // one its description's block links to, and the notes leave the block out.
-    let invitation = objects
-        .iter()
-        .find(|e| e.uid.as_str() == "meeting-2003@test.local")
-        .unwrap();
-    let found: Vec<_> = invitation
-        .conferences
-        .iter()
-        .map(|c| (c.join().map(ToString::to_string), c.origin))
-        .collect();
-    assert_eq!(
-        found,
-        [(
-            Some("https://meet.google.com/abc-defg-hij".to_owned()),
-            ConferenceOrigin::Detected {
-                place: DetectedIn::Description
-            }
-        )]
-    );
-    assert_eq!(
-        invitation.notes(|_| true).as_deref(),
-        Some("Bring the quarterly figures.")
     );
 }
 
@@ -488,9 +406,4 @@ async fn live_watch_sees_a_change_over_event_source() {
             .await
             .expect("cleanup delete");
     }
-}
-
-/// JMAP's event state is account-wide, so which calendar asks for it does not matter.
-fn any_calendar() -> engine_core::ids::CalendarId {
-    engine_core::ids::CalendarId::try_from("any").unwrap()
 }

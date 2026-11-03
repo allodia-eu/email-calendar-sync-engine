@@ -3,9 +3,9 @@
 use engine_core::calendar::{ConferenceOrigin, ConferenceService, DetectedIn, Event};
 
 /// Asserts the seed's two meetings among `events`: `virtual-2004`'s `CONFERENCE` join link
-/// with its dial-in number as one conference, and `meeting-2003`, shaped as a Google
-/// invitation, as the meeting its `X-GOOGLE-CONFERENCE` names, with notes that leave out
-/// Google's block.
+/// with its two dial-in numbers as one conference, the second with a PIN after its pause, and
+/// `meeting-2003`, shaped as a Google invitation, as the meeting its `X-GOOGLE-CONFERENCE`
+/// names, with notes that leave out Google's block.
 pub(crate) fn the_seeds_meetings_read_as_one_conference_each(events: &[Event]) {
     let by_uid = |uid: &str| events.iter().find(|e| e.uid.as_str() == uid).unwrap();
 
@@ -22,7 +22,11 @@ pub(crate) fn the_seeds_meetings_read_as_one_conference_each(events: &[Event]) {
         .collect();
     assert_eq!(
         entry_uris,
-        ["https://meet.example.com/harness-room", "tel:+15555550100"]
+        [
+            "https://meet.example.com/harness-room",
+            "tel:+15555550100",
+            "tel:+15555550101,,123456#"
+        ]
     );
 
     let invitation = by_uid("meeting-2003@test.local");
