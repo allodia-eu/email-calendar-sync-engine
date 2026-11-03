@@ -173,15 +173,17 @@ fn a_handle_the_session_does_not_list_fails_at_connect() {
 
 #[tokio::test]
 async fn a_domain_the_shared_account_does_not_expose_is_not_advertised() {
-    // Stalwart gives every account the same `accountCapabilities`, so this case needs a
-    // trimmed session: RFC 8620 defines the set per account precisely so it *can* differ,
-    // and claiming a domain the session says is absent would be a wrong promise.
+    // RFC 8620 defines `accountCapabilities` per account precisely so the set *can* differ,
+    // and claiming a domain the session says is absent would be a wrong promise. Bob's
+    // share already lacks `submission` in the captured session, so the trim is applied to
+    // the group account, which lists every domain: each assertion below then holds only
+    // because the narrowing read the trimmed set.
     let mut doc = session_doc();
-    let caps = doc["accounts"][BOB]["accountCapabilities"]
+    let caps = doc["accounts"][SUPPORT]["accountCapabilities"]
         .as_object_mut()
         .unwrap();
     caps.retain(|urn, _| urn == "urn:ietf:params:jmap:mail");
-    let exec = FakeExecutor::bound_to(&doc, Some(BOB), vec![]);
+    let exec = FakeExecutor::bound_to(&doc, Some(SUPPORT), vec![]);
     let caps = exec.session().capabilities();
     assert!(caps.mail() && !caps.calendars() && !caps.contacts() && !caps.submission());
     let err = exec.session().calendar_account_id().unwrap_err();

@@ -58,11 +58,20 @@ wait_http() {
 }
 
 # Bootstrap mode lists the singleton Bootstrap object; normal mode answers it under
-# `notFound`. Match the singleton's id, never one of its fields: v1 renamed
-# `serverHostname` to `defaultHostname`, and a check keyed on the old name read every
-# fresh v1 server as already bootstrapped, skipped setup, and died on a missing domain.
+# `notFound`. Ask for it by id (v1 answers other singletons' `ids: null` with an empty
+# list) and match the id, never one of its fields: v1 renamed `serverHostname` to
+# `defaultHostname`, and a check keyed on the old name read every fresh v1 server as
+# already bootstrapped, skipped setup, and died on a missing domain. Anything else — an
+# error, a non-JSON body — fails loudly rather than being read as either mode.
 in_bootstrap_mode() {
-  jmap '["x:Bootstrap/get",{"ids":null},"c0"]' | grep -q '"id":"singleton"'
+  resp=$(jmap '["x:Bootstrap/get",{"ids":["singleton"]},"c0"]')
+  if printf '%s' "$resp" | grep -q '"id":"singleton"'; then
+    return 0
+  elif printf '%s' "$resp" | grep -q '"notFound":\["singleton"\]'; then
+    return 1
+  fi
+  log "unexpected x:Bootstrap/get answer: $resp"
+  exit 1
 }
 
 # Id of the auto-created default domain (the only domain), parsed from the

@@ -770,9 +770,11 @@ the shares the user has **subscribed** to, so a share appears there once accepte
   (`session_shared_accounts.json`) and live.
 - **Sending from a group mailbox works through its own account.** Bound to it, `Identity/get`
   answers the group's one identity and the message leaves as the group (live: the copy bob
-  receives is `From: support@`). A share granted read-only answers `Identity/get` with
-  `forbidden`, so a send there fails `Permanent`; `submission` is still advertised for it
-  because its `accountCapabilities` say so, and a capability names the door, not that it opens.
+  receives is `From: support@`). A share granted read-only offers no send at all on v1.0.2:
+  its `accountCapabilities` list no `submission`, so the adapter does not advertise one. On
+  v0.16 they did, and `Identity/get` there answered `forbidden`, so a send failed
+  `Permanent` — a capability names the door, not that it opens, and a server that lists
+  `submission` for an account it will not send from still gets that answer.
 
 ## Known limitations (documented, not bugs)
 

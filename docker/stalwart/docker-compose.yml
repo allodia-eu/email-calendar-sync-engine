@@ -31,8 +31,9 @@ services:
     # docs/agent-guidance/stalwart-harness.md → "The v0.16.24 → v1.0.2 bump"). What it
     # changed *near* this repo:
     #
-    #   - v1 renamed two registry fields entrypoint.sh sends: `Bootstrap.serverHostname`
-    #     (now `defaultHostname`) and `NetworkListener.tlsImplicit` (now `implicitTls`).
+    #   - v1 renamed two registry fields entrypoint.sh relies on: `NetworkListener.tlsImplicit`
+    #     (now `implicitTls`), which it sends, and `Bootstrap.serverHostname` (now
+    #     `defaultHostname`), which its bootstrap-mode check used to look for.
     #     v1's new database layout does not matter here: the harness always bootstraps
     #     from an empty volume, so there is nothing to migrate.
     #   - A share whose every folder is read-only now reports `isReadOnly: true` and lists

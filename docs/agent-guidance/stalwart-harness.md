@@ -124,8 +124,10 @@ These were confirmed before/with implementation; do not relitigate without cause
   `provider-jmap`, `provider-imap`, `provider-caldav`, `dav-cli`) passed from a wiped volume,
   and a warm restart re-seeded without re-bootstrapping. What changed for this repo:
 
-  - **The entrypoint**: `serverHostname` → `defaultHostname` and `tlsImplicit` →
-    `implicitTls` (see "Gotchas" — the first one failed silently).
+  - **The entrypoint**: `tlsImplicit` → `implicitTls` in the listener it creates, and
+    `serverHostname` → `defaultHostname`, which it never sends but its bootstrap-mode check
+    grepped for (see "Gotchas" — that one failed silently). The check now asks for the
+    singleton by id and stops on any answer that is neither the object nor `notFound`.
   - **A fully read-only share now says so on its account.** Bob's share reports
     `isReadOnly: true` and lists no `submission`, so a client bound to it offers neither
     writes nor sending; the all-writable group share is unchanged. The two tests built as
@@ -154,14 +156,15 @@ These were confirmed before/with implementation; do not relitigate without cause
 
   - Stalwart answers a **DAV** request over its concurrency cap with `400` and JMAP's
     `urn:ietf:params:jmap:error:limit` / `maxConcurrentRequests` body (5 of 144 `PROPFIND`s
-    in 24-wide bursts on v0.16.24; on v1.0.2, 2 of 16 simultaneous `PUT`s). `provider-caldav` classes that `400`
-    `Permanent`, and `http-throttling.md` records no DAV concurrency ceiling — its
-    `live_concurrency` arm A offers a fixed 25/s, which never holds many requests in flight.
-    `live_caldav`'s 22 concurrent tests, each its own client, meet it now and then.
+    in 24-wide bursts on v0.16.24; on v1.0.2, 2 of 16 simultaneous `PUT`s).
+    `provider-caldav` classes that `400` `Permanent`, and `http-throttling.md` records no DAV
+    concurrency ceiling — its `live_concurrency` arm A offers a fixed 25/s, which never holds
+    many requests in flight. `live_caldav`'s 22 concurrent tests, each its own client, meet
+    it now and then (issue #332).
   - `/healthz/live` counts against `Http.rateLimitAnonymous` (100/minute on both pins), and
     every live test polls it through `Harness::wait_until_ready`. Back-to-back runs of one
     suite exhaust it and the poll times out after 30 s ("harness ready: Timeout(30s)") — 4 of
-    5 consecutive `live_caldav` runs on v0.16.24. A single CI run stays under it.
+    5 consecutive `live_caldav` runs on v0.16.24. A single CI run stays under it (issue #333).
 
   **The v0.16.21 → v0.16.24 bump.** The whole gated suite passed unchanged from a wiped
   volume. One fix lands on a request the engine sends: before v0.16.24, an `Email/set` whose
