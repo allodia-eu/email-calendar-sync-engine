@@ -6,7 +6,7 @@ One message per MIME shape that decides whether a message carries a download, as
 
 - `NN-name.eml` — the message, written for the purpose (the harness's `@test.local`
   addresses only);
-- `NN-name.bodystructure` — the `BODYSTRUCTURE` the **Stalwart v0.16 harness**
+- `NN-name.bodystructure` — the `BODYSTRUCTURE` the **Stalwart harness** at its pinned version (v1.0.2 when captured)
   (`docker/stalwart/`, account `alice@test.local`) built for it: the `.eml` was `APPEND`ed
   to a scratch mailbox and read back with `UID FETCH 1:* (UID BODYSTRUCTURE)`, keeping the
   value after `BODYSTRUCTURE` and dropping the `FETCH` list's closing parenthesis.

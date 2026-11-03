@@ -1,1 +1,1 @@
-(("text" "html" ("charset" "utf-8") NIL NIL "7bit" 16 0 "b5af85da69e532e66e7b3208fdf6b942" NIL NIL NIL)("image" "png" NIL "<logo@test.local>" NIL "base64" 8 "0733351879b2fa9bd05c7ca3061529c0" NIL NIL NIL) "related" ("boundary" "r") NIL NIL NIL)
+(("text" "html" ("charset" "utf-8") NIL NIL "7bit" 16 0 NIL NIL NIL NIL)("image" "png" NIL "<logo@test.local>" NIL "base64" 8 NIL NIL NIL NIL) "related" ("boundary" "r") NIL NIL NIL)

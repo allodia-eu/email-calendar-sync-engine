@@ -13,7 +13,11 @@ pub fn extract_inline_parts(raw: &RawMime) -> Vec<InlinePart>
 pub fn extract_attachments(raw: &RawMime) -> Vec<MessageAttachment>
 pub fn extract_attachment(raw: &RawMime, id: AttachmentPartId) -> Option<MessageAttachmentContent>
 pub fn encoded_word::decode(input: &str) -> String
+pub fn html_to_text(html: &str) -> String
 ```
+
+`html_to_text` is the text rendering an HTML-only body gets, for HTML that arrives outside a
+message (`provider-google` renders a conference's HTML notes with it).
 
 `extract_body` interprets a message's cached raw source (`RawMime`, the Tier-3 blob the
 store caches on demand — `store-and-sync.md`) into `MessageBody { plain, html }`:
