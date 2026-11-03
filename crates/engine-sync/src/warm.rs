@@ -14,7 +14,8 @@ use futures_util::{Stream, StreamExt};
 use crate::SyncError;
 
 /// Fetches the raw sources of `messages` in as few provider requests as the transport allows,
-/// caching each one's bytes, extracted text and derived list snippet as it arrives, and yields
+/// caching each one's bytes, extracted text, derived list snippet and attachment flag as it
+/// arrives, and yields
 /// `(index into messages, outcome)` for every message, in the order they complete.
 ///
 /// For messages the caller knows are not warm, such as a page of
@@ -43,8 +44,13 @@ where
                     let message = &messages[index];
                     let key = message.id.key();
                     let body = engine_mime::extract_body(&raw);
+                    let has_attachment = engine_mime::has_downloadable_attachment(&raw);
                     let _ = store.put_message_source(account, key, raw).await;
                     let _ = store.put_message_body(account, key, &body).await;
+                    // As an open would: the source answers the row's paperclip.
+                    let _ = store
+                        .set_mail_has_attachment(account, key, has_attachment)
+                        .await;
                     // The same gate an open applies: only a message with no snippet of its own
                     // gets one derived from its body.
                     if message.preview.is_none()

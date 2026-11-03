@@ -31,14 +31,19 @@ where
     P: Provider,
     S: MessageSourceCache,
 {
-    with_raw_source(
+    let attachments = with_raw_source(
         provider,
         store,
         account,
         message,
         engine_mime::extract_attachments,
     )
-    .await
+    .await?;
+    // The list just read is the answer the row's paperclip only guessed at.
+    let _ = store
+        .set_mail_has_attachment(account, message.id.key(), !attachments.is_empty())
+        .await;
+    Ok(attachments)
 }
 
 /// Returns one decoded attachment selected by `id`.

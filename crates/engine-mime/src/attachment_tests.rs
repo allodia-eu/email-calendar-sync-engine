@@ -294,6 +294,22 @@ fn a_parameter_value_folded_after_its_equals_sign_is_kept() {
 }
 
 #[test]
+fn the_flag_answers_what_the_list_holds() {
+    for (shape, expected) in [
+        (MIXED_WITH_ATTACHMENTS, true),
+        (IMIP_INLINE_ONLY, false),
+        (IMIP_INLINE_PLUS_ATTACHED, true),
+        (RELATED_UNDISPOSED_CID, false),
+        (&b"Content-Type: text/plain\r\n\r\njust text"[..], false),
+        (&b""[..], false),
+    ] {
+        let raw = raw(shape);
+        assert_eq!(has_downloadable_attachment(&raw), expected);
+        assert_eq!(!extract_attachments(&raw).is_empty(), expected);
+    }
+}
+
+#[test]
 fn hostile_input_never_panics() {
     assert_eq!(extract_attachments(&raw(b"")), []);
     assert!(extract_attachment(&raw(b"\xff\x00not mime"), AttachmentPartId::new(0)).is_none());

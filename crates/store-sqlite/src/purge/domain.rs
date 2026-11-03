@@ -21,15 +21,17 @@ use crate::{
     sql,
 };
 
-/// Account-keyed tables whose every row is mail: the cached bodies and raw sources, and the
-/// recipient index's coverage and backfill marker. The observations themselves are handled
-/// apart, because a suppressed one outlives the mail it came from.
+/// Account-keyed tables whose every row is mail: the cached bodies and raw sources with the
+/// attachment answers read from them, and the recipient index's coverage and backfill marker. The
+/// observations themselves are handled apart, because a suppressed one outlives the mail it came
+/// from.
 pub(super) const MAIL_TABLES: &[&str] = &[
     "message_source",
     "message_body",
     "recipient_coverage",
     "recipient_index_state",
     "server_keywords",
+    "source_attachment",
 ];
 
 /// Account-keyed tables whose every row is contacts.

@@ -62,6 +62,17 @@ pub fn extract_attachment(raw: &RawMime, id: AttachmentPartId) -> Option<Message
     ))
 }
 
+/// Whether the message carries a download: [`extract_attachments`] would list at least one part.
+///
+/// The answer a list row's paperclip should give once the bytes are at hand, without building
+/// any part's metadata. A message that cannot be parsed carries none.
+#[must_use]
+pub fn has_downloadable_attachment(raw: &RawMime) -> bool {
+    MessageParser::default()
+        .parse(raw.as_bytes())
+        .is_some_and(|message| downloadable_parts(&message).next().is_some())
+}
+
 /// The parts [`extract_attachments`] lists, in document order. Listing and fetching by id
 /// both read this one sequence, so they cannot disagree about which parts are downloads.
 fn downloadable_parts<'m>(message: &'m Message<'_>) -> impl Iterator<Item = MessagePart<'m>> {

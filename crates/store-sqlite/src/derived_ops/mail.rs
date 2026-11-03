@@ -29,6 +29,12 @@ use crate::{convert, sql};
 /// dropped out of its conversation and lost its snippet until the next derivation pass, which is
 /// the row a user is looking at while a resync lands. A provider that *does* assign them sends
 /// them on every object, so `excluded` wins there and a re-thread still lands.
+///
+/// **`has_attachment` yields to the message's own source** once one has been read
+/// (`source_attachment`, written by `set_mail_has_attachment`). The provider's value is a guess
+/// made without the bytes, and a key's source never changes, so a re-snapshot or re-fetch must
+/// not undo the answer the bytes gave. The lookup is in `VALUES`, so `excluded` already carries
+/// it on the update path.
 pub(crate) fn upsert_message(
     tx: &Transaction<'_>,
     scope_key: &str,
@@ -40,7 +46,10 @@ pub(crate) fn upsert_message(
         "INSERT INTO message (scope_key, provider_key, account, thread_id, message_id, date_utc,
                               flags, has_attachment, size_octets, from_name, from_addr, subject,
                               preview, last_modified, etag, change_key, mod_seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                 COALESCE((SELECT has_attachment FROM source_attachment
+                            WHERE account = ?3 AND provider_key = ?2), ?8),
+                 ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
          ON CONFLICT(scope_key, provider_key) DO UPDATE SET
              account = excluded.account,
              thread_id = COALESCE(excluded.thread_id, message.thread_id),

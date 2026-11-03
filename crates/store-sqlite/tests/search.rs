@@ -19,6 +19,8 @@ use engine_search::MailQuery;
 use engine_store::{ApplyBatch, DerivedWrite, LeaseRequest, ManualClock, Store, WorkerId};
 use store_sqlite::SqliteStore;
 
+#[path = "search/attachment_flag.rs"]
+mod attachment_flag;
 #[path = "search/body.rs"]
 mod body;
 #[path = "search/calendar.rs"]

@@ -128,6 +128,12 @@ fn seed_two_accounts() -> Connection {
         )
         .unwrap();
         conn.execute(
+            "INSERT INTO source_attachment (account, provider_key, has_attachment)
+             VALUES (?1, ?2, 1)",
+            (account, key),
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO recipient_coverage
                  (account, window_json, sent_collection_present)
              VALUES (?1, '{\"kind\":\"full\"}', 1)",

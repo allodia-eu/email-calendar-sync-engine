@@ -80,6 +80,29 @@ pub trait MessageSourceCache {
         account: &AccountId,
         octets: u64,
     ) -> Result<SourcesDropped>;
+
+    /// Records whether the message carries a download, **as its own source says**
+    /// (`engine_mime::has_downloadable_attachment`), and sets the row's flag to it.
+    ///
+    /// A provider's `has_attachment` is a guess made without the bytes: Gmail's metadata read
+    /// has no parts tree, and a server's own rule (JMAP `hasAttachment`, Graph
+    /// `hasAttachments`) need not count what the opened message lists. The source is the
+    /// answer, and a key's source never changes, so once recorded it **wins over every later
+    /// sync of the message**: a whole-object write takes the recorded value instead of the
+    /// one it carries. A message recorded before its row arrives lands with it.
+    ///
+    /// Lease-free, like [`put_message_source`](Self::put_message_source) beside it, and keyed
+    /// by account, so a message filed in two folders is answered once for both.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`](crate::StoreError) on a backend failure.
+    async fn set_mail_has_attachment(
+        &self,
+        account: &AccountId,
+        key: &ProviderKey,
+        has_attachment: bool,
+    ) -> Result<()>;
 }
 
 /// A cache for a message's extracted, displayable body *text* — the reading view and

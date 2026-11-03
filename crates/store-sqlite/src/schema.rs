@@ -484,6 +484,6 @@ mod mail;
 mod outbox;
 mod scope;
 
-pub(crate) use mail::{V8, V9, V10, V17, V18};
+pub(crate) use mail::{V8, V9, V10, V17, V18, V21};
 pub(crate) use outbox::V20;
 pub(crate) use scope::{V6, V19};

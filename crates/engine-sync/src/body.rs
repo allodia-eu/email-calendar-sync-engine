@@ -52,11 +52,18 @@ where
             None => (true, provider.fetch_message_source(account, message).await?),
         };
         let body = engine_mime::extract_body(&raw);
+        // The source answers the row's paperclip, which a provider only guessed at
+        // (`MessageSourceCache::set_mail_has_attachment`). Here and not on the fast path above:
+        // a body already cached had its source read, and answered, when it was cached.
+        let has_attachment = engine_mime::has_downloadable_attachment(&raw);
         // Best-effort caching; the read already succeeded.
         if from_provider {
             let _ = store.put_message_source(account, key, raw).await;
         }
         let _ = store.put_message_body(account, key, &body).await;
+        let _ = store
+            .set_mail_has_attachment(account, key, has_attachment)
+            .await;
         body
     };
 

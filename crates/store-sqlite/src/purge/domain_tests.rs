@@ -131,6 +131,10 @@ fn seed_account_row(conn: &Connection, table: &str, account: &str) {
         "server_keywords" => {
             "INSERT INTO server_keywords (account, provider_key, keywords) VALUES (?1, 'k', '[]')"
         }
+        "source_attachment" => {
+            "INSERT INTO source_attachment (account, provider_key, has_attachment)
+             VALUES (?1, 'k', 1)"
+        }
         "contact_photo" => {
             "INSERT INTO contact_photo
                  (account, contact, resource, fingerprint, content_hash, fetched_at)

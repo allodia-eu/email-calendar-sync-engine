@@ -23,7 +23,7 @@ pub mod encoded_word;
 mod scheduling;
 mod structure;
 
-pub use attachment::{extract_attachment, extract_attachments};
+pub use attachment::{extract_attachment, extract_attachments, has_downloadable_attachment};
 pub use body::extract_body;
 use engine_core::{mail::InlinePart, raw::RawMime};
 use mail_parser::{ContentType, MessageParser, PartKind};
