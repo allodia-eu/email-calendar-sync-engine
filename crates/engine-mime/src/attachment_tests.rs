@@ -278,6 +278,22 @@ fn sanitizes_suggested_file_names() {
 }
 
 #[test]
+fn a_parameter_value_folded_after_its_equals_sign_is_kept() {
+    // mail-parser 1.0.0 read the value on the folded line as a new parameter name (its #165),
+    // losing the `boundary` (so the message lost its parts) and the file name.
+    let raw = raw(
+        b"Content-Type: multipart/mixed; boundary=\r\n \"m\"\r\n\r\n\
+          --m\r\nContent-Type: text/plain\r\n\r\nbody\r\n\
+          --m\r\nContent-Type: application/pdf; name=\r\n \"report.pdf\"\r\n\
+          Content-Disposition: attachment; filename=\r\n \"report.pdf\"\r\n\
+          Content-Transfer-Encoding: base64\r\n\r\nUERG\r\n--m--\r\n",
+    );
+    let attachments = extract_attachments(&raw);
+    assert_eq!(attachments.len(), 1, "{attachments:?}");
+    assert_eq!(attachments[0].file_name(), "report.pdf");
+}
+
+#[test]
 fn hostile_input_never_panics() {
     assert_eq!(extract_attachments(&raw(b"")), []);
     assert!(extract_attachment(&raw(b"\xff\x00not mime"), AttachmentPartId::new(0)).is_none());
