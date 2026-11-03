@@ -316,7 +316,7 @@ async fn a_qresync_delta_with_no_changes_is_empty() {
 async fn a_qresync_delta_surfaces_a_fetch_error() {
     // A tagged NO on the CHANGEDSINCE fetch propagates as a classified error (not a
     // silent empty delta), so the orchestrator can reclassify/retry.
-    let resp = "a2 NO [SERVERBUG] fetch failed\r\n";
+    let resp = "a2 NO fetch failed\r\n";
     let mut conn = logged_in(script(&[GREETING, LOGIN_OK, resp])).await;
     let err = delta_page(
         &mut conn,

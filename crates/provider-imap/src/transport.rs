@@ -172,21 +172,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         }
     }
 
-    /// `LOGIN user password`. A `NO` here is an authentication failure, not a
-    /// generic invalid-state error, unless it carries `[LIMIT]`: the server is refusing
-    /// sessions for this account, and the credential was never judged.
-    ///
-    /// Only here, because RFC 5530's `LIMIT` is any implementation limit: on `STORE` it can
-    /// mean too many keywords, which no wait will fix. Before a session exists, the only
-    /// limit left to hit is on sessions.
+    /// `LOGIN user password`. A `NO` here is classed as a sign-in refusal
+    /// ([`ImapError::refused_sign_in`]), not as a generic invalid-state error.
     pub(crate) async fn login(&mut self, user: &str, password: &str) -> ImapResult<()> {
         let command = format!("LOGIN {} {}", quote(user), quote(password));
         match self.command(&command).await {
             Ok(_) => Ok(()),
-            Err(ImapError::No(detail)) if opens_with_code(&detail, "LIMIT") => {
-                Err(ImapError::rate_limited(detail))
-            }
-            Err(ImapError::No(detail)) => Err(ImapError::auth(detail)),
+            Err(ImapError::No(detail)) => Err(ImapError::refused_sign_in(detail)),
             Err(other) => Err(other),
         }
     }
@@ -345,16 +337,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     }
 }
 
-/// Whether a completion's text opens with the argument-less response code `code`. A code
-/// is only a code at the start of the text (RFC 3501 `resp-text`), and it is an atom, so
-/// case does not matter.
-pub(crate) fn opens_with_code(detail: &str, code: &str) -> bool {
-    detail
-        .strip_prefix('[')
-        .and_then(|rest| rest.split_once(']'))
-        .is_some_and(|(found, _)| found.eq_ignore_ascii_case(code))
-}
-
 /// Extracts `(validity, uid)` from an `[APPENDUID validity uid]` response code
 /// (RFC 4315), if present.
 pub(crate) fn parse_append_uid(detail: &str) -> Option<(u32, u32)> {
@@ -414,3 +396,7 @@ mod tests;
 #[cfg(test)]
 #[path = "transport_negotiate_tests.rs"]
 mod negotiate_tests;
+
+#[cfg(test)]
+#[path = "transport_refusal_tests.rs"]
+mod refusal_tests;

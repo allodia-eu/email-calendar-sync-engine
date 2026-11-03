@@ -42,13 +42,26 @@ is authoritative for the `provider-caldav` calendar client.
   live as `NO [LIMIT] LOGIN Rate limit hit.` on a session opened seconds after five
   others had authenticated with the same credential. The rule is scoped to `LOGIN`:
   RFC 5530's `LIMIT` is any implementation limit, so on `STORE` it can mean too many
-  keywords, which is `InvalidState` like any other `NO`. An `AUTHENTICATE` carrying a token
+  keywords, which is `InvalidState` like any other lasting `NO`. A temporary code (next
+  item) did not judge the credential either, and stays the `Retryable` `NO` it is: RFC 5530
+  §3's own example of `UNAVAILABLE` is a `LOGIN` refused while the directory that checks
+  passwords is down. An `AUTHENTICATE` carrying a token
   is classified the same way, since it is the other way into a session. SMTP `AUTH`, with a
   password or a token, follows the same rule in its own terms: a 4xx is "try again later"
   (RFC 5321 §4.2.1), so it is `RateLimited` too, except RFC 4954's `432` (a password
   transition is needed), which only the user can resolve and stays `Authentication`. Nothing in the adapter waits either
   out; the class is the host's cue to back off (`http-throttling.md` covers the HTTP
   adapters, where the engine does the waiting).
+- **A refused command is classed by its response code.** A tagged `NO` is `ImapError::No`
+  whatever it carries, so every site that tolerates a refusal (an `ENABLE`, a `STATUS`
+  probe, `NAMESPACE`) keeps tolerating it. Its class is read from the code RFC 5530 puts at
+  the start of the text (`error::opens_with_temporary_code`): `[UNAVAILABLE]`, `[INUSE]`
+  and `[SERVERBUG]` say the refusal is temporary, so they are `Retryable`; any other code,
+  and none, is `InvalidState`. A `NO` took no effect, so a write the outbox parks on
+  `Retryable` and repeats after its backoff cannot apply twice. Without this a host cannot
+  tell a server that is briefly short of something from a lasting answer such as a folder
+  hidden from IMAP, and has to guess with waits of its own. Proof:
+  `transport_refusal_tests.rs`.
 - Layers: `dial` (the connect sequence itself: TCP, TLS, authenticate, negotiate; behind
   `ImapAccount::connect` and every connection the account's pool opens after it),
   `credentials`/`sasl` (a password or an OAuth 2.0 access token, and the two SASL
@@ -140,9 +153,9 @@ is authoritative for the `provider-caldav` calendar client.
   number, and the server's limit is shared with every other client of the user's. A caller
   whose dial fails while another *worker* holds a connection waits for one to come back
   rather than failing; it fails only once no worker is left. When the server *answered*
-  (`LOGIN` `NO`, `NO [LIMIT]`, `BYE` at the greeting) the ceiling also drops by that
-  connection, since a `NO` to a credential other sessions are logged in with right now is
-  a session limit, not a verdict on the credential; `ImapAccount::invalidate` restores it,
+  (`LOGIN` `NO`, with or without a code, `BYE` at the greeting) the ceiling also drops by
+  that connection, since a `NO` to a credential other sessions are logged in with right now
+  is a session limit, not a verdict on the credential; `ImapAccount::invalidate` restores it,
   a new network being a new address. An unanswered dial (the network) lowers nothing.
   A refused **token** first gets its one renewal (**Authentication** below), so an expired
   token that a fresh one replaces never reaches the pool as a refusal; only a fresh token

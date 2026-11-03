@@ -38,8 +38,10 @@ pub enum ImapError {
     #[error("no credential to sign in with: {0}")]
     Credential(ProviderError),
 
-    /// A command returned a tagged `NO`: it is invalid in the resource's current
-    /// state (e.g. `SELECT` of a missing mailbox), not retryable as-is.
+    /// A command returned a tagged `NO`, leaving the session usable. Its response code
+    /// decides the class: one RFC 5530 calls temporary (`UNAVAILABLE`, `INUSE`,
+    /// `SERVERBUG`) may pass if asked again, and any other `NO` is invalid in the
+    /// resource's current state (e.g. `SELECT` of a missing mailbox).
     #[error("IMAP command rejected: {0}")]
     No(String),
 
@@ -76,6 +78,27 @@ impl ImapError {
         Self::No(detail.into())
     }
 
+    /// Classes a `NO` to `LOGIN` or `AUTHENTICATE`, the two ways into a session.
+    ///
+    /// It is an authentication failure unless its code says the credential was never judged:
+    /// `[LIMIT]` is the server refusing sessions for the account ([`ImapError::RateLimited`]),
+    /// and a temporary code stays the retryable `NO` it is (`[UNAVAILABLE]` is RFC 5530 §3's
+    /// own example: the directory that checks passwords is down).
+    ///
+    /// `LIMIT` is read this way only here, because RFC 5530's `LIMIT` is any implementation
+    /// limit: on `STORE` it can mean too many keywords, which no wait will fix. Before a
+    /// session exists, the only limit left to hit is on sessions.
+    pub(crate) fn refused_sign_in(detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        if opens_with_code(&detail, "LIMIT") {
+            Self::RateLimited(detail)
+        } else if opens_with_temporary_code(&detail) {
+            Self::No(detail)
+        } else {
+            Self::Auth(detail)
+        }
+    }
+
     /// Builds an [`ImapError::Bad`].
     pub(crate) fn bad(detail: impl Into<String>) -> Self {
         Self::Bad(detail.into())
@@ -100,7 +123,8 @@ impl ImapError {
             Self::Auth(_) => FailureClass::Authentication,
             Self::RateLimited(_) => FailureClass::RateLimited,
             Self::Credential(source) => source.class(),
-            // `NO` means "not now, in this state" — recompute, do not blind-retry.
+            Self::No(detail) if opens_with_temporary_code(detail) => FailureClass::Retryable,
+            // Any other `NO` means "not in this state": recompute, do not blind-retry.
             Self::No(_) => FailureClass::InvalidState,
             // `BAD`/malformed is a protocol-level incompatibility: the same request
             // will not start working.
@@ -115,6 +139,29 @@ impl From<ImapError> for ProviderError {
         let detail = err.to_string();
         ProviderError::new(class, detail).with_source(err)
     }
+}
+
+/// Whether a `NO`'s text opens with a response code that says the refusal is temporary: the
+/// server is short of something (`UNAVAILABLE`), another session holds what the command needs
+/// (`INUSE`), or the server failed on its own account (`SERVERBUG`), RFC 5530 §3. The command
+/// took no effect, so asking again later is safe and may pass.
+///
+/// `LIMIT` is not among them: it is any implementation limit, so on `STORE` it can mean too
+/// many keywords, which no wait fixes. Only a sign-in reads it as a limit on sessions.
+pub(crate) fn opens_with_temporary_code(detail: &str) -> bool {
+    ["UNAVAILABLE", "INUSE", "SERVERBUG"]
+        .iter()
+        .any(|code| opens_with_code(detail, code))
+}
+
+/// Whether a completion's text opens with the argument-less response code `code`. A code
+/// is only a code at the start of the text (RFC 3501 `resp-text`), and it is an atom, so
+/// case does not matter.
+pub(crate) fn opens_with_code(detail: &str, code: &str) -> bool {
+    detail
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+        .is_some_and(|(found, _)| found.eq_ignore_ascii_case(code))
 }
 
 /// The result type the IMAP client's internal operations return.
@@ -141,6 +188,10 @@ mod tests {
         assert_eq!(
             ImapError::no("SELECT nonexistent").failure_class(),
             FailureClass::InvalidState
+        );
+        assert_eq!(
+            ImapError::no("[INUSE] SELECT").failure_class(),
+            FailureClass::Retryable
         );
         assert_eq!(
             ImapError::bad("syntax").failure_class(),

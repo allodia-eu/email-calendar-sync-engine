@@ -287,3 +287,21 @@ async fn a_token_refused_with_limit_is_rate_limited_not_a_bad_token() {
     let err = outcome.expect_err("a refusal must fail");
     assert!(matches!(err, ImapError::RateLimited(_)), "{err:?}");
 }
+
+#[tokio::test]
+async fn a_token_refused_while_a_backend_is_down_is_not_a_bad_token() {
+    // As at `LOGIN`: a host that read it as a bad token would renew one that was never judged.
+    let (outcome, _) = authenticate(script(&[
+        GREETING,
+        "* CAPABILITY IMAP4rev1 SASL-IR AUTH=OAUTHBEARER\r\n",
+        "a1 OK CAPABILITY done\r\n",
+        "a2 NO [UNAVAILABLE] Authentication backend down\r\n",
+    ]))
+    .await;
+    let err = outcome.expect_err("a refusal must fail");
+    assert!(!matches!(err, ImapError::Auth(_)), "{err:?}");
+    assert_eq!(
+        err.failure_class(),
+        engine_core::error::FailureClass::Retryable
+    );
+}

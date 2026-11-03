@@ -90,7 +90,10 @@ use tokio::{
 };
 
 pub(crate) use crate::pool_lease::{PooledConnection, WatchLease};
-use crate::{error::ImapError, transport::Connection};
+use crate::{
+    error::{ImapError, opens_with_temporary_code},
+    transport::Connection,
+};
 
 /// The most connections one account may hold open at once, across workers and watches.
 ///
@@ -319,11 +322,13 @@ impl<S> ImapPool<S> {
 
 /// Whether a failed dial was the server declining a session, rather than a path that failed.
 /// Only an answer lowers the ceiling: a network that is down says nothing about the server.
+/// A temporary `NO` counts, being what a sign-in refused without judging the credential
+/// becomes ([`ImapError::refused_sign_in`]); a lasting one reached during a dial does not.
 fn refuses_sessions(err: &ImapError) -> bool {
     matches!(
         err,
         ImapError::Auth(_) | ImapError::RateLimited(_) | ImapError::Bye(_)
-    )
+    ) || matches!(err, ImapError::No(detail) if opens_with_temporary_code(detail))
 }
 
 /// The two operations that actually touch a connection, so they carry the stream bound the
