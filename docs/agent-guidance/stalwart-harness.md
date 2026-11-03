@@ -152,19 +152,20 @@ These were confirmed before/with implementation; do not relitigate without cause
   through), OAuth scopes, OpenPGP/S/MIME encryption.
 
   **Found while testing, and not caused by the bump** — each reproduced on v0.16.24 with the
-  same procedure, so neither was fixed here:
+  same procedure, so neither was fixed in the bump; both were fixed straight after it:
 
   - Stalwart answers a **DAV** request over its concurrency cap with `400` and JMAP's
     `urn:ietf:params:jmap:error:limit` / `maxConcurrentRequests` body (5 of 144 `PROPFIND`s
-    in 24-wide bursts on v0.16.24; on v1.0.2, 2 of 16 simultaneous `PUT`s).
-    `provider-caldav` classes that `400` `Permanent`, and `http-throttling.md` records no DAV
-    concurrency ceiling — its `live_concurrency` arm A offers a fixed 25/s, which never holds
-    many requests in flight. `live_caldav`'s 22 concurrent tests, each its own client, meet
-    it now and then (issue #332).
+    in 24-wide bursts on v0.16.24; on v1.0.2, 2 of 16 simultaneous `PUT`s, and 34 of 48).
+    `provider-caldav` classed that `400` `Permanent`, so `live_caldav`'s 22 concurrent tests,
+    each its own client, met it now and then as a flake. It now waits the refusal out
+    (`DavThrottles`; `live_concurrency_refusal.rs` proves it), and `http-throttling.md` states
+    the ceiling (#332).
   - `/healthz/live` counts against `Http.rateLimitAnonymous` (100/minute on both pins), and
     every live test polls it through `Harness::wait_until_ready`. Back-to-back runs of one
-    suite exhaust it and the poll times out after 30 s ("harness ready: Timeout(30s)") — 4 of
-    5 consecutive `live_caldav` runs on v0.16.24. A single CI run stays under it (issue #333).
+    suite exhausted it and the poll timed out after 30 s ("harness ready: Timeout(30s)") — 4 of
+    5 consecutive `live_caldav` runs on v0.16.24. A single CI run stays under it. The
+    entrypoint now raises the limit ("And so is the anonymous HTTP limit", below; #333).
 
   **The v0.16.21 → v0.16.24 bump.** The whole gated suite passed unchanged from a wiped
   volume. One fix lands on a request the engine sends: before v0.16.24, an `Email/set` whose
@@ -329,6 +330,26 @@ in the Stalwart docs). The object name is `MtaInboundThrottle`; guessing at
 `x:Setting`/`x:RateLimit` gets `unknownMethod`, which is easy to mistake for "not
 configurable". The full object registry is the Stalwart docs' `ref/object` index —
 consult it rather than probing.
+
+### And so is the anonymous HTTP limit
+
+The entrypoint also raises `x:Http`'s **`rateLimitAnonymous`** (100 requests/minute per client
+IP as shipped) and logs `relaxed the anonymous HTTP rate limit`. Every live run spends it, in two
+ways measured on v1.0.2:
+
+- the readiness poll — `Harness::wait_until_ready`, one `GET /healthz/live` per test;
+- the first request of every DAV connection, which `provider-caldav` sends without the
+  credential until the server asks for it (`CredentialScope`, `caldav.md`). Stalwart answers it
+  `401`, and that counts: 60 of them left 40 of the 100. Authenticated requests do not.
+
+One `live_caldav` run fits in the budget; back-to-back runs did not, and once it ran out every
+poll drew `429` (`Retry-After` up to a minute) until the wait timed out with
+`harness ready: Timeout(30s)` — 4 of 5 consecutive runs on v0.16.24 (#333). Polling once per test
+binary would only have moved the failure to the DAV connects, so the fix is the limit. Verified:
+five back-to-back `live_caldav` runs, where the fourth used to fail. `rateLimitAuthenticated`
+(1000/minute) is left as shipped. The smoke test `anonymous_requests_are_not_rationed` sends 150
+unauthenticated requests and fails on a harness started before the change, so a stale container
+says so rather than flaking.
 
 ## The seed dataset — and the invariant each fixture protects
 

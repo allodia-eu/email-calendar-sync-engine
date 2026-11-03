@@ -31,10 +31,17 @@
 //! | A: 25/s at widths 1, 4, 16, 64 | 0% refused throughout | 0% refused throughout |
 //! | B: width 8 at 10, 50, 150, 400/s | 0%, 0%, **a few %**, **tens of %** | 0% throughout |
 //!
-//! So **neither implementation bounds concurrency**, Stalwart bounds *rate* (it trips
-//! somewhere between 50/s and 150/s and says so with a `429`), and SabreDAV refused nothing at
-//! all up to 400/s. Two independent implementations, because one server's behaviour is a fact
-//! about that server while the adapter's ceiling is a claim about CalDAV.
+//! So at a steady rate **the width bound is not the lever on either implementation**, Stalwart
+//! bounds *rate* (it trips somewhere between 50/s and 150/s and says so with a `429`), and
+//! SabreDAV refused nothing at all up to 400/s. Two independent implementations, because one
+//! server's behaviour is a fact about that server while the adapter's ceiling is a claim about
+//! CalDAV.
+//!
+//! ⚠️ **This once concluded "neither bounds concurrency", and for Stalwart that was wrong.** At
+//! 25/s a request is done long before the next arrives, so about one is ever in flight however
+//! wide arm A lets it go, and no arm here can see a ceiling on requests *in flight*. Stalwart has
+//! one — 4 per account, refused with a `400` (#332) — and `live_concurrency_refusal.rs` is the
+//! suite that offers enough at once to meet it.
 //!
 //! Which is also why arm A asserts and arm B only reports: "clean at every width" is a
 //! property worth failing on, while "refused 40.6% at 400/s" is a weather report, and a
@@ -44,8 +51,8 @@
 //! measurement: without them a block inherits the previous block's drained limiter, which is
 //! exactly the mistake that produced the wrong Gmail figure this file's sibling corrects.
 //!
-//! That is why no DAV adapter calls `RequestGate::narrow_to`, and this test is what a future
-//! change to that decision has to get past.
+//! No DAV adapter calls `RequestGate::narrow_to`: Stalwart's 4 is stated nowhere in DAV, so it
+//! is waited out when met rather than imposed on every server (`http-throttling.md`).
 //!
 //! Skips unless the harness addresses are set, like every live suite here:
 //!
@@ -221,8 +228,8 @@ async fn measure(target: Target) {
         assert!(
             counts.refused_percent() < 1.0,
             "{}: width {width} drew {:.1}% refusals at a rate that is clean at width 1 — \
-             this server DOES bound concurrency, and `provider-caldav` should narrow the \
-             account gate (`http-throttling.md`)",
+             at a steady rate the width bound has become the lever, which nothing measured \
+             before showed (`http-throttling.md`)",
             target.name,
             counts.refused_percent(),
         );
@@ -263,18 +270,19 @@ async fn measure(target: Target) {
 
 /// Stalwart: the arm that carries the proof, because it is the one that refuses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn live_stalwart_bounds_rate_and_not_concurrency() {
+async fn live_stalwart_bounds_rate_under_a_steady_load() {
     let Some(target) = stalwart() else {
         eprintln!(
-            "skipping live_stalwart_bounds_rate_and_not_concurrency: STALWART_HTTP_ADDR unset"
+            "skipping live_stalwart_bounds_rate_under_a_steady_load: STALWART_HTTP_ADDR unset"
         );
         return;
     };
     measure(target).await;
 }
 
-/// SabreDAV: a second implementation, so "CalDAV does not bound concurrency" rests on more
-/// than one server's habits. It refuses nothing, which is why it cannot carry the proof alone.
+/// SabreDAV: a second implementation, so "a steady rate is not refused for its width" rests on
+/// more than one server's habits. It refuses nothing, which is why it cannot carry the proof
+/// alone — and, like every arm here, it says nothing about a cap on requests in flight.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn live_sabredav_bounds_neither() {
     let Some(target) = sabredav() else {

@@ -202,6 +202,31 @@ relax_inbound_throttles() {
   log "relaxed inbound rate limiters: $(printf '%s' "$ids" | wc -w | tr -d ' ') throttle(s)"
 }
 
+# Raise the HTTP limit on **unauthenticated** requests (`x:Http`'s `rateLimitAnonymous`,
+# 100/minute per client IP by default) for the same reason as the throttles above: it makes a
+# test's outcome depend on how recently the suites last ran.
+#
+# Two things every live run spends it on, measured: the readiness poll, `GET /healthz/live`
+# once per test (`Harness::wait_until_ready`), and the first request of every DAV connection,
+# which goes without the credential until the server asks for it (`provider-caldav`'s
+# `CredentialScope`) and is answered `401` — 60 of those left 40 of the 100. One `live_caldav`
+# run fits; back-to-back runs exhausted it, and every poll after that drew `429` until the
+# readiness wait timed out (#333). Polling once per test binary would only have moved the
+# problem to the DAV connects.
+#
+# The **authenticated** limit (`rateLimitAuthenticated`, 1000/minute) is left as shipped, so
+# the rate refusals `provider-caldav/tests/live_concurrency.rs` measures are the server's own.
+#
+# Idempotent, and takes effect without a restart.
+relax_anonymous_http_limit() {
+  resp=$(jmap '["x:Http/set",{"update":{"singleton":{"rateLimitAnonymous":{"count":1000000,"period":60000}}}},"c0"]')
+  if ! printf '%s' "$resp" | grep -q '"updated"'; then
+    log "FAILED to relax the anonymous HTTP rate limit: $resp"
+    return 1
+  fi
+  log "relaxed the anonymous HTTP rate limit"
+}
+
 trap 'stop_server; exit 0' TERM INT
 
 rm -f "$MARKER"
@@ -237,6 +262,7 @@ ensure_account bob "Bob Tester" "${HARNESS_BOB_PW:-harness-bob-pw}"
 ensure_account carol "Carol Tester" "${HARNESS_CAROL_PW:-harness-carol-pw}"
 
 relax_inbound_throttles
+relax_anonymous_http_limit
 
 # The shared-mailbox fixture's first half: a credential-less group mailbox alice belongs
 # to, so she holds every right on it. The second half — bob granting alice read-only

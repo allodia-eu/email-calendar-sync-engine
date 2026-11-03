@@ -81,7 +81,10 @@ assert (`docs/agent-guidance/stalwart-harness.md`).
 The entrypoint also **raises Stalwart's inbound rate limiters** (`x:MtaInboundThrottle`)
 at bootstrap, logging `relaxed inbound rate limiters`. The default of 25 messages/hour
 per sender-domain→recipient otherwise breaks the scheduling suite after a few runs, and
-does so silently — see the harness guidance doc.
+does so silently — see the harness guidance doc. It raises the **anonymous HTTP rate limit**
+(`x:Http.rateLimitAnonymous`, 100/minute) too, logging `relaxed the anonymous HTTP rate
+limit`: readiness polls and the uncredentialed first request of each DAV connection spend it,
+and back-to-back runs used to exhaust it.
 
 ## Layout
 

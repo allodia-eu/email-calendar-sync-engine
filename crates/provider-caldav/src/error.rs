@@ -171,6 +171,9 @@ fn status_class(status: u16, body: &str) -> FailureClass {
             FailureClass::NeedsResync
         }
         401 => FailureClass::Authentication,
+        // Stalwart's concurrency refusal, which the send funnel has already waited out and is
+        // still a throttle when it gives up (`throttle.rs`).
+        400 if crate::throttle::is_concurrency_limit(body) => FailureClass::RateLimited,
         // `412 Precondition Failed` is an `If-Match`/ETag write conflict (RFC 4791
         // §5.3.2); a `409 Conflict` without the sync-token precondition is a
         // write-ordering conflict.

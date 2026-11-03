@@ -323,6 +323,16 @@ impl Sent {
         self.stated
     }
 
+    /// The body, by reference, where the funnel already read it to classify the reply; `None`
+    /// where it did not, which is every reply a classifier never claimed.
+    ///
+    /// For an adapter that decides what to do *next* from a body its own classifier claimed,
+    /// without consuming the reply it may still hand back.
+    #[must_use]
+    pub fn read_body(&self) -> Option<&[u8]> {
+        self.body.as_deref()
+    }
+
     /// The whole body as bytes, read now or already read here.
     ///
     /// # Errors

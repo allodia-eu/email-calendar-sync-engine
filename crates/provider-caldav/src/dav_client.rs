@@ -20,6 +20,15 @@ use crate::{
     transport::{Credentials, DavExecutor, DavMethod, HttpResponse, Precondition, WriteRequest},
 };
 
+/// Whether `response` is a concurrency refusal the send funnel claimed and gave up waiting on
+/// (`DavThrottles` buffers every `400`, so its body is there to read).
+fn is_throttle(response: &engine_http::Sent) -> bool {
+    response
+        .read_body()
+        .and_then(|body| core::str::from_utf8(body).ok())
+        .is_some_and(crate::throttle::is_concurrency_limit)
+}
+
 /// The live `reqwest`-backed CalDAV transport.
 pub(crate) struct DavClient {
     client: Client,
@@ -41,9 +50,9 @@ pub(crate) struct DavClient {
     /// that serves every real request, so the latest observation — not the first — is
     /// the one that describes the working connection.
     connection: ObservedConnection,
-    /// How a `429` is waited out. Note that `PROPFIND` and `REPORT` are extension methods
-    /// rather than ones `http` knows are idempotent, so a `503` on them is not retried even
-    /// though their own RFCs say it would be safe.
+    /// How a `429`, or Stalwart's `400` concurrency refusal, is waited out. Note that `PROPFIND`
+    /// and `REPORT` are extension methods rather than ones `http` knows are idempotent, so a
+    /// `503` on them is not retried even though their own RFCs say it would be safe.
     retry: RetryConfig,
 }
 
@@ -86,7 +95,12 @@ impl DavClient {
             credentials,
             credential_hosts: None,
             connection: ObservedConnection::default(),
-            retry: retry.clone().labelled("caldav"),
+            retry: retry
+                .clone()
+                .labelled("caldav")
+                // Stalwart refuses a request over its concurrency cap with a `400`, which the
+                // shared status rule reads as a request defect. See `DavThrottles`.
+                .classifying(Arc::new(crate::throttle::DavThrottles)),
         })
     }
 }
@@ -216,7 +230,10 @@ impl DavClient {
         let response = self
             .exchange_at(method, &url, &dress, body.as_ref())
             .await?;
-        if !respell || response.status() != reqwest::StatusCode::BAD_REQUEST {
+        if !respell
+            || response.status() != reqwest::StatusCode::BAD_REQUEST
+            || is_throttle(&response)
+        {
             return Ok(response);
         }
         let Some(once) = single_encoded(&url) else {
@@ -229,6 +246,10 @@ impl DavClient {
     }
 
     /// One [`exchange`](Self::exchange) at `url`, answering one challenge.
+    ///
+    /// (A `400` the send funnel waited on and gave up is a refusal of *this* URL's request
+    /// for now, not of its spelling, so [`exchange`](Self::exchange) hands it back unrespelled:
+    /// asking the once-encoded URL would answer for another resource and lose the throttle.)
     async fn exchange_at(
         &self,
         method: DavMethod,

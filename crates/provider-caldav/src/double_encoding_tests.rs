@@ -125,3 +125,39 @@ async fn an_unguarded_write_is_not_respelled() {
     assert_eq!(reply.status, 400);
     assert_eq!(seen.lock().unwrap().len(), 1);
 }
+
+/// A concurrency refusal the send funnel gave up waiting on is a "not yet" for this URL, not a
+/// verdict on its spelling: respelling it would ask another resource and lose the throttle.
+#[tokio::test]
+async fn a_concurrency_refusal_is_not_respelled() {
+    let refusal = include_str!("../tests/fixtures/concurrency-limit-stalwart.json");
+    let (base, seen) = mock_server_capturing(vec![format!(
+        "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{refusal}",
+        refusal.len()
+    )]);
+    let client = DavClient::new(
+        &base,
+        Credentials::Bearer("tok".to_owned()),
+        &engine_tls::TlsClientConfig::default(),
+        &engine_http::RetryConfig::default().with_policy(engine_http::RetryPolicy::none()),
+        &engine_http::test_server::user_agent(),
+    )
+    .expect("client");
+
+    let reply = client
+        .send(
+            DavMethod::Report,
+            "/cal/131/uid%2540example.invalid.ics",
+            "0",
+            "<x/>".to_owned(),
+        )
+        .await
+        .expect("an answer");
+
+    assert_eq!(reply.status, 400);
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        1,
+        "asked once, at the URL it named"
+    );
+}

@@ -103,18 +103,20 @@ Surveyed across every adapter, because a throttle is not a provider-specific sym
 | `provider-graph` | `429` (+ `Retry-After`) | **4 per mailbox** | Documented `MailboxConcurrency`, and measured: a sharp cliff, 4 clean over 460 requests and 5 refused 13% | **yes**, in `HttpTransport::new` | no — the status is the whole answer |
 | `provider-jmap` | `429`, method `rateLimit`/`overQuota`, **and a `400`** (below) | the session's `maxConcurrentRequests` | **The server states it** (RFC 8620 §2) — 4 on Stalwart, 10 on Fastmail | **yes**, in `JmapClient::connect`, once the session resolves | **yes**, `400` → `JmapThrottles` |
 | `provider-google` | **both**: `429` for concurrency, `403` for the per-minute quota | **between 48 and 64 per user**, measured | See "Gmail has two limits, and they are not the same limit" | yes, at `MAX_CONCURRENT_GETS` (20), comfortably under it, **and paces it** to the published quota (`provider-google/src/quota.rs`) | **yes**, `403` → `GoogleThrottles` |
-| `provider-caldav` + CardDAV | `429` (Stalwart); SabreDAV refuses nothing | **none found** — clean at widths 1–64 on both servers | Measured on two implementations; `provider-caldav/tests/live_concurrency.rs` | **no** | no — the status is the whole answer |
+| `provider-caldav` + CardDAV | Stalwart: `429` for rate, **and a `400`** for concurrency (below); SabreDAV refuses nothing | **Stalwart: 4 per account**, its JMAP `maxConcurrentRequests` applied to DAV too and stated nowhere in DAV; SabreDAV: none found to 64 | Measured: `provider-caldav/tests/live_concurrency.rs` (rate) and `live_concurrency_refusal.rs` (width) | **no** — no DAV server states a number to narrow to | **yes**, `400` → `DavThrottles` |
 | `provider-imap` | `NO [LIMIT]` to `LOGIN`, a 4xx to SMTP `AUTH` → `RateLimited`, waited out by nobody (`imap-smtp.md`) | 1 **per connection** | Not HTTP, and one connection is one command at a time | n/a — not an HTTP adapter | n/a |
 
 ⚠️ **Graph and Gmail both have a concurrency ceiling; Graph's is the one a gate is sized
 against.** Graph's is 4 and an ordinary pass walks straight into it. Gmail's is between 48 and
 64 and nothing this engine does goes near it — the adapter fans out 20 wide — so the gate is
 narrowed there for a different reason, stated below. JMAP's is honoured because the server
-states a number and ignoring a stated limit is indefensible whether or not it bites. On the
-DAV servers the thing that refuses is a **rate**, and a width bound does not control a rate:
-halving the width of a drain that then runs twice as long delivers the same requests per
-second. Keep the two quantities apart — conflating them is how the Gmail figures below came to
-be wrong twice, in opposite directions.
+states a number and ignoring a stated limit is indefensible whether or not it bites. Stalwart
+holds DAV to the same 4, but nothing in DAV states it, so the DAV adapter waits the refusal out
+instead of narrowing to a number it would have to guess for every other server. What a steady
+DAV sync meets is a **rate**, and a width bound does not control a rate: halving the width of a
+drain that then runs twice as long delivers the same requests per second. Keep the two
+quantities apart — conflating them is how the Gmail figures below came to be wrong twice, in
+opposite directions.
 
 ⚠️ **`provider-imap`'s `1` is the odd one out among the *widths*, and it is the reason
 `min`-ing these into a fan-out is wrong.** Every HTTP adapter's number is a bound on the
@@ -284,13 +286,25 @@ shape is the result, not the numbers:
 | fixed 25/s, widths 1 · 4 · 16 · 64 | 0% refused throughout | 0% refused throughout |
 | fixed width 8, rates 10 · 50 · 150 · 400/s | 0% · 0% · **a few %** · **tens of %** | 0% throughout |
 
-So **neither bounds concurrency**; Stalwart bounds rate (tripping between 50/s and 150/s, and
-saying so with a proper `429`), and SabreDAV refused nothing at all up to 400/s. The second arm
-matters as much as the first: without a rate that *does* provoke a refusal, "clean at every
-width" would just mean the probe never pushed hard enough.
+So at a steady rate the width bound is not the lever on either server; Stalwart bounds rate
+(tripping between 50/s and 150/s, and saying so with a proper `429`), and SabreDAV refused
+nothing at all up to 400/s. The second arm matters as much as the first: without a rate that
+*does* provoke a refusal, "clean at every width" would just mean the probe never pushed hard
+enough.
 
-That is why no DAV adapter narrows the gate — now on evidence rather than on nobody having
-looked.
+⚠️ **That table once read "neither bounds concurrency", and for Stalwart it was wrong.** At 25/s
+a request finishes long before the next arrives, so about one is ever in flight whatever the
+width bound allows, and arm A cannot see a ceiling on requests *in flight*. Offered all at once,
+Stalwart refuses past **4 per account** (48 simultaneous `PUT`s: 34 refused; split across two
+accounts, half the refusals), with a `400` and JMAP's `maxConcurrentRequests` problem body — the
+same cap its JMAP session states, on an endpoint that states nothing (#332). The refusal also
+carries `RateLimit-Policy: "concurrent-requests";q=4` (the IETF `RateLimit` header draft), which
+the engine does not read. `live_concurrency_refusal.rs` offers 24 creates at once through one
+provider and requires every one to land.
+
+No DAV adapter narrows the gate even so: the number is Stalwart's alone and arrives only on a
+refusal, so narrowing every DAV account to it would cap iCloud or Fastmail at a guess. The
+refusal is waited out instead (below).
 
 ### One gate, one account — the scope is the whole difficulty
 
@@ -307,14 +321,15 @@ process-wide, so clone it per account through `gated` rather than building a sec
 
 ## When the status is not the answer
 
-Two of the four adapters signal a throttle with a status that reads as something else, and
-**each of them already knows it** — the verdict simply arrived after the retry decision, which
+Three of the four HTTP adapters signal a throttle with a status that reads as something else,
+and **each of them already knows it** — the verdict simply arrived after the retry decision, which
 had read the status and moved on.
 
 | Adapter | Arrives as | Reads as | Really is |
 |---|---|---|---|
 | `provider-google` | `403 PERMISSION_DENIED` | no permission | the per-minute quota, when `errors[0].reason` is a rate-limit reason |
 | `provider-jmap` | `400` + `urn:ietf:params:jmap:error:limit` | a bad request | too many at once, when `limit` is `maxConcurrentRequests` |
+| `provider-caldav` | the same `400` and body, from Stalwart's DAV endpoint | a bad request | the same: Stalwart counts DAV and JMAP requests against one cap |
 
 **The adapter reads the body; `engine-http` still owns every question about waiting.** A
 `RetryConfig` carries a `ThrottleClassifier` the adapter supplies through `classifying`, the
@@ -328,7 +343,7 @@ Three properties hold the design together:
   is waited out on exactly the path it always was. A classifier can turn a reply that was being
   handed back into one that is waited out, and can never do the reverse.
 - **Bodies are read only where the adapter asked.** `reads_body_of(status)` is consulted before
-  anything is buffered, and claims `403` for Google and `400` for JMAP — nothing else. A
+  anything is buffered, and claims `403` for Google and `400` for JMAP and DAV — nothing else. A
   classifier that claimed `200` would buffer every page the adapter ever fetched.
 - **Nothing is reconstructed.** Reading a body used to mean losing the reply —
   `Response::bytes` consumes `self` — so the first version of this took the reply apart and
@@ -371,12 +386,13 @@ hit. Only `maxConcurrentRequests` is one a client clears by waiting — `maxSize
 the real server precisely so the reader can be shown discriminating between them.
 
 RFC 8620 scopes `maxConcurrentRequests` to the API endpoint and defines no companion for
-downloads, but a server may apply one number to more than that. **Stalwart applies it to
-uploads and, as measured here, to nothing else:** 300 simultaneous API calls and 300
-simultaneous blob *downloads* were all answered `200`, while 16 simultaneous uploads drew six
-`400`s — reported under the name `maxConcurrentRequests` even though the session advertises a
-separate `maxConcurrentUpload`. One counter, two names. It still defaults to `1` when a session
-omits it, rather than to a guess.
+downloads, but a server may apply one number to more than that. **Of the JMAP endpoint's
+traffic, Stalwart applies it to uploads and, as measured here, to nothing else:** 300
+simultaneous API calls and 300 simultaneous blob *downloads* were all answered `200`, while 16
+simultaneous uploads drew six `400`s — reported under the name `maxConcurrentRequests` even
+though the session advertises a separate `maxConcurrentUpload`. One counter, two names, and it
+holds Stalwart's DAV endpoint to the same number (above). It still defaults to `1` when a
+session omits it, rather than to a guess.
 
 That is also why the refusal is only reachable at all with **more than one client**:
 `JmapClient::connect` narrows the account's gate to the stated number, so this adapter alone
