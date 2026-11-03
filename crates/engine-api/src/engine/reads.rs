@@ -172,7 +172,7 @@ impl Engine {
                 // is a store inconsistency rather than a message in no folder.
                 continue;
             };
-            messages.push(Message::from_parts(
+            let mut message = Message::from_parts(
                 content,
                 StoredState {
                     mailboxes,
@@ -183,7 +183,12 @@ impl Engine {
                     revisions: row.mail.revisions,
                     last_modified: row.mail.last_modified,
                 },
-            ));
+            );
+            // The payload carries the provider's guess; the row carries the answer a read of the
+            // source settled (`MessageSourceCache::set_mail_has_attachment`), so an opened
+            // message and its list row cannot disagree about the paperclip.
+            message.has_attachment = row.mail.has_attachment;
+            messages.push(message);
         }
         Ok(messages)
     }

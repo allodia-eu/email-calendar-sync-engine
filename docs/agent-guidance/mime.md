@@ -12,6 +12,7 @@ pub fn extract_body(raw: &RawMime) -> MessageBody
 pub fn extract_inline_parts(raw: &RawMime) -> Vec<InlinePart>
 pub fn extract_attachments(raw: &RawMime) -> Vec<MessageAttachment>
 pub fn extract_attachment(raw: &RawMime, id: AttachmentPartId) -> Option<MessageAttachmentContent>
+pub fn has_downloadable_attachment(raw: &RawMime) -> bool
 pub fn encoded_word::decode(input: &str) -> String
 pub fn html_to_text(html: &str) -> String
 ```
@@ -111,6 +112,9 @@ order from the root's `0`, nested messages' parts included), which depends on th
 alone: a classification rule that changes between releases can make an id stop resolving,
 never make it name a different file. (It was the index into the parser's attachment list
 before mail-parser 1.0.) Listing and fetching read one sequence of parts, so they agree.
+`has_downloadable_attachment` answers whether that list is non-empty without building it; it
+is what a row's paperclip is set to once the source is read (`store-and-sync.md`, "The source
+answers the row's paperclip").
 `extract_attachment` takes that id and returns the selected metadata plus decoded bytes
 (`MessageAttachmentContent`) for a host save/open action; suggested file names are sanitized
 (path separators, control codes, and Unicode bidi/zero-width format controls neutralized).

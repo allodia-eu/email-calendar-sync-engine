@@ -1,4 +1,4 @@
-//! The mail row and the message-id graph: schema steps v8 through v10, and v17; and v18, the
+//! The mail row and the message-id graph: schema steps v8 through v10, v17 and v21; and v18, the
 //! instants every table stores.
 //!
 //! Split from [`super`], which holds the base store, the search layer and the calendar steps.
@@ -156,3 +156,22 @@ CREATE TABLE server_keywords (
 /// it. The form a store wrote before dropped a zero fraction and trailing zeros, and so did not
 /// sort as text within one second.
 pub(crate) const V18: &str = "";
+
+/// Migration v21: `source_attachment` — whether a message carries a download, as its own source
+/// says.
+///
+/// A provider's `has_attachment` is a guess made without the bytes (Gmail's metadata read has no
+/// parts tree; a server's own rule need not count what the opened message lists). Reading the
+/// source settles it, and a key's source never changes, so the answer is kept apart from the row
+/// a sync rewrites: `derived_ops::upsert_message` takes it in place of the value a sync carries.
+/// Keyed by `(account, provider_key)` like the body caches, since a body is read without a scope.
+///
+/// No backfill: it fills as sources are read, by an open or the warming pass.
+pub(crate) const V21: &str = "\
+CREATE TABLE source_attachment (
+    account        TEXT    NOT NULL,
+    provider_key   TEXT    NOT NULL,
+    has_attachment INTEGER NOT NULL,
+    PRIMARY KEY (account, provider_key)
+) STRICT, WITHOUT ROWID;
+";

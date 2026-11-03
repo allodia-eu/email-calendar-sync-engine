@@ -345,7 +345,8 @@ is authoritative for the `provider-caldav` calendar client.
   (`name*0*`) are recognized, `message/global` is read like `message/rfc822`, and a nested
   message is one part. The two agree on every shape in
   `provider-imap/tests/fixtures/attachment-shapes/` (real Stalwart structures), which a test
-  enforces. Flags → keywords:
+  enforces. Once the message's source is read, that answer replaces this one
+  (`store-and-sync.md`, "The source answers the row's paperclip"). Flags → keywords:
   `\Seen`/`\Flagged`/
   `\Answered`/`\Draft` map to their `$`-keywords; `\Deleted`/`\Recent` are
   deliberately not keywords (expunge/session model); custom keywords pass through.

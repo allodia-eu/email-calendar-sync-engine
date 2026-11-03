@@ -99,10 +99,10 @@ fn seed_mail(conn: &Connection, scope_key: &str, key: &str, date: Option<&str>, 
     seed_caches(conn, scope_key, key, subject);
 }
 
-/// Seeds the two lease-free content caches for one message: the extracted body text
-/// (whose `message_body_fts` shadow a trigger maintains, so `subject` doubles as a
-/// probeable body term) and the raw-source metadata pointing at a blob hash. Both are
-/// keyed by `(account, provider_key)`, resolved from the scope.
+/// Seeds the lease-free content caches for one message: the extracted body text (whose
+/// `message_body_fts` shadow a trigger maintains, so `subject` doubles as a probeable body
+/// term), the raw-source metadata pointing at a blob hash, and the attachment answer read
+/// from that source. All are keyed by `(account, provider_key)`, resolved from the scope.
 fn seed_caches(conn: &Connection, scope_key: &str, key: &str, subject: &str) {
     conn.execute(
         "INSERT INTO message_body (account, provider_key, plain, fetched_at)
@@ -114,6 +114,12 @@ fn seed_caches(conn: &Connection, scope_key: &str, key: &str, subject: &str) {
         "INSERT INTO message_source (account, provider_key, content_hash, fetched_at)
          VALUES ((SELECT account FROM sync_scope WHERE scope_key = ?1), ?2, ?3, '2026-06-01T00:00:00Z')",
         (scope_key, key, format!("hash-{key}")),
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO source_attachment (account, provider_key, has_attachment)
+         VALUES ((SELECT account FROM sync_scope WHERE scope_key = ?1), ?2, 1)",
+        (scope_key, key),
     )
     .unwrap();
 }
@@ -339,7 +345,7 @@ fn pruned_mail_takes_its_cached_body_and_source_with_it() {
 
     // The caches are the bulk of what an account occupies on disk, so they follow the
     // message out of the window rather than outliving it.
-    for table in ["message_body", "message_source"] {
+    for table in ["message_body", "message_source", "source_attachment"] {
         assert_eq!(cached(&conn, table, "a", "old"), 0, "{table} kept old");
         assert_eq!(cached(&conn, table, "a", "new"), 1, "{table} lost new");
     }
@@ -368,7 +374,7 @@ fn a_copy_still_live_in_another_scope_keeps_its_cached_body_and_source() {
 
     prune_account_mail(&mut conn, &account("a"), &floor().to_string()).unwrap();
 
-    for table in ["message_body", "message_source"] {
+    for table in ["message_body", "message_source", "source_attachment"] {
         assert_eq!(cached(&conn, table, "a", "old"), 1, "{table} dropped old");
     }
     assert_eq!(body_matches(&conn, "alpha"), 1);

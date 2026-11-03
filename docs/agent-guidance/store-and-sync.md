@@ -604,6 +604,24 @@ through **separate, lease-free** traits in `engine-store` (beside `Store`), keye
   alongside the scope FTS (RRF-fused) and joins to the live `message` rows so stale rows
   for deleted messages drop out, and to `message_body.account` so IMAP keys that
   collide across accounts cannot cross over (`search.md`).
+- **The source answers the row's paperclip** — `MessageSourceCache::set_mail_has_attachment`.
+  A provider's `has_attachment` is a guess made without the bytes: Gmail's API fallback reads
+  `format=metadata`, which has no parts tree, so it never sets one; JMAP's `hasAttachment` and
+  Graph's `hasAttachments` are each server's own rule, which need not count what the opened
+  message lists (`engine_mime::extract_attachments`). **One funnel answers it**
+  (`engine_sync::source_answer`): a source a provider returns is answered as it enters the
+  cache, on every road that fetches one (open, warm, attachments, inline parts, scheduling,
+  export, `ensure_message_source`), and a cached source still owing an answer pays it when it
+  is next read — including a body served from its cached text, which reads the blob once for
+  that. That last case is every message cached before answers were recorded, so no backfill
+  is needed. Bytes that do not parse as a message (`has_downloadable_attachment` → `None`)
+  record nothing: a broken source must not clear a flag the server set correctly.
+  The answer lives in `source_attachment (account, provider_key)`, beside the body caches and
+  lease-free like them, and **wins over every later sync**: `derived_ops::upsert_message`
+  takes it in place of the value a whole object carries, since a key's source never changes
+  and a re-snapshot must not undo it. It is dropped with the other caches (tombstone, prune,
+  purge). Until a message's source is read its row keeps the provider's guess, and the warming
+  pass is what reaches mail nobody opened.
 - The fetch-throughs are `engine_sync::fetch_message_body` (text in SQLite → on-disk
   raw → one provider fetch; best-effort caching of both),
   `fetch_inline_parts`, `fetch_message_attachments`, and `fetch_message_attachment`

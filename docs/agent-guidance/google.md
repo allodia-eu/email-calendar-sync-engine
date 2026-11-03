@@ -152,7 +152,12 @@ part way; `reconcile;h=…` is a backfill finished and not yet reconciled.
 
 - **Backfill** (no cursor, or `backfill;…`): capture the account `historyId` from `profile`
   **before** enumerating, then page `messages.list`, fetching each id full (`format=metadata` with a
-  fixed `metadataHeaders` set for a minimal, deterministic payload). Those per-id gets are
+  fixed `metadataHeaders` set for a minimal, deterministic payload). `format=metadata` carries no
+  parts tree, so these rows arrive with `has_attachment` false; the flag is settled when the
+  message's source is read, by an open or the warming pass (`store-and-sync.md`, "The source
+  answers the row's paperclip"). Reading the tree here would be `format=full`, three times the
+  quota (60 units against 20). Over IMAP (`with_imap`) the list-time flag comes from
+  `BODYSTRUCTURE` instead. Those per-id gets are
   the pass's whole cost — `messages.list` returns bare `{id, threadId}` and Gmail offers no
   companion batch-get — so a page fetches them **concurrently**, `MAX_CONCURRENT_GETS` in
   flight. **20 is not Gmail's concurrency ceiling.** Gmail has one — salvos of W simultaneous
