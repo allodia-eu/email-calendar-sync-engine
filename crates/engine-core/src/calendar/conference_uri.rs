@@ -157,6 +157,16 @@ impl ConferenceUri {
         (!number.is_empty()).then_some(number)
     }
 
+    /// What a `tel:` URI dials once the call connects, which services write after a `,` pause
+    /// (`123456789#` in `tel:+14255550100,,123456789#`): the meeting's PIN or access code,
+    /// without the pauses before it. `None` for any other scheme, or when nothing follows one.
+    #[must_use]
+    pub fn dialled_after_pause(&self) -> Option<&str> {
+        let (_, after) = self.0.strip_prefix("tel:")?.split_once(',')?;
+        let after = after.trim_start_matches(',');
+        (!after.is_empty()).then_some(after)
+    }
+
     /// Whether `other` joins the same meeting as this URI.
     ///
     /// Two web URIs do when their host and path match, with percent escapes compared without
@@ -374,6 +384,25 @@ mod tests {
         );
         assert_eq!(uri("tel:,,123#").phone_number(), None);
         assert_eq!(uri("https://zoom.us/j/1").phone_number(), None);
+    }
+
+    #[test]
+    fn what_is_dialled_after_the_pause_is_read_without_the_pause_or_the_parameters() {
+        assert_eq!(
+            uri("tel:+14255550100,,123456789#").dialled_after_pause(),
+            Some("123456789#")
+        );
+        assert_eq!(
+            uri("tel:+1-425-555-0100;ext=12,123#").dialled_after_pause(),
+            Some("123#")
+        );
+        assert_eq!(
+            uri("tel:+1-425-555-0100;ext=12").dialled_after_pause(),
+            None
+        );
+        assert_eq!(uri("tel:+14255550100").dialled_after_pause(), None);
+        assert_eq!(uri("tel:+14255550100,,").dialled_after_pause(), None);
+        assert_eq!(uri("https://zoom.us/j/1,2").dialled_after_pause(), None);
     }
 
     #[test]

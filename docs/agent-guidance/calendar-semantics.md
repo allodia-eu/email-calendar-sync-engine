@@ -674,7 +674,8 @@ sees:
   way in: the server's label when it is written as a number (Google's and Graph's are), else
   the URI's number without its parameters and without what is dialled after the call connects
   (`tel:+14255550100,,123456789#`). A JSCalendar `name` such as "Dial in" names the way in,
-  not the number.
+  not the number. `ConferenceUri::dialled_after_pause` is that remainder (`123456789#`), the
+  PIN of a way in whose only copy of it is its URI.
 - **Occurrences** read the master's conferences; no override carries its own.
 - **Which calendars make one** is the server's to say, per calendar: Graph's
   `allowedOnlineMeetingProviders`, Google's `conferenceProperties`. Observed live: a
