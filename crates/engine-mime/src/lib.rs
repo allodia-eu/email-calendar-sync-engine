@@ -2,8 +2,8 @@
 //!
 //! One pure function, [`extract_body`], turns a message's raw RFC 5322 source
 //! ([`RawMime`], the lossless Tier-3 blob the store caches on demand —
-//! `north-star.md`) into a displayable [`MessageBody`]: the best `text/plain` and
-//! `text/html` bodies, content-transfer- and charset-decoded to UTF-8.
+//! `north-star.md`) into a displayable [`MessageBody`](engine_core::mail::MessageBody): the best
+//! `text/plain` and `text/html` bodies, content-transfer- and charset-decoded to UTF-8.
 //!
 //! The decoding is delegated to [`mail_parser`] — a hardened, pure-Rust parser
 //! (`Cargo.toml` records why we depend on it rather than hand-rolling MIME). Mail
@@ -18,16 +18,15 @@
 //! with a body, about what a charset label means.
 
 mod attachment;
+mod body;
 pub mod encoded_word;
 mod scheduling;
 mod structure;
 
 pub use attachment::{extract_attachment, extract_attachments};
-use engine_core::{
-    mail::{InlinePart, MessageBody},
-    raw::RawMime,
-};
-use mail_parser::{ContentType, MessageParser, MessagePart, PartKind};
+pub use body::extract_body;
+use engine_core::{mail::InlinePart, raw::RawMime};
+use mail_parser::{ContentType, MessageParser, PartKind};
 // The mail side of the mail↔calendar bridge: the iMIP `text/calendar` payload, and the
 // addresses the message was delivered to (which is how an invitation to an alias is
 // recognized with no configuration).
@@ -41,64 +40,6 @@ pub use structure::is_single_text_body;
 #[must_use]
 pub fn html_to_text(html: &str) -> String {
     mail_parser::decoders::html::html_to_text(html)
-}
-
-/// Extracts the displayable [`MessageBody`] from a raw RFC 5322 message.
-///
-/// [`MessageBody::plain`] is the message's canonical text rendering — the
-/// decoded `text/plain` body, or a text rendering of an HTML-only message — so a
-/// plain-text reading view always has something to show. [`MessageBody::html`] is
-/// captured only when the message carries a real `text/html` part (mail-parser copies
-/// a text-only message's text part into its HTML body list too, so its presence
-/// alone does not prove a real HTML part); it is **unsanitized** and a host must
-/// sanitize before rendering. Its `<meta>` charset declarations are rewritten to
-/// UTF-8, which is what the text now is.
-///
-/// A message that cannot be parsed, or carries no text part, yields
-/// [`MessageBody::empty`].
-#[must_use]
-pub fn extract_body(raw: &RawMime) -> MessageBody {
-    let Some(message) = MessageParser::default().parse(raw.as_bytes()) else {
-        return MessageBody::empty();
-    };
-
-    // The first text of the text body, an HTML part converted (the content of `<head>`,
-    // `<style>`, `<script>` and `<template>` left out, whatever attributes the tag carries).
-    let plain = message
-        .text_bodies()
-        .next()
-        .map(std::borrow::Cow::into_owned);
-    // The first body part that is *actually* `text/html`, rather than `body_html(0)`:
-    // mail-parser puts a text part standing in for a missing HTML version in the HTML body
-    // list too (a text-only message, or a leading text part of a `multipart/mixed`), and
-    // `body_html(0)` would hand back HTML synthesized from it.
-    let html = message
-        .html_body()
-        .find(|part| matches!(part.kind(), PartKind::Html))
-        .or_else(|| message.root().parts().find(is_alternative_html))
-        .and_then(|part| part.html_utf8())
-        .map(std::borrow::Cow::into_owned);
-
-    MessageBody::new(plain, html)
-}
-
-/// Whether `part` is the HTML version of a `multipart/alternative` that RFC 8621 nonetheless
-/// classifies as an attachment, because it carries a name.
-///
-/// The children of an alternative are versions of one body by definition (RFC 2046 §5.1.4),
-/// so a `text/html; name="message.html"` there is the body the sender wrote, not a file, and
-/// mail-parser's stand-in (the `text/plain` copied into the HTML body list) would replace
-/// real HTML with a conversion. It is read as the HTML body and never listed as a download,
-/// which is also how IMAP's list-time `has_attachment` already counts it.
-fn is_alternative_html(part: &MessagePart<'_>) -> bool {
-    matches!(part.kind(), PartKind::Html)
-        && !part.in_html_body()
-        && !part
-            .content_disposition()
-            .is_some_and(|disposition| disposition.is_attachment())
-        && part
-            .parent()
-            .is_some_and(|parent| parent.is_content_type("multipart", "alternative"))
 }
 
 /// Extracts a message's inline (`cid:`-referenced) parts — the decoded bytes a host
@@ -293,10 +234,10 @@ mod tests {
     }
 
     #[test]
-    fn mixed_with_leading_text_keeps_real_html_not_a_synthesis() {
-        // Regression: a leading text/plain before a multipart/alternative makes
-        // mail-parser put that text part at html_body[0], so `body_html(0)` would
-        // synthesize HTML from "LEADING_PLAIN" and drop the genuine `<p>REAL</p>`.
+    fn mixed_with_leading_text_keeps_real_html_and_the_leading_text() {
+        // A leading text/plain before a multipart/alternative puts that text part at
+        // html_body[0]. `body_html(0)` would hand back HTML synthesized from "LEADING_PLAIN"
+        // and drop the genuine `<p>REAL_HTML</p>`; the HTML is both, in reading order.
         let body = extract_body(&raw(
             b"Content-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
               --m\r\nContent-Type: text/plain\r\n\r\nLEADING_PLAIN\r\n\
@@ -305,11 +246,16 @@ mod tests {
               --a\r\nContent-Type: text/html\r\n\r\n<p>REAL_HTML</p>\r\n--a--\r\n--m--\r\n",
         ));
         let html = body.html().expect("the real html part is captured");
-        assert!(html.contains("REAL_HTML"), "{html}");
+        let (leading, real) = (html.find("LEADING_PLAIN"), html.find("<p>REAL_HTML</p>"));
         assert!(
-            !html.contains("LEADING_PLAIN"),
-            "must not be a text->html synthesis: {html}"
+            leading.is_some() && real.is_some() && leading < real,
+            "{html}"
         );
+        assert!(
+            !html.contains("ALT_PLAIN"),
+            "the text version is not shown twice: {html}"
+        );
+        assert_eq!(body.plain().unwrap(), "LEADING_PLAIN\n\nALT_PLAIN");
     }
 
     #[test]

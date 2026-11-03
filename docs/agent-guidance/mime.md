@@ -18,9 +18,12 @@ pub fn encoded_word::decode(input: &str) -> String
 `extract_body` interprets a message's cached raw source (`RawMime`, the Tier-3 blob the
 store caches on demand — `store-and-sync.md`) into `MessageBody { plain, html }`:
 
-- `plain` — the canonical text rendering: the decoded `text/plain` body, or a text
-  rendering of an HTML-only message, so a plain-text reading view always has
-  something to show. The rendering leaves out what `<head>`, `<style>`, `<script>` and
+- `plain` — the canonical text rendering: the decoded `text/plain` parts of the text
+  body (RFC 8621 `textBody`) in reading order, an HTML part converted where it has no
+  text version, so a plain-text reading view always has something to show. A body is a
+  list of parts — an iPhone puts its text on both sides of a photo, a mailing list
+  appends its footer as a part — so every text part is kept, a blank line between two;
+  a single part is kept exactly as written. The rendering leaves out what `<head>`, `<style>`, `<script>` and
   `<template>` hold, whatever attributes the tag carries. That is mail-parser's own
   converter since 1.0; 0.11 recognised only the bare tag and an `html_text` module here
   stripped the attributes first. A test through `extract_body` pins it, so a release that
@@ -28,10 +31,14 @@ store caches on demand — `store-and-sync.md`) into `MessageBody { plain, html 
 - `html` — the decoded **unsanitized** `text/html`, captured **only** when the
   message carries a real `text/html` part (the parser maps a text-only message's
   text part into its HTML body list too, so the list being non-empty does not prove
-  a real HTML part — check the part type). Its `<meta>` charset declarations are
+  a real HTML part — check the part type). It is then the whole HTML body list in
+  reading order, a text part standing in for a missing HTML version converted to HTML
+  in its place (so a `multipart/mixed` of an alternative and a plain footer shows both,
+  and two alternatives around a photo show both halves). Its `<meta>` charset declarations are
   rewritten to `utf-8` (`MessagePart::html_utf8`), because the text is UTF-8 once
   decoded and a stale `charset=iso-8859-1` would have a browser decode it twice. The HTML
-  version of a `multipart/alternative` is the HTML body even when it carries a `name`:
+  version of a `multipart/alternative` is the HTML body even when it carries a `name`, and
+  neither it nor a named `text/plain` version is ever listed as a download:
   RFC 8621, which mail-parser 1.0 follows exactly, makes such a part an attachment and
   copies the `text/plain` in as the HTML stand-in, but an alternative's children are
   versions of one body by definition (RFC 2046 §5.1.4), and IMAP's list-time
@@ -136,6 +143,7 @@ the same authors as our test target):
 `extract_body` is covered by fixtures for plain text, `multipart/alternative`
 (text+html), quoted-printable, base64, a non-UTF-8 charset (proving `full_encoding`),
 HTML-only fallback (non-text elements left out of the text, whatever their attributes),
+the text on both sides of a photo, every HTML part of a body in order,
 the `<meta>` charset rewrite, a named HTML alternative, `multipart/mixed` past an
 attachment, and adversarial/empty input (no panic). `extract_inline_parts` is covered by fixtures for a `multipart/related`
 inline image (decoded bytes, stripped `cid`), an attachment without a `Content-ID` (not

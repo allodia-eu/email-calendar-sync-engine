@@ -6,7 +6,7 @@ use engine_core::{
 };
 use mail_parser::{ContentType, Message, MessageParser, MessagePart, PartKind, PartRole};
 
-use crate::is_alternative_html;
+use crate::body::is_alternative_version;
 
 /// Extracts downloadable attachment metadata from a raw RFC 5322 message.
 ///
@@ -26,8 +26,8 @@ use crate::is_alternative_html;
 /// downloadable file attachment. The one exception is a part the sender explicitly marked
 /// `Content-Disposition: attachment`, which stays downloadable even when it also carries a
 /// `Content-ID`. Parts without a `Content-ID`, such as a provider-displayed inline PDF, remain
-/// downloadable. The HTML version of a `multipart/alternative` is the body, never a file,
-/// even when it carries a name.
+/// downloadable. A `text/plain` or `text/html` version of a `multipart/alternative` is the
+/// body, never a file, even when it carries a name.
 ///
 /// An **iMIP `text/calendar` body part** — a meeting invitation's payload, which the reading
 /// view renders as an invitation card — is likewise omitted. The rule is the absence of any
@@ -70,7 +70,7 @@ fn downloadable_parts<'m>(message: &'m Message<'_>) -> impl Iterator<Item = Mess
             && !part.is_multipart()
             && !is_cid_inline(part)
             && !is_imip_body_part(part)
-            && !is_alternative_html(part)
+            && !is_alternative_version(part)
     })
 }
 
