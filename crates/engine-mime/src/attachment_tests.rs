@@ -301,12 +301,21 @@ fn the_flag_answers_what_the_list_holds() {
         (IMIP_INLINE_PLUS_ATTACHED, true),
         (RELATED_UNDISPOSED_CID, false),
         (&b"Content-Type: text/plain\r\n\r\njust text"[..], false),
-        (&b""[..], false),
     ] {
         let raw = raw(shape);
-        assert_eq!(has_downloadable_attachment(&raw), expected);
+        assert_eq!(has_downloadable_attachment(&raw), Some(expected));
         assert_eq!(!extract_attachments(&raw).is_empty(), expected);
     }
+}
+
+#[test]
+fn bytes_that_are_no_message_answer_nothing() {
+    // Not "no attachment": a broken source says nothing, so it must not clear a flag.
+    assert_eq!(has_downloadable_attachment(&raw(b"")), None);
+    assert_eq!(
+        has_downloadable_attachment(&raw(b"no header, no blank line")),
+        None
+    );
 }
 
 #[test]

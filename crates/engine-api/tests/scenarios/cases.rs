@@ -490,4 +490,7 @@ async fn every_road_that_reads_a_source_settles_the_rows_paperclip() {
         )
         .await;
     assert_eq!(paperclips(&engine).await, settled);
+    // An opened message agrees with its row, not with the payload's guess.
+    let opened = engine.messages_by_keys(&account(), &[key("m2")]).await;
+    assert!(!opened.unwrap()[0].has_attachment);
 }

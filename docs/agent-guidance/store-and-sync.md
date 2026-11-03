@@ -608,9 +608,14 @@ through **separate, lease-free** traits in `engine-store` (beside `Store`), keye
   A provider's `has_attachment` is a guess made without the bytes: Gmail's API fallback reads
   `format=metadata`, which has no parts tree, so it never sets one; JMAP's `hasAttachment` and
   Graph's `hasAttachments` are each server's own rule, which need not count what the opened
-  message lists (`engine_mime::extract_attachments`). Every road that reads a source —
-  `fetch_message_body`'s raw path, `warm_message_sources`, `fetch_message_attachments` —
-  records `engine_mime::has_downloadable_attachment` for the key and sets the rows to it.
+  message lists (`engine_mime::extract_attachments`). **One funnel answers it**
+  (`engine_sync::source_answer`): a source a provider returns is answered as it enters the
+  cache, on every road that fetches one (open, warm, attachments, inline parts, scheduling,
+  export, `ensure_message_source`), and a cached source still owing an answer pays it when it
+  is next read — including a body served from its cached text, which reads the blob once for
+  that. That last case is every message cached before answers were recorded, so no backfill
+  is needed. Bytes that do not parse as a message (`has_downloadable_attachment` → `None`)
+  record nothing: a broken source must not clear a flag the server set correctly.
   The answer lives in `source_attachment (account, provider_key)`, beside the body caches and
   lease-free like them, and **wins over every later sync**: `derived_ops::upsert_message`
   takes it in place of the value a whole object carries, since a key's source never changes

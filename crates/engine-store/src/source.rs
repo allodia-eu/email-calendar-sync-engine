@@ -103,6 +103,21 @@ pub trait MessageSourceCache {
         key: &ProviderKey,
         has_attachment: bool,
     ) -> Result<()>;
+
+    /// The answer [`set_mail_has_attachment`](Self::set_mail_has_attachment) recorded for
+    /// `(account, key)`, or `None` if no source of it has been read yet.
+    ///
+    /// How a read that skips the source (a body served from its cached text) tells whether the
+    /// source still owes an answer: one that was cached before answers were recorded does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`](crate::StoreError) on a backend failure.
+    async fn mail_has_attachment(
+        &self,
+        account: &AccountId,
+        key: &ProviderKey,
+    ) -> Result<Option<bool>>;
 }
 
 /// A cache for a message's extracted, displayable body *text* — the reading view and

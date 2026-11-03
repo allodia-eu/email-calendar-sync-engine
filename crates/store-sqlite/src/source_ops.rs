@@ -143,16 +143,38 @@ impl<C: Clock> MessageSourceCache for SqliteStore<C> {
                 "INSERT INTO source_attachment (account, provider_key, has_attachment)
                  VALUES (?1, ?2, ?3)
                  ON CONFLICT(account, provider_key) DO UPDATE SET
-                     has_attachment = excluded.has_attachment",
+                     has_attachment = excluded.has_attachment
+                  WHERE has_attachment != excluded.has_attachment",
                 (account.as_str(), key.as_str(), i64::from(has_attachment)),
             )?;
+            // Rows already answered are left alone, so a repeat read (every attachment listing
+            // reaches here) rewrites nothing.
             sql::execute(
                 &tx,
                 "UPDATE message SET has_attachment = ?3
-                  WHERE account = ?1 AND provider_key = ?2",
+                  WHERE account = ?1 AND provider_key = ?2 AND has_attachment != ?3",
                 (account.as_str(), key.as_str(), i64::from(has_attachment)),
             )?;
             tx.commit().map_err(convert::backend)
+        })
+        .await
+    }
+
+    async fn mail_has_attachment(
+        &self,
+        account: &AccountId,
+        key: &ProviderKey,
+    ) -> Result<Option<bool>> {
+        let account = account.as_str().to_owned();
+        let key = key.as_str().to_owned();
+        self.read(move |conn| {
+            sql::query_opt(
+                conn,
+                "SELECT has_attachment FROM source_attachment
+                  WHERE account = ?1 AND provider_key = ?2",
+                (account.as_str(), key.as_str()),
+                |row| row.get::<_, i64>(0).map(|value| value != 0),
+            )
         })
         .await
     }

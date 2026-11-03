@@ -14,7 +14,10 @@ use engine_core::{
 use engine_provider::Provider;
 use engine_store::{MessageBodyStore, MessageSourceCache};
 
-use crate::SyncError;
+use crate::{
+    SyncError,
+    source_answer::{answer_from_if_owed, answer_if_owed, cache_fetched_source},
+};
 
 /// Returns the displayable [`MessageBody`] of `message`.
 ///
@@ -44,6 +47,9 @@ where
     // Fast path: the extracted text is already in SQLite.
     let cached = store.get_message_body(account, key).await?;
     let body = if let Some(body) = cached {
+        // The row's paperclip is answered from the source (`source_answer`); a body cached
+        // before answers were recorded still owes one, which its cached bytes pay once.
+        answer_if_owed(store, account, key).await;
         body
     } else {
         // Otherwise we need the raw bytes — from the on-disk blob, or one provider fetch.
@@ -52,18 +58,13 @@ where
             None => (true, provider.fetch_message_source(account, message).await?),
         };
         let body = engine_mime::extract_body(&raw);
-        // The source answers the row's paperclip, which a provider only guessed at
-        // (`MessageSourceCache::set_mail_has_attachment`). Here and not on the fast path above:
-        // a body already cached had its source read, and answered, when it was cached.
-        let has_attachment = engine_mime::has_downloadable_attachment(&raw);
         // Best-effort caching; the read already succeeded.
         if from_provider {
-            let _ = store.put_message_source(account, key, raw).await;
+            cache_fetched_source(store, account, key, raw).await;
+        } else {
+            answer_from_if_owed(store, account, key, &raw).await;
         }
         let _ = store.put_message_body(account, key, &body).await;
-        let _ = store
-            .set_mail_has_attachment(account, key, has_attachment)
-            .await;
         body
     };
 
@@ -126,7 +127,9 @@ where
     // Best-effort: re-cache the raw so a later body/inline read hits the blob. The read
     // already succeeded, so a cache-write failure never denies it.
     if from_provider {
-        let _ = store.put_message_source(account, key, raw).await;
+        cache_fetched_source(store, account, key, raw).await;
+    } else {
+        answer_from_if_owed(store, account, key, &raw).await;
     }
     Ok(parts)
 }
@@ -163,7 +166,7 @@ where
     let raw = provider.fetch_message_source(account, message).await?;
     // Best-effort, like every other cache write here: the caller asked for the bytes to be
     // kept, not for a guarantee, and a failed write leaves the message on the work list.
-    let _ = store.put_message_source(account, key, raw).await;
+    cache_fetched_source(store, account, key, raw).await;
     Ok(())
 }
 
