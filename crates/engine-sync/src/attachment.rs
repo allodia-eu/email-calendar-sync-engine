@@ -267,7 +267,8 @@ mod tests {
             &store,
             &account(),
             &message(),
-            AttachmentPartId::new(0),
+            // The PDF's MIME part number: the multipart is 0, the text body 1.
+            AttachmentPartId::new(2),
         )
         .await
         .expect("attachment")

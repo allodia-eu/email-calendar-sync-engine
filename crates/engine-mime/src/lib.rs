@@ -19,7 +19,6 @@
 
 mod attachment;
 pub mod encoded_word;
-mod html_text;
 mod scheduling;
 mod structure;
 
@@ -28,23 +27,32 @@ use engine_core::{
     mail::{InlinePart, MessageBody},
     raw::RawMime,
 };
-pub use html_text::html_to_text;
-use mail_parser::{ContentType, GetHeader, HeaderName, HeaderValue, MessageParser, PartType};
+use mail_parser::{ContentType, MessageParser, MessagePart, PartKind};
 // The mail side of the mail↔calendar bridge: the iMIP `text/calendar` payload, and the
 // addresses the message was delivered to (which is how an invitation to an alias is
 // recognized with no configuration).
 pub use scheduling::{CalendarPart, extract_calendar_part, extract_delivery_recipients};
 pub use structure::is_single_text_body;
 
+/// Renders `html` as text: tags removed, entities decoded, white space collapsed, and what
+/// `<head>`, `<style>`, `<script>` and `<template>` hold left out, whatever attributes the
+/// tag carries. It is the rendering [`extract_body`] gives an HTML part with no text version,
+/// for HTML that arrives outside a message (an event's conference notes).
+#[must_use]
+pub fn html_to_text(html: &str) -> String {
+    mail_parser::decoders::html::html_to_text(html)
+}
+
 /// Extracts the displayable [`MessageBody`] from a raw RFC 5322 message.
 ///
 /// [`MessageBody::plain`] is the message's canonical text rendering — the
 /// decoded `text/plain` body, or a text rendering of an HTML-only message — so a
 /// plain-text reading view always has something to show. [`MessageBody::html`] is
-/// captured only when the message carries a real `text/html` part (mail-parser maps
+/// captured only when the message carries a real `text/html` part (mail-parser copies
 /// a text-only message's text part into its HTML body list too, so its presence
 /// alone does not prove a real HTML part); it is **unsanitized** and a host must
-/// sanitize before rendering.
+/// sanitize before rendering. Its `<meta>` charset declarations are rewritten to
+/// UTF-8, which is what the text now is.
 ///
 /// A message that cannot be parsed, or carries no text part, yields
 /// [`MessageBody::empty`].
@@ -54,40 +62,55 @@ pub fn extract_body(raw: &RawMime) -> MessageBody {
         return MessageBody::empty();
     };
 
-    // `body_text(0)`, with the HTML rendered by [`html_text`] rather than by mail-parser alone.
+    // The first text of the text body, an HTML part converted (the content of `<head>`,
+    // `<style>`, `<script>` and `<template>` left out, whatever attributes the tag carries).
     let plain = message
         .text_bodies()
         .next()
-        .and_then(|part| match &part.body {
-            PartType::Text(text) => Some(text.as_ref().to_owned()),
-            PartType::Html(html) => Some(html_text::html_to_text(html)),
-            _ => None,
-        });
-    // Take the decoded contents of the first body part that is *actually* a
-    // `text/html` part, rather than `body_html(0)`. mail-parser lists a text-only
-    // message's text part in its `html_body` index too (so `body_html` can
-    // synthesize HTML from plain text), and for a `multipart/mixed` with a leading
-    // text part before a `multipart/alternative`, `html_body[0]` is that leading
-    // *text* part — so `body_html(0)` would return fabricated HTML and drop the real
-    // one. Matching on `PartType::Html` captures genuine provider HTML only.
-    let html = message.html_bodies().find_map(|part| match &part.body {
-        PartType::Html(text) => Some(text.as_ref().to_owned()),
-        _ => None,
-    });
+        .map(std::borrow::Cow::into_owned);
+    // The first body part that is *actually* `text/html`, rather than `body_html(0)`:
+    // mail-parser puts a text part standing in for a missing HTML version in the HTML body
+    // list too (a text-only message, or a leading text part of a `multipart/mixed`), and
+    // `body_html(0)` would hand back HTML synthesized from it.
+    let html = message
+        .html_body()
+        .find(|part| matches!(part.kind(), PartKind::Html))
+        .or_else(|| message.root().parts().find(is_alternative_html))
+        .and_then(|part| part.html_utf8())
+        .map(std::borrow::Cow::into_owned);
 
     MessageBody::new(plain, html)
+}
+
+/// Whether `part` is the HTML version of a `multipart/alternative` that RFC 8621 nonetheless
+/// classifies as an attachment, because it carries a name.
+///
+/// The children of an alternative are versions of one body by definition (RFC 2046 §5.1.4),
+/// so a `text/html; name="message.html"` there is the body the sender wrote, not a file, and
+/// mail-parser's stand-in (the `text/plain` copied into the HTML body list) would replace
+/// real HTML with a conversion. It is read as the HTML body and never listed as a download,
+/// which is also how IMAP's list-time `has_attachment` already counts it.
+fn is_alternative_html(part: &MessagePart<'_>) -> bool {
+    matches!(part.kind(), PartKind::Html)
+        && !part.in_html_body()
+        && !part
+            .content_disposition()
+            .is_some_and(|disposition| disposition.is_attachment())
+        && part
+            .parent()
+            .is_some_and(|parent| parent.is_content_type("multipart", "alternative"))
 }
 
 /// Extracts a message's inline (`cid:`-referenced) parts — the decoded bytes a host
 /// inlines for an `<img src="cid:…">` in the HTML body.
 ///
-/// Returns one [`InlinePart`] per **binary** leaf part that declares a `Content-ID`
-/// (the only parts a `cid:` URL can address, RFC 2392): the id with angle brackets
-/// stripped, the `Content-Type` media type (parameters stripped), and the
-/// content-transfer-decoded bytes. Parts without a `Content-ID`, and `text/*`/container
-/// parts, are skipped. Whether to actually inline a part — and which media types are
-/// safe to render — is the **host's** policy, not this function's (the bytes are hostile
-/// input).
+/// Returns one [`InlinePart`] per **binary** leaf part of the message itself (not of a
+/// message it forwards) that declares a `Content-ID` (the only parts a `cid:` URL can
+/// address, RFC 2392): the id with angle brackets stripped, the `Content-Type` media type
+/// (parameters stripped), and the content-transfer-decoded bytes. Parts without a
+/// `Content-ID`, and `text/*`/container parts, are skipped. Whether to actually inline a
+/// part — and which media types are safe to render — is the **host's** policy, not this
+/// function's (the bytes are hostile input).
 ///
 /// Like [`extract_body`], a message that cannot be parsed, or that carries no such part,
 /// yields an empty `Vec`, never a panic.
@@ -98,41 +121,32 @@ pub fn extract_inline_parts(raw: &RawMime) -> Vec<InlinePart> {
     };
 
     message
-        .parts
-        .iter()
+        .root()
+        .parts()
         .filter_map(|part| {
-            // Only binary leaf parts hold inline attachment bytes (mail-parser has already
-            // content-transfer-decoded them); text and multipart parts are never `cid:`
-            // image targets.
-            let bytes = match &part.body {
-                PartType::Binary(bytes) | PartType::InlineBinary(bytes) => bytes.as_ref(),
-                _ => return None,
-            };
+            // Only binary leaf parts hold inline attachment bytes; text and multipart parts
+            // are never `cid:` image targets.
+            if !matches!(part.kind(), PartKind::Binary | PartKind::InlineBinary) {
+                return None;
+            }
             // A part is addressable by `cid:` only if it carries a Content-ID.
-            let content_id = part
-                .headers
-                .header_value(&HeaderName::ContentId)
-                .and_then(content_id_token)?;
+            let content_id = part.content_id().and_then(content_id_token)?;
             let media_type = part
-                .headers
-                .header_value(&HeaderName::ContentType)
-                .and_then(HeaderValue::as_content_type)
+                .content_type()
                 .map_or_else(|| "application/octet-stream".to_owned(), media_type_of);
-            Some(InlinePart::new(content_id, media_type, bytes.to_vec()))
+            Some(InlinePart::new(
+                content_id,
+                media_type,
+                part.decoded().into_owned(),
+            ))
         })
         .collect()
 }
 
 /// The bare `Content-ID` token a `cid:` URL references — the header value with any
-/// surrounding angle brackets and whitespace removed (mail-parser parses Content-ID as a
-/// message-id, so brackets are usually already gone; this is belt-and-braces). `None` for
-/// a blank or non-text value.
-fn content_id_token(value: &HeaderValue) -> Option<String> {
-    let raw = match value {
-        HeaderValue::Text(text) => text.as_ref(),
-        HeaderValue::TextList(list) => list.first()?.as_ref(),
-        _ => return None,
-    };
+/// surrounding angle brackets and whitespace removed (mail-parser already drops the
+/// brackets of a well-formed id; this is belt-and-braces). `None` for a blank value.
+fn content_id_token(raw: &str) -> Option<String> {
     let token = raw
         .trim()
         .trim_start_matches('<')
@@ -143,7 +157,7 @@ fn content_id_token(value: &HeaderValue) -> Option<String> {
 
 /// The media type (`type/subtype`, parameters stripped) of a parsed `Content-Type`, or
 /// just the type when no subtype is present.
-fn media_type_of(content_type: &ContentType) -> String {
+fn media_type_of(content_type: ContentType<'_>) -> String {
     match content_type.subtype() {
         Some(subtype) => format!("{}/{}", content_type.ctype(), subtype),
         None => content_type.ctype().to_owned(),
@@ -221,6 +235,47 @@ mod tests {
         let plain = body.plain().unwrap();
         assert!(!plain.contains("Verdana"), "{plain}");
         assert_eq!(plain.trim(), "Dear reader,");
+    }
+
+    #[test]
+    fn every_non_text_element_is_left_out_whatever_its_attributes() {
+        // mail-parser 0.11 recognised only the bare tags, so `<style type="text/css">` put a
+        // stylesheet into the snippet and the search index; 1.0's converter handles both.
+        let body = extract_body(&raw(b"Content-Type: text/html\r\n\r\n\
+              <HEAD lang=\"nl\"><meta charset=\"utf-8\"></HEAD>\
+              <Style media=\"screen\">.a{color:red}</Style>\
+              <script type=\"text/javascript\">track()</script>\
+              <template id=\"t\">hidden</template><styles>s</styles><p>shown</p>\r\n"));
+        assert_eq!(body.plain().unwrap().trim(), "sshown");
+    }
+
+    #[test]
+    fn the_html_says_it_is_utf8_once_decoded() {
+        // The HTML is handed over as UTF-8 text; a `<meta>` still naming the source charset
+        // would have a browser decode it a second time.
+        let body = extract_body(&raw(
+            b"Content-Type: text/html; charset=iso-8859-1\r\n\r\n\
+              <html><head><meta charset=\"iso-8859-1\"></head><body>caf\xe9</body></html>\r\n",
+        ));
+        let html = body.html().unwrap();
+        assert!(html.contains("<meta charset=\"utf-8\">"), "{html}");
+        assert!(html.contains("café"), "{html}");
+    }
+
+    #[test]
+    fn a_named_html_alternative_is_the_html_body_not_a_file() {
+        // RFC 8621 makes a named, non-first alternative an attachment and copies the
+        // `text/plain` in as the HTML stand-in; the sender's HTML is the body all the same.
+        let raw = raw(
+            b"Content-Type: multipart/alternative; boundary=\"a\"\r\n\r\n\
+              --a\r\nContent-Type: text/plain\r\n\r\nplain\r\n\
+              --a\r\nContent-Type: text/html; name=\"message.html\"\r\n\r\n<p>REAL</p>\r\n\
+              --a--\r\n",
+        );
+        let body = extract_body(&raw);
+        assert!(body.html().unwrap().contains("<p>REAL</p>"));
+        assert_eq!(body.plain().unwrap().trim(), "plain");
+        assert_eq!(extract_attachments(&raw), []);
     }
 
     #[test]

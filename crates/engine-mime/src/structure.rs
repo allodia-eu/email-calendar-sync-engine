@@ -4,7 +4,7 @@
 //! `BODY.PEEK[HEADER.FIELDS (…)]`) asks this before paying for the structure itself:
 //! some servers build `BODYSTRUCTURE` by reading the whole message.
 
-use mail_parser::{ContentType, HeaderName, MessageParser, MimeHeaders};
+use mail_parser::{HeaderName, MessageParser};
 
 /// Whether the header block `headers` describes a message that is one text body and
 /// nothing else: its top-level `Content-Type` is `text/plain` or `text/html`, and its
@@ -21,20 +21,15 @@ pub fn is_single_text_body(headers: &[u8]) -> bool {
         // No header at all: the default type and no disposition.
         return headers.iter().all(u8::is_ascii_whitespace);
     };
-    if message
-        .header_values(HeaderName::ContentType)
-        .nth(1)
-        .is_some()
-        || message
-            .header_values(HeaderName::ContentDisposition)
-            .nth(1)
-            .is_some()
+    let headers = message.headers();
+    if headers.all(HeaderName::ContentType).nth(1).is_some()
+        || headers.all(HeaderName::ContentDisposition).nth(1).is_some()
     {
         return false;
     }
     if message
         .content_disposition()
-        .is_some_and(ContentType::is_attachment)
+        .is_some_and(|disposition| disposition.is_attachment())
     {
         return false;
     }
@@ -45,7 +40,7 @@ pub fn is_single_text_body(headers: &[u8]) -> bool {
                     subtype.eq_ignore_ascii_case("plain") || subtype.eq_ignore_ascii_case("html")
                 })
         }
-        None => message.header(HeaderName::ContentType).is_none(),
+        None => !headers.contains(HeaderName::ContentType),
     }
 }
 

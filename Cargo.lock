@@ -489,6 +489,7 @@ dependencies = [
 name = "engine-mime"
 version = "0.1.0"
 dependencies = [
+ "encodify",
  "engine-core",
  "mail-parser",
 ]
