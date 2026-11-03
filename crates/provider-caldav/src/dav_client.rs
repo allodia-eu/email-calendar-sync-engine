@@ -41,9 +41,9 @@ pub(crate) struct DavClient {
     /// that serves every real request, so the latest observation — not the first — is
     /// the one that describes the working connection.
     connection: ObservedConnection,
-    /// How a `429` is waited out. Note that `PROPFIND` and `REPORT` are extension methods
-    /// rather than ones `http` knows are idempotent, so a `503` on them is not retried even
-    /// though their own RFCs say it would be safe.
+    /// How a `429`, or Stalwart's `400` concurrency refusal, is waited out. Note that `PROPFIND`
+    /// and `REPORT` are extension methods rather than ones `http` knows are idempotent, so a
+    /// `503` on them is not retried even though their own RFCs say it would be safe.
     retry: RetryConfig,
 }
 
@@ -86,7 +86,12 @@ impl DavClient {
             credentials,
             credential_hosts: None,
             connection: ObservedConnection::default(),
-            retry: retry.clone().labelled("caldav"),
+            retry: retry
+                .clone()
+                .labelled("caldav")
+                // Stalwart refuses a request over its concurrency cap with a `400`, which the
+                // shared status rule reads as a request defect. See `DavThrottles`.
+                .classifying(Arc::new(crate::throttle::DavThrottles)),
         })
     }
 }

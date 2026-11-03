@@ -62,6 +62,7 @@ pub mod schedule_status;
 mod sync;
 #[cfg(test)]
 mod test_support;
+mod throttle;
 mod transport;
 mod vcard;
 mod vcard_escape;

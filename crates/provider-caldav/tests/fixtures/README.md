@@ -14,6 +14,7 @@ committing: these come from throwaway harness accounts only
 | `sync-initial.xml` / `sync-noop.xml` | Stalwart | The RFC 6578 `sync-collection` snapshot, and the held-token empty delta. |
 | `options-dav-stalwart.txt` | Stalwart | The `DAV:` response header of an `OPTIONS` on the calendar home — **with** `calendar-auto-schedule` (RFC 6638 §2). |
 | `options-dav-sabredav.txt` | SabreDAV | The same header **without** it. |
+| `concurrency-limit-stalwart.json` | Stalwart | The body of the `400` a `PUT` over the account's concurrency cap is refused with — RFC 8620's `limit` problem details, `maxConcurrentRequests`, on a DAV endpoint (`throttle.rs`). Byte-for-byte; it names no account. |
 
 ## The two `OPTIONS` fixtures are the discriminating pair
 

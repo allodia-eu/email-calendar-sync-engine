@@ -46,6 +46,28 @@ fn server_becomes_ready() {
         .expect("Stalwart /healthz/live should report ready");
 }
 
+/// The harness must not ration unauthenticated requests, or a run's outcome depends on how
+/// recently the suites last ran (#333). Stalwart allows 100 a minute per client IP by default,
+/// and every live run spends them: a readiness poll per test, and the uncredentialed first
+/// request of every DAV connection. So this sends more than a minute's default allowance and
+/// requires every one to be answered — against a harness without the entrypoint's
+/// `relax_anonymous_http_limit` it fails at the 101st at the latest.
+#[test]
+fn anonymous_requests_are_not_rationed() {
+    let Some(h) = ready_harness() else {
+        return;
+    };
+    for n in 1..=150 {
+        let status = h.healthz().expect("healthz answers").status;
+        assert_eq!(
+            status, 200,
+            "unauthenticated request {n} was answered {status}: the harness is still on \
+             Stalwart's anonymous rate limit. Recreate it so entrypoint.sh relaxes it \
+             (`docker compose down -v && up`)"
+        );
+    }
+}
+
 #[test]
 fn jmap_session_advertises_core() {
     let Some(h) = ready_harness() else {

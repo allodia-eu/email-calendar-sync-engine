@@ -676,14 +676,19 @@ what a client would assume:
   *and* the organizer (a `REPLY` arrives as "Accepted:…"), and the mail suites assert an exact
   INBOX count on Alice — so the whole exchange runs between two scratch accounts
   (`stalwart-harness.md`). This is why `bob`/`carol` exist.
-- **Neither server bounds concurrency; Stalwart bounds rate.** Measured on both harness
-  implementations (`tests/live_concurrency.rs`): at a fixed 25 requests/second, widths of 1, 4,
-  16 and 64 were refused 0% of the time on *both*. At a fixed width of 8, Stalwart begins
-  refusing somewhere between 50/s and 150/s with a proper `429`, and SabreDAV refused nothing
-  at all up to 400/s. So `provider-caldav` does **not** narrow the account
-  `engine_http::RequestGate` — not because nobody looked, which is what `http-throttling.md`
-  used to say, but because two independent implementations were asked and neither has a width
-  to narrow to. A future change to that needs to get past that suite.
+- **Stalwart bounds rate, and requests in flight too; SabreDAV bounds neither.** Measured on
+  both harness implementations (`tests/live_concurrency.rs`): at a fixed 25 requests/second,
+  widths of 1, 4, 16 and 64 were refused 0% of the time on *both*. At a fixed width of 8,
+  Stalwart begins refusing somewhere between 50/s and 150/s with a proper `429`, and SabreDAV
+  refused nothing at all up to 400/s. That suite never holds more than about one request in
+  flight, though, so it could not see that Stalwart caps an account at **4 in flight** — its
+  JMAP `maxConcurrentRequests` — and refuses past it with a `400` carrying JMAP's
+  `urn:ietf:params:jmap:error:limit` body. `DavThrottles` (`src/throttle.rs`) reads that body so
+  the send funnel waits the refusal out, and the error names it `RateLimited` if the funnel
+  gives up; `tests/live_concurrency_refusal.rs` offers 24 creates at once and requires all of
+  them to land (#332). `provider-caldav` still does **not** narrow the account
+  `engine_http::RequestGate`: nothing in DAV states the 4, so narrowing would cap every other
+  server at Stalwart's number (`http-throttling.md`).
 - **That mail is rate-limited, and exceeding the limit looks like nothing at all.** Stalwart's
   default inbound throttle is 25 messages/hour per (sender domain, recipient); past it the
   server abandons the **whole** iTIP delivery — calendar copy included — while still answering
