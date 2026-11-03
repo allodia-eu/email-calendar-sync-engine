@@ -117,7 +117,7 @@ async fn caldav_calendar_sync_loop() {
     let by_uid = |uid: &str| events.iter().find(|e| e.uid.as_str() == uid).unwrap();
 
     // The one-off zoned event, the meeting's three merged participants, the
-    // conference with its dial-in number, and the zoneless all-day event.
+    // conference with its dial-in numbers, and the zoneless all-day event.
     assert_eq!(
         by_uid("oneoff-2001@test.local").title,
         "One-off zoned event"

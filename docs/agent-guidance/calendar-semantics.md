@@ -628,6 +628,8 @@ sees:
 - **`ConferenceUri`** admits `https`, `http`, `tel`, `sip` and `sips`, and a web URI only
   with a host and no credentials. A host opens this value when a person asks to join, so an
   entry with any other value is left out of the projection; the raw payload keeps it.
+  The iCalendar reader unescapes a `CONFERENCE` value before parsing it: Stalwart 0.16 serves
+  a dial-in's pause as `\,`, and a URI never holds a backslash.
 - **Keys** name a conference for a later edit: the `virtualLocations` map key, the field
   name where the provider allows one conference (`conferenceData`, `onlineMeeting`), else
   the first URI.

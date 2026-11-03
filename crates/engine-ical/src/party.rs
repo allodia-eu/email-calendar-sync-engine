@@ -51,6 +51,10 @@ pub(crate) fn parse_locations(vevent: &Component) -> Vec<Location> {
 /// Reads every RFC 7986 `CONFERENCE` property into the event's conferences
 /// ([`group_flat`]). A value that is not a URI of a scheme a person can join through is
 /// left out, along with an explicit `VALUE` other than `URI`, the only type §5.11 allows.
+///
+/// A `URI` value is not TEXT and carries no escapes, but Stalwart 0.16 serves one with its commas
+/// escaped (`tel:+31201234567\,\,123456#`), so the value is unescaped first. A URI never holds a
+/// backslash, so this changes no value written as the RFC asks.
 pub(crate) fn parse_conferences(vevent: &Component) -> Vec<Conference> {
     let entries = vevent
         .all_properties("CONFERENCE")
@@ -59,7 +63,7 @@ pub(crate) fn parse_conferences(vevent: &Component) -> Vec<Conference> {
                 .is_none_or(|value| value.eq_ignore_ascii_case("URI"))
         })
         .filter_map(|line| {
-            let mut entry = FlatEntry::new(ConferenceUri::parse(&line.value).ok()?);
+            let mut entry = FlatEntry::new(ConferenceUri::parse(&unescape_text(&line.value)).ok()?);
             entry.label = line.param("LABEL").map(str::to_owned);
             if let Some(features) = line.param("FEATURE") {
                 // iCalendar `FEATURE` tokens are uppercase; JSCalendar's keys are lowercase.
@@ -79,12 +83,13 @@ pub(crate) fn parse_conferences(vevent: &Component) -> Vec<Conference> {
 /// The meeting URIs of the vendor properties Google's and Microsoft's invitations carry
 /// (`X-GOOGLE-CONFERENCE`, `X-MICROSOFT-SKYPETEAMSMEETINGURL`), for
 /// [`engine_core::calendar::add_detected`]. A value that is not a URI a person can join
-/// through is left out.
+/// through is left out. An `X-` property's value is TEXT unless it says otherwise, so it is
+/// unescaped.
 pub(crate) fn vendor_conference_uris(vevent: &Component) -> Vec<ConferenceUri> {
     ["X-GOOGLE-CONFERENCE", "X-MICROSOFT-SKYPETEAMSMEETINGURL"]
         .into_iter()
         .flat_map(|name| vevent.all_properties(name))
-        .filter_map(|line| ConferenceUri::parse(&line.value).ok())
+        .filter_map(|line| ConferenceUri::parse(&unescape_text(&line.value)).ok())
         .collect()
 }
 
@@ -264,6 +269,19 @@ mod tests {
             .into_iter()
             .collect()
         );
+    }
+
+    #[test]
+    fn a_dial_in_served_with_escaped_commas_reads_as_the_uri_it_is() {
+        let event = vevent(
+            "CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://meet.example.com/a\r\n\
+             CONFERENCE;FEATURE=PHONE;VALUE=URI:tel:+31201234567\\,\\,123456#",
+        );
+        let conferences = parse_conferences(&event);
+        assert_eq!(conferences.len(), 1, "{conferences:?}");
+        let phone = &conferences[0].entry_points[1];
+        assert_eq!(phone.uri.as_str(), "tel:+31201234567,,123456#");
+        assert_eq!(phone.uri.dialled_after_pause(), Some("123456#"));
     }
 
     #[test]

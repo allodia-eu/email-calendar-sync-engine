@@ -216,22 +216,28 @@ async fn live_calendar_fetch() {
     ] {
         assert!(uids.contains(uid), "seed event uid missing: {uid}");
     }
-    // Stalwart serves the seed's two `CONFERENCE` lines as two `virtualLocations`, which
-    // read back as one meeting with its dial-in number.
+    // Stalwart serves the seed's three `CONFERENCE` lines as three `virtualLocations`, which
+    // read back as one meeting with its two dial-in numbers. `virtualLocations` is a map, so
+    // the numbers come in the order of the keys the server gave them, not the seed's.
     let conferences = &objects
         .iter()
         .find(|e| e.uid.as_str() == "virtual-2004@test.local")
         .unwrap()
         .conferences;
     assert_eq!(conferences.len(), 1, "{conferences:?}");
-    let entry_uris: Vec<&str> = conferences[0]
+    let mut entry_uris: Vec<&str> = conferences[0]
         .entry_points
         .iter()
         .map(|entry| entry.uri.as_str())
         .collect();
+    entry_uris.sort_unstable();
     assert_eq!(
         entry_uris,
-        ["https://meet.example.com/harness-room", "tel:+15555550100"]
+        [
+            "https://meet.example.com/harness-room",
+            "tel:+15555550100",
+            "tel:+15555550101,,123456#"
+        ]
     );
     // JMAP carries no `X-GOOGLE-CONFERENCE`, so the Google-shaped invitation's meeting is the
     // one its description's block links to, and the notes leave the block out.
