@@ -1,8 +1,8 @@
 #!/bin/sh
 # Self-bootstrapping entrypoint for the deterministic Stalwart test harness.
 #
-# Stalwart v0.16 has no declarative config file: a fresh server boots into
-# "bootstrap mode" and is configured through its JMAP management API, after
+# Stalwart (v0.16 onward, v1 included) has no declarative config file: a fresh
+# server boots into "bootstrap mode" and is configured through its JMAP management API, after
 # which it must restart to come up as a full server. This wrapper drives that
 # sequence non-interactively and deterministically, then seeds the shared
 # dataset, so `docker compose up` yields an identical, ready server every time:
@@ -57,9 +57,21 @@ wait_http() {
   done
 }
 
-# Bootstrap mode exposes the singleton Bootstrap object; normal mode 404s it.
+# Bootstrap mode lists the singleton Bootstrap object; normal mode answers it under
+# `notFound`. Ask for it by id (v1 answers other singletons' `ids: null` with an empty
+# list) and match the id, never one of its fields: v1 renamed `serverHostname` to
+# `defaultHostname`, and a check keyed on the old name read every fresh v1 server as
+# already bootstrapped, skipped setup, and died on a missing domain. Anything else — an
+# error, a non-JSON body — fails loudly rather than being read as either mode.
 in_bootstrap_mode() {
-  jmap '["x:Bootstrap/get",{"ids":null},"c0"]' | grep -q '"serverHostname"'
+  resp=$(jmap '["x:Bootstrap/get",{"ids":["singleton"]},"c0"]')
+  if printf '%s' "$resp" | grep -q '"id":"singleton"'; then
+    return 0
+  elif printf '%s' "$resp" | grep -q '"notFound":\["singleton"\]'; then
+    return 1
+  fi
+  log "unexpected x:Bootstrap/get answer: $resp"
+  exit 1
 }
 
 # Id of the auto-created default domain (the only domain), parsed from the
@@ -138,7 +150,8 @@ listener_exists() { # name
     | grep -q "\"name\":\"$1\""
 }
 
-# Add a STARTTLS listener (`useTls` with `tlsImplicit:false`) if absent. Stalwart
+# Add a STARTTLS listener (`useTls` with `implicitTls:false`; v0.16 spelled it
+# `tlsImplicit`, which v1 refuses with `invalidPatch`) if absent. Stalwart
 # supports STARTTLS on 143/587 but recommends implicit TLS (993/465), so a fresh
 # bootstrap comes up with 993/465 only; we add 143/587 to exercise the engine's STARTTLS
 # transports (which real, older servers require). Sets CREATED_LISTENER=1 when it creates
@@ -149,7 +162,7 @@ ensure_starttls_listener() { # create-key  name  bind  protocol
     log "listener $2 already present"
     return 0
   fi
-  resp=$(jmap "[\"x:NetworkListener/set\",{\"create\":{\"$1\":{\"name\":\"$2\",\"bind\":{\"$3\":true},\"protocol\":\"$4\",\"useTls\":true,\"tlsImplicit\":false}}},\"c0\"]")
+  resp=$(jmap "[\"x:NetworkListener/set\",{\"create\":{\"$1\":{\"name\":\"$2\",\"bind\":{\"$3\":true},\"protocol\":\"$4\",\"useTls\":true,\"implicitTls\":false}}},\"c0\"]")
   if ! printf '%s' "$resp" | grep -q '"created"'; then
     log "FAILED to create listener $2: $resp"
     return 1
@@ -159,7 +172,7 @@ ensure_starttls_listener() { # create-key  name  bind  protocol
 }
 
 # Raise every inbound rate limiter out of the way (`x:MtaInboundThrottle`, one of the
-# store-backed settings objects — v0.16 has no config file for these).
+# store-backed settings objects — Stalwart has had no config file for these since v0.16).
 #
 # Stalwart ships two enabled by default: 5/second per sender IP, and **25/hour per (sender
 # domain, recipient)**. Both make a test's outcome depend on how many times the suite has

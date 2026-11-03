@@ -15,7 +15,7 @@ license.workspace = true
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
-# Test-only: Stalwart's v0.16 IMAP listener is implicit-TLS, so the smoke suite
+# Test-only: Stalwart's IMAP listener is implicit-TLS, so the smoke suite
 # wraps its TCP stream in rustls (with a probe-only no-verify verifier for the
 # server's self-signed test cert). The `ring` provider keeps this pure Rust with
 # no system OpenSSL — it needs only the C compiler the workspace already

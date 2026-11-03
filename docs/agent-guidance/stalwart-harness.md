@@ -49,7 +49,7 @@ part of it.
   smoke suite. It is the only job that sets `STALWART_*`, so it is the only one
   whose Stalwart tests execute.
 
-## How it bootstraps (Stalwart v0.16)
+## How it bootstraps (Stalwart v0.16 onward, v1 included)
 
 Stalwart **v0.16 replaced the old declarative-TOML configuration with a
 registry/bootstrap model**: the `--config` file is a small JSON pointer to the
@@ -57,7 +57,10 @@ data store, and everything else (listeners, directory, principals) lives in the
 store, configured through a JMAP management API. A fresh server boots into
 "bootstrap mode" (a recovery HTTP listener on 8080) and expects setup to be
 completed via that API, after which it must restart to come up as a full server.
-The older TOML approach the secondary docs describe applies to ≤0.15 only.
+The older TOML approach the secondary docs describe applies to ≤0.15 only. v1 keeps
+the model and the method names and renames fields (its `SCHEMA_CHANGES.md` in
+`stalwartlabs/stalwart-migrate` lists every one); two of them are fields the entrypoint
+touches — see "Gotchas".
 
 `entrypoint.sh` drives this deterministically, as PID 1 of the single container:
 
@@ -66,7 +69,11 @@ The older TOML approach the secondary docs describe applies to ≤0.15 only.
    wizard.
 2. If in bootstrap mode, `x:Bootstrap/set` completes setup with an internal
    directory and **no ACME / auto-TLS request** (so boot stays offline and
-   self-contained), then the server is restarted into a full server.
+   self-contained), then the server is restarted into a full server. Bootstrap mode
+   is recognised by `x:Bootstrap/get` *listing* the singleton (`"id":"singleton"`);
+   a full server answers it under `notFound`. On v1 the bootstrap also creates a real
+   `admin@test.local` account with a random password, which the harness never uses —
+   every management call authenticates as the recovery admin.
 3. Create the test accounts with `x:Account/set` (idempotent: existing accounts
    are skipped). The default domain `test.local` is auto-created at bootstrap;
    its id is looked up at runtime.
@@ -89,7 +96,7 @@ These were confirmed before/with implementation; do not relitigate without cause
   **A bump is its own PR.** The pin decides what *every* live test in this repo is
   evidence about, so it must not ride along inside a change that is really about
   something else — a provider fix and a server change landing together leave neither
-  attributable. Currently pinned: **v0.16.24**. What a bump owes:
+  attributable. Currently pinned: **v1.0.2**. What a bump owes:
 
   1. Re-resolve the **index** digest (`docker buildx imagetools inspect
      stalwartlabs/stalwart:<tag>` → the top-level `Digest:`, not a per-platform one, or
@@ -107,6 +114,57 @@ These were confirmed before/with implementation; do not relitigate without cause
      Stalwart's — `provider-jmap` had simply never sent `sendSchedulingMessages`, and two
      version bumps were taken partly in the hope of fixing a defect that did not exist
      (#102).
+
+  **The v0.16.24 → v1.0.2 bump** (through v0.16.25–27 and v1.0.0–1). v1 is a major release
+  with a new database layout and a renamed settings schema; neither touches the harness beyond
+  two field renames, because CI always bootstraps from an empty volume (no migration). Every
+  release note was read, and the JMAP Calendars and JSCalendar drafts v1 moved to (-33 and
+  jscalendarbis-22, from -28 and -19) were diffed in full against what `provider-jmap` sends
+  and reads. With the changes below, all 1455 tests in the gated Stalwart suites (smoke,
+  `provider-jmap`, `provider-imap`, `provider-caldav`, `dav-cli`) passed from a wiped volume,
+  and a warm restart re-seeded without re-bootstrapping. What changed for this repo:
+
+  - **The entrypoint**: `tlsImplicit` → `implicitTls` in the listener it creates, and
+    `serverHostname` → `defaultHostname`, which it never sends but its bootstrap-mode check
+    grepped for (see "Gotchas" — that one failed silently). The check now asks for the
+    singleton by id and stops on any answer that is neither the object nor `notFound`.
+  - **A fully read-only share now says so on its account.** Bob's share reports
+    `isReadOnly: true` and lists no `submission`, so a client bound to it offers neither
+    writes nor sending; the all-writable group share is unchanged. The two tests built as
+    tripwires for exactly this (`smoke.rs`, `live_shared.rs`) fired, and now pin both
+    directions; `session_shared_accounts.json` was re-captured. The per-folder rights design
+    stands: a share mixing writable and read-only folders still says `false` (`modeling.md`).
+  - **JSCalendar `version` and `organizerCalendarAddress`.** v1 returns `"version": "2.0"` on
+    every event and now infers `organizerCalendarAddress` on a create that names an owner
+    participant (`jmap.md`). The adapter already sent both, so nothing it does changed.
+  - **Limits it now states**: `maxMailboxesPerEmail` 100, `maxCalendarsPerEvent` 10,
+    `maxAddressBooksPerCard` 10 (all `null` before). Nothing the engine does approaches them.
+
+  Read and found not to touch a request the engine sends: the slimmer `*/set` create
+  responses (v1.0.1; the adapter reads only `id`), `onSuccessUpdateEmail` by submission id
+  (v0.16.26; the adapter uses a creation reference), inline-attachment placement in
+  `Email/set` (v1.0.2; the adapter sends its own `multipart/related`), the `EmailDelivery`
+  and `EmailPush` fixes (the watcher reads `Email` state), `SEARCH RETURN MIN/MAX`, the
+  untagged `NO` to a rejected app-password login (v0.16.25; no live test logs in with a wrong
+  credential), and the iTIP `PRIORITY`/`SEQUENCE` fixes (the CalDAV RSVP edits the stored
+  object in place). New in v1 and not used by the engine: JMAP and IMAP `METADATA`, indexing
+  of attachment contents (a `text` search may now match more; the engine passes the query
+  through), OAuth scopes, OpenPGP/S/MIME encryption.
+
+  **Found while testing, and not caused by the bump** — each reproduced on v0.16.24 with the
+  same procedure, so neither was fixed here:
+
+  - Stalwart answers a **DAV** request over its concurrency cap with `400` and JMAP's
+    `urn:ietf:params:jmap:error:limit` / `maxConcurrentRequests` body (5 of 144 `PROPFIND`s
+    in 24-wide bursts on v0.16.24; on v1.0.2, 2 of 16 simultaneous `PUT`s).
+    `provider-caldav` classes that `400` `Permanent`, and `http-throttling.md` records no DAV
+    concurrency ceiling — its `live_concurrency` arm A offers a fixed 25/s, which never holds
+    many requests in flight. `live_caldav`'s 22 concurrent tests, each its own client, meet
+    it now and then (issue #332).
+  - `/healthz/live` counts against `Http.rateLimitAnonymous` (100/minute on both pins), and
+    every live test polls it through `Harness::wait_until_ready`. Back-to-back runs of one
+    suite exhaust it and the poll times out after 30 s ("harness ready: Timeout(30s)") — 4 of
+    5 consecutive `live_caldav` runs on v0.16.24. A single CI run stays under it (issue #333).
 
   **The v0.16.21 → v0.16.24 bump.** The whole gated suite passed unchanged from a wiped
   volume. One fix lands on a request the engine sends: before v0.16.24, an `Email/set` whose
@@ -222,10 +280,14 @@ contrast is the point:
 Both appear in Alice's JMAP session as `accounts` entries with `isPersonal: false` (and give her
 JMAP account a second `Identity`, the group's, listed **first**), and in her IMAP `LIST` under
 the `Shared Folders` prefix her `NAMESPACE` puts in RFC 2342's *Other Users'* position. The
-finding the fixture pins: Stalwart reports `isReadOnly: false` for **both** accounts —
-including Bob's, whose one mailbox grants read alone — so nothing above the folder tells them
-apart. The smoke suite asserts that flag, so if Stalwart changes its mind the rationale in
-`modeling.md` is revisited rather than silently outliving its evidence.
+finding the fixture pins, in both directions: since v1 Stalwart reports `isReadOnly: true` for
+Bob's account, whose one mailbox grants read alone, and `false` for the group's (v0.16 said
+`false` for **both**, so nothing above the folder told them apart). v1 also lists no
+`submission` on Bob's account. The flag is still no substitute for per-folder rights: a share
+mixing a writable and a read-only folder says `false` (observed by hand on v1.0.2; no fixture
+carries that shape). The smoke suite and `provider-jmap`'s `live_shared.rs` assert both values,
+so if Stalwart changes its mind again the rationale in `modeling.md` is revisited rather than
+silently outliving its evidence.
 
 `MYRIGHTS` on the `\Noselect` containers (`Shared Folders`, `Shared Folders/support@test.local`)
 answers `NO Mailbox does not exist.` — they are path components, not mailboxes — and pipelined
@@ -391,6 +453,15 @@ healthy when ready), export `STALWART_*`, and
   (`--config` parses JSON `DataStore`). Configuration is the `x:Bootstrap/set` /
   `x:Account/set` / `x:NetworkListener/*` registry methods (the `x:` prefix marks
   registry methods; first-class objects like `Principal` are unprefixed).
+- **v1 renamed two fields the entrypoint uses, and they fail differently.**
+  `NetworkListener.tlsImplicit` became `implicitTls`, and the old name is refused
+  loudly (`invalidPatch`, "Invalid key for object"). `Bootstrap.serverHostname` became
+  `defaultHostname`, and that one failed *silently*: the bootstrap-mode check grepped for
+  the field's name, so a fresh v1 server read as already bootstrapped, setup was skipped,
+  and the entrypoint died later on "could not resolve default domain id". The check now
+  matches the singleton's id, which no rename can move. Singleton settings objects
+  (`x:Http`, `x:Jmap`, …) answer `ids: null` with an empty list (observed on v1.0.2);
+  ask for `ids: ["singleton"]`.
 - **`SEARCH HEADER Message-ID` does not match** in Stalwart; the seeder uses
   append-order sequence numbers and the smoke suite searches by `SUBJECT`.
 - **The JMAP session is at `/jmap/session`** (`/.well-known/jmap` 307-redirects

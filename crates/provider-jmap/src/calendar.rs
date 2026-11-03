@@ -386,14 +386,12 @@ fn participant_from_json(participant: &Value) -> Participant {
 /// `urn:ietf:params:jmap:calendars` capability is an empty object in the JMAP Session and
 /// its account-level properties are byte-identical between draft-24 and draft-27, so
 /// nothing in the session says which JSCalendar a server serves. JSCalendar 2.0 does define
-/// a `version` property (jscalendarbis §3.1.2) — the only in-band signal that exists — but
-/// Stalwart neither emits it nor honours it, and how it *refuses* it moved between the two
-/// pins this repo has run: v0.16.15 rejected a create carrying `version` with
-/// `invalidProperties: ["version"]`, while v0.16.21 accepts the create and silently drops the
-/// property (never echoed back, and asking for it in `properties` still returns nothing —
-/// both observed). The conclusion is unchanged and if anything firmer: a signal that can be
-/// swallowed without a word is no signal. So the adapter reads the shape rather than asking,
-/// and the shape is unambiguous:
+/// a `version` property (jscalendarbis §3.1.2) — the only in-band signal that exists — but it
+/// belongs to one object, not to the server, and Stalwart's handling of it moved with every
+/// pin this repo has run: v0.16.15 rejected a create carrying it with
+/// `invalidProperties: ["version"]`, v0.16.21 accepted the create and silently dropped it, and
+/// v1.0.2 returns `"2.0"` on every event, CalDAV-written ones included (all observed). So the
+/// adapter reads the shape rather than asking, and the shape is unambiguous:
 ///
 /// - **2.0** (jscalendarbis §3.4.6): a scalar `calendarAddress`.
 /// - **1.0** ([RFC 8984] §4.4.6): `sendTo`, a map of *method* → URI.

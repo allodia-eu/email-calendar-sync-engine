@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 /// [`CalendarAccess`](crate::calendar::CalendarAccess) normalizes calendar rights.
 ///
 /// **Rights live here, on the collection, and not on the account**, because the account is
-/// the wrong level to ask. Live against Stalwart, a JMAP account shared read-only reports
-/// `accounts.<id>.isReadOnly: false` while the single mailbox it exposes grants only
-/// `lr`. A share can be granted folder by folder, so "may I do this here?" has an answer
-/// only per collection.
+/// the wrong level to ask. Live against Stalwart v1.0.2, a JMAP account sharing one writable
+/// and one read-only folder reports `accounts.<id>.isReadOnly: false` (v0.16 said `false` even
+/// when its only mailbox granted `lr`). A share can be granted folder by folder, so "may I do
+/// this here?" has an answer only per collection.
 ///
 /// The rights are kept separate rather than collapsed to read/write because servers hand
 /// out arbitrary subsets of them: a shared mailbox commonly lets each reader keep their own

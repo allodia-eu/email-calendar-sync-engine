@@ -1,4 +1,4 @@
-# Deterministic Stalwart protocol test harness (Stalwart v0.16).
+# Deterministic Stalwart protocol test harness (Stalwart v1).
 #
 # `docker compose up -d --wait` brings up a Stalwart server that self-bootstraps
 # through its management API, creates the test accounts, and seeds one shared
@@ -23,29 +23,31 @@ name: stalwart-harness
 
 services:
   stalwart:
-    # stalwartlabs/stalwart v0.16.24, pinned by multi-arch digest (linux/amd64 +
+    # stalwartlabs/stalwart v1.0.2, pinned by multi-arch digest (linux/amd64 +
     # linux/arm64). Bump deliberately: re-resolve the digest and update CI too.
     #
-    # Bumped from v0.16.21 in its own change, after running the whole gated suite from a
-    # wiped volume (see docs/agent-guidance/stalwart-harness.md → "The pinned version").
-    # What v0.16.22–v0.16.24 changed *near* this repo:
+    # Bumped from v0.16.24 in its own change, after reading every release note from
+    # v0.16.25 to v1.0.2 and running the whole gated suite from a wiped volume (see
+    # docs/agent-guidance/stalwart-harness.md → "The v0.16.24 → v1.0.2 bump"). What it
+    # changed *near* this repo:
     #
-    #   - v0.16.24 stopped `Email/set` giving a message IMAP UID 0 when one patch carries
-    #     a full `mailboxIds` equal to the current membership *and* a keyword change. That
-    #     is the report patch's shape whenever the message already sits in the
-    #     destination: reproduced on v0.16.22, where a junk report of a message already in
-    #     Junk left it at UID 0, which no IMAP client can address
-    #     (`docs/agent-guidance/jmap.md` → reporting).
+    #   - v1 renamed two registry fields entrypoint.sh relies on: `NetworkListener.tlsImplicit`
+    #     (now `implicitTls`), which it sends, and `Bootstrap.serverHostname` (now
+    #     `defaultHostname`), which its bootstrap-mode check used to look for.
+    #     v1's new database layout does not matter here: the harness always bootstraps
+    #     from an empty volume, so there is nothing to migrate.
+    #   - A share whose every folder is read-only now reports `isReadOnly: true` and lists
+    #     no `submission`, so a client bound to it offers neither writes nor sending.
+    #   - JMAP Calendars moved to draft-33 / jscalendarbis-22: `version: "2.0"` is now
+    #     returned on every event, and `organizerCalendarAddress` is inferred on create.
+    #     Nothing the engine sends or reads changed shape.
     #
-    # Still true from earlier pins: v0.16.21 rejects a `CalendarEvent/set` that asks for
-    # scheduling with a `forbidden` `SetError` when the account cannot schedule (iTIP
-    # disabled, no calendar address, or no `CalendarSchedulingSend`). `provider-jmap` asks
-    # on *every* calendar write, so on such an account every write fails; the harness
-    # accounts can schedule, which is why the suite is unaffected. Tracked as an
-    # engine-side exposure, not a harness one (`docs/agent-guidance/jmap.md`).
-    # `ifInState` enforcement (v0.16.14) is unchanged through v0.16.24, and the engine
-    # still sends no precondition.
-    image: stalwartlabs/stalwart:v0.16.24@sha256:ec011be228596e37e65f41aab17deed573859614430472f7eeb42178c50d87b7
+    # Still true from earlier pins: `ifInState` is enforced (since v0.16.14, re-verified on
+    # v1.0.2), and the engine still sends no precondition. From v0.16.21 a `CalendarEvent/set`
+    # that asks for scheduling is refused `forbidden` when the account cannot schedule; the
+    # harness accounts can, so no test covers it and it was not re-observed on v1.0.2
+    # (`docs/agent-guidance/jmap.md`).
+    image: stalwartlabs/stalwart:v1.0.2@sha256:154e55adecadfcc4a67044b9b94d482a20286e1101c97a2b322224bb596053d5
     # Self-bootstrapping wrapper: bootstrap via API, restart to full server,
     # create accounts, seed, then run the server in the foreground.
     entrypoint: ["/bin/sh", "/harness/entrypoint.sh"]

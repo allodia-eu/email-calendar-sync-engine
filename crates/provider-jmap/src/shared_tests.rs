@@ -113,10 +113,15 @@ async fn a_bound_client_addresses_the_share_and_reads_its_rights_off_each_folder
         Some(BOB),
         vec![fixture("mailbox_snapshot_shared_read_only_response.json")],
     );
-    // Bob's account reports `isReadOnly: false` although the one mailbox it exposes grants
-    // read alone — so writes stay advertised at the account level, as the RFC flag says,
-    // and the folder is where the truth is.
-    assert!(provider.connection_info().capabilities.mail_writes());
+    // The one mailbox Bob's account exposes grants read alone, and Stalwart v1 says so on the
+    // account too (`isReadOnly: true`; v0.16 said `false`), so writes are not advertised. The
+    // folder still carries the rights: an account mixing a writable folder with a read-only
+    // one reports `isReadOnly: false` (observed on v1.0.2), so the flag cannot stand in for
+    // them (modeling.md).
+    assert!(!provider.connection_info().capabilities.mail_writes());
+    // v1 also stops listing `submission` on that account (the group share keeps it), so a
+    // client bound to it offers no send rather than one the server would refuse.
+    assert!(!provider.connection_info().capabilities.submission());
 
     let sync = provider.sync_mailboxes(&account(), None).await.unwrap();
     let SyncUpdate::Snapshot { objects, .. } = sync.update else {
@@ -127,6 +132,17 @@ async fn a_bound_client_addresses_the_share_and_reads_its_rights_off_each_folder
     // And the call went to bob's account, not the credential's primary one.
     let requests = exec.requests.lock().unwrap();
     assert_eq!(requests[0]["methodCalls"][0][1]["accountId"], json!(BOB));
+}
+
+#[tokio::test]
+async fn a_bound_client_on_a_writable_share_keeps_writes_and_send() {
+    // The other direction of the read-only case above, from the same captured session: the
+    // group account, every folder of which alice may write, says `isReadOnly: false` and
+    // lists `submission`, so neither is withheld.
+    let (provider, _) = bound(Some(SUPPORT), vec![]);
+    let caps = provider.connection_info().capabilities;
+    assert!(caps.mail_writes());
+    assert!(caps.submission());
 }
 
 #[tokio::test]
@@ -157,15 +173,17 @@ fn a_handle_the_session_does_not_list_fails_at_connect() {
 
 #[tokio::test]
 async fn a_domain_the_shared_account_does_not_expose_is_not_advertised() {
-    // Stalwart gives every account the same `accountCapabilities`, so this case needs a
-    // trimmed session: RFC 8620 defines the set per account precisely so it *can* differ,
-    // and claiming a domain the session says is absent would be a wrong promise.
+    // RFC 8620 defines `accountCapabilities` per account precisely so the set *can* differ,
+    // and claiming a domain the session says is absent would be a wrong promise. Bob's
+    // share already lacks `submission` in the captured session, so the trim is applied to
+    // the group account, which lists every domain: each assertion below then holds only
+    // because the narrowing read the trimmed set.
     let mut doc = session_doc();
-    let caps = doc["accounts"][BOB]["accountCapabilities"]
+    let caps = doc["accounts"][SUPPORT]["accountCapabilities"]
         .as_object_mut()
         .unwrap();
     caps.retain(|urn, _| urn == "urn:ietf:params:jmap:mail");
-    let exec = FakeExecutor::bound_to(&doc, Some(BOB), vec![]);
+    let exec = FakeExecutor::bound_to(&doc, Some(SUPPORT), vec![]);
     let caps = exec.session().capabilities();
     assert!(caps.mail() && !caps.calendars() && !caps.contacts() && !caps.submission());
     let err = exec.session().calendar_account_id().unwrap_err();

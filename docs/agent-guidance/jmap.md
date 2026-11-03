@@ -508,17 +508,19 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
     the JMAP Session `capabilities`, and its account-level properties
     (`maxCalendarsPerEvent`, `minDateTime`, `maxDateTime`, `maxExpandedQueryDuration`,
     `maxParticipantsPerEvent`, `mayCreateCalendar`) are **byte-identical between
-    draft-24 and draft-27** — verified by diffing the two drafts in full. Nothing in the
-    session distinguishes them, by design rather than oversight.
+    draft-24 and draft-27**, and again between draft-28 and draft-33 — verified by diffing
+    each pair in full. Nothing in the session distinguishes them, by design rather than
+    oversight.
   - **The only in-band signal is the object's own `version`** (JSCalendar 2.0 /
-    jscalendarbis §3.1.2, value `"2.0"`). **Do not send it.** Stalwart neither emits it nor
-    honours it, and how it refuses it *moved between pins*: on v0.16.15 a
-    `CalendarEvent/set` create carrying `version` was rejected with
-    `invalidProperties: ["version"]`; on v0.16.21 the same create is **accepted and the
-    property silently dropped** — never echoed back, and asking for it in `properties` still
-    returns nothing (both observed). That makes the signal weaker, not stronger: a client
-    that sent `version` to announce its dialect would now get a success that means nothing.
-    So "support the latest draft" cannot mean "emit the 2.0 markers".
+    jscalendarbis §3.1.2, value `"2.0"`), and it is a property of *one object*, not of the
+    server. Do not branch on it: an object without it is 1.0 (jscalendarbis-22 §3.1.2), so a
+    server that stores objects from several sources may hold both. Stalwart's handling has
+    *moved with every pin*: v0.16.15 rejected a create carrying it with
+    `invalidProperties: ["version"]`; v0.16.21 accepted the create and silently dropped it;
+    **v1.0.2** (jmap-calendars-33, which makes the server set it on a create that omits it,
+    §5.9) keeps the `"2.0"` a create sends and returns `"version": "2.0"` on *every* event,
+    including ones written over CalDAV without it (all observed). Three behaviours in three
+    pins is the argument for reading the shape: it survived all three unchanged.
   - **What differs in practice is one spelling**, and it is fallback-shaped rather than
     switch-shaped. A participant's address is `calendarAddress` in 2.0 and `sendTo`
     (a map of *method* → URI; `imip` is the mail one) in 1.0 — and 2.0 **reserves**
@@ -529,8 +531,8 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
     owner role.
   - **A create declares `"version": "2.0"`, and otherwise stays on the intersection.**
     jscalendarbis makes `version` required; Fastmail refuses a create without it
-    (`invalidProperties`, `properties: version`) and Stalwart accepts it (it stores the event and
-    does not echo the property). Everything else `calendar_write` sends (`@type`, `uid`,
+    (`invalidProperties`, `properties: version`) and Stalwart accepts it (v0.16.21 dropped
+    it; v1.0.2 keeps and returns it). Everything else `calendar_write` sends (`@type`, `uid`,
     `title`, `start`/`timeZone`/`showWithoutTime`, `duration`, `locations`, the singular
     `recurrenceRule`) is what both servers read back. A write that carries participants is
     where the two versions' spellings part, and *that* is when a version decision has to be
@@ -649,7 +651,7 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   decision. v0.16.11–v0.16.13 parsed it and never compared it (a stale-state `/set` was applied
   and returned a fresh `newState`, where RFC 8620 §5.3 requires a `stateMismatch`; a *malformed*
   state string still `400`s, so it was parsed, just never checked). v0.16.14 fixed it, and the
-  harness now pins **v0.16.24**, so enforcement is what our live runs meet: a stale-but-
+  harness now pins **v1.0.2**, which still enforces it, so enforcement is what our live runs meet: a stale-but-
   well-formed token is refused with `stateMismatch` and the write does not land. That only
   sharpens reason 2 — the probe's state had moved because of an edit to a *different* property
   of a *different* event, which is precisely the spurious rejection a per-event guard must not
@@ -661,7 +663,7 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
 
   Be precise about what that test can and cannot catch. It drives the **adapter**, which sends
   no precondition, so server-side `ifInState` enforcement can never fail it — and did not: it
-  passes unchanged on v0.16.15, v0.16.21 and v0.16.24. It is a tripwire for *the writes we
+  passes unchanged on v0.16.15, v0.16.21, v0.16.24 and v1.0.2. It is a tripwire for *the writes we
   actually send* losing their ability to clobber, which is what `WriteGuard::Absent` claims;
   it is **not** a tripwire for Stalwart gaining a precondition. A host that must not lose a concurrent edit has to detect it
   above the engine. The one thing that must not happen is a neutral write API that *looks* like
@@ -677,16 +679,21 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   and a *malformed* token is a `400 notRequest` instead, so "a bad token fails" is **not**
   evidence of enforcement — check *which* error you got before concluding anything.
 - **Scheduling is opt-in, and omitting the flag fails silently.** `sendSchedulingMessages`
-  (draft-ietf-jmap-calendars §5.3, default **`false`**) is what makes the server derive the
+  (draft-ietf-jmap-calendars §5.9, `CalendarEvent/set`, default **`false`**) is what makes the server derive the
   iTIP message from a `/set`. A request without it is stored and notifies **nobody**: the
   organizer is never told an invitation was answered, and an attendee keeps a meeting the
   organizer cancelled. Nothing in the response distinguishes that from success.
 
-  Meeting creation follows draft-ietf-jmap-calendars-28 and
-  draft-ietf-calext-jscalendarbis-19. Stalwart 0.16.15 does not infer
+  Meeting creation was written against draft-ietf-jmap-calendars-28 and
+  draft-ietf-calext-jscalendarbis-19; the harness's Stalwart v1.0.2 implements -33 and -22,
+  and nothing the adapter sends or reads changed between them (diffed in full when the pin
+  moved: the capability URIs, `sendSchedulingMessages`, `calendarAddress` and
+  `organizerCalendarAddress` are untouched). Stalwart 0.16.15 did not infer
   `organizerCalendarAddress` when participants are supplied, although the JMAP Calendars
-  draft requires the server to do so. Sending the field explicitly is permitted and is
-  required for Stalwart to deliver the invitation. The live suite locks that behaviour.
+  draft requires the server to do so (§5.9); v1.0.2 does (observed: a create naming an owner
+  participant comes back with it set). The adapter still sends it explicitly — permitted,
+  and what a server that does not infer it needs to deliver the invitation. The live suite
+  locks that behaviour.
 
   The adapter sends it on all four verbs. The RSVP carries the caller's choice
   (`EventRsvp::notify_organizer`); create/patch/destroy send `true` unconditionally
@@ -748,19 +755,26 @@ the shares the user has **subscribed** to, so a share appears there once accepte
   calendars, contacts — and a domain it does not expose is simply not advertised, with an
   accessor error that names the reason. The handle is checked at connect, so a withdrawn or
   foreign one fails `connect` rather than every call after it.
-- **Rights come from each `Mailbox.myRights`; the account flag cannot answer.** Live against
-  Stalwart, the account bob shares read-only reports `isReadOnly: false` while the one INBOX
-  it exposes grants `mayReadItems` alone. So `mail_writes` stays advertised for it (the account
-  flag is what gates that, as RFC 8620 defines it) and the *folder* says read-only
-  (`modeling.md`).
-- **Stalwart gives every account the same `accountCapabilities`,** shares included — so the
-  per-account narrowing is a no-op against it and is driven offline by a trimmed session. It
-  is kept because RFC 8620 defines the set per account precisely so it *can* differ.
+- **Rights come from each `Mailbox.myRights`; the account flag cannot answer.** The flag is
+  what gates `mail_writes` (as RFC 8620 defines it), and on Stalwart it is coarser than the
+  folders. v0.16 reported `isReadOnly: false` for the account bob shares read-only, whose one
+  INBOX grants `mayReadItems` alone. v1.0.2 reports `true` for it — so `mail_writes` is no
+  longer advertised there — but `false` for a share mixing a writable and a read-only folder
+  (observed by hand), so the *folder* is still the only place a per-folder answer lives
+  (`modeling.md`). Both directions of the flag are pinned live (`smoke.rs`, `live_shared.rs`).
+- **Each account carries its own `accountCapabilities`, and on Stalwart v1 they differ.**
+  v0.16 gave every account the same set, shares included, so the per-account narrowing was a
+  no-op against it. v1.0.2 drops `submission`, `sieve`, `vacationresponse`, `quota` and
+  `emailpush` from the read-only share (the group share keeps them all), so a client bound to
+  it advertises no send — exercised offline from the captured session
+  (`session_shared_accounts.json`) and live.
 - **Sending from a group mailbox works through its own account.** Bound to it, `Identity/get`
   answers the group's one identity and the message leaves as the group (live: the copy bob
-  receives is `From: support@`). A share granted read-only answers `Identity/get` with
-  `forbidden`, so a send there fails `Permanent`; `submission` is still advertised for it
-  because its `accountCapabilities` say so, and a capability names the door, not that it opens.
+  receives is `From: support@`). A share granted read-only offers no send at all on v1.0.2:
+  its `accountCapabilities` list no `submission`, so the adapter does not advertise one. On
+  v0.16 they did, and `Identity/get` there answered `forbidden`, so a send failed
+  `Permanent` — a capability names the door, not that it opens, and a server that lists
+  `submission` for an account it will not send from still gets that answer.
 
 ## Known limitations (documented, not bugs)
 

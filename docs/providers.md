@@ -136,8 +136,9 @@ read/write support, using JSCalendar and JSContact projections.
 - **RFC 8620** — JMAP Core (session resource, method calls, state changes, blob upload/download, EventSource push).
 - **RFC 8621** — JMAP Mail (`Mailbox`, `Email`, `EmailSubmission`, `Thread`).
 - **RFC 8984** — JSCalendar, the normalized calendar data model.
-- **draft-ietf-jmap-calendars-28** and **draft-ietf-calext-jscalendarbis-19**: current JMAP
-  Calendars and JSCalendar 2.0 write shapes. Reads remain compatible with RFC 8984 shapes.
+- **draft-ietf-jmap-calendars-33** and **draft-ietf-calext-jscalendarbis-22**: current JMAP
+  Calendars and JSCalendar 2.0 write shapes (written against -28 and -19; nothing the
+  adapter sends or reads changed between them). Reads remain compatible with RFC 8984 shapes.
 - **RFC 9610** — JMAP Contacts (`AddressBook`, `ContactCard`).
 - **RFC 8620 §7.3** — EventSource push notifications via `JmapWatcher`.
 

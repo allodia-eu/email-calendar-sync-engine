@@ -1,7 +1,7 @@
 # JMAP offline fixtures
 
-Real JMAP JSON **captured from the deterministic Stalwart v0.16 harness**
-(`docker/stalwart/`, account `alice@test.local`) and committed so the
+Real JMAP JSON **captured from the deterministic Stalwart harness** (v0.16, unless a row
+says it was re-captured on v1) (`docker/stalwart/`, account `alice@test.local`) and committed so the
 parse/normalize and orchestration tests run offline with no Docker. They are the
 ground truth the normalizers and the generic fetch orchestration are tested
 against; the live integration tests re-verify the same invariants against the
@@ -29,7 +29,7 @@ tests driven through a fake executor.
 | `submit_context_response.json` | `[Mailbox/get, Identity/get]` response | Resolving the Drafts/Sent mailboxes + submission identity before a send. |
 | `submit_send_response.json` | `[Email/set, EmailSubmission/set]` response | Submission: the created email key, plus the implicit `Email/set` from `onSuccessUpdateEmail` (two responses share call id `1`). |
 | `submit_context_shared_identities_response.json` | `[Mailbox/get, Identity/get]` response, alice **after** joining the `support` group | Two submission identities, the *group's* listed first. Taking the first submitted `From: alice@` under `support@` and Stalwart answered `forbiddenFrom`; the identity is matched to the draft's `From`. |
-| `session_shared_accounts.json` | `GET /jmap/session` as alice, verbatim | Shared-mailbox discovery: three `accounts` entries (her own, the `support` group, bob's read-only share), and the finding the design rests on — the read-only share reports `isReadOnly: false`. Every account also carries the *same* `accountCapabilities`. |
+| `session_shared_accounts.json` | `GET /jmap/session` as alice, verbatim (re-captured on Stalwart v1.0.2) | Shared-mailbox discovery: three `accounts` entries (her own, the `support` group, bob's read-only share). The read-only share reports `isReadOnly: true` and lists no `submission`, `sieve`, `vacationresponse`, `quota` or `emailpush` (v0.16 reported `false` and gave every account the same `accountCapabilities`); the group share reports `false` and keeps them all. |
 | `mailbox_snapshot_shared_read_only_response.json` | `[Mailbox/query, Mailbox/get]` response with bob's shared `accountId` | Per-folder rights: one Inbox whose `myRights` grants `mayReadItems` and nothing else. Its counts are whatever the scheduling suite had delivered; nothing asserts them. The `Mailbox/get` half is observed; the `Mailbox/query` half is written around it, since a snapshot became query + get after the capture. |
 | `submit_keyword_update_response.json` | `[Email/set]` update response (`live_sent_copy_keywords`; the account and email ids replaced by `submit_send_response.json`'s) | Setting a send's `sent_copy_keywords` on its filed copy: an applied update answers `updated` with the id mapped to `null`. |
 | `email_set_report_response.json` | `[Email/set]` response for a report | One `Email/set` carrying **both** the `keywords/$junk` patch and the `mailboxIds` move — the report and its filing cannot land half-applied. Replayed through the fake executor, so its call id is the adapter's `0` rather than the capturing probe's. |

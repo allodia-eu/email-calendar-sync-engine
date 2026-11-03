@@ -25,10 +25,10 @@
 //!
 //! # What a [`SharedMailbox`] does not carry
 //!
-//! - **Rights.** An account-level "read-only" is not a usable signal — live against Stalwart, a
-//!   JMAP account shared read-only reports `isReadOnly: false` while its only mailbox grants `lr` —
-//!   so rights are carried per folder, on [`Mailbox::access`](engine_core::mail::Mailbox::access),
-//!   once the store is bound and synced.
+//! - **Rights.** An account-level "read-only" is too coarse a signal — live against Stalwart
+//!   v1.0.2, a JMAP account sharing one writable and one read-only folder reports `isReadOnly:
+//!   false` — so rights are carried per folder, on
+//!   [`Mailbox::access`](engine_core::mail::Mailbox::access), once the store is bound and synced.
 //! - **Kind** (shared vs. user vs. room). Graph's `userPurpose` is the only such vocabulary any
 //!   adapter here publishes, and a delegated credential cannot read it for any mailbox but its own
 //!   — every `/users/{other}/mailboxSettings` route answers `403` even with Full Access
