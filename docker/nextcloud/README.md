@@ -16,6 +16,8 @@ the way a real deployment is, so it exercises what the bare SabreDAV fixture doe
 - **Scheduling.** Its `OPTIONS` reports `calendar-auto-schedule` (RFC 6638), the positive
   answer to the SabreDAV fixture's negative one on the same server software.
 - **Verbatim storage.** Like SabreDAV, it hands back the iCalendar bytes it was given.
+- **Talk.** Nextcloud's meeting service, installed so `TalkMeetings` makes and deletes real
+  conversations.
 
 It is **test infrastructure, not product code**: the stock `nextcloud` image on the stock
 `postgres` image, both with their data on a `tmpfs`, so every start is a fresh install. Not
@@ -30,7 +32,8 @@ once fail one of them with "database is locked", which a slower CI runner meets.
 - `hooks/seed.sh`: the image's post-installation hook. It gives the account the address
   `alice@test.local`, creates the `harness` calendar and imports the shared
   [`../stalwart/seed/calendar/*.ics`](../stalwart/seed/calendar/) into it, and creates the
-  `harness` address book.
+  `harness` address book. It then downloads the pinned Talk release, checks its sha256 and
+  enables it.
 
 ## Running it
 
@@ -38,7 +41,8 @@ once fail one of them with "database is locked", which a slower CI runner meets.
 cd docker/nextcloud
 docker compose up -d --wait          # installs, seeds, healthy when ready
 NEXTCLOUD_HTTP_ADDR=127.0.0.1:18082 \
-  cargo test -p provider-caldav --test live_nextcloud --test live_nextcloud_contacts
+  cargo test -p provider-caldav --test live_nextcloud --test live_nextcloud_contacts \
+  --test live_talk
 docker compose down -v
 ```
 
@@ -60,4 +64,6 @@ Throwaway credentials, committed on purpose. The suites read `NEXTCLOUD_USER` an
 ## Bumping the image
 
 Re-resolve the multi-arch digest for the new tag (`docker buildx imagetools inspect
-nextcloud:<tag>-apache`), replace it in `docker-compose.yml`, and run both gated suites.
+nextcloud:<tag>-apache`), replace it in `docker-compose.yml`, and run the gated suites. Talk
+is released per Nextcloud major: a new major needs the Talk release for it, whose URL and
+sha256 go into `hooks/seed.sh` together.

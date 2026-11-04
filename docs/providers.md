@@ -265,6 +265,7 @@ share HTTP/TLS/WebDAV transport only; normalization remains domain-specific.
 - **RFC 6638** — CalDAV scheduling (server auto-schedule).
 - **RFC 6047** — iMIP (iTIP over email), inbound parse + RSVP write primitive.
 - **RFC 6350 / RFC 6352** — vCard and CardDAV address-book access.
+- **Nextcloud Talk** (OCS `apps/spreed/api/v4/room`), for `TalkMeetings`, which makes a Talk conversation for an event on any calendar. Not DAV, but the same server and the same `Credentials`.
 
 ### Capabilities
 
