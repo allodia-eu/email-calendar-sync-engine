@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::Alert;
+use super::{Alert, ConferenceService};
 use crate::{
     extended::ExtendedProperties, ids::CalendarId, time::TimeZoneId, version::RevisionTokens,
 };
@@ -80,6 +80,17 @@ impl Default for CalendarAccess {
     }
 }
 
+/// A meeting a calendar's own server makes when an event on it asks for one: Teams on an
+/// Exchange calendar, Meet on a Google one (`calendar-semantics.md`, "Conferences").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeConference {
+    /// The service the meeting runs on.
+    pub service: ConferenceService,
+    /// Whether the meeting can be taken off an event once the server has made it. Graph
+    /// refuses `isOnlineMeeting: false`, so a Teams meeting stays.
+    pub removable: bool,
+}
+
 /// A calendar collection (JSCalendar/JMAP `Calendar`, CalDAV calendar
 /// collection, Google `calendarList` entry).
 ///
@@ -114,6 +125,12 @@ pub struct Calendar {
     pub default_alerts_without_time: Vec<Alert>,
     /// The caller's access rights.
     pub access: CalendarAccess,
+    /// The meetings this calendar's server makes itself, in the server's order; empty where it
+    /// makes none. Only a service the adapter can ask the server for is listed. It is the
+    /// server's answer whatever [`Self::access`] says, so a calendar the caller cannot write
+    /// may still list one.
+    #[serde(default)]
+    pub native_conferences: Vec<NativeConference>,
     /// Per-object revision tokens, if the provider supplies any.
     pub revisions: RevisionTokens,
     /// Preserved provider-defined extended properties.
@@ -138,6 +155,7 @@ impl Calendar {
             default_alerts_with_time: Vec::new(),
             default_alerts_without_time: Vec::new(),
             access: CalendarAccess::owner(),
+            native_conferences: Vec::new(),
             revisions: RevisionTokens::none(),
             extended: ExtendedProperties::new(),
         }
@@ -175,7 +193,19 @@ mod tests {
         cal.access = CalendarAccess::reader();
         cal.owner = Some("boss@example.com".into());
         cal.time_zone = Some(TimeZoneId::iana("Europe/Amsterdam").unwrap());
+        cal.native_conferences = vec![NativeConference {
+            service: ConferenceService::Teams,
+            removable: false,
+        }];
         let json = serde_json::to_string(&cal).unwrap();
         assert_eq!(serde_json::from_str::<Calendar>(&json).unwrap(), cal);
+    }
+
+    #[test]
+    fn a_calendar_stored_before_native_conferences_reads_with_none() {
+        let mut stored = serde_json::to_value(Calendar::new(id(), "Work")).unwrap();
+        stored.as_object_mut().unwrap().remove("native_conferences");
+        let cal: Calendar = serde_json::from_value(stored).unwrap();
+        assert_eq!(cal.native_conferences, []);
     }
 }

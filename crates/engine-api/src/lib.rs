@@ -53,9 +53,10 @@ pub use engine::{
 pub use engine_core::calendar::{
     AccessCodes, Calendar, Conference, ConferenceFeature, ConferenceKey, ConferenceOrigin,
     ConferenceService, ConferenceUri, ConferenceUriError, DetectedIn, EntryKind, EntryPoint, Event,
-    EventKind, EventStatus, FreeBusyStatus, Frequency, Location, NDay, NativeState, Participant,
-    ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence, RecurrenceBound,
-    RecurrenceOverride, RecurrenceRule, RecurrenceSkip, UriScheme, Weekday,
+    EventKind, EventStatus, FreeBusyStatus, Frequency, Location, NDay, NativeConference,
+    NativeState, Participant, ParticipantKind, ParticipantRole, ParticipationStatus, Privacy,
+    Recurrence, RecurrenceBound, RecurrenceOverride, RecurrenceRule, RecurrenceSkip, UriScheme,
+    Weekday,
 };
 // The payload of a `RecurrenceOverride::Patch` — what one occurrence changed about itself.
 // The variant is re-exported above, so without this a host can match on it and then not name

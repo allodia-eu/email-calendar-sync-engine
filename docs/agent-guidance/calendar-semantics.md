@@ -622,6 +622,15 @@ sees:
   `Attached` is a meeting stored in a field built for it that the server did not make:
   `CONFERENCE`, `virtualLocations`, a Google `addOn`. `Detected` is one found elsewhere
   (below).
+- **Which meetings a calendar makes** (`Calendar::native_conferences`) is the server's
+  answer for that calendar, read with the calendar list: Graph's
+  `allowedOnlineMeetingProviders` (`teamsForBusiness` is Teams, not removable) and Google's
+  `conferenceProperties.allowedConferenceSolutionTypes` (`hangoutsMeet` is Meet,
+  removable). Never the account kind: a personal Microsoft account lists `unknown`, a
+  subscribed or shared Exchange calendar lists nothing, and a Workspace admin can switch Meet
+  off. Retired services a server still names (Skype, Skype for Business, classic Hangouts) are
+  left out. The list does not depend on `access`: Google lists Meet on a calendar the caller
+  can only read, and a host reads the two together. CalDAV and JMAP servers make no meetings.
 - **Service** comes from the server where it names one (`hangoutsMeet`,
   `onlineMeetingProvider`) and otherwise from `ConferenceService::recognise`, which matches
   each service's *meeting* URL shapes only, never its bare domain. `None` means neither said.

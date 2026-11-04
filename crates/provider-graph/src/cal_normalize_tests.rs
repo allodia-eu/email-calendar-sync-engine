@@ -3,8 +3,8 @@
 
 use engine_core::{
     calendar::{
-        ConferenceOrigin, ConferenceService, DetectedIn, EventStatus, Frequency, ParticipantRole,
-        RecurrenceBound, Weekday,
+        ConferenceOrigin, ConferenceService, DetectedIn, EventStatus, Frequency, NativeConference,
+        ParticipantRole, RecurrenceBound, Weekday,
     },
     time::{CalendarDateTime, Duration, TimeZoneId},
 };
@@ -18,6 +18,7 @@ const SINGLE: &str = include_str!("../tests/fixtures/calendar/event_single.json"
 const ALLDAY: &str = include_str!("../tests/fixtures/calendar/event_allday.json");
 const ONLINE: &str = include_str!("../tests/fixtures/calendar/event_online_meeting.json");
 const CALENDARS: &str = include_str!("../tests/fixtures/calendar/calendars.json");
+const CALENDARS_WORK: &str = include_str!("../tests/fixtures/calendar/calendars_work.json");
 const EXTRA_EVENT: &str = include_str!("../tests/fixtures/calendar/event_extra_calendar.json");
 const INVITATION: &str = include_str!("../tests/fixtures/calendar/event_invitation.json");
 const EXTERNAL_INVITATION: &str =
@@ -178,6 +179,38 @@ fn a_meeting_link_in_an_html_body_is_detected_and_a_typed_location_kept() {
         )]
     );
     assert_eq!(event.locations.len(), 1);
+}
+
+fn native(fixture: &str) -> Vec<Vec<NativeConference>> {
+    json(fixture)["value"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| calendar_from_json(c).unwrap().native_conferences)
+        .collect()
+}
+
+#[test]
+fn a_work_calendar_makes_teams_meetings_and_a_subscribed_one_none() {
+    // Captured on a work tenant: the user's own calendar lists `teamsForBusiness`, the two
+    // calendars subscribed from elsewhere list nothing.
+    let teams = NativeConference {
+        service: ConferenceService::Teams,
+        removable: false,
+    };
+    assert_eq!(native(CALENDARS_WORK), [vec![teams], vec![], vec![]]);
+}
+
+#[test]
+fn a_personal_calendar_makes_no_meeting_and_a_retired_service_is_left_out() {
+    // A personal account lists `unknown` (captured).
+    assert_eq!(native(CALENDARS), [vec![], vec![]]);
+    // Skype for Business and Skype are retired; a server that still names them makes no
+    // meeting through either.
+    let mut value = json(CALENDAR);
+    value["allowedOnlineMeetingProviders"] =
+        serde_json::json!(["skypeForConsumer", "skypeForBusiness"]);
+    assert_eq!(calendar_from_json(&value).unwrap().native_conferences, []);
 }
 
 #[test]
