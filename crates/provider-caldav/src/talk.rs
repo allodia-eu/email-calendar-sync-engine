@@ -9,8 +9,11 @@
 //! its link, and Talk answers 404 for one that is gone.
 
 use async_trait::async_trait;
-use engine_core::calendar::{
-    Conference, ConferenceKey, ConferenceOrigin, ConferenceService, ConferenceUri, EntryPoint,
+use engine_core::{
+    calendar::{
+        Conference, ConferenceKey, ConferenceOrigin, ConferenceService, ConferenceUri, EntryPoint,
+    },
+    error::FailureClass,
 };
 use engine_http::{Exchange, RetryConfig, send_retrying};
 use engine_provider::{MeetingRequest, MeetingService, ProviderError, ProviderResult};
@@ -60,22 +63,27 @@ impl TalkMeetings {
     ///
     /// # Errors
     ///
-    /// [`CalDavError`] when `server` is no `http` or `https` address, or the HTTP client
-    /// cannot be built.
+    /// [`ProviderError::invalid_state`] when `server` is no `http` or `https` address, or has
+    /// a query; a transport error when the HTTP client cannot be built.
     pub fn new(
         server: &str,
         credentials: Credentials,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
         user_agent: &engine_http::UserAgent,
-    ) -> Result<Self, CalDavError> {
+    ) -> ProviderResult<Self> {
         let url = reqwest::Url::parse(server)
             .ok()
             .filter(|url| matches!(url.scheme(), "http" | "https") && url.query().is_none())
-            .ok_or_else(|| CalDavError::protocol(format!("bad Talk server {server:?}")))?;
+            .ok_or_else(|| {
+                ProviderError::invalid_state(
+                    "a Talk server is an http or https address without a query",
+                )
+            })?;
         let client = engine_http::client(tls, user_agent)
             .redirect(Policy::none())
-            .build()?;
+            .build()
+            .map_err(|err| unanswered(err.into()))?;
         Ok(Self {
             client,
             server: url.as_str().trim_end_matches('/').to_owned(),
@@ -99,30 +107,32 @@ impl TalkMeetings {
     }
 
     /// Sends `request`, answering the reply's status and its OCS `data`, or `None` for 404.
-    async fn send(&self, request: RequestBuilder) -> Result<Option<Value>, CalDavError> {
-        let sent = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
+    async fn send(&self, request: RequestBuilder) -> ProviderResult<Option<Value>> {
+        let sent = send_retrying(request, &self.retry, Exchange::Ordinary)
+            .await
+            .map_err(unanswered)?;
         let status = sent.status().as_u16();
         let wait = sent.stated_wait();
-        let body = sent.text().await?;
+        let body = sent.text().await.map_err(unanswered)?;
         if status == 404 {
             return Ok(None);
         }
         if !(200..300).contains(&status) {
-            return Err(CalDavError::status(status, body).with_retry_after(wait));
+            return Err(refused(status, body, wait));
         }
         let value: Value = serde_json::from_str(&body)
-            .map_err(|_| CalDavError::protocol("Talk answered without JSON"))?;
+            .map_err(|_| ProviderError::permanent("Talk answered without JSON"))?;
         Ok(Some(
             value.pointer("/ocs/data").cloned().unwrap_or(Value::Null),
         ))
     }
 
-    async fn rules(&self) -> Result<Rules, CalDavError> {
+    async fn rules(&self) -> ProviderResult<Rules> {
         let data = self
             .send(self.request(Method::GET, CAPABILITIES))
             .await?
             .unwrap_or(Value::Null);
-        rules(&data).ok_or_else(|| CalDavError::protocol("the server has no Talk"))
+        rules(&data).ok_or_else(|| ProviderError::permanent("the server has no Talk"))
     }
 
     /// The link of the conversation whose token is `token`.
@@ -157,10 +167,10 @@ impl MeetingService for TalkMeetings {
         let data = self
             .send(self.request(Method::POST, ROOMS).json(&body))
             .await?
-            .ok_or_else(|| CalDavError::status(404, "the server has no Talk"))?;
+            .ok_or_else(|| ProviderError::permanent("the server has no Talk"))?;
         let token = created(&data)
-            .ok_or_else(|| CalDavError::protocol("Talk answered without a conversation"))?;
-        Ok(conference(&self.link(token), password)?)
+            .ok_or_else(|| ProviderError::permanent("Talk answered without a conversation"))?;
+        conference(&self.link(token), password)
     }
 
     async fn delete_meeting(&self, meeting: &Conference) -> ProviderResult<()> {
@@ -215,9 +225,9 @@ fn token_in<'a>(server: &str, link: &'a str) -> Option<&'a str> {
 
 /// The conversation at `link` as an event holds one made elsewhere, with its password when
 /// the server forces one.
-fn conference(link: &str, password: Option<&str>) -> Result<Conference, CalDavError> {
+fn conference(link: &str, password: Option<&str>) -> ProviderResult<Conference> {
     let uri = ConferenceUri::parse(link)
-        .map_err(|_| CalDavError::protocol("a Talk link that cannot be opened"))?;
+        .map_err(|_| ProviderError::permanent("a Talk link that cannot be opened"))?;
     let mut entry = EntryPoint::at(uri.clone());
     entry.access.password = password.map(str::to_owned);
     Ok(Conference {
@@ -229,6 +239,32 @@ fn conference(link: &str, password: Option<&str>) -> Result<Conference, CalDavEr
         meeting_id: None,
         notes: None,
     })
+}
+
+/// Talk's refusal of a request, classified as a CalDAV status is.
+fn refused(status: u16, body: String, wait: Option<core::time::Duration>) -> ProviderError {
+    let detail = format!("Talk HTTP {status}: {body}");
+    classified(
+        detail,
+        CalDavError::status(status, body).with_retry_after(wait),
+    )
+}
+
+/// A request that never got Talk's answer.
+fn unanswered(cause: engine_http::SendError) -> ProviderError {
+    let detail = format!("Talk transport error: {cause}");
+    classified(detail, CalDavError::Transport(cause))
+}
+
+/// `err`'s class, since the server and the transport are CalDAV's, with Talk's `detail`.
+fn classified(detail: String, err: CalDavError) -> ProviderError {
+    let class = err.failure_class();
+    let error = if class == FailureClass::RateLimited {
+        ProviderError::rate_limited(detail, err.retry_after().map(Into::into))
+    } else {
+        ProviderError::new(class, detail)
+    };
+    error.with_source(err)
 }
 
 #[cfg(test)]

@@ -134,6 +134,7 @@ async fn a_refusal_or_an_answer_without_a_conversation_is_an_error() {
     ]);
     let err = talk(&server).create_meeting(&request()).await.unwrap_err();
     assert_eq!(err.class(), FailureClass::Permanent);
+    assert!(err.detail().starts_with("Talk HTTP 400: "), "{err}");
 
     let (server, _) = mock_server_capturing(vec![
         http("200 OK", CAPABILITIES),
@@ -199,4 +200,34 @@ async fn a_bearer_token_is_sent_as_one() {
     talk.delete_meeting(&meeting).await.unwrap();
     let head = seen.lock().unwrap()[0].to_ascii_lowercase();
     assert!(head.contains("authorization: bearer token"), "{head}");
+}
+
+#[tokio::test]
+async fn a_throttle_it_does_not_wait_out_is_reported_with_its_wait() {
+    let throttled = "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 30\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+    let (server, _) = mock_server_capturing(vec![throttled.to_owned()]);
+    let talk = TalkMeetings::new(
+        &server,
+        Credentials::Bearer("token".into()),
+        &TlsClientConfig::default(),
+        &RetryConfig::default().with_policy(engine_http::RetryPolicy::none()),
+        &engine_http::test_server::user_agent(),
+    )
+    .unwrap();
+    let err = talk.create_meeting(&request()).await.unwrap_err();
+    assert_eq!(err.class(), FailureClass::RateLimited);
+    assert_eq!(
+        err.retry_after(),
+        Some(core::time::Duration::from_secs(30).into())
+    );
+    assert!(err.detail().starts_with("Talk HTTP 429"), "{err}");
+}
+
+#[tokio::test]
+async fn a_server_that_does_not_answer_is_a_talk_transport_error() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let err = talk(&server).create_meeting(&request()).await.unwrap_err();
+    assert!(err.detail().starts_with("Talk transport error"), "{err}");
 }
