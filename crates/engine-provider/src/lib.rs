@@ -50,6 +50,7 @@ mod keyword_name;
 mod mail_edit;
 mod mailbox_edit;
 mod mailbox_write;
+mod meeting;
 mod page;
 mod provider;
 #[cfg(feature = "http")]
@@ -89,6 +90,9 @@ pub use keyword_name::{KeywordName, keyword_named};
 pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use mailbox_edit::{MailboxEdit, MailboxEditReceipt};
 pub use mailbox_write::MailboxWrites;
+pub use meeting::{
+    JitsiMeetings, JitsiServerError, MeetingKey, MeetingKeyError, MeetingRequest, MeetingService,
+};
 pub use page::{PageToken, SyncKind, SyncPage};
 pub use provider::Provider;
 #[cfg(feature = "http")]

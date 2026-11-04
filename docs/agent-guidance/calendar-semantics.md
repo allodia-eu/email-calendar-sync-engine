@@ -740,6 +740,21 @@ sees:
   `live_calendar_conference_write` in `provider-graph`, `provider-google` and `provider-jmap`,
   and `common::conference_write` against each DAV server in `provider-caldav`, put each kind
   on and take it off through the adapter.
+- **Meeting services** (`MeetingService`) make a meeting for an event whose calendar's server
+  makes none, or makes one on another service than the person wants; the caller then attaches
+  it (`NewConference::attach`). A service is told only a `MeetingRequest`: a title, the start,
+  the end (a series' last end, since a service that expires a meeting does so after its end,
+  and for a series without one, as long as the caller wants it to last) and a `MeetingKey`.
+  The key is minted by the caller from at least 128 bits of a secure random source, because
+  the engine makes no randomness of its own; it is 26 to 64 lowercase letters and digits,
+  since Jitsi lowercases a room name, and its `Debug` hides it, because the key alone is a way
+  in. A service that keeps a key answers a repeated one with the same meeting.
+  `delete_meeting` takes the conference as the event holds it, `create_meeting`'s answer or
+  the same meeting read back, and finds the meeting by its join link, so nothing of the
+  service's own is kept beside the event; a meeting already gone is a success.
+  - **Jitsi** (`JitsiMeetings`) has no API: the meeting is `https://<server>/<key>`, made
+    without a request, and there is nothing to delete. The server is an `https` address
+    without a query or fragment, a path kept.
 
 ## Supported recurrence subset
 
