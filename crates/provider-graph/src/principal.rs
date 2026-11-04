@@ -148,7 +148,7 @@ fn validate(address: &str) -> Result<(), GraphError> {
 
 /// Percent-encodes `value` for use as one URL path segment, leaving RFC 3986's
 /// unreserved characters plus `@` and `+` as they are.
-fn encode_segment(value: &str) -> String {
+pub(crate) fn encode_segment(value: &str) -> String {
     use core::fmt::Write as _;
 
     let mut out = String::with_capacity(value.len());

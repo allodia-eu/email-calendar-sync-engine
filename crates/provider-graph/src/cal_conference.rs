@@ -105,7 +105,7 @@ pub(crate) fn is_placeholder(value: &Value, location: &Value) -> bool {
 
 /// Every dial-in number `onlineMeeting` names: `tollNumber`, `tollFreeNumbers` and
 /// `phones[].number`, as written.
-fn dial_in_numbers(meeting: &Value) -> Vec<&str> {
+pub(crate) fn dial_in_numbers(meeting: &Value) -> Vec<&str> {
     let toll = opt_str(meeting, "tollNumber");
     let toll_free = meeting
         .get("tollFreeNumbers")
@@ -125,7 +125,7 @@ fn dial_in_numbers(meeting: &Value) -> Vec<&str> {
 /// A dial-in number as a `tel:` way in, labelled with the number as Graph wrote it. The URI
 /// keeps the digits and a leading `+`, which is what RFC 3966 needs to dial; `None` when
 /// there are no digits.
-fn phone(number: &str) -> Option<EntryPoint> {
+pub(crate) fn phone(number: &str) -> Option<EntryPoint> {
     let digits: String = number
         .trim()
         .char_indices()

@@ -344,6 +344,7 @@ personal contacts.
 - Calendar API (`/me/calendars`, `calendarView/delta` with `Prefer: outlook.timezone` so DST resolves server-side), `If-Match` conditional writes, and the RSVP action endpoints.
 - Contact folders/contacts delta, organizational contacts, and directory users.
 - `Prefer: IdType="ImmutableId"` so object ids are stable across folder moves.
+- Online meetings (`/me/onlineMeetings/createOrGet`), for `TeamsMeetings`, which makes a Teams meeting for an event on any calendar. It needs `OnlineMeetings.ReadWrite`, which only a work or school account can grant.
 
 ### Capabilities
 

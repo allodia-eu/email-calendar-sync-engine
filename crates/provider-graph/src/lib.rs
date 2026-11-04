@@ -66,6 +66,7 @@ mod provider;
 mod report;
 mod shared;
 mod submit;
+mod teams_meetings;
 mod transport;
 
 #[cfg(test)]
@@ -83,4 +84,5 @@ pub use contact::{GraphContactProvider, GraphContactSource};
 pub use error::GraphError;
 pub use principal::{MailboxAddress, MailboxPrincipal};
 pub use provider::GraphProvider;
+pub use teams_meetings::TeamsMeetings;
 pub use transport::GraphClient;
