@@ -158,10 +158,7 @@ impl MeetingService for TalkMeetings {
             .send(self.request(Method::POST, ROOMS).json(&body))
             .await?
             .ok_or_else(|| CalDavError::status(404, "the server has no Talk"))?;
-        let token = data
-            .get("token")
-            .and_then(Value::as_str)
-            .filter(|token| is_token(token))
+        let token = created(&data)
             .ok_or_else(|| CalDavError::protocol("Talk answered without a conversation"))?;
         Ok(conference(&self.link(token), password)?)
     }
@@ -187,6 +184,13 @@ fn rules(data: &Value) -> Option<Rules> {
         can_create: flag("can-create").unwrap_or(true),
         force_passwords: flag("force-passwords").unwrap_or(false),
     })
+}
+
+/// The token of the conversation a creation's `data` describes.
+fn created(data: &Value) -> Option<&str> {
+    data.get("token")
+        .and_then(Value::as_str)
+        .filter(|token| is_token(token))
 }
 
 /// `title` cut to what Talk accepts as a name, at a character boundary.
@@ -230,3 +234,7 @@ fn conference(link: &str, password: Option<&str>) -> Result<Conference, CalDavEr
 #[cfg(test)]
 #[path = "talk_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "talk_http_tests.rs"]
+mod http_tests;

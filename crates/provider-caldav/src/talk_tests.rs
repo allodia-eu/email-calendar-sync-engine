@@ -3,6 +3,33 @@ use serde_json::json;
 use super::*;
 
 const SERVER: &str = "https://cloud.example.org";
+/// The harness's capabilities, captured with Talk installed and nothing configured.
+const CAPABILITIES: &str = include_str!("../tests/fixtures/talk-capabilities.json");
+/// The harness's answer to making a public conversation.
+const CREATED: &str = include_str!("../tests/fixtures/talk-room-created.json");
+
+fn ocs_data(fixture: &str) -> Value {
+    let body: Value = serde_json::from_str(fixture).unwrap();
+    body["ocs"]["data"].clone()
+}
+
+#[test]
+fn a_server_as_installed_lets_anyone_make_a_conversation_without_a_password() {
+    assert_eq!(
+        rules(&ocs_data(CAPABILITIES)),
+        Some(Rules {
+            can_create: true,
+            force_passwords: false
+        })
+    );
+}
+
+#[test]
+fn a_new_conversation_is_named_by_its_token() {
+    assert_eq!(created(&ocs_data(CREATED)), Some("83h5s7dz"));
+    assert_eq!(created(&json!({ "token": "../x" })), None);
+    assert_eq!(created(&json!({})), None);
+}
 
 #[test]
 fn the_capabilities_say_whether_a_conversation_may_be_made_and_needs_a_password() {
