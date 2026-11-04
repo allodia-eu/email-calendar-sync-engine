@@ -82,6 +82,10 @@ exempt() {
     # reconcile by the id it generated). Rewriting these would make the fixtures and the prose
     # describe a wire format Google does not emit.
     *@google.com | *@group.v.calendar.google.com | *@group.calendar.google.com | *@mail.gmail.com) return 0 ;;
+    # A Teams meeting's thread id (`19_meeting_<opaque-id>@thread.v2`), which its meeting-options
+    # link carries unescaped. Not an address; rewriting it would describe a link Teams does not
+    # write.
+    *@thread.v2) return 0 ;;
     # Company-owned mailboxes used by the live provider suites. Real, but ours, and named in
     # the live-test setup docs rather than belonging to a person.
     allodia.e2e@gmail.com | allodia-e2e@outlook.com) return 0 ;;
