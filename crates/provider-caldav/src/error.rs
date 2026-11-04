@@ -207,19 +207,27 @@ impl From<reqwest::Error> for CalDavError {
 
 impl From<CalDavError> for ProviderError {
     fn from(err: CalDavError) -> Self {
-        if matches!(err, CalDavError::Unconfirmed(_)) {
-            return ProviderError::needs_confirmation(err.to_string()).with_source(err);
-        }
-        let class = err.failure_class();
         let detail = err.to_string();
+        err.into_provider_error(detail)
+    }
+}
+
+impl CalDavError {
+    /// This failure as a [`ProviderError`] saying `detail`: the classification is this
+    /// error's whatever the words, so a caller that names its own service (Talk) keeps it.
+    pub(crate) fn into_provider_error(self, detail: String) -> ProviderError {
+        if matches!(self, CalDavError::Unconfirmed(_)) {
+            return ProviderError::needs_confirmation(detail).with_source(self);
+        }
+        let class = self.failure_class();
         // A rate limit is the one class that carries *when*: the outbox obeys a provider's
         // instant outright, past its own derived cap, and a host schedules from it.
         let error = if class == FailureClass::RateLimited {
-            ProviderError::rate_limited(detail, err.retry_after().map(Into::into))
+            ProviderError::rate_limited(detail, self.retry_after().map(Into::into))
         } else {
             ProviderError::new(class, detail)
         };
-        error.with_source(err)
+        error.with_source(self)
     }
 }
 

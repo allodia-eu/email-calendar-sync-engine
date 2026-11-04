@@ -9,11 +9,8 @@
 //! its link, and Talk answers 404 for one that is gone.
 
 use async_trait::async_trait;
-use engine_core::{
-    calendar::{
-        Conference, ConferenceKey, ConferenceOrigin, ConferenceService, ConferenceUri, EntryPoint,
-    },
-    error::FailureClass,
+use engine_core::calendar::{
+    Conference, ConferenceKey, ConferenceOrigin, ConferenceService, ConferenceUri, EntryPoint,
 };
 use engine_http::{Exchange, RetryConfig, send_retrying};
 use engine_provider::{MeetingRequest, MeetingService, ProviderError, ProviderResult};
@@ -64,7 +61,8 @@ impl TalkMeetings {
     /// # Errors
     ///
     /// [`ProviderError::invalid_state`] when `server` is no `http` or `https` address, or has
-    /// a query; a transport error when the HTTP client cannot be built.
+    /// a user name, a query or a fragment, none of which a conversation's link appended to it
+    /// could carry; a transport error when the HTTP client cannot be built.
     pub fn new(
         server: &str,
         credentials: Credentials,
@@ -74,10 +72,16 @@ impl TalkMeetings {
     ) -> ProviderResult<Self> {
         let url = reqwest::Url::parse(server)
             .ok()
-            .filter(|url| matches!(url.scheme(), "http" | "https") && url.query().is_none())
+            .filter(|url| {
+                matches!(url.scheme(), "http" | "https")
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.query().is_none()
+                    && url.fragment().is_none()
+            })
             .ok_or_else(|| {
                 ProviderError::invalid_state(
-                    "a Talk server is an http or https address without a query",
+                    "a Talk server is an http or https address without a user name, query or fragment",
                 )
             })?;
         let client = engine_http::client(tls, user_agent)
@@ -244,27 +248,15 @@ fn conference(link: &str, password: Option<&str>) -> ProviderResult<Conference> 
 /// Talk's refusal of a request, classified as a CalDAV status is.
 fn refused(status: u16, body: String, wait: Option<core::time::Duration>) -> ProviderError {
     let detail = format!("Talk HTTP {status}: {body}");
-    classified(
-        detail,
-        CalDavError::status(status, body).with_retry_after(wait),
-    )
+    CalDavError::status(status, body)
+        .with_retry_after(wait)
+        .into_provider_error(detail)
 }
 
 /// A request that never got Talk's answer.
 fn unanswered(cause: engine_http::SendError) -> ProviderError {
     let detail = format!("Talk transport error: {cause}");
-    classified(detail, CalDavError::Transport(cause))
-}
-
-/// `err`'s class, since the server and the transport are CalDAV's, with Talk's `detail`.
-fn classified(detail: String, err: CalDavError) -> ProviderError {
-    let class = err.failure_class();
-    let error = if class == FailureClass::RateLimited {
-        ProviderError::rate_limited(detail, err.retry_after().map(Into::into))
-    } else {
-        ProviderError::new(class, detail)
-    };
-    error.with_source(err)
+    CalDavError::Transport(cause).into_provider_error(detail)
 }
 
 #[cfg(test)]

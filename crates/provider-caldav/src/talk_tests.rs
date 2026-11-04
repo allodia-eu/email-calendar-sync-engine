@@ -150,6 +150,9 @@ fn a_server_is_an_http_address_without_a_query() {
     );
     assert!(make("ftp://cloud.example.org").is_err());
     assert!(make("https://cloud.example.org/?x=1").is_err());
+    assert!(make("https://cloud.example.org/#apps").is_err());
+    assert!(make("https://alice@cloud.example.org").is_err());
+    assert!(make("https://alice:pw@cloud.example.org").is_err());
     assert!(make("not a url").is_err());
     let talk = make(SERVER).unwrap();
     assert_eq!(
