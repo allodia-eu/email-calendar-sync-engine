@@ -681,8 +681,15 @@ sees:
   not the number. `ConferenceUri::dialled_after_pause` is that remainder (`123456789#`), the
   PIN of a way in whose only copy of it is its URI.
 - **Occurrences** read the master's conferences; no override carries its own.
-- **Which calendars make one** is the server's to say, per calendar: Graph's
-  `allowedOnlineMeetingProviders`, Google's `conferenceProperties`. Observed live: a
+- **Which calendars make one** is the server's to say, per calendar, never the account
+  kind, and is read with the calendar list into `Calendar::native_conferences`: Graph's
+  `allowedOnlineMeetingProviders` (`teamsForBusiness` is Teams) and Google's
+  `conferenceProperties.allowedConferenceSolutionTypes` (`hangoutsMeet` is Meet). A
+  subscribed or shared Exchange calendar lists nothing, and a Workspace admin can switch Meet
+  off. Retired services a server still names (Skype, Skype for Business, classic Hangouts)
+  are left out. The list does not depend on `access`: Google lists Meet on a calendar the
+  caller can only read, so a host reads the two together. CalDAV and JMAP servers make no
+  meetings. Observed live: a
   work or school calendar lists `teamsForBusiness` and makes the meeting on create; a
   personal Microsoft account's calendar lists only `unknown`, and a create asking for
   `teamsForBusiness` succeeds with `isOnlineMeeting: false` and no meeting, without an

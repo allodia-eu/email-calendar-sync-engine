@@ -181,6 +181,7 @@ public repo must not ship a working join link (see Finding 10).
 | Fixture | Real Graph call | Protects |
 | --- | --- | --- |
 | `calendar/calendars.json` | `GET /me/calendars` | calendar-list → `Calendar` normalization: **two** calendars under one account — the default `Calendar` and the non-default `Extra calendar test` (`hexColor: #f7630c`) |
+| `calendar/calendars_work.json` | `GET /me/calendars?$top=100` on a work tenant | `allowedOnlineMeetingProviders` per calendar: `teamsForBusiness` on the user's own calendar, nothing on the two subscribed ones. Names, ids and the owner are placeholders |
 | `calendar/calendar.json` | one entry from `GET /me/calendars` | a single `Calendar` (the default) in isolation |
 | `calendar/event_extra_calendar.json` | a `singleInstance` from the non-default calendar's `calendarView` | an event bound to a **non-default** calendar — membership keeps it separable from the default calendar's events |
 | `calendar/event_series_master.json` | `GET /me/events/{id}` (a `seriesMaster`) | `patternedRecurrence` → `Recurrence`, zone, location, organizer |

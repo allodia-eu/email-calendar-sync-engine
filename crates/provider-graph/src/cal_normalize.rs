@@ -19,8 +19,9 @@
 
 use engine_core::{
     calendar::{
-        Calendar, CalendarAccess, DetectionSources, Event, EventStatus, FreeBusyStatus, Location,
-        Participant, ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, add_detected,
+        Calendar, CalendarAccess, ConferenceService, DetectionSources, Event, EventStatus,
+        FreeBusyStatus, Location, Participant, ParticipantKind, ParticipantRole,
+        ParticipationStatus, Privacy, add_detected,
     },
     ids::{CalendarId, EventId, Uid},
     membership::Memberships,
@@ -87,8 +88,25 @@ pub(crate) fn calendar_from_json(value: &Value) -> Result<Calendar, GraphError> 
         .get("owner")
         .and_then(|o| opt_str(o, "address"))
         .map(str::to_owned);
+    calendar.native_conferences = native_conferences(value);
     calendar.revisions = revisions(value);
     Ok(calendar)
+}
+
+/// The meetings the calendar's server makes itself, from `allowedOnlineMeetingProviders`.
+///
+/// Only `teamsForBusiness` makes one: `skypeForBusiness` and `skypeForConsumer` name retired
+/// services, and `unknown` (what a personal account lists) names none.
+fn native_conferences(value: &Value) -> Vec<ConferenceService> {
+    let lists_teams = value
+        .get("allowedOnlineMeetingProviders")
+        .and_then(Value::as_array)
+        .is_some_and(|providers| providers.iter().any(|p| p == "teamsForBusiness"));
+    if lists_teams {
+        vec![ConferenceService::Teams]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Normalizes one Graph `event` (`seriesMaster` or `singleInstance`) into an [`Event`]

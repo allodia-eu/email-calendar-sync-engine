@@ -21,9 +21,9 @@
 
 use engine_core::{
     calendar::{
-        Calendar, CalendarAccess, DetectionSources, Event, EventStatus, FreeBusyStatus, Location,
-        Participant, ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence,
-        RecurrenceOverride, add_detected, parse_rrule,
+        Calendar, CalendarAccess, ConferenceService, DetectionSources, Event, EventStatus,
+        FreeBusyStatus, Location, Participant, ParticipantKind, ParticipantRole,
+        ParticipationStatus, Privacy, Recurrence, RecurrenceOverride, add_detected, parse_rrule,
     },
     ids::{CalendarId, Uid},
     membership::Memberships,
@@ -72,8 +72,27 @@ pub(crate) fn calendar_from_json(value: &Value) -> Result<Calendar, GoogleError>
         None => None,
     };
     calendar.access = access_role(opt_str(value, "accessRole"));
+    calendar.native_conferences = native_conferences(value);
     calendar.revisions = revisions(value);
     Ok(calendar)
+}
+
+/// The meetings the calendar's server makes itself, from
+/// `conferenceProperties.allowedConferenceSolutionTypes`.
+///
+/// Only `hangoutsMeet` makes one: `eventHangout` and `eventNamedHangout` name the retired
+/// classic Hangouts. A Workspace admin can switch Meet off, which leaves the list without it.
+fn native_conferences(value: &Value) -> Vec<ConferenceService> {
+    let allows_meet = value
+        .get("conferenceProperties")
+        .and_then(|properties| properties.get("allowedConferenceSolutionTypes"))
+        .and_then(Value::as_array)
+        .is_some_and(|types| types.iter().any(|t| t == "hangoutsMeet"));
+    if allows_meet {
+        vec![ConferenceService::GoogleMeet]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Maps a `calendarList` entry's `accessRole` to a [`CalendarAccess`].

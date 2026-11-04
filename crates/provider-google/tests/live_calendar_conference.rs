@@ -1,5 +1,6 @@
 //! Gated live checks that a Meet conference Google makes reads back as the calendar's own,
-//! and that a meeting only written into the location and description is detected there.
+//! that a meeting only written into the location and description is detected there, and that
+//! each calendar says whether its server makes Meet meetings.
 //!
 //! The event is created by direct HTTP with a `conferenceData.createRequest` under
 //! `conferenceDataVersion=1`, because asking the server for a meeting is not something the
@@ -197,4 +198,48 @@ async fn read_back(
         .find(|event| event.title == title)
         .expect("the created event syncs")
         .conferences
+}
+
+#[tokio::test]
+async fn live_each_calendar_says_whether_its_server_makes_meet_meetings() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_each_calendar_says...: GOOGLE_ACCESS_TOKEN unset");
+        return;
+    };
+    let listed: serde_json::Value = http()
+        .get("https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=250")
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("GET calendarList")
+        .json()
+        .await
+        .expect("calendarList json");
+    let calendars = calendar_provider(token)
+        .sync_calendars(&account(), None)
+        .await
+        .expect("sync calendars")
+        .sync;
+    let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
+        panic!("expected a calendar snapshot");
+    };
+    for calendar in objects {
+        let raw = listed["items"]
+            .as_array()
+            .expect("a calendar list")
+            .iter()
+            .find(|c| c["id"] == calendar.id.as_str())
+            .expect("the adapter's calendar is in Google's list");
+        let types = &raw["conferenceProperties"]["allowedConferenceSolutionTypes"];
+        eprintln!("{}: {types}", calendar.name);
+        let allows_meet = types
+            .as_array()
+            .is_some_and(|list| list.iter().any(|t| t == "hangoutsMeet"));
+        let expected: &[ConferenceService] = if allows_meet {
+            &[ConferenceService::GoogleMeet]
+        } else {
+            &[]
+        };
+        assert_eq!(calendar.native_conferences, expected, "{}", calendar.name);
+    }
 }

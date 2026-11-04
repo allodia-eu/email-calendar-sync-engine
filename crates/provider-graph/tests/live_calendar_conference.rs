@@ -1,6 +1,7 @@
 //! Gated live checks that an online meeting Exchange makes reads back as the calendar's own
 //! conference, without Exchange's stand-in location, that a meeting only written into the
-//! location and body is detected there, and that editing a meeting's notes keeps the meeting.
+//! location and body is detected there, that editing a meeting's notes keeps the meeting, and
+//! that each calendar says whether its server makes Teams meetings.
 //!
 //! The event is created by direct HTTP with `isOnlineMeeting: true`, because asking the
 //! server for a meeting is not something the adapter writes yet; it is the fixture. Reading it
@@ -317,6 +318,58 @@ async fn edit_notes(
         return Ok((read, after));
     }
     Err("the notes edit kept conflicting".to_owned())
+}
+
+#[tokio::test]
+async fn live_each_calendar_says_whether_its_server_makes_teams_meetings() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_each_calendar_says...: GRAPH_ACCESS_TOKEN unset");
+        return;
+    };
+    let listed: serde_json::Value = http()
+        .get(format!(
+            "{GRAPH}/me/calendars?$top=100&$select=allowedOnlineMeetingProviders"
+        ))
+        .bearer_auth(&token)
+        .header("Prefer", "IdType=\"ImmutableId\"")
+        .send()
+        .await
+        .expect("GET /me/calendars")
+        .json()
+        .await
+        .expect("calendars json");
+    let calendars = calendar_provider(&token)
+        .sync_calendars(&account(), None)
+        .await
+        .expect("sync calendars")
+        .sync;
+    let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
+        panic!("expected a calendar snapshot");
+    };
+    let mut seen_teams = false;
+    for calendar in objects {
+        let raw = listed["value"]
+            .as_array()
+            .expect("a calendar list")
+            .iter()
+            .find(|c| c["id"] == calendar.id.as_str())
+            .expect("the adapter's calendar is in Graph's list");
+        let providers = &raw["allowedOnlineMeetingProviders"];
+        eprintln!("{}: {providers}", calendar.name);
+        let lists_teams = providers
+            .as_array()
+            .is_some_and(|list| list.iter().any(|p| p == "teamsForBusiness"));
+        seen_teams |= lists_teams;
+        let expected: &[ConferenceService] = if lists_teams {
+            &[ConferenceService::Teams]
+        } else {
+            &[]
+        };
+        assert_eq!(calendar.native_conferences, expected, "{}", calendar.name);
+    }
+    if !seen_teams {
+        eprintln!("note: no calendar on this account makes Teams meetings");
+    }
 }
 
 /// The event titled `title`, once the adapter's sync finds it.
