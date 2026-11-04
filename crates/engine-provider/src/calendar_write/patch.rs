@@ -38,7 +38,8 @@ use engine_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{DraftRecurrence, InviteePatch, Occurrence};
+use super::{ConferenceEdit, DraftRecurrence, InviteePatch, Occurrence};
+use crate::{ProviderError, ProviderResult};
 
 /// Which occurrence of a recurring event an [`EventPatch`] lands on.
 ///
@@ -122,6 +123,8 @@ pub struct EventPatch {
     recurrence: Option<RecurrenceEdit>,
     #[serde(default)]
     invitees: Option<InviteePatch>,
+    #[serde(default)]
+    conference: Option<ConferenceEdit>,
 }
 
 impl EventPatch {
@@ -147,6 +150,7 @@ impl EventPatch {
             end: None,
             recurrence: None,
             invitees: None,
+            conference: None,
         }
     }
 
@@ -239,6 +243,21 @@ impl EventPatch {
         self
     }
 
+    /// Puts a video meeting on the event, or takes one off. A meeting belongs to the series,
+    /// so only a [`Series`](PatchTarget::Series) target may carry one. Read
+    /// [`Capabilities::conference_writes`](crate::Capabilities::conference_writes) first.
+    #[must_use]
+    pub fn conference(mut self, conference: ConferenceEdit) -> Self {
+        self.conference = Some(conference);
+        self
+    }
+
+    /// What the edit does to the event's meetings, if it touches them.
+    #[must_use]
+    pub fn conference_edit(&self) -> Option<&ConferenceEdit> {
+        self.conference.as_ref()
+    }
+
     /// Returns the invitee changes, if this patch touches the roster.
     #[must_use]
     pub fn invitee_edit(&self) -> Option<&InviteePatch> {
@@ -282,7 +301,8 @@ impl EventPatch {
     }
 
     /// Whether this patch changes something the attendees must be told about: time,
-    /// recurrence, location, or the roster (RFC 5546 §2.1.4). Retitling does not.
+    /// recurrence, location, the roster (RFC 5546 §2.1.4), or the meeting they join.
+    /// Retitling does not.
     ///
     /// An adapter that keeps an iTIP revision counter (CalDAV: `SEQUENCE`) bumps it exactly
     /// when this is `true`.
@@ -293,6 +313,7 @@ impl EventPatch {
             || self.location.is_some()
             || self.recurrence.is_some()
             || self.invitees.as_ref().is_some_and(|edit| !edit.is_empty())
+            || self.conference.is_some()
     }
 
     /// Whether the patch changes nothing but its own stamp.
@@ -305,6 +326,25 @@ impl EventPatch {
             && self.end.is_none()
             && self.recurrence.is_none()
             && self.invitees.as_ref().is_none_or(InviteePatch::is_empty)
+            && self.conference.is_none()
+    }
+}
+
+impl EventEdit {
+    /// Refuses a video-meeting edit aimed at one occurrence: a meeting belongs to the series,
+    /// as its invitees do (`calendar-semantics.md`).
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::invalid_state`] when an [`Instance`](PatchTarget::Instance) target
+    /// carries a [`ConferenceEdit`].
+    pub fn refuse_conference_on_occurrence(&self) -> ProviderResult<()> {
+        if matches!(self.target, PatchTarget::Instance(_)) && self.patch.conference.is_some() {
+            return Err(ProviderError::invalid_state(
+                "a video meeting belongs to the series, never to one occurrence",
+            ));
+        }
+        Ok(())
     }
 }
 

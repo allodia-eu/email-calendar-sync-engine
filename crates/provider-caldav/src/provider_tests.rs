@@ -107,6 +107,7 @@ async fn exposes_dav_scopes_and_the_calendar_capabilities() {
     // it does no mail.
     assert!(provider.connection_info().capabilities.calendars());
     assert!(provider.connection_info().capabilities.calendar_writes());
+    assert!(!provider.connection_info().capabilities.conference_writes());
     assert!(!provider.connection_info().capabilities.mail());
     assert!(!provider.connection_info().capabilities.submission());
 
@@ -329,6 +330,23 @@ async fn a_create_is_written_into_the_calendar_its_draft_names() {
         start,
         stamp,
     );
+
+    // A create asking for a video meeting is refused before anything is written, never
+    // stored without it.
+    let with_meeting = draft
+        .clone()
+        .conference(engine_provider::NewConference::Native(
+            engine_core::calendar::ConferenceService::Teams,
+        ));
+    let refused = provider
+        .create_event(&AccountId::try_from("a").unwrap(), &with_meeting)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.class(),
+        engine_core::error::FailureClass::InvalidState
+    );
+    assert!(replay.writes().is_empty());
 
     let receipt = provider
         .create_event(&AccountId::try_from("a").unwrap(), &draft)

@@ -104,7 +104,8 @@ impl GraphCalendarProvider {
                 .with_calendars()
                 .with_calendar_writes(WriteGuard::Enforced, GRAPH_OVERRIDE_SURVIVAL)
                 .with_calendar_rsvp(GRAPH_RSVP)
-                .with_calendar_scheduling(),
+                .with_calendar_scheduling()
+                .with_conference_writes(),
         }
     }
 

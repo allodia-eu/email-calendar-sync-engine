@@ -52,10 +52,11 @@ pub use engine::{
 // `engine-api` alone (the providers themselves still come from the adapter crates).
 pub use engine_core::calendar::{
     AccessCodes, Calendar, Conference, ConferenceFeature, ConferenceKey, ConferenceOrigin,
-    ConferenceService, ConferenceUri, ConferenceUriError, DetectedIn, EntryKind, EntryPoint, Event,
-    EventKind, EventStatus, FreeBusyStatus, Frequency, Location, NDay, NativeState, Participant,
-    ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence, RecurrenceBound,
-    RecurrenceOverride, RecurrenceRule, RecurrenceSkip, UriScheme, Weekday,
+    ConferenceService, ConferenceText, ConferenceUri, ConferenceUriError, DetectedIn, EntryKind,
+    EntryPoint, Event, EventKind, EventStatus, FreeBusyStatus, Frequency, Location, NDay,
+    NativeState, Participant, ParticipantKind, ParticipantRole, ParticipationStatus, Privacy,
+    Recurrence, RecurrenceBound, RecurrenceOverride, RecurrenceRule, RecurrenceSkip, UriScheme,
+    Weekday,
 };
 // The payload of a `RecurrenceOverride::Patch` — what one occurrence changed about itself.
 // The variant is re-exported above, so without this a host can match on it and then not name
@@ -142,16 +143,17 @@ pub use engine_http::{
 /// it is. The engine adds no product of its own.
 pub use engine_http::{InvalidUserAgent, UserAgent};
 pub use engine_provider::{
-    CalendarAddress, CalendarUserAddresses, CalendarWrites, Capabilities, ContactDestination,
-    ContactPhoto, ContactsProvider, ContentIdHeader, DeleteTarget, Draft, DraftAttachment,
-    DraftAttachmentDisposition, DraftCalendar, DraftRecurrence, EventDeletion, EventDraft,
-    EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, IdentityControls,
-    InvitationError, Invitee, InviteePatch, InviteeRole, KeywordName, MailEdit, MailEditReceipt,
-    MailboxEdit, MailboxEditReceipt, MailboxWrites, MeetingDraft, MessageReport, Occurrence,
-    OverrideSurvival, PatchTarget, Provider, RecurrenceEdit, ReplyDelivery, ReportControls,
-    ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts, RsvpControls, RsvpResponse,
-    SchedulingIdentity, SenderIdentity, SenderIdentityId, SentCopy, SharedMailbox, SharedMailboxes,
-    SourceStream, SubmissionReceipt, TextEdit, WriteGuard, WritePrecondition,
+    AttachedConference, CalendarAddress, CalendarUserAddresses, CalendarWrites, Capabilities,
+    ConferenceEdit, ContactDestination, ContactPhoto, ContactsProvider, ContentIdHeader,
+    DeleteTarget, Draft, DraftAttachment, DraftAttachmentDisposition, DraftCalendar,
+    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
+    EventWriteReceipt, IdentityControls, InvitationError, Invitee, InviteePatch, InviteeRole,
+    KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites,
+    MeetingDraft, MessageReport, NewConference, Occurrence, OverrideSurvival, PatchTarget,
+    Provider, RecurrenceEdit, ReplyDelivery, ReportControls, ReportEvidence, ReportReceipt,
+    ReportVerdict, ReportVerdicts, RsvpControls, RsvpResponse, SchedulingIdentity, SenderIdentity,
+    SenderIdentityId, SentCopy, SharedMailbox, SharedMailboxes, SourceStream, SubmissionReceipt,
+    TextEdit, WriteGuard, WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,

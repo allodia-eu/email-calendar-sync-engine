@@ -35,6 +35,7 @@
 
 mod affiliation;
 mod cal_conference;
+mod cal_conference_write;
 mod cal_fetch;
 mod cal_invite;
 mod cal_normalize;

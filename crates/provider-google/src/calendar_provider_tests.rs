@@ -126,6 +126,7 @@ fn with_window_and_write_capabilities_and_debug() {
     let p = provider(vec![]).with_window(window);
     // Google enforces the If-Match guard → writes advertised.
     assert!(p.connection_info().capabilities.calendar_writes());
+    assert!(p.connection_info().capabilities.conference_writes());
     assert!(format!("{p:?}").contains("GoogleCalendarProvider"));
 }
 

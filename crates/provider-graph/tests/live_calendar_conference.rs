@@ -114,7 +114,7 @@ async fn live_a_teams_meeting_reads_back_as_the_calendars_own_conference() {
     assert_eq!(
         teams.origin,
         ConferenceOrigin::Native {
-            removable: false,
+            removable: true,
             state: NativeState::Ready
         }
     );

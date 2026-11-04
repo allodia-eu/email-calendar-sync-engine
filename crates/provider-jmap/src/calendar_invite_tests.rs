@@ -182,3 +182,25 @@ async fn invitee_patch_respects_the_accounts_participant_limit() {
     assert_eq!(error.class(), FailureClass::Permanent);
     assert_eq!(executor.request_count(), 0);
 }
+
+/// An adapter that writes no video meetings refuses a create that asks for one, before
+/// anything is sent, rather than storing the event without it.
+#[tokio::test]
+async fn a_create_with_a_video_meeting_is_refused_before_anything_is_sent() {
+    use engine_provider::{NewConference, Provider};
+    let p = provider(vec![]);
+    assert!(!p.connection_info().capabilities.conference_writes());
+    let draft = EventDraft::new(
+        calendar(),
+        uid(),
+        "Sprint planning",
+        zoned("2026-08-01T09:00:00"),
+        zoned("2026-08-01T09:30:00"),
+        stamp(),
+    )
+    .conference(NewConference::Native(
+        engine_core::calendar::ConferenceService::Teams,
+    ));
+    let err = p.create_event(&account(), &draft).await.unwrap_err();
+    assert_eq!(err.class(), FailureClass::InvalidState);
+}
