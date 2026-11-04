@@ -22,6 +22,7 @@ use engine_core::{
         ConferenceOrigin, ConferenceService, ConferenceUri, DetectedIn, EntryKind, Event,
         NativeState,
     },
+    error::FailureClass,
     sync::SyncUpdate,
 };
 use engine_provider::{CalendarWrites, EventEdit, EventPatch, PatchTarget, Provider};
@@ -254,7 +255,7 @@ async fn live_a_notes_edit_keeps_the_teams_meeting_and_the_whole_notes() {
         return;
     };
 
-    let (read, after) = outcome.expect("the created event syncs");
+    let (read, after) = outcome.unwrap();
     assert!(
         read.contains("decisions and owners."),
         "the description is the whole body: {read}"
@@ -269,41 +270,54 @@ async fn live_a_notes_edit_keeps_the_teams_meeting_and_the_whole_notes() {
 
 /// Edits the notes of the event titled `title` through the adapter, keeping the rest of its
 /// description, and returns the description the sync read and the event as Graph then holds
-/// it.
+/// it. Exchange keeps changing an event for a few seconds while it sets up a Teams meeting,
+/// so a revision read just after the create can be refused as stale (`412`); like the outbox,
+/// the edit is then rebuilt on a fresh read. Nothing here panics, so the caller's clean-up
+/// always runs.
 async fn edit_notes(
     provider: &provider_graph::GraphCalendarProvider,
     token: &str,
     title: &str,
     id: &str,
-) -> Option<(String, serde_json::Value)> {
-    let base = read_back(provider, title).await?;
-    let read = base.description.clone()?;
-    let edit = EventEdit::new(
-        &base,
-        PatchTarget::Series,
-        EventPatch::new("2026-07-18T10:05:00Z".parse().unwrap()).description(read.replacen(
-            "Agenda first",
-            "Agenda first, edited",
-            1,
-        )),
-    );
-    provider
-        .patch_event(&account(), &base, &edit)
-        .await
-        .expect("patch_event");
-    let after = http()
-        .get(format!(
-            "{GRAPH}/me/events/{id}?$select=isOnlineMeeting,onlineMeeting,body"
-        ))
-        .bearer_auth(token)
-        .header("Prefer", "outlook.body-content-type=\"text\"")
-        .send()
-        .await
-        .expect("GET the edited event")
-        .json()
-        .await
-        .expect("event json");
-    Some((read, after))
+) -> Result<(String, serde_json::Value), String> {
+    for _ in 0..5 {
+        let base = read_back(provider, title)
+            .await
+            .ok_or("the created event syncs")?;
+        let read = base
+            .description
+            .clone()
+            .ok_or("the event has a description")?;
+        let edit =
+            EventEdit::new(
+                &base,
+                PatchTarget::Series,
+                EventPatch::new("2026-07-18T10:05:00Z".parse().unwrap())
+                    .description(read.replacen("Agenda first", "Agenda first, edited", 1)),
+            );
+        match provider.patch_event(&account(), &base, &edit).await {
+            Ok(_) => {}
+            Err(err) if err.class() == FailureClass::Conflict => {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                continue;
+            }
+            Err(err) => return Err(format!("patch_event: {err}")),
+        }
+        let after = http()
+            .get(format!(
+                "{GRAPH}/me/events/{id}?$select=isOnlineMeeting,onlineMeeting,body"
+            ))
+            .bearer_auth(token)
+            .header("Prefer", "outlook.body-content-type=\"text\"")
+            .send()
+            .await
+            .map_err(|err| format!("GET the edited event: {err}"))?
+            .json()
+            .await
+            .map_err(|err| format!("event json: {err}"))?;
+        return Ok((read, after));
+    }
+    Err("the notes edit kept conflicting".to_owned())
 }
 
 #[tokio::test]
