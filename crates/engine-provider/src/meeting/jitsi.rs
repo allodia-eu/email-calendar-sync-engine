@@ -63,8 +63,8 @@ impl MeetingService for JitsiMeetings {
 
     async fn create_meeting(&self, request: &MeetingRequest) -> ProviderResult<Conference> {
         let link = format!("{}/{}", self.server, request.key.as_str());
-        let uri = ConferenceUri::parse(&link)
-            .unwrap_or_else(|_| unreachable!("an https server and a lowercase key are a link"));
+        let uri =
+            ConferenceUri::parse(&link).expect("an https server and a lowercase key are a link");
         Ok(Conference {
             key: ConferenceKey::new(uri.as_str()),
             service: Some(ConferenceService::Jitsi),

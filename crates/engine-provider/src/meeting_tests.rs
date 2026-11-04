@@ -78,3 +78,28 @@ fn a_jitsi_server_is_an_https_address_a_room_can_follow() {
         );
     }
 }
+
+#[test]
+fn a_key_is_hidden_from_debug_output() {
+    let shown = format!("{:?}", request());
+    assert!(!shown.contains(KEY), "{shown}");
+    assert!(shown.contains("MeetingKey(\"<redacted>\")"), "{shown}");
+}
+
+#[test]
+fn a_refusal_says_what_a_key_and_a_server_must_be() {
+    assert_eq!(
+        MeetingKeyError.to_string(),
+        "a meeting key is 26 to 64 lowercase letters and digits"
+    );
+    assert_eq!(
+        JitsiServerError.to_string(),
+        "a Jitsi server is an https address without a query or fragment"
+    );
+}
+
+#[test]
+fn jitsi_names_its_service() {
+    let jitsi = JitsiMeetings::new("https://meet.example.org").unwrap();
+    assert_eq!(jitsi.service(), ConferenceService::Jitsi);
+}

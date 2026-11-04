@@ -53,7 +53,8 @@ pub struct MeetingRequest {
     /// When the meeting starts.
     pub start: UtcDateTime,
     /// When it ends; for a series, when its last occurrence ends, since a service that expires
-    /// a meeting does so after its end.
+    /// a meeting does so after its end. A series without one has no such end, and the caller
+    /// names how long the meeting is to last instead.
     pub end: UtcDateTime,
 }
 
@@ -61,10 +62,17 @@ pub struct MeetingRequest {
 /// cryptographically secure random source: anyone who has it can join a meeting whose link is
 /// the name. 26 to 64 lowercase letters and digits, such as 128 bits in lowercase base32;
 /// Jitsi lowercases a room name, so an uppercase letter would name a different key from the
-/// room it opens.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// room it opens. Its `Debug` hides it, as `Credentials` hide a password, because the key
+/// alone is a way in.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct MeetingKey(String);
+
+impl core::fmt::Debug for MeetingKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("MeetingKey").field(&"<redacted>").finish()
+    }
+}
 
 /// Why a [`MeetingKey`] was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
