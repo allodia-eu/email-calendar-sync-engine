@@ -9,7 +9,14 @@ use crate::{
 };
 
 const KEY: &str = "k5x2q7m4n9b3v8c1z6l0p2w4r7";
-const JOIN: &str = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0?context=%7b%22Tid%22%3a%22t%22%7d";
+/// `createOrGet`'s answer, captured from a work account and scrubbed.
+const MEETING: &str = include_str!("../tests/fixtures/calendar/online_meeting.json");
+/// The `JoinWebUrl` lookup of that meeting, captured with it.
+const LOOKUP: &str = include_str!("../tests/fixtures/calendar/online_meeting_lookup.json");
+/// Graph's answer to a lookup or a delete of a meeting that is gone.
+const NOT_FOUND: &str = include_str!("../tests/fixtures/error/online_meeting_not_found.json");
+const JOIN: &str = "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_Zml4dHVyZS1tZWV0aW5n%40thread.v2/0?context=%7b%22Tid%22%3a%2200000000-0000-0000-0000-00000000cafe%22%2c%22Oid%22%3a%2200000000-0000-0000-0000-00000000feed%22%7d";
+const ID: &str = "fixture-online-meeting-1";
 
 fn request() -> MeetingRequest {
     MeetingRequest {
@@ -20,22 +27,28 @@ fn request() -> MeetingRequest {
     }
 }
 
+/// The captured answer: an account without Audio Conferencing has no dial-in numbers.
 fn answer() -> Value {
-    json!({
-        "id": "MSo1N2Y5_meeting",
-        "externalId": KEY,
-        "joinWebUrl": JOIN,
-        "joinMeetingIdSettings": {
-            "isPasscodeRequired": true,
-            "joinMeetingId": "36833578137039",
-            "passcode": "vb3T5Ag6"
-        },
-        "audioConferencing": {
-            "conferenceId": "123456789",
-            "tollNumber": "+31 20 123 4567",
-            "tollFreeNumbers": ["+31 800 000 0000", "+31 20 123 4567"]
-        }
-    })
+    serde_json::from_str(MEETING).unwrap()
+}
+
+/// The captured answer with the `audioConferencing` Graph documents for a licensed account.
+fn answer_with_numbers() -> Value {
+    let mut meeting = answer();
+    meeting["audioConferencing"] = json!({
+        "conferenceId": "123456789",
+        "tollNumber": "+31 20 123 4567",
+        "tollFreeNumbers": ["+31 800 000 0000", "+31 20 123 4567"]
+    });
+    meeting
+}
+
+fn lookup() -> Value {
+    serde_json::from_str(LOOKUP).unwrap()
+}
+
+fn gone() -> FakeRoute {
+    Err((404, serde_json::from_str(NOT_FOUND).unwrap()))
 }
 
 fn service(routes: Vec<(&str, FakeRoute)>) -> (TeamsMeetings, crate::test_support::RequestLog) {
@@ -77,16 +90,16 @@ async fn a_client_rooted_at_a_shared_mailbox_makes_the_meeting_as_its_own_user()
 
 #[tokio::test]
 async fn the_answer_is_a_meeting_made_elsewhere_with_its_codes_and_numbers() {
-    let (teams, _) = service(vec![("createOrGet", Ok(answer()))]);
+    let (teams, _) = service(vec![("createOrGet", Ok(answer_with_numbers()))]);
     let meeting = teams.create_meeting(&request()).await.unwrap();
     assert_eq!(meeting.key.as_str(), JOIN);
     assert_eq!(meeting.service, Some(ConferenceService::Teams));
     assert_eq!(meeting.origin, ConferenceOrigin::Attached);
     assert_eq!(meeting.label.as_deref(), Some("Microsoft Teams"));
-    assert_eq!(meeting.meeting_id.as_deref(), Some("36833578137039"));
+    assert_eq!(meeting.meeting_id.as_deref(), Some("1234567890123456"));
     let join = &meeting.entry_points[0];
     assert_eq!(join.uri.as_str(), JOIN);
-    assert_eq!(join.access.passcode.as_deref(), Some("vb3T5Ag6"));
+    assert_eq!(join.access.passcode.as_deref(), Some("Fx7pQ2zA"));
     let numbers: Vec<_> = meeting.entry_points[1..]
         .iter()
         .map(|entry| (entry.kind.clone(), entry.uri.as_str().to_owned()))
@@ -102,12 +115,17 @@ async fn the_answer_is_a_meeting_made_elsewhere_with_its_codes_and_numbers() {
 
 #[tokio::test]
 async fn an_account_without_audio_conferencing_has_only_the_link() {
-    let mut bare = answer();
-    bare.as_object_mut().unwrap().remove("audioConferencing");
-    bare["joinMeetingIdSettings"]["passcode"] = Value::Null;
-    let (teams, _) = service(vec![("createOrGet", Ok(bare))]);
+    let (teams, _) = service(vec![("createOrGet", Ok(answer()))]);
     let meeting = teams.create_meeting(&request()).await.unwrap();
     assert_eq!(meeting.entry_points.len(), 1);
+}
+
+#[tokio::test]
+async fn a_meeting_without_a_passcode_has_none() {
+    let mut open = answer();
+    open["joinMeetingIdSettings"]["passcode"] = Value::Null;
+    let (teams, _) = service(vec![("createOrGet", Ok(open))]);
+    let meeting = teams.create_meeting(&request()).await.unwrap();
     assert_eq!(meeting.entry_points[0].access.passcode, None);
 }
 
@@ -121,10 +139,7 @@ async fn an_answer_without_a_join_link_is_refused() {
 
 #[tokio::test]
 async fn a_meeting_is_found_by_its_join_link_and_deleted() {
-    let (teams, requests) = service(vec![
-        ("$filter=", Ok(json!({ "value": [answer()] }))),
-        ("/me/onlineMeetings/MSo1N2Y5_meeting", Ok(Value::Null)),
-    ]);
+    let (teams, requests) = service(vec![("$filter=", Ok(lookup())), (ID, Ok(Value::Null))]);
     let meeting = conference(&answer()).unwrap();
     teams.delete_meeting(&meeting).await.unwrap();
     let requests = requests.lock().unwrap();
@@ -135,16 +150,13 @@ async fn a_meeting_is_found_by_its_join_link_and_deleted() {
     assert_eq!(requests[1].0, "DELETE");
     assert_eq!(
         requests[1].1,
-        "https://graph.test/me/onlineMeetings/MSo1N2Y5_meeting"
+        format!("https://graph.test/me/onlineMeetings/{ID}")
     );
 }
 
 #[tokio::test]
 async fn a_meeting_read_back_from_an_event_is_deleted_by_its_link_alone() {
-    let (teams, requests) = service(vec![
-        ("$filter=", Ok(json!({ "value": [answer()] }))),
-        ("/me/onlineMeetings/MSo1N2Y5_meeting", Ok(Value::Null)),
-    ]);
+    let (teams, requests) = service(vec![("$filter=", Ok(lookup())), (ID, Ok(Value::Null))]);
     let read_back = Conference {
         key: ConferenceKey::new("meeting-1"),
         service: None,
@@ -160,7 +172,6 @@ async fn a_meeting_read_back_from_an_event_is_deleted_by_its_link_alone() {
 
 #[tokio::test]
 async fn a_meeting_already_gone_is_deleted() {
-    let gone = || Err((404, json!({ "error": { "code": "NotFound" } })));
     let meeting = conference(&answer()).unwrap();
 
     let (teams, requests) = service(vec![("$filter=", gone())]);
@@ -171,10 +182,7 @@ async fn a_meeting_already_gone_is_deleted() {
     teams.delete_meeting(&meeting).await.unwrap();
     assert_eq!(requests.lock().unwrap().len(), 1);
 
-    let (teams, _) = service(vec![
-        ("$filter=", Ok(json!({ "value": [answer()] }))),
-        ("/me/onlineMeetings/MSo1N2Y5_meeting", gone()),
-    ]);
+    let (teams, _) = service(vec![("$filter=", Ok(lookup())), (ID, gone())]);
     teams.delete_meeting(&meeting).await.unwrap();
 }
 
@@ -184,10 +192,7 @@ async fn a_refused_delete_is_an_error() {
     let meeting = conference(&answer()).unwrap();
     let (teams, _) = service(vec![("$filter=", refused())]);
     assert!(teams.delete_meeting(&meeting).await.is_err());
-    let (teams, _) = service(vec![
-        ("$filter=", Ok(json!({ "value": [answer()] }))),
-        ("/me/onlineMeetings/MSo1N2Y5_meeting", refused()),
-    ]);
+    let (teams, _) = service(vec![("$filter=", Ok(lookup())), (ID, refused())]);
     assert!(teams.delete_meeting(&meeting).await.is_err());
 }
 

@@ -1,0 +1,72 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('00000000-0000-0000-0000-00000000feed')/onlineMeetings",
+  "value": [
+    {
+      "creationDateTime": "2026-11-04T17:46:05.6984366Z",
+      "startDateTime": "2026-12-14T09:00:00Z",
+      "endDateTime": "2026-12-14T09:30:00Z",
+      "joinUrl": "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_Zml4dHVyZS1tZWV0aW5n%40thread.v2/0?context=%7b%22Tid%22%3a%2200000000-0000-0000-0000-00000000cafe%22%2c%22Oid%22%3a%2200000000-0000-0000-0000-00000000feed%22%7d",
+      "meetingCode": "1234567890123456",
+      "isBroadcast": false,
+      "autoAdmittedUsers": "everyoneInCompany",
+      "externalId": "fixturek5x2q7m4n9b3v8c1z6l0p2",
+      "joinWebUrl": "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_Zml4dHVyZS1tZWV0aW5n%40thread.v2/0?context=%7b%22Tid%22%3a%2200000000-0000-0000-0000-00000000cafe%22%2c%22Oid%22%3a%2200000000-0000-0000-0000-00000000feed%22%7d",
+      "subject": "Fixture: Teams meeting",
+      "meetingType": "scheduled",
+      "isEntryExitAnnounced": true,
+      "isEndToEndEncryptionEnabled": false,
+      "allowedPresenters": "everyone",
+      "allowAttendeeToEnableMic": true,
+      "allowAttendeeToEnableCamera": true,
+      "allowMeetingChat": "enabled",
+      "allowedLobbyAdmitters": "organizerAndCoOrganizersAndPresenters",
+      "shareMeetingChatHistoryDefault": "none",
+      "allowTeamworkReactions": true,
+      "anonymizeIdentityForRoles": [],
+      "recordAutomatically": false,
+      "allowParticipantsToChangeName": false,
+      "allowTranscription": true,
+      "allowRecording": true,
+      "allowWhiteboard": true,
+      "allowBreakoutRooms": true,
+      "allowLiveShare": "enabled",
+      "allowPowerPointSharing": true,
+      "allowCopyingAndSharingMeetingContent": true,
+      "meetingOptionsWebUrl": "https://teams.microsoft.com/meetingOptions/?organizerId=00000000-0000-0000-0000-00000000feed&tenantId=00000000-0000-0000-0000-00000000cafe&threadId=19_meeting_Zml4dHVyZS1tZWV0aW5n@thread.v2&messageId=0&language=",
+      "expiryDateTime": "2027-02-12T09:30:00Z",
+      "id": "fixture-online-meeting-1",
+      "participants": {
+        "organizer": {
+          "upn": "testuser@example.test",
+          "role": "presenter",
+          "identity": {
+            "user": {
+              "@odata.type": "#microsoft.graph.communicationsUserIdentity",
+              "id": "00000000-0000-0000-0000-00000000feed",
+              "tenantId": "00000000-0000-0000-0000-00000000cafe"
+            }
+          }
+        },
+        "attendees": []
+      },
+      "chatInfo": {
+        "threadId": "19:meeting_Zml4dHVyZS1tZWV0aW5n@thread.v2",
+        "messageId": "0"
+      },
+      "joinInformation": {
+        "content": "data:text/html,Fixture%20join%20information",
+        "contentType": "html"
+      },
+      "joinMeetingIdSettings": {
+        "isPasscodeRequired": true,
+        "joinMeetingId": "1234567890123456",
+        "passcode": "Fx7pQ2zA"
+      },
+      "lobbyBypassSettings": {
+        "scope": "organization",
+        "isDialInBypassEnabled": false
+      },
+      "cloudVideoInteropInfo": {}
+    }
+  ]
+}
