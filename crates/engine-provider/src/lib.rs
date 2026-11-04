@@ -68,7 +68,7 @@ pub use calendar_write::{
     DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
     EventWriteReceipt, InvitationError, Invitee, InviteePatch, InviteeRole, MeetingDraft,
     NewConference, Occurrence, PatchTarget, RecurrenceEdit, ReplyDelivery, RsvpResponse,
-    SchedulingIdentity, TextEdit, WritePrecondition,
+    SchedulingIdentity, TextEdit, WritePrecondition, refuse_conference,
 };
 pub use capability::Capabilities;
 pub use capability_calendar::{OverrideSurvival, RsvpControls, WriteGuard};

@@ -13,8 +13,8 @@
 //! The body is written as text, as every Graph notes edit is (`cal_write`).
 
 use engine_core::calendar::{
-    Conference, ConferenceKey, ConferenceOrigin, ConferenceService, ConferenceText, Event,
-    with_text_block, without_text_block,
+    Conference, ConferenceOrigin, ConferenceService, ConferenceText, Event, with_text_block,
+    without_text_block,
 };
 use engine_provider::{
     EventDraft, EventPatch, NewConference, ProviderError, ProviderResult, TextEdit,
@@ -54,28 +54,25 @@ pub(crate) fn apply_to_patch(
     let Some(edit) = patch.conference_edit() else {
         return Ok(());
     };
-    let mut notes = match patch.description_edit() {
-        Some(TextEdit::Set(text)) => text.clone(),
-        Some(TextEdit::Clear) => String::new(),
-        None => base.description.clone().unwrap_or_default(),
-    };
+    let before = patch.description_after(base).unwrap_or_default();
+    let mut notes = before.to_owned();
+    // A location the patch sets is the person's; only the stored one is the meeting's to clear.
+    let edits_location = patch.location_edit().is_some();
     let mut location = match patch.location_edit() {
         Some(TextEdit::Set(text)) => text.clone(),
         Some(TextEdit::Clear) => String::new(),
         None => stored_location(base),
     };
-    let mut notes_changed = false;
     let mut location_changed = false;
     if let Some(key) = edit.removes() {
-        let conference = held(base, key)?;
+        let conference = base.conference(key).ok_or_else(not_held)?;
         notes = without_text_block(&notes, conference).into_owned();
-        notes_changed = true;
         let stand_in = matches!(conference.origin, ConferenceOrigin::Native { .. })
             && base.locations.is_empty();
         let is_link = conference
             .join()
             .is_some_and(|uri| uri.as_str() == location);
-        if !location.is_empty() && (stand_in || is_link) {
+        if !edits_location && !location.is_empty() && (stand_in || is_link) {
             location.clear();
             location_changed = true;
         }
@@ -86,15 +83,16 @@ pub(crate) fn apply_to_patch(
         Some(NewConference::Attach(attached)) => {
             let (conference, text) = (&attached.conference, &attached.text);
             let (join, block) = block(conference, text)?;
-            notes = with_text_block(&notes, &block);
-            notes_changed = true;
+            // A block the notes already carry for this meeting is replaced, never repeated.
+            notes = with_text_block(&without_text_block(&notes, conference), &block);
             if location.is_empty() {
                 location = join;
                 location_changed = true;
             }
         }
     }
-    if notes_changed {
+    // An unchanged body is not written: a text write flattens the HTML Exchange holds.
+    if notes != before {
         body.insert("body".to_owned(), text_body(&notes));
     }
     if location_changed {
@@ -129,12 +127,9 @@ fn block(conference: &Conference, text: &ConferenceText) -> ProviderResult<(Stri
     Ok((join.as_str().to_owned(), block))
 }
 
-/// The conference `key` names on `base`.
-fn held<'a>(base: &'a Event, key: &ConferenceKey) -> ProviderResult<&'a Conference> {
-    base.conferences
-        .iter()
-        .find(|conference| &conference.key == key)
-        .ok_or_else(|| ProviderError::invalid_state("the event holds no meeting with that key"))
+/// The refusal of a removal naming a meeting the event does not hold.
+fn not_held() -> ProviderError {
+    ProviderError::invalid_state("the event holds no meeting with that key")
 }
 
 /// The location as Graph holds it, Exchange's stand-in included, which the projection leaves

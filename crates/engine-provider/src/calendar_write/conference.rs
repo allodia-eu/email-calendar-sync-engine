@@ -15,6 +15,24 @@
 use engine_core::calendar::{Conference, ConferenceKey, ConferenceService, ConferenceText};
 use serde::{Deserialize, Serialize};
 
+use crate::{ProviderError, ProviderResult};
+
+/// Refuses a write that carries a video meeting, for an adapter that writes none
+/// ([`Capabilities::conference_writes`](crate::Capabilities::conference_writes)), so the event
+/// is never stored without the meeting the caller asked for.
+///
+/// # Errors
+///
+/// [`ProviderError::invalid_state`] when `asked`.
+pub fn refuse_conference(asked: bool) -> ProviderResult<()> {
+    if asked {
+        return Err(ProviderError::invalid_state(
+            "this calendar's adapter writes no video meetings",
+        ));
+    }
+    Ok(())
+}
+
 /// A meeting to put on an event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NewConference {

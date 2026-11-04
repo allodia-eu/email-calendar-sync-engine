@@ -215,3 +215,34 @@ async fn a_write_with_a_meeting_asks_for_conference_data_version_1() {
         "{request}"
     );
 }
+
+#[test]
+fn a_new_meeting_on_an_event_with_one_must_name_the_one_it_replaces() {
+    // `conferenceData` holds one meeting; writing another without naming it would drop it
+    // unannounced.
+    let patch = EventPatch::new(stamp()).conference(ConferenceEdit::Set {
+        replacing: None,
+        new: attach(),
+    });
+    let err = build_patch(&meet_on(base_event()), &patch).unwrap_err();
+    assert_eq!(err.class(), FailureClass::InvalidState);
+}
+
+#[test]
+fn a_location_the_same_patch_sets_survives_the_removal() {
+    let mut base = base_event();
+    base.locations = vec![Location::named("https://meet.example.org/abc123")];
+    let mut found = jitsi();
+    found.origin = ConferenceOrigin::Detected {
+        place: DetectedIn::Location,
+    };
+    base.conferences = vec![found.clone()];
+    let patch = EventPatch::new(stamp())
+        .location("https://meet.example.org/abc123")
+        .conference(ConferenceEdit::Remove(found.key));
+    let body = build_patch(&base, &patch).unwrap();
+    assert_eq!(
+        body,
+        sjson!({ "location": "https://meet.example.org/abc123" })
+    );
+}

@@ -56,7 +56,7 @@ mod patch;
 mod rsvp;
 mod writes;
 
-pub use conference::{AttachedConference, ConferenceEdit, NewConference};
+pub use conference::{AttachedConference, ConferenceEdit, NewConference, refuse_conference};
 pub use delete::{DeleteTarget, EventDeletion, Occurrence};
 use engine_core::{
     calendar::{Event, RecurrenceRule},

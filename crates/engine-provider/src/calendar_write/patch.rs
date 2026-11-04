@@ -282,6 +282,17 @@ impl EventPatch {
         self.description.as_ref()
     }
 
+    /// The description `base` holds once this patch lands: the edit's value, none after a
+    /// clear, else the one it has.
+    #[must_use]
+    pub fn description_after<'a>(&'a self, base: &'a Event) -> Option<&'a str> {
+        match &self.description {
+            Some(TextEdit::Set(text)) => Some(text),
+            Some(TextEdit::Clear) => None,
+            None => base.description.as_deref(),
+        }
+    }
+
     /// What the edit does to the location, if it touches it.
     #[must_use]
     pub fn location_edit(&self) -> Option<&TextEdit> {

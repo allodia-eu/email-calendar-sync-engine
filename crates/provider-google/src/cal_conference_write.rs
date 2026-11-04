@@ -16,9 +16,7 @@ use engine_core::{
     },
     time::UtcDateTime,
 };
-use engine_provider::{
-    EventDraft, EventPatch, NewConference, ProviderError, ProviderResult, TextEdit,
-};
+use engine_provider::{EventDraft, EventPatch, NewConference, ProviderError, ProviderResult};
 use serde_json::{Map, Value, json};
 
 /// The query parameter a write carrying a meeting edit needs: without it Google ignores
@@ -54,7 +52,9 @@ pub(crate) fn apply_to_patch(
         return Ok(());
     };
     if let Some(key) = edit.removes() {
-        let conference = held(base, key)?;
+        let conference = base.conference(key).ok_or_else(|| {
+            ProviderError::invalid_state("the event holds no meeting with that key")
+        })?;
         if key.as_str() == KEY {
             body.insert(KEY.to_owned(), Value::Null);
         } else {
@@ -62,6 +62,13 @@ pub(crate) fn apply_to_patch(
         }
     }
     if let Some(new) = edit.adds() {
+        // `conferenceData` holds one meeting, so a new one replaces it: the caller names it.
+        let replaces_held = edit.removes().is_some_and(|key| key.as_str() == KEY);
+        if !replaces_held && base.conference(&ConferenceKey::new(KEY)).is_some() {
+            return Err(ProviderError::invalid_state(
+                "a Google event holds one meeting; name the one it holds in `replacing`",
+            ));
+        }
         body.insert(
             KEY.to_owned(),
             conference_data(new, base.uid.as_str(), patch.stamp())?,
@@ -70,34 +77,23 @@ pub(crate) fn apply_to_patch(
     Ok(())
 }
 
-/// The conference `key` names on `base`.
-fn held<'a>(base: &'a Event, key: &ConferenceKey) -> ProviderResult<&'a Conference> {
-    base.conferences
-        .iter()
-        .find(|conference| &conference.key == key)
-        .ok_or_else(|| ProviderError::invalid_state("the event holds no meeting with that key"))
-}
-
-/// Takes a meeting found in the text out of the description, and out of the location when
-/// the location is exactly its link. An edit of either in the same patch is what is cut.
+/// Takes a meeting found in the text out of the description (an edit of it in the same patch
+/// is what is cut), and out of the stored location when that is exactly its link. A location
+/// the same patch sets is the person's and stays.
 fn remove_from_text(
     base: &Event,
     patch: &EventPatch,
     conference: &Conference,
     body: &mut Map<String, Value>,
 ) {
-    let description = match patch.description_edit() {
-        Some(TextEdit::Set(text)) => Some(text.as_str()),
-        Some(TextEdit::Clear) => None,
-        None => base.description.as_deref(),
-    };
-    if let Some(description) = description {
+    if let Some(description) = patch.description_after(base) {
         let kept = without_text_block(description, conference);
-        body.insert("description".to_owned(), json!(kept));
+        if kept != description {
+            body.insert("description".to_owned(), json!(kept));
+        }
     }
     let location = match patch.location_edit() {
-        Some(TextEdit::Set(text)) => Some(text.as_str()),
-        Some(TextEdit::Clear) => None,
+        Some(_) => None,
         None => base
             .locations
             .first()

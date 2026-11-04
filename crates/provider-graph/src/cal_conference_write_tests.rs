@@ -220,3 +220,53 @@ async fn an_occurrence_cannot_carry_a_meeting_edit() {
         .unwrap_err();
     assert!(err.to_string().contains("belongs to the series"), "{err}");
 }
+
+#[test]
+fn a_location_the_same_patch_sets_survives_the_removal() {
+    let base = teams_meeting();
+    let body = patch_body(
+        &base,
+        &EventPatch::new(stamp())
+            .location("Room 4")
+            .conference(ConferenceEdit::Remove(ConferenceKey::new("onlineMeeting"))),
+    );
+    assert_eq!(body["location"], sjson!({ "displayName": "Room 4" }));
+}
+
+#[test]
+fn a_removal_that_takes_nothing_from_the_notes_leaves_the_body_alone() {
+    // A meeting found only in the location: the notes stay as Exchange holds them, HTML and
+    // all, rather than being rewritten as text.
+    let mut base = base_event();
+    base.description = Some("Bring the figures.".into());
+    base.extended.set(
+        crate::cal_normalize::RAW_EVENT_KEY,
+        sjson!({ "location": { "displayName": "https://meet.example.org/abc123" } }),
+    );
+    let mut found = jitsi();
+    found.origin = ConferenceOrigin::Detected {
+        place: DetectedIn::Location,
+    };
+    base.conferences = vec![found.clone()];
+    let body = patch_body(
+        &base,
+        &EventPatch::new(stamp()).conference(ConferenceEdit::Remove(found.key)),
+    );
+    assert_eq!(body, sjson!({ "location": { "displayName": "" } }));
+}
+
+#[test]
+fn attaching_a_meeting_the_notes_already_carry_writes_its_block_once() {
+    let mut base = base_event();
+    let block = jitsi().text_block(&words()).unwrap();
+    base.description = Some(format!("Bring the figures.\n\n{block}"));
+    let body = patch_body(
+        &base,
+        &EventPatch::new(stamp()).conference(ConferenceEdit::Set {
+            replacing: None,
+            new: attach(),
+        }),
+    );
+    // Replacing the block with itself leaves the notes as they are, so they are not written.
+    assert!(body.get("body").is_none(), "{body}");
+}

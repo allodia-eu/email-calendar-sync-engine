@@ -256,18 +256,6 @@ impl Provider for CalDavProvider {
 }
 impl engine_provider::MailboxWrites for CalDavProvider {}
 
-/// Refuses a write that carries a video meeting, which this adapter does not write
-/// ([`Capabilities::conference_writes`](engine_provider::Capabilities::conference_writes)), so
-/// the event is never stored without the meeting the caller asked for.
-fn refuse_conference(asked: bool) -> ProviderResult<()> {
-    if asked {
-        return Err(engine_provider::ProviderError::invalid_state(
-            "this calendar's adapter writes no video meetings",
-        ));
-    }
-    Ok(())
-}
-
 #[async_trait]
 impl CalendarWrites for CalDavProvider {
     /// Mints the href from the draft's `UID` inside the calendar the draft names, then `PUT`s
@@ -277,7 +265,7 @@ impl CalendarWrites for CalDavProvider {
         _account: &AccountId,
         draft: &EventDraft,
     ) -> ProviderResult<EventWriteReceipt> {
-        refuse_conference(draft.conference.is_some())?;
+        engine_provider::refuse_conference(draft.conference.is_some())?;
         let href = self.event_href(&draft.calendar, &draft.uid)?;
         Ok(crate::write::create_event(self.executor.as_ref(), href, draft).await?)
     }
@@ -288,7 +276,7 @@ impl CalendarWrites for CalDavProvider {
         base: &Event,
         edit: &EventEdit,
     ) -> ProviderResult<EventWriteReceipt> {
-        refuse_conference(edit.patch.conference_edit().is_some())?;
+        engine_provider::refuse_conference(edit.patch.conference_edit().is_some())?;
         Ok(crate::write::patch_event(self.executor.as_ref(), base, edit).await?)
     }
 

@@ -11,18 +11,6 @@ use engine_provider::{CalendarUserAddresses, CalendarWrites, ProviderResult};
 
 use crate::JmapProvider;
 
-/// Refuses a write that carries a video meeting, which this adapter does not write
-/// ([`Capabilities::conference_writes`](engine_provider::Capabilities::conference_writes)), so
-/// the event is never stored without the meeting the caller asked for.
-fn refuse_conference(asked: bool) -> ProviderResult<()> {
-    if asked {
-        return Err(engine_provider::ProviderError::invalid_state(
-            "this calendar's adapter writes no video meetings",
-        ));
-    }
-    Ok(())
-}
-
 #[async_trait]
 impl CalendarWrites for JmapProvider {
     /// One `CalendarEvent/set` `create`. The **server** assigns the id, so the receipt is
@@ -32,7 +20,7 @@ impl CalendarWrites for JmapProvider {
         _account: &AccountId,
         draft: &engine_provider::EventDraft,
     ) -> ProviderResult<engine_provider::EventWriteReceipt> {
-        refuse_conference(draft.conference.is_some())?;
+        engine_provider::refuse_conference(draft.conference.is_some())?;
         let account = self.calendar_account()?;
         Ok(crate::calendar_write::create_event(self.executor.as_ref(), &account, draft).await?)
     }
@@ -46,7 +34,7 @@ impl CalendarWrites for JmapProvider {
         base: &Event,
         edit: &engine_provider::EventEdit,
     ) -> ProviderResult<engine_provider::EventWriteReceipt> {
-        refuse_conference(edit.patch.conference_edit().is_some())?;
+        engine_provider::refuse_conference(edit.patch.conference_edit().is_some())?;
         let account = self.calendar_account()?;
         Ok(
             crate::calendar_write::patch_event(self.executor.as_ref(), &account, base, edit)
