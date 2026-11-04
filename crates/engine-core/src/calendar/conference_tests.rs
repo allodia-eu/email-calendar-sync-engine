@@ -152,3 +152,47 @@ fn a_dial_in_number_is_the_label_when_it_is_written_as_one() {
     let web = EntryPoint::at(ConferenceUri::parse("https://zoom.us/j/1").unwrap());
     assert_eq!(web.phone_number(), None);
 }
+
+#[test]
+fn a_way_in_offers_what_it_states_else_what_its_kind_offers() {
+    let web = EntryPoint::at(ConferenceUri::parse("https://meet.example.org/a").unwrap());
+    assert_eq!(
+        web.offered_features(),
+        [ConferenceFeature::Audio, ConferenceFeature::Video].into()
+    );
+    let phone = EntryPoint::at(ConferenceUri::parse("tel:+31201234567").unwrap());
+    assert_eq!(phone.offered_features(), [ConferenceFeature::Phone].into());
+    let sip = EntryPoint::at(ConferenceUri::parse("sip:room@example.org").unwrap());
+    assert!(sip.offered_features().is_empty());
+    let mut stated = web;
+    stated.features = [ConferenceFeature::Chat].into();
+    assert_eq!(stated.offered_features(), [ConferenceFeature::Chat].into());
+}
+
+#[test]
+fn the_join_link_comes_first_under_the_meetings_name() {
+    let mut dial = EntryPoint::at(ConferenceUri::parse("tel:+31201234567").unwrap());
+    dial.label = Some("+31 20 1234567".into());
+    let mut web = EntryPoint::at(ConferenceUri::parse("https://meet.example.org/a").unwrap());
+    web.label = Some("Open in a browser".into());
+    let conference = Conference {
+        key: ConferenceKey::new("k"),
+        service: None,
+        origin: ConferenceOrigin::Attached,
+        entry_points: vec![dial, web],
+        label: Some("Team call".into()),
+        meeting_id: None,
+        notes: None,
+    };
+    let ways: Vec<(&str, Option<&str>)> = conference
+        .labelled_ways_in()
+        .map(|(point, label)| (point.uri.as_str(), label))
+        .collect();
+    assert_eq!(
+        ways,
+        [
+            ("https://meet.example.org/a", Some("Team call")),
+            ("tel:+31201234567", Some("+31 20 1234567")),
+        ]
+    );
+}

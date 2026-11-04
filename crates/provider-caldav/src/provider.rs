@@ -139,7 +139,8 @@ impl CalDavProvider {
         let capabilities = Capabilities::none()
             .with_calendars()
             .with_calendar_writes(WriteGuard::Enforced, CALDAV_OVERRIDE_SURVIVAL)
-            .with_calendar_rsvp(CALDAV_RSVP);
+            .with_calendar_rsvp(CALDAV_RSVP)
+            .with_conference_writes();
         Ok(Self {
             executor,
             capabilities: if scheduling {
@@ -265,7 +266,7 @@ impl CalendarWrites for CalDavProvider {
         _account: &AccountId,
         draft: &EventDraft,
     ) -> ProviderResult<EventWriteReceipt> {
-        engine_provider::refuse_conference(draft.conference.is_some())?;
+        engine_provider::refuse_native_conference(draft.conference.as_ref())?;
         let href = self.event_href(&draft.calendar, &draft.uid)?;
         Ok(crate::write::create_event(self.executor.as_ref(), href, draft).await?)
     }
@@ -276,7 +277,12 @@ impl CalendarWrites for CalDavProvider {
         base: &Event,
         edit: &EventEdit,
     ) -> ProviderResult<EventWriteReceipt> {
-        engine_provider::refuse_conference(edit.patch.conference_edit().is_some())?;
+        edit.refuse_conference_on_occurrence()?;
+        engine_provider::refuse_native_conference(
+            edit.patch
+                .conference_edit()
+                .and_then(engine_provider::ConferenceEdit::adds),
+        )?;
         Ok(crate::write::patch_event(self.executor.as_ref(), base, edit).await?)
     }
 
@@ -336,3 +342,7 @@ mod tests;
 #[cfg(test)]
 #[path = "imip_flow_tests.rs"]
 mod imip_flow_tests;
+
+#[cfg(test)]
+#[path = "conference_provider_tests.rs"]
+mod conference_provider_tests;

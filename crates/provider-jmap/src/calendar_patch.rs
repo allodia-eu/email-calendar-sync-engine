@@ -28,6 +28,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     calendar::participant_address,
+    calendar_conference_write::ConferenceWrite,
     calendar_rule::render_rule,
     calendar_write::{NEW_LOCATION_ID, duration, escape_pointer, local_date_time},
     error::JmapError,
@@ -113,13 +114,36 @@ pub(crate) fn patch_to_json(
     if let Some(summary) = patch.summary_edit() {
         properties.insert("title".to_owned(), json!(summary));
     }
-    if let Some(description) = patch.description_edit() {
+    if patch.conference_edit().is_some() && !matches!(edit.target, PatchTarget::Series) {
+        return Err(JmapError::protocol(
+            "a meeting belongs to the whole series, not one occurrence",
+        ));
+    }
+    let conference = crate::calendar_conference_write::plan(base, patch)?;
+    let description = conference
+        .as_ref()
+        .and_then(|write| write.description.as_ref())
+        .or(patch.description_edit());
+    if let Some(description) = description {
         properties.insert("description".to_owned(), text_edit(description));
     }
-    if let Some(location) = patch.location_edit() {
-        for (pointer, value) in location_edit(base, location) {
-            properties.insert(pointer, value);
-        }
+    let location = match (&conference, patch.location_edit()) {
+        (
+            Some(ConferenceWrite {
+                location: Some(pointers),
+                ..
+            }),
+            _,
+        ) => pointers.clone(),
+        (_, Some(location)) => location_edit(base, location),
+        (_, None) => Vec::new(),
+    };
+    for (pointer, value) in location.into_iter().chain(
+        conference
+            .into_iter()
+            .flat_map(|write| write.virtual_locations),
+    ) {
+        properties.insert(pointer, value);
     }
 
     // A move keeps the event's form: JSCalendar states the wall clock in `start` and the
@@ -370,7 +394,7 @@ fn text_edit(edit: &TextEdit) -> Value {
 ///
 /// An event with no location yet gets one at a fresh id; clearing removes the whole map,
 /// which is the only honest reading of "this event has no location".
-fn location_edit(base: &Event, edit: &TextEdit) -> Vec<(String, Value)> {
+pub(crate) fn location_edit(base: &Event, edit: &TextEdit) -> Vec<(String, Value)> {
     match edit {
         TextEdit::Clear => vec![("locations".to_owned(), Value::Null)],
         TextEdit::Set(name) => {

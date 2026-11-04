@@ -107,7 +107,7 @@ async fn exposes_dav_scopes_and_the_calendar_capabilities() {
     // it does no mail.
     assert!(provider.connection_info().capabilities.calendars());
     assert!(provider.connection_info().capabilities.calendar_writes());
-    assert!(!provider.connection_info().capabilities.conference_writes());
+    assert!(provider.connection_info().capabilities.conference_writes());
     assert!(!provider.connection_info().capabilities.mail());
     assert!(!provider.connection_info().capabilities.submission());
 
@@ -331,8 +331,8 @@ async fn a_create_is_written_into_the_calendar_its_draft_names() {
         stamp,
     );
 
-    // A create asking for a video meeting is refused before anything is written, never
-    // stored without it.
+    // A create asking the server for a meeting of its own is refused before anything is
+    // written, never stored without it: no CalDAV server makes one.
     let with_meeting = draft
         .clone()
         .conference(engine_provider::NewConference::Native(

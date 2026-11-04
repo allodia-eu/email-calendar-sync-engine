@@ -5,6 +5,7 @@
 //! requires of a revised event (`DTSTAMP`, `LAST-MODIFIED`, `SEQUENCE`).
 
 use engine_core::{
+    calendar::Event,
     scheduling::addresses_match,
     time::{CalendarDateTime, UtcDateTime},
 };
@@ -23,7 +24,9 @@ use crate::{
     scheduling_write::{attendee_address, attendee_line, update_attendee_line},
 };
 
-/// Plans every line edit `patch` implies for `vevent`, writing them into `edits`.
+/// Plans every line edit `patch` implies for `vevent`, writing them into `edits`. `base` is
+/// the stored event's projection, which a conference edit is resolved against; an occurrence
+/// has none, since a meeting belongs to the series.
 ///
 /// # Errors
 ///
@@ -33,6 +36,7 @@ pub(super) fn plan(
     doc: &Document,
     vevent: &Vevent,
     patch: &EventPatch,
+    base: Option<&Event>,
     edits: &mut Edits,
 ) -> Result<(), IcalError> {
     // The start the end is validated against: the new one if this patch moves it,
@@ -89,11 +93,32 @@ pub(super) fn plan(
             &TextEdit::Set(summary.to_owned()),
         );
     }
-    if let Some(description) = patch.description_edit() {
+    // An occurrence's patch has no base: `patch_event_ical` refuses a meeting edit on one.
+    let conference = match (base, patch.conference_edit()) {
+        (Some(base), Some(edit)) => Some(super::conference::plan(doc, vevent, base, patch, edit)?),
+        _ => None,
+    };
+    let description = conference
+        .as_ref()
+        .and_then(|write| write.description.as_ref())
+        .or(patch.description_edit());
+    if let Some(description) = description {
         set_text(doc, vevent, edits, "DESCRIPTION", description);
     }
-    if let Some(location) = patch.location_edit() {
+    let location = conference
+        .as_ref()
+        .and_then(|write| write.location.as_ref())
+        .or(patch.location_edit());
+    if let Some(location) = location {
         set_text(doc, vevent, edits, "LOCATION", location);
+    }
+    if let Some(write) = &conference {
+        for &group in &write.remove {
+            remove(edits, group);
+        }
+        for line in &write.insert {
+            insert(doc, vevent, edits, line);
+        }
     }
     if let Some(invitees) = patch.invitee_edit() {
         set_invitees(doc, vevent, edits, invitees)?;

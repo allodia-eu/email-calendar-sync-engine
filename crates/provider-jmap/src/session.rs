@@ -21,7 +21,7 @@
 //!   (`rebase_template`).
 
 use engine_core::ids::SharedMailboxId;
-use engine_provider::{OverrideSurvival, RsvpControls, SharedMailboxes, WriteGuard};
+use engine_provider::{OverrideSurvival, SharedMailboxes, WriteGuard};
 use reqwest::Url;
 use serde_json::Value;
 
@@ -31,30 +31,6 @@ use crate::{
     session_accounts::{self, SessionAccount},
     session_limits::{max_participants_per_event, parse_limits},
     session_urls::{origin_of, rebase_template, resolve_against},
-};
-
-/// What a JMAP RSVP can and cannot control.
-///
-/// **Silence is ours to give**, unlike on the other server-scheduled transport. JMAP
-/// schedules only when the request asks it to — `sendSchedulingMessages`, default `false` —
-/// so "answer without telling the organizer" is a per-request choice the adapter can honour
-/// verbatim, where an RFC 6638 CalDAV server emits the `REPLY` on its own and a client
-/// cannot stop it. This read `false` until #102, which was not a judgement about JMAP but a
-/// description of an adapter that never sent the argument at all: it advertised that it
-/// could not suppress the reply while in fact suppressing *every* reply.
-///
-/// The note is not ours. RFC 8984 defines a `participationComment`, but whether a given
-/// server carries it into the reply is unverified against any server we run, so it is
-/// advertised as absent rather than promised — a note that may go nowhere is worse than one
-/// never offered.
-///
-/// The guard is [`WriteGuard::Absent`] for the same reason every JMAP write is: a
-/// `CalendarEvent` carries no per-object revision. Declared once, and used both to advertise
-/// and to enforce, so the two can never disagree.
-pub(crate) const JMAP_RSVP: RsvpControls = RsvpControls {
-    comment: false,
-    suppress_notification: true,
-    guard: WriteGuard::Absent,
 };
 
 /// What a JMAP series edit costs the user: nothing.
@@ -288,8 +264,9 @@ impl Session {
             // RFC 6638 §2 gives a discoverable answer and the adapter discovers it.
             capabilities = capabilities
                 .with_calendar_writes(WriteGuard::Absent, JMAP_OVERRIDE_SURVIVAL)
-                .with_calendar_rsvp(JMAP_RSVP)
-                .with_calendar_scheduling();
+                .with_calendar_rsvp(crate::calendar_rsvp::JMAP_RSVP)
+                .with_calendar_scheduling()
+                .with_conference_writes();
         }
         if capabilities.contacts() && !read_only(contact_account_id.as_deref()) {
             capabilities = capabilities.with_contact_writes(WriteGuard::Absent);

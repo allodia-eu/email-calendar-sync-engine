@@ -7,7 +7,7 @@
 //! write on this transport does except a location rename.
 
 use engine_core::{calendar::Event, scheduling::addresses_match, version::RevisionTokens};
-use engine_provider::{EventRsvp, EventWriteReceipt};
+use engine_provider::{EventRsvp, EventWriteReceipt, RsvpControls, WriteGuard};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -16,6 +16,30 @@ use crate::{
     error::{JmapError, set_refusal},
     executor::Executor,
     request::{Request, capability},
+};
+
+/// What a JMAP RSVP can and cannot control.
+///
+/// **Silence is ours to give**, unlike on the other server-scheduled transport. JMAP
+/// schedules only when the request asks it to — `sendSchedulingMessages`, default `false` —
+/// so "answer without telling the organizer" is a per-request choice the adapter can honour
+/// verbatim, where an RFC 6638 CalDAV server emits the `REPLY` on its own and a client
+/// cannot stop it. This read `false` until #102, which was not a judgement about JMAP but a
+/// description of an adapter that never sent the argument at all: it advertised that it
+/// could not suppress the reply while in fact suppressing *every* reply.
+///
+/// The note is not ours. RFC 8984 defines a `participationComment`, but whether a given
+/// server carries it into the reply is unverified against any server we run, so it is
+/// advertised as absent rather than promised — a note that may go nowhere is worse than one
+/// never offered.
+///
+/// The guard is [`WriteGuard::Absent`] for the same reason every JMAP write is: a
+/// `CalendarEvent` carries no per-object revision. Declared once, and used both to advertise
+/// and to enforce, so the two can never disagree.
+pub(crate) const JMAP_RSVP: RsvpControls = RsvpControls {
+    comment: false,
+    suppress_notification: true,
+    guard: WriteGuard::Absent,
 };
 
 /// Answers an invitation: one `CalendarEvent/set` `update` of *my* participant's

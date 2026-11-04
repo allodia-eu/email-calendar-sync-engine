@@ -17,18 +17,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ProviderError, ProviderResult};
 
-/// Refuses a write that carries a video meeting, for an adapter that writes none
-/// ([`Capabilities::conference_writes`](crate::Capabilities::conference_writes)), so the event
-/// is never stored without the meeting the caller asked for.
+/// Refuses a meeting the calendar's own server would have to make, for an adapter whose
+/// servers make none (an empty
+/// [`Calendar::native_conferences`](engine_core::calendar::Calendar::native_conferences)), so
+/// the event is never stored without the meeting the caller asked for.
 ///
 /// # Errors
 ///
-/// [`ProviderError::invalid_state`] when `asked`.
-pub fn refuse_conference(asked: bool) -> ProviderResult<()> {
-    if asked {
-        return Err(ProviderError::invalid_state(
-            "this calendar's adapter writes no video meetings",
-        ));
+/// [`ProviderError::invalid_state`] when `new` is a [`NewConference::Native`].
+pub fn refuse_native_conference(new: Option<&NewConference>) -> ProviderResult<()> {
+    if let Some(NewConference::Native(service)) = new {
+        return Err(ProviderError::invalid_state(format!(
+            "this calendar's server makes no meetings of its own, so it cannot make a \
+             {service:?} one"
+        )));
     }
     Ok(())
 }

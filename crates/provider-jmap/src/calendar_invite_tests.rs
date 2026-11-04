@@ -183,13 +183,13 @@ async fn invitee_patch_respects_the_accounts_participant_limit() {
     assert_eq!(executor.request_count(), 0);
 }
 
-/// An adapter that writes no video meetings refuses a create that asks for one, before
-/// anything is sent, rather than storing the event without it.
+/// A JMAP server makes no meetings of its own, so a create asking it for one is refused
+/// before anything is sent, rather than storing the event without it.
 #[tokio::test]
-async fn a_create_with_a_video_meeting_is_refused_before_anything_is_sent() {
+async fn a_create_asking_the_server_for_a_meeting_is_refused_before_anything_is_sent() {
     use engine_provider::{NewConference, Provider};
     let p = provider(vec![]);
-    assert!(!p.connection_info().capabilities.conference_writes());
+    assert!(p.connection_info().capabilities.conference_writes());
     let draft = EventDraft::new(
         calendar(),
         uid(),

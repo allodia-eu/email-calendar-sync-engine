@@ -701,7 +701,9 @@ sees:
   one of its own; `NewConference::Attach` stores one made elsewhere. `ConferenceEdit::Set`
   puts one on, replacing a named one, and `Remove` takes one off. A meeting belongs to the
   series, so an occurrence edit carrying one is refused (`EventEdit::refuse_conference_on_occurrence`).
-  Measured per adapter:
+  What an edit leaves in the notes and location is decided once, by `meeting_text`, for every
+  adapter that writes a meeting into them; an adapter decides only which of its own fields name
+  the meeting. Measured per adapter:
   - **Graph.** Teams is `isOnlineMeeting: true` with `teamsForBusiness`; Exchange appends its
     block and stand-in location, and keeps changing the event while it sets up the meeting,
     so a patch on a revision read just after the create can be refused as stale (`412`).
@@ -717,16 +719,27 @@ sees:
     shows it with a Join button and writes its link into its own block and `LOCATION` in the
     invitations it sends, so no block of ours is written. Removing either is
     `conferenceData: null`.
-  - **CalDAV and JMAP** do not advertise the capability, and refuse a write that carries a
-    meeting rather than storing the event without it.
+  - **CalDAV and JMAP.** No server makes a meeting of its own, so `NewConference::Native` is
+    refused before anything is sent (`refuse_native_conference`). A meeting made elsewhere is
+    one `CONFERENCE` line (RFC 7986, `FEATURE` from the way in's kind when none is stated, a
+    `LABEL` escaped per RFC 6868) or one `virtualLocations` entry per way in, our block in the
+    notes and, when the event has none, the join link as the location: Outlook, Google
+    Calendar and Thunderbird read neither field. Taking one off removes every
+    `CONFERENCE`, vendor property or `virtualLocations` entry whose address joins it, its
+    block, and the location when that is still its link; adding one replaces any entry for
+    the same address rather than repeating it. CalDAV resolves the meeting's key against the
+    projection of the stored document, so a key means what it did on the read. Stalwart,
+    SabreDAV and Nextcloud keep `CONFERENCE` and its `LABEL`, and Stalwart keeps
+    `virtualLocations` and their names.
   - **Our block** (`Conference::text_block`) is a rule of 40 `-=` characters, the meeting's
     name (its label, else the caller's word for a video meeting), `Join: <link>`, its ID,
     passcode and dial-in numbers, and the rule again. The words come from the caller in a
     `ConferenceText`, since the engine has no locale. It is recognised like Teams' and
     Google's blocks, so `notes` leaves it out, and removing the meeting takes it out of the
     notes with every other block that joins it (`without_text_block`).
-  `live_calendar_conference_write` in `provider-graph` and `provider-google` puts each kind on
-  and takes it off through the adapter.
+  `live_calendar_conference_write` in `provider-graph`, `provider-google` and `provider-jmap`,
+  and `common::conference_write` against each DAV server in `provider-caldav`, put each kind
+  on and take it off through the adapter.
 
 ## Supported recurrence subset
 

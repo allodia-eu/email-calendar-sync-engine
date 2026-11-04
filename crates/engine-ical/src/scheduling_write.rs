@@ -79,7 +79,7 @@ const fn role_value(role: InviteeRole) -> &'static str {
     }
 }
 
-fn escape_parameter(value: &str) -> String {
+pub(crate) fn escape_parameter(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
         match character {
