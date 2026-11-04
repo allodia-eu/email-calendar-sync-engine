@@ -18,6 +18,7 @@ use crate::{
     categories::{encode, literal},
     error::GraphError,
     json::opt_str,
+    mailbox_write::is_not_found,
     principal::encode_segment,
     transport::GraphClient,
 };
@@ -50,7 +51,7 @@ impl TeamsMeetings {
             .global_url(&format!("/me/onlineMeetings?$filter={}", encode(&filter)));
         let page = match self.client.get(&url).await {
             Ok(page) => page,
-            Err(err) if gone(&err) => return Ok(Vec::new()),
+            Err(err) if is_not_found(&err) => return Ok(Vec::new()),
             Err(err) => return Err(err),
         };
         Ok(page
@@ -96,7 +97,7 @@ impl MeetingService for TeamsMeetings {
                 .global_url(&format!("/me/onlineMeetings/{}", encode_segment(&id)));
             match self.client.delete(&url, None).await {
                 Ok(()) => {}
-                Err(err) if gone(&err) => {}
+                Err(err) if is_not_found(&err) => {}
                 Err(err) => return Err(err.into()),
             }
         }
@@ -105,7 +106,9 @@ impl MeetingService for TeamsMeetings {
 }
 
 /// The meeting `createOrGet` answered with, as an event holds one made elsewhere: the join
-/// link with its passcode, then each dial-in number.
+/// link with its passcode, then each dial-in number with the phone conference ID a caller
+/// enters after dialling. That ID is `audioConferencing`'s own, not the join ID beside the
+/// passcode.
 fn conference(meeting: &Value) -> Result<Conference, GraphError> {
     let join = opt_str(meeting, "joinWebUrl")
         .and_then(|url| ConferenceUri::parse(url).ok())
@@ -117,11 +120,15 @@ fn conference(meeting: &Value) -> Result<Conference, GraphError> {
         .filter(|code| !code.is_empty())
         .map(str::to_owned);
     let mut entry_points = vec![entry];
-    let numbers = meeting.get("audioConferencing").map(dial_in_numbers);
-    for number in numbers.unwrap_or_default() {
-        if let Some(entry) = phone(number)
+    let audio = meeting.get("audioConferencing");
+    let phone_id = audio
+        .and_then(|a| opt_str(a, "conferenceId"))
+        .filter(|id| !id.is_empty());
+    for number in audio.map(dial_in_numbers).unwrap_or_default() {
+        if let Some(mut entry) = phone(number)
             && !entry_points.iter().any(|known| known.uri == entry.uri)
         {
+            entry.access.access_code = phone_id.map(str::to_owned);
             entry_points.push(entry);
         }
     }
@@ -137,10 +144,6 @@ fn conference(meeting: &Value) -> Result<Conference, GraphError> {
             .map(str::to_owned),
         notes: None,
     })
-}
-
-fn gone(err: &GraphError) -> bool {
-    matches!(err, GraphError::Status { status: 404, .. })
 }
 
 #[cfg(test)]

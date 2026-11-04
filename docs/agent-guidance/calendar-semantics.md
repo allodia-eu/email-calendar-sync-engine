@@ -758,7 +758,8 @@ sees:
   - **Teams** (`TeamsMeetings`, in `provider-graph`) uses `onlineMeetings/createOrGet` with
     the key as `externalId`. The meeting is the signed-in user's whatever mailbox the client
     is rooted at, because Graph makes one only for `/me`. Its answer becomes the join link with
-    its passcode, the meeting ID and each dial-in number. A delete looks the meeting up by
+    its passcode, the meeting ID and each dial-in number, which carries `audioConferencing`'s
+    phone conference ID as its `access_code`. A delete looks the meeting up by
     `JoinWebUrl` and deletes each match; Graph answers 404 for one that is gone, and after a
     delete the same key makes a new meeting. `live_teams_meetings` checks both against a
     work account.

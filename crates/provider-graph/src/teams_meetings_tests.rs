@@ -112,6 +112,10 @@ async fn the_answer_is_a_meeting_made_elsewhere_with_its_codes_and_numbers() {
             (EntryKind::Phone, "tel:+318000000000".to_owned()),
         ]
     );
+    for entry in &meeting.entry_points[1..] {
+        assert_eq!(entry.access.access_code.as_deref(), Some("123456789"));
+    }
+    assert_eq!(join.access.access_code, None, "the phone ID is no web code");
 }
 
 #[tokio::test]
