@@ -1,6 +1,6 @@
 //! Gated live checks that an online meeting Exchange makes reads back as the calendar's own
-//! conference, without Exchange's stand-in location, and that a meeting only written into
-//! the location and body is detected there.
+//! conference, without Exchange's stand-in location, that a meeting only written into the
+//! location and body is detected there, and that editing a meeting's notes keeps the meeting.
 //!
 //! The event is created by direct HTTP with `isOnlineMeeting: true`, because asking the
 //! server for a meeting is not something the adapter writes yet; it is the fixture. Reading it
@@ -21,9 +21,10 @@ use engine_core::{
         ConferenceOrigin, ConferenceService, ConferenceUri, DetectedIn, EntryKind, Event,
         NativeState,
     },
+    error::FailureClass,
     sync::SyncUpdate,
 };
-use engine_provider::Provider;
+use engine_provider::{CalendarWrites, EventEdit, EventPatch, PatchTarget, Provider};
 
 const GRAPH: &str = "https://graph.microsoft.com/v1.0";
 
@@ -193,6 +194,129 @@ async fn live_a_meeting_only_in_the_body_and_location_is_detected() {
         ]
     );
     assert_eq!(event.conferences[1].service, Some(ConferenceService::Zoom));
+}
+
+#[tokio::test]
+async fn live_a_notes_edit_keeps_the_teams_meeting_and_the_whole_notes() {
+    let Some(token) = token() else {
+        eprintln!(
+            "skipping live_a_notes_edit_keeps_the_teams_meeting...: GRAPH_ACCESS_TOKEN unset"
+        );
+        return;
+    };
+    let date = time::OffsetDateTime::now_utc().date() + time::Duration::days(16);
+    let title = format!(
+        "PIM live notes edit {}",
+        time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+    );
+    // Longer than the 255 characters of `bodyPreview`, so a description read from the preview
+    // would lose its last sentence.
+    let notes = "<p>Agenda first: the figures, then the forecast.</p><p>Please read the \
+        <a href=\"https://example.com/q3-report\">Q3 report</a> before we meet, and bring any \
+        questions about the regional split, the hiring plan and the budget for next year. We \
+        keep the last ten minutes for decisions and owners.</p>";
+    let created: serde_json::Value = http()
+        .post(format!("{GRAPH}/me/events"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "subject": title,
+            "start": { "dateTime": format!("{date}T11:00:00"), "timeZone": "Europe/Amsterdam" },
+            "end": { "dateTime": format!("{date}T11:30:00"), "timeZone": "Europe/Amsterdam" },
+            "isOnlineMeeting": true,
+            "onlineMeetingProvider": "teamsForBusiness",
+            "body": { "contentType": "html", "content": notes }
+        }))
+        .send()
+        .await
+        .expect("POST /me/events")
+        .error_for_status()
+        .expect("the server makes an online meeting")
+        .json()
+        .await
+        .expect("created json");
+    let id = created["id"].as_str().expect("an event id").to_owned();
+
+    // A calendar that cannot make a Teams meeting answers with a plain event.
+    let outcome = if created["isOnlineMeeting"] == true {
+        let provider = calendar_provider_around(&token, date);
+        Some(edit_notes(&provider, &token, &title, &id).await)
+    } else {
+        None
+    };
+    http()
+        .delete(format!("{GRAPH}/me/events/{id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("DELETE the fixture event");
+    let Some(outcome) = outcome else {
+        eprintln!("skipping: this calendar cannot make a Teams meeting");
+        return;
+    };
+
+    let (read, after) = outcome.unwrap();
+    assert!(
+        read.contains("decisions and owners."),
+        "the description is the whole body: {read}"
+    );
+    assert_eq!(after["isOnlineMeeting"], true, "{after:#}");
+    assert!(after["onlineMeeting"]["joinUrl"].is_string(), "{after:#}");
+    let body = after["body"]["content"].as_str().unwrap_or_default();
+    assert!(body.contains("Agenda first, edited"), "{body}");
+    assert!(body.contains("decisions and owners."), "{body}");
+    assert!(body.contains("https://example.com/q3-report"), "{body}");
+}
+
+/// Edits the notes of the event titled `title` through the adapter, keeping the rest of its
+/// description, and returns the description the sync read and the event as Graph then holds
+/// it. Exchange keeps changing an event for a few seconds while it sets up a Teams meeting,
+/// so a revision read just after the create can be refused as stale (`412`); like the outbox,
+/// the edit is then rebuilt on a fresh read. Nothing here panics, so the caller's clean-up
+/// always runs.
+async fn edit_notes(
+    provider: &provider_graph::GraphCalendarProvider,
+    token: &str,
+    title: &str,
+    id: &str,
+) -> Result<(String, serde_json::Value), String> {
+    for _ in 0..5 {
+        let base = read_back(provider, title)
+            .await
+            .ok_or("the created event syncs")?;
+        let read = base
+            .description
+            .clone()
+            .ok_or("the event has a description")?;
+        let edit =
+            EventEdit::new(
+                &base,
+                PatchTarget::Series,
+                EventPatch::new("2026-07-18T10:05:00Z".parse().unwrap())
+                    .description(read.replacen("Agenda first", "Agenda first, edited", 1)),
+            );
+        match provider.patch_event(&account(), &base, &edit).await {
+            Ok(_) => {}
+            Err(err) if err.class() == FailureClass::Conflict => {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                continue;
+            }
+            Err(err) => return Err(format!("patch_event: {err}")),
+        }
+        let after = http()
+            .get(format!(
+                "{GRAPH}/me/events/{id}?$select=isOnlineMeeting,onlineMeeting,body"
+            ))
+            .bearer_auth(token)
+            .header("Prefer", "outlook.body-content-type=\"text\"")
+            .send()
+            .await
+            .map_err(|err| format!("GET the edited event: {err}"))?
+            .json()
+            .await
+            .map_err(|err| format!("event json: {err}"))?;
+        return Ok((read, after));
+    }
+    Err("the notes edit kept conflicting".to_owned())
 }
 
 /// The event titled `title`, once the adapter's sync finds it.

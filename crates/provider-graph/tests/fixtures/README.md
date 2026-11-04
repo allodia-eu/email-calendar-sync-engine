@@ -189,6 +189,7 @@ public repo must not ship a working join link (see Finding 10).
 | `calendar/event_external_invitation.json` | the invitee's copy of an invitation an organizer **outside Exchange** mailed in (a `singleInstance` from `calendarView`) | the one shape where `uid` and `iCalUId` disagree: `uid` is the organizer's own `UID`, `iCalUId` the `PidLidGlobalObjectId` Exchange wrapped it in. The wrapper is re-encoded around the scrubbed `UID` so the two still agree byte for byte |
 | `calendar/event_allday.json` | an all-day `singleInstance` | `isAllDay` → zoneless `Date` + one-day duration |
 | `calendar/event_online_meeting.json` | a Teams `singleInstance` from `calendarView` | the online-meeting shape (`isOnlineMeeting`, `onlineMeetingProvider`, `onlineMeeting.joinUrl`) preserved on `Event.extended` — captured ahead of online-meeting-provider support |
+| `calendar/event_online_meeting_text_body.json` | `GET /me/events/{id}` on a work tenant with `Prefer: outlook.timezone="Europe/Amsterdam", outlook.body-content-type="text"`, the headers the delta sends | a Teams meeting made with HTML notes longer than `bodyPreview`'s 255 characters, its body as Exchange renders it in text: the whole notes, each link as `label<url>`, and Teams' current block (see Finding 10). Ids, the tenant and organiser GUIDs, the meeting number and both passcodes are same-shape placeholders |
 | `calendar/events_delta.json` | `GET /me/calendars/{id}/calendarView/delta?startDateTime=…&endDateTime=…` | the delta page shape: `seriesMaster`/`singleInstance` **kept**, `occurrence` **dropped**, `exception` folded onto its series (it carries `seriesMasterId` + `occurrenceId`), `@odata.deltaLink` cursor |
 | `calendar/event_master_cancellations.json` | `GET /me/events/{seriesMaster}?$select=start,end,cancelledOccurrences` with `Prefer: outlook.timezone="W. Europe Standard Time"` | the second request every series master costs: the two occurrences removed from the standup, and the master's start/end in its **own** authoring zone (see Finding 23) |
 
@@ -225,6 +226,10 @@ public repo must not ship a working join link (see Finding 10).
     the projection leaves it out. The fixture's body is Teams' older block between
     underscore rules; a work tenant now writes the block with no rule above it, a heading
     and `Deelnemen: <link>` first, and the meeting-options section last (`conference_block`).
+    The sync reads each body as text (`event_online_meeting_text_body.json`): asked for HTML,
+    Exchange gives the description only as the 255-character `bodyPreview`, and a notes edit
+    written back from it takes the meeting off the event, because Exchange keeps
+    `isOnlineMeeting` only while the body still holds the block.
 11. **One MS account owns many calendars** (`GET /me/calendars` → a list). Each is a
     distinct `Calendar` with its own immutable id, `isDefaultCalendar` flag, and colour
     (`hexColor` `#rrggbb` wins over the named `color`). A Graph `event` object does not
