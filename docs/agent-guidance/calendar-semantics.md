@@ -624,9 +624,8 @@ sees:
   (below).
 - **Which meetings a calendar makes** (`Calendar::native_conferences`) is the server's
   answer for that calendar, read with the calendar list: Graph's
-  `allowedOnlineMeetingProviders` (`teamsForBusiness` is Teams, not removable) and Google's
-  `conferenceProperties.allowedConferenceSolutionTypes` (`hangoutsMeet` is Meet,
-  removable). Never the account kind: a personal Microsoft account lists `unknown`, a
+  `allowedOnlineMeetingProviders` (`teamsForBusiness` is Teams) and Google's
+  `conferenceProperties.allowedConferenceSolutionTypes` (`hangoutsMeet` is Meet). Never the account kind: a personal Microsoft account lists `unknown`, a
   subscribed or shared Exchange calendar lists nothing, and a Workspace admin can switch Meet
   off. Retired services a server still names (Skype, Skype for Business, classic Hangouts) are
   left out. The list does not depend on `access`: Google lists Meet on a calendar the caller

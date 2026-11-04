@@ -20,7 +20,7 @@
 use engine_core::{
     calendar::{
         Calendar, CalendarAccess, ConferenceService, DetectionSources, Event, EventStatus,
-        FreeBusyStatus, Location, NativeConference, Participant, ParticipantKind, ParticipantRole,
+        FreeBusyStatus, Location, Participant, ParticipantKind, ParticipantRole,
         ParticipationStatus, Privacy, add_detected,
     },
     ids::{CalendarId, EventId, Uid},
@@ -96,18 +96,14 @@ pub(crate) fn calendar_from_json(value: &Value) -> Result<Calendar, GraphError> 
 /// The meetings the calendar's server makes itself, from `allowedOnlineMeetingProviders`.
 ///
 /// Only `teamsForBusiness` makes one: `skypeForBusiness` and `skypeForConsumer` name retired
-/// services, and `unknown` (what a personal account lists) names none. Graph refuses
-/// `isOnlineMeeting: false`, so a Teams meeting stays on its event ([`crate::cal_conference`]).
-fn native_conferences(value: &Value) -> Vec<NativeConference> {
+/// services, and `unknown` (what a personal account lists) names none.
+fn native_conferences(value: &Value) -> Vec<ConferenceService> {
     let lists_teams = value
         .get("allowedOnlineMeetingProviders")
         .and_then(Value::as_array)
         .is_some_and(|providers| providers.iter().any(|p| p == "teamsForBusiness"));
     if lists_teams {
-        vec![NativeConference {
-            service: ConferenceService::Teams,
-            removable: false,
-        }]
+        vec![ConferenceService::Teams]
     } else {
         Vec::new()
     }

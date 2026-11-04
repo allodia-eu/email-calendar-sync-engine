@@ -27,7 +27,7 @@ mod recurrence_parse;
 mod recurrence_set;
 
 pub use alert::{Alert, AlertAction, Trigger};
-pub use calendar_collection::{Calendar, CalendarAccess, NativeConference};
+pub use calendar_collection::{Calendar, CalendarAccess};
 pub use conference::{
     AccessCodes, Conference, ConferenceFeature, ConferenceKey, ConferenceOrigin, DetectedIn,
     EntryKind, EntryPoint, FlatEntry, NativeState, group_flat,

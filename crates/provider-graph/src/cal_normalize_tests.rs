@@ -3,8 +3,8 @@
 
 use engine_core::{
     calendar::{
-        ConferenceOrigin, ConferenceService, DetectedIn, EventStatus, Frequency, NativeConference,
-        ParticipantRole, RecurrenceBound, Weekday,
+        ConferenceOrigin, ConferenceService, DetectedIn, EventStatus, Frequency, ParticipantRole,
+        RecurrenceBound, Weekday,
     },
     time::{CalendarDateTime, Duration, TimeZoneId},
 };
@@ -181,7 +181,7 @@ fn a_meeting_link_in_an_html_body_is_detected_and_a_typed_location_kept() {
     assert_eq!(event.locations.len(), 1);
 }
 
-fn native(fixture: &str) -> Vec<Vec<NativeConference>> {
+fn native(fixture: &str) -> Vec<Vec<ConferenceService>> {
     json(fixture)["value"]
         .as_array()
         .unwrap()
@@ -194,11 +194,10 @@ fn native(fixture: &str) -> Vec<Vec<NativeConference>> {
 fn a_work_calendar_makes_teams_meetings_and_a_subscribed_one_none() {
     // Captured on a work tenant: the user's own calendar lists `teamsForBusiness`, the two
     // calendars subscribed from elsewhere list nothing.
-    let teams = NativeConference {
-        service: ConferenceService::Teams,
-        removable: false,
-    };
-    assert_eq!(native(CALENDARS_WORK), [vec![teams], vec![], vec![]]);
+    assert_eq!(
+        native(CALENDARS_WORK),
+        [vec![ConferenceService::Teams], vec![], vec![]]
+    );
 }
 
 #[test]

@@ -22,7 +22,7 @@
 use engine_core::{
     calendar::{
         Calendar, CalendarAccess, ConferenceService, DetectionSources, Event, EventStatus,
-        FreeBusyStatus, Location, NativeConference, Participant, ParticipantKind, ParticipantRole,
+        FreeBusyStatus, Location, Participant, ParticipantKind, ParticipantRole,
         ParticipationStatus, Privacy, Recurrence, RecurrenceOverride, add_detected, parse_rrule,
     },
     ids::{CalendarId, Uid},
@@ -82,18 +82,14 @@ pub(crate) fn calendar_from_json(value: &Value) -> Result<Calendar, GoogleError>
 ///
 /// Only `hangoutsMeet` makes one: `eventHangout` and `eventNamedHangout` name the retired
 /// classic Hangouts. A Workspace admin can switch Meet off, which leaves the list without it.
-/// A Meet meeting can be taken off its event again.
-fn native_conferences(value: &Value) -> Vec<NativeConference> {
+fn native_conferences(value: &Value) -> Vec<ConferenceService> {
     let allows_meet = value
         .get("conferenceProperties")
         .and_then(|properties| properties.get("allowedConferenceSolutionTypes"))
         .and_then(Value::as_array)
         .is_some_and(|types| types.iter().any(|t| t == "hangoutsMeet"));
     if allows_meet {
-        vec![NativeConference {
-            service: ConferenceService::GoogleMeet,
-            removable: true,
-        }]
+        vec![ConferenceService::GoogleMeet]
     } else {
         Vec::new()
     }

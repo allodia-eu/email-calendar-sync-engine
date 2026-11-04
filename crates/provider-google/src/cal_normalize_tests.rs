@@ -3,8 +3,7 @@
 
 use engine_core::calendar::{
     ConferenceOrigin, ConferenceService, ConferenceUri, DetectedIn, EventStatus, FreeBusyStatus,
-    Frequency, NativeConference, ParticipantRole, ParticipationStatus, RecurrenceBound,
-    RecurrenceOverride,
+    Frequency, ParticipantRole, ParticipationStatus, RecurrenceBound, RecurrenceOverride,
 };
 use serde_json::Value;
 
@@ -91,13 +90,9 @@ fn each_access_role_maps_to_the_grant_it_names() {
 fn a_calendar_that_allows_meet_makes_meet_meetings() {
     // Every captured calendar, the primary and the shared ones alike, lists `hangoutsMeet`.
     let doc: Value = serde_json::from_str(CALENDARS).unwrap();
-    let meet = NativeConference {
-        service: ConferenceService::GoogleMeet,
-        removable: true,
-    };
     for entry in doc["items"].as_array().unwrap() {
         let calendar = calendar_from_json(entry).unwrap();
-        assert_eq!(calendar.native_conferences, std::slice::from_ref(&meet));
+        assert_eq!(calendar.native_conferences, [ConferenceService::GoogleMeet]);
     }
 }
 

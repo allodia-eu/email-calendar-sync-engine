@@ -18,8 +18,7 @@ mod common;
 use common::*;
 use engine_core::{
     calendar::{
-        Conference, ConferenceOrigin, ConferenceService, ConferenceUri, DetectedIn,
-        NativeConference, NativeState,
+        Conference, ConferenceOrigin, ConferenceService, ConferenceUri, DetectedIn, NativeState,
     },
     sync::SyncUpdate,
 };
@@ -224,10 +223,6 @@ async fn live_each_calendar_says_whether_its_server_makes_meet_meetings() {
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };
-    let meet = NativeConference {
-        service: ConferenceService::GoogleMeet,
-        removable: true,
-    };
     for calendar in objects {
         let raw = listed["items"]
             .as_array()
@@ -240,8 +235,8 @@ async fn live_each_calendar_says_whether_its_server_makes_meet_meetings() {
         let allows_meet = types
             .as_array()
             .is_some_and(|list| list.iter().any(|t| t == "hangoutsMeet"));
-        let expected: &[NativeConference] = if allows_meet {
-            std::slice::from_ref(&meet)
+        let expected: &[ConferenceService] = if allows_meet {
+            &[ConferenceService::GoogleMeet]
         } else {
             &[]
         };

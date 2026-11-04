@@ -20,7 +20,7 @@ use common::*;
 use engine_core::{
     calendar::{
         ConferenceOrigin, ConferenceService, ConferenceUri, DetectedIn, EntryKind, Event,
-        NativeConference, NativeState,
+        NativeState,
     },
     sync::SyncUpdate,
 };
@@ -222,10 +222,6 @@ async fn live_each_calendar_says_whether_its_server_makes_teams_meetings() {
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };
-    let teams = NativeConference {
-        service: ConferenceService::Teams,
-        removable: false,
-    };
     let mut seen_teams = false;
     for calendar in objects {
         let raw = listed["value"]
@@ -240,8 +236,8 @@ async fn live_each_calendar_says_whether_its_server_makes_teams_meetings() {
             .as_array()
             .is_some_and(|list| list.iter().any(|p| p == "teamsForBusiness"));
         seen_teams |= lists_teams;
-        let expected: &[NativeConference] = if lists_teams {
-            std::slice::from_ref(&teams)
+        let expected: &[ConferenceService] = if lists_teams {
+            &[ConferenceService::Teams]
         } else {
             &[]
         };
