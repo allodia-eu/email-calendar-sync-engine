@@ -324,6 +324,7 @@ fn draft_to_json(draft: &EventDraft, organiser_id: Option<&str>) -> Result<Value
             json!({ NEW_LOCATION_ID: { "@type": "Location", "name": location } }),
         );
     }
+    crate::calendar_conference_write::apply_to_create(draft, &mut object)?;
     for (key, value) in start_fields(&draft.start)? {
         object.insert(key, value);
     }

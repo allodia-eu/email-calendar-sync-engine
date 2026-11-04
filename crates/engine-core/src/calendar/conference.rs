@@ -123,6 +123,20 @@ impl EntryPoint {
         }
     }
 
+    /// The capabilities to write for this way in: the ones the server stated, else what its
+    /// kind always offers (a web link audio and video, a number the phone).
+    #[must_use]
+    pub fn offered_features(&self) -> BTreeSet<ConferenceFeature> {
+        if !self.features.is_empty() {
+            return self.features.clone();
+        }
+        match self.kind {
+            EntryKind::Video => [ConferenceFeature::Audio, ConferenceFeature::Video].into(),
+            EntryKind::Phone => [ConferenceFeature::Phone].into(),
+            _ => BTreeSet::new(),
+        }
+    }
+
     /// The number a person reads for a `tel:` way in: the server's label when it is written
     /// as a phone number, else the URI's own ([`ConferenceUri::phone_number`]). `None` for any
     /// other scheme. A label such as "Dial in" names the way in rather than the number, so it

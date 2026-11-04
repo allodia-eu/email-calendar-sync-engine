@@ -47,9 +47,12 @@
 //! master's `RRULE` rewritten with an `UNTIL`, which is a different operation from this
 //! one (`calendar-semantics.md` lists the `RECURRENCE-ID` range semantics as staged).
 
+mod conference;
 mod plan;
 mod vevent;
 
+#[cfg(test)]
+mod conference_tests;
 #[cfg(test)]
 mod exclude_tests;
 #[cfg(test)]
@@ -98,7 +101,13 @@ pub fn patch_event_ical(
     match target {
         PatchTarget::Series => {
             let master = resource.master(&doc)?;
-            plan::plan(&doc, master, patch, &mut edits)?;
+            // A meeting is named by its key in the projection the host read, so a conference
+            // edit is resolved against that projection of these same bytes.
+            let base = match patch.conference_edit() {
+                Some(_) => Some(projection(text)?),
+                None => None,
+            };
+            plan::plan(&doc, master, patch, base.as_ref(), &mut edits)?;
             plan::set_recurrence(&doc, master, &resource, patch, &mut edits)?;
         }
         PatchTarget::Instance(occurrence) => {
@@ -116,10 +125,15 @@ pub fn patch_event_ical(
                     "invitees belong to the whole meeting, not one occurrence",
                 ));
             }
+            if patch.conference_edit().is_some() {
+                return Err(IcalError::new(
+                    "a meeting belongs to the whole series, not one occurrence",
+                ));
+            }
             let recurrence_id = &occurrence.start;
             if let Some(existing) = resource.override_for(&doc, recurrence_id) {
                 // The series is already overridden here: patch that VEVENT in place.
-                plan::plan(&doc, existing, patch, &mut edits)?;
+                plan::plan(&doc, existing, patch, None, &mut edits)?;
             } else {
                 // First edit to this occurrence: split a fresh override out of the master.
                 let master = resource.master(&doc)?;
@@ -129,6 +143,16 @@ pub fn patch_event_ical(
         }
     }
     Ok(RawIcal::new(doc.render(&edits)))
+}
+
+/// The event `text` holds, as the reader projects it. The ids are placeholders: nothing the
+/// planner reads depends on them.
+fn projection(text: &str) -> Result<engine_core::calendar::Event, IcalError> {
+    let id =
+        engine_core::ids::EventId::try_from("patch").map_err(|e| IcalError::new(e.to_string()))?;
+    let calendar = engine_core::ids::CalendarId::try_from("patch")
+        .map_err(|e| IcalError::new(e.to_string()))?;
+    crate::parse_calendar_object(text, id, calendar)
 }
 
 /// Removes **one occurrence** from a stored series, returning the document to `PUT` back
@@ -238,6 +262,6 @@ fn split_override(
         .or_default()
         .before
         .push_str(&doc.fold(anchor, &date_time_line("RECURRENCE-ID", recurrence_id)));
-    plan::plan(doc, master, patch, &mut edits)?;
+    plan::plan(doc, master, patch, None, &mut edits)?;
     Ok(doc.render_range(master.groups(), &edits))
 }

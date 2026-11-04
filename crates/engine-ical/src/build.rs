@@ -3,7 +3,8 @@
 //! This is how CalDAV serializes the neutral [`EventDraft`]: a host states the intent
 //! through the `engine-api` facade, and the adapter renders it as the iCalendar body of a
 //! conditional `PUT` (`caldav.md`). It is deliberately small — enough for a valid create
-//! (`UID`, `DTSTAMP`, `DTSTART`/`DTEND`, `SUMMARY`, optional `DESCRIPTION`).
+//! (`UID`, `DTSTAMP`, `DTSTART`/`DTEND`, `SUMMARY`, optional `DESCRIPTION`, `LOCATION`,
+//! `RRULE`, scheduling and `CONFERENCE` properties).
 //!
 //! It is **only** for a create. Rebuilding a document to *update* an event would delete
 //! every property this function does not emit — the `RRULE`, the attendees, the alarms, the
@@ -21,6 +22,7 @@ use engine_core::raw::RawIcal;
 use engine_provider::EventDraft;
 
 use super::{
+    conference_write::attachment,
     format::{date_time_line, escape_text, fold_line, format_utc, strip_control},
     scheduling_write::{attendee_line, organiser_line},
 };
@@ -36,7 +38,8 @@ use crate::error::IcalError;
 /// Returns [`IcalError`] if the draft's recurrence cannot be written as an `RRULE`: a
 /// non-Gregorian rule (which would silently become Gregorian), or a rule ending at a wall
 /// clock on a zoned or UTC event with no resolved instant to render `UNTIL` from — see
-/// [`engine_provider::DraftRecurrence`].
+/// [`engine_provider::DraftRecurrence`]. Also for a meeting the server would have to make
+/// ([`engine_provider::NewConference::Native`]), and one without a web link to join it at.
 pub fn build_event_ical(draft: &EventDraft) -> Result<RawIcal, IcalError> {
     if let Some(meeting) = &draft.meeting {
         meeting
@@ -59,11 +62,26 @@ pub fn build_event_ical(draft: &EventDraft) -> Result<RawIcal, IcalError> {
     ical.push_str(&date_time_line("DTEND", &draft.end));
     ical.push_str("\r\n");
     push_property(&mut ical, "SUMMARY", &escape_text(&draft.summary));
-    if let Some(description) = &draft.description {
+    let conference = draft
+        .conference
+        .as_ref()
+        .map(|new| attachment(draft.description.as_deref().unwrap_or_default(), new))
+        .transpose()?;
+    let description = conference
+        .as_ref()
+        .map(|conference| conference.notes.as_str())
+        .or(draft.description.as_deref());
+    if let Some(description) = description {
         push_property(&mut ical, "DESCRIPTION", &escape_text(description));
     }
-    if let Some(location) = &draft.location {
+    let location = draft.location.as_deref().or(conference
+        .as_ref()
+        .map(|conference| conference.join.as_str()));
+    if let Some(location) = location {
         push_property(&mut ical, "LOCATION", &escape_text(location));
+    }
+    for line in conference.iter().flat_map(|conference| &conference.lines) {
+        ical.push_str(&fold_line(line, "\r\n"));
     }
     if let Some(recurrence) = &draft.recurrence {
         push_property(

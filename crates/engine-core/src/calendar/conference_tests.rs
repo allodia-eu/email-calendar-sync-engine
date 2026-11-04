@@ -152,3 +152,19 @@ fn a_dial_in_number_is_the_label_when_it_is_written_as_one() {
     let web = EntryPoint::at(ConferenceUri::parse("https://zoom.us/j/1").unwrap());
     assert_eq!(web.phone_number(), None);
 }
+
+#[test]
+fn a_way_in_offers_what_it_states_else_what_its_kind_offers() {
+    let web = EntryPoint::at(ConferenceUri::parse("https://meet.example.org/a").unwrap());
+    assert_eq!(
+        web.offered_features(),
+        [ConferenceFeature::Audio, ConferenceFeature::Video].into()
+    );
+    let phone = EntryPoint::at(ConferenceUri::parse("tel:+31201234567").unwrap());
+    assert_eq!(phone.offered_features(), [ConferenceFeature::Phone].into());
+    let sip = EntryPoint::at(ConferenceUri::parse("sip:room@example.org").unwrap());
+    assert!(sip.offered_features().is_empty());
+    let mut stated = web;
+    stated.features = [ConferenceFeature::Chat].into();
+    assert_eq!(stated.offered_features(), [ConferenceFeature::Chat].into());
+}

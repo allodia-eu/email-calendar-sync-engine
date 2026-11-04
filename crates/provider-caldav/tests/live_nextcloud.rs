@@ -387,3 +387,14 @@ async fn nextcloud_override_survival_is_what_the_adapter_advertises() {
     let _serial = common::serial_guard().await;
     common::survival::survival_is_what_the_adapter_advertises(&provider, &account).await;
 }
+
+/// A meeting goes on and comes off through the adapter (`common::conference_write`).
+#[tokio::test]
+async fn nextcloud_a_meeting_goes_on_and_comes_off() {
+    let Some((provider, account)) = provider("nextcloud_a_meeting_goes_on_and_comes_off").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::conference_write::a_meeting_goes_on_and_comes_off(&provider, &account).await;
+}

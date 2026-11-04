@@ -80,6 +80,7 @@ the inputs — the `connect()` future, its result, the `FailureClass`, the
 | calendar write guard | absent | — | enforced ETag or schedule tag | enforced ETag | enforced ETag |
 | meeting invitations | yes, discovered account limit | — | yes, delivery needs RFC 6638 | yes, 500 attendees | yes, response propagation changes above 200 guests |
 | RSVP | yes | — | yes | yes | yes |
+| video meeting writes | made elsewhere | — | made elsewhere | Teams, or made elsewhere | Meet, or made elsewhere |
 | server-side scheduling | yes (asked for) | — | discovered (RFC 6638) | yes | yes |
 | contact read | yes | — | yes | personal + directory | owned + suggested + directory |
 | contact write guard | absent | — | enforced ETag | absent | enforced ETag |
