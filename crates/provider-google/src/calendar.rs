@@ -96,7 +96,8 @@ impl GoogleCalendarProvider {
                 .with_calendars()
                 .with_calendar_writes(WriteGuard::Enforced, GOOGLE_OVERRIDE_SURVIVAL)
                 .with_calendar_rsvp(GOOGLE_RSVP)
-                .with_calendar_scheduling(),
+                .with_calendar_scheduling()
+                .with_conference_writes(),
         }
     }
 

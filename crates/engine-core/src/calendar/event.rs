@@ -4,7 +4,7 @@ use std::{borrow::Cow, collections::BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::{Alert, Conference, EventKind, Location, Participant, Recurrence};
+use super::{Alert, Conference, ConferenceKey, EventKind, Location, Participant, Recurrence};
 use crate::{
     extended::ExtendedProperties,
     ids::{CalendarId, EventId, Uid},
@@ -197,6 +197,14 @@ impl Event {
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.status == EventStatus::Cancelled
+    }
+
+    /// The conference `key` names, if the event holds it.
+    #[must_use]
+    pub fn conference(&self, key: &ConferenceKey) -> Option<&Conference> {
+        self.conferences
+            .iter()
+            .find(|conference| &conference.key == key)
     }
 
     /// The person's own notes: the description without each meeting block an invitation

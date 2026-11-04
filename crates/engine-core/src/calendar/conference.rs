@@ -169,7 +169,7 @@ pub enum ConferenceOrigin {
     /// The calendar server made the meeting and keeps it: a Google Meet conference, a Graph
     /// online meeting.
     Native {
-        /// Whether the server lets it be taken off the event again. Graph does not.
+        /// Whether the server lets it be taken off the event again.
         removable: bool,
         /// Where the meeting stands.
         state: NativeState,

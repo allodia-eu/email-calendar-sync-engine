@@ -15,6 +15,7 @@ mod conference;
 mod conference_block;
 mod conference_detect;
 mod conference_service;
+mod conference_text;
 mod conference_uri;
 mod event;
 mod kind;
@@ -34,6 +35,7 @@ pub use conference::{
 };
 pub use conference_detect::{DetectionSources, add_detected};
 pub use conference_service::ConferenceService;
+pub use conference_text::{ConferenceText, with_text_block, without_text_block};
 pub use conference_uri::{ConferenceUri, ConferenceUriError, UriScheme};
 pub use event::{Event, EventStatus, FreeBusyStatus, Privacy};
 pub use kind::EventKind;

@@ -13,6 +13,7 @@
 //!   Teams-vergadering") whose next line holds a Teams meeting link, with no rule above it. Teams
 //!   appends this block last, so it runs to the end of the text.
 //! - **Google Calendar**: a line `-::~:~::~:~…::-` above the block and the same line below.
+//! - **Ours**: the rule [`super::conference_text`] writes, above the block and below it.
 //!
 //! A block whose closing line is missing runs to the end of the text, because a server's
 //! preview of the description (Graph's `bodyPreview`) cuts it off.
@@ -25,12 +26,15 @@ use super::{ConferenceService, conference_detect::links};
 enum Rule {
     Teams,
     Google,
+    Ours,
 }
 
 impl Rule {
     fn of(line: &str) -> Option<Self> {
         let line = line.trim();
-        if line.len() >= 32 && line.bytes().all(|b| b == b'_') {
+        if line == super::conference_text::RULE {
+            Some(Self::Ours)
+        } else if line.len() >= 32 && line.bytes().all(|b| b == b'_') {
             Some(Self::Teams)
         } else if line.starts_with("-::~:~::~:~") && line.ends_with("::-") {
             Some(Self::Google)

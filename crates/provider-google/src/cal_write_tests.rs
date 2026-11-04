@@ -61,7 +61,7 @@ pub(super) fn base_event() -> Event {
 }
 
 /// A Google created/updated event response.
-fn stored(id: &str, ical_uid: &str, etag: &str) -> serde_json::Value {
+pub(super) fn stored(id: &str, ical_uid: &str, etag: &str) -> serde_json::Value {
     sjson!({ "id": id, "iCalUID": ical_uid, "etag": etag, "status": "confirmed" })
 }
 

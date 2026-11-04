@@ -68,6 +68,7 @@ pub struct Capabilities {
     /// unrepresentable.
     override_survival: Option<OverrideSurvival>,
     calendar_scheduling: bool,
+    conference_writes: bool,
     pub(crate) contacts: bool,
     pub(crate) contact_writes: Option<WriteGuard>,
     pub(crate) contact_groups: bool,
@@ -99,6 +100,7 @@ impl Capabilities {
             calendar_rsvp: None,
             override_survival: None,
             calendar_scheduling: false,
+            conference_writes: false,
             contacts: false,
             contact_writes: None,
             contact_groups: false,
@@ -284,6 +286,15 @@ impl Capabilities {
         self
     }
 
+    /// Marks video-meeting writes as supported: a create's
+    /// [`EventDraft::conference`](crate::EventDraft::conference) and a patch's
+    /// [`EventPatch::conference`](crate::EventPatch::conference).
+    #[must_use]
+    pub const fn with_conference_writes(mut self) -> Self {
+        self.conference_writes = true;
+        self
+    }
+
     /// Whether mail read/sync is supported.
     #[must_use]
     pub const fn mail(self) -> bool {
@@ -443,6 +454,13 @@ impl Capabilities {
     #[must_use]
     pub const fn calendar_scheduling(self) -> bool {
         self.calendar_scheduling
+    }
+
+    /// Whether the adapter puts a video meeting on an event and takes one off. Without it, a
+    /// create or patch that carries one is refused rather than written without the meeting.
+    #[must_use]
+    pub const fn conference_writes(self) -> bool {
+        self.conference_writes
     }
 }
 

@@ -87,6 +87,7 @@ fn exposes_graph_calendar_scopes_and_write_capabilities() {
     assert!(caps.calendars() && caps.calendar_writes());
     // Graph enforces the lost-update guard (If-Match), unlike JMAP.
     assert_eq!(caps.calendar_write_guard(), Some(WriteGuard::Enforced));
+    assert!(caps.conference_writes());
     assert!(!caps.mail());
 }
 

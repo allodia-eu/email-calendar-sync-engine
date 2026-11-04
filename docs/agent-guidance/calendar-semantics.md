@@ -617,8 +617,8 @@ sees:
   meeting; a `tel:` or `sip:` URI joins it when the list holds exactly one web URI and stands
   alone otherwise, since nothing in either format says which meeting a number dials into.
 - **Origin.** `Native` is a meeting the calendar server made and keeps: Google's
-  `hangoutsMeet` (removable, with `pending`/`failure` read from `createRequest.status`) and
-  any Graph online meeting (never removable: Graph refuses `isOnlineMeeting: false`).
+  `hangoutsMeet` (with `pending`/`failure` read from `createRequest.status`) and any Graph
+  online meeting. Both are removable, each its own way (below, "Writing a meeting").
   `Attached` is a meeting stored in a field built for it that the server did not make:
   `CONFERENCE`, `virtualLocations`, a Google `addOn`. `Detected` is one found elsewhere
   (below).
@@ -696,6 +696,37 @@ sees:
   error. `live_calendar_conference` in `provider-graph` and `provider-google` reads a
   server-made meeting back through the adapter, and a meeting written only into the
   location and description.
+- **Writing a meeting** (`EventDraft::conference`, `EventPatch::conference`, advertised as
+  `Capabilities::conference_writes`). `NewConference::Native` asks the calendar's server for
+  one of its own; `NewConference::Attach` stores one made elsewhere. `ConferenceEdit::Set`
+  puts one on, replacing a named one, and `Remove` takes one off. A meeting belongs to the
+  series, so an occurrence edit carrying one is refused (`EventEdit::refuse_conference_on_occurrence`).
+  Measured per adapter:
+  - **Graph.** Teams is `isOnlineMeeting: true` with `teamsForBusiness`; Exchange appends its
+    block and stand-in location, and keeps changing the event while it sets up the meeting,
+    so a patch on a revision read just after the create can be refused as stale (`412`).
+    Taking Teams off is writing the body without Teams' block and clearing the stand-in:
+    Graph accepts `isOnlineMeeting: false` and ignores it. A meeting made elsewhere has no
+    field, so it is written as our block in the body and, when the event has none, as the
+    location; it reads back as a detected meeting, and a self-hosted server's link names no
+    service.
+  - **Google.** Everything is `conferenceData` under `conferenceDataVersion=1`, which Google
+    otherwise ignores. Meet is a `createRequest` for `hangoutsMeet` whose `requestId` comes
+    from the event's UID and the edit's stamp, so a retried write asks for the same meeting.
+    A meeting made elsewhere is an `addOn` conference with its entry points; Google Calendar
+    shows it with a Join button and writes its link into its own block and `LOCATION` in the
+    invitations it sends, so no block of ours is written. Removing either is
+    `conferenceData: null`.
+  - **CalDAV and JMAP** do not advertise the capability, and refuse a write that carries a
+    meeting rather than storing the event without it.
+  - **Our block** (`Conference::text_block`) is a rule of 40 `-=` characters, the meeting's
+    name (its label, else the caller's word for a video meeting), `Join: <link>`, its ID,
+    passcode and dial-in numbers, and the rule again. The words come from the caller in a
+    `ConferenceText`, since the engine has no locale. It is recognised like Teams' and
+    Google's blocks, so `notes` leaves it out, and removing the meeting takes it out of the
+    notes with every other block that joins it (`without_text_block`).
+  `live_calendar_conference_write` in `provider-graph` and `provider-google` puts each kind on
+  and takes it off through the adapter.
 
 ## Supported recurrence subset
 

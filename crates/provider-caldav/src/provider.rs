@@ -265,6 +265,7 @@ impl CalendarWrites for CalDavProvider {
         _account: &AccountId,
         draft: &EventDraft,
     ) -> ProviderResult<EventWriteReceipt> {
+        engine_provider::refuse_conference(draft.conference.is_some())?;
         let href = self.event_href(&draft.calendar, &draft.uid)?;
         Ok(crate::write::create_event(self.executor.as_ref(), href, draft).await?)
     }
@@ -275,6 +276,7 @@ impl CalendarWrites for CalDavProvider {
         base: &Event,
         edit: &EventEdit,
     ) -> ProviderResult<EventWriteReceipt> {
+        engine_provider::refuse_conference(edit.patch.conference_edit().is_some())?;
         Ok(crate::write::patch_event(self.executor.as_ref(), base, edit).await?)
     }
 

@@ -2,8 +2,9 @@
 //!
 //! Graph describes at most one, in `isOnlineMeeting`, `onlineMeetingProvider` and
 //! `onlineMeeting` (`joinUrl`, `conferenceId` and the dial-in numbers). Exchange made it, so
-//! it is the calendar's own, and it stays: "You cannot change the onlineMeetingProvider
-//! property, nor set isOnlineMeeting to false" (Graph's `event` reference). An event marked
+//! it is the calendar's own. It can be taken off again, though not the way the reference
+//! suggests: Graph accepts `isOnlineMeeting: false` and ignores it, and drops the meeting when
+//! the body is written without Teams' block (measured, `cal_conference_write`). An event marked
 //! online with a known provider and no `onlineMeeting` yet reads as pending, since Exchange
 //! fills it in after the write. A join URL that is there but cannot be opened safely is no
 //! conference, never a pending one.
@@ -64,7 +65,7 @@ pub(crate) fn conferences(value: &Value) -> Vec<Conference> {
         key: ConferenceKey::new(KEY),
         service,
         origin: ConferenceOrigin::Native {
-            removable: false,
+            removable: true,
             state,
         },
         entry_points,
@@ -162,7 +163,7 @@ mod tests {
         assert_eq!(
             teams.origin,
             ConferenceOrigin::Native {
-                removable: false,
+                removable: true,
                 state: NativeState::Ready
             }
         );
@@ -216,7 +217,7 @@ mod tests {
         assert_eq!(
             teams.origin,
             ConferenceOrigin::Native {
-                removable: false,
+                removable: true,
                 state: NativeState::Pending
             }
         );

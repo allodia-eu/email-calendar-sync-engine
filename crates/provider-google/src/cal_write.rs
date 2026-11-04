@@ -21,7 +21,7 @@ use engine_provider::{
 use serde_json::{Map, Value, json};
 
 use crate::{
-    cal_id,
+    cal_conference_write, cal_id,
     cal_invite::{draft_attendees, merge_attendees},
     error::{GoogleError, unread_answer},
     json::opt_str,
@@ -47,9 +47,13 @@ pub(crate) async fn create_event(
     draft: &EventDraft,
 ) -> ProviderResult<EventWriteReceipt> {
     let body = build_create(draft)?;
+    let version = cal_conference_write::version_query(draft.conference.is_some());
     let created = client
         .post(
-            &client.url(&format!("{}?sendUpdates=all", events_path(calendar))),
+            &client.url(&format!(
+                "{}?sendUpdates=all{version}",
+                events_path(calendar)
+            )),
             "application/json",
             serde_json::to_vec(&body).map_err(GoogleError::from)?,
         )
@@ -81,6 +85,7 @@ pub(crate) async fn patch_event(
              rule of its own",
         ));
     }
+    edit.refuse_conference_on_occurrence()?;
     // An empty patch changes nothing; skip the round trip and report the current revision.
     if edit.patch.is_empty() {
         return Ok(EventWriteReceipt::new(
@@ -95,9 +100,13 @@ pub(crate) async fn patch_event(
         PatchTarget::Instance(occurrence) => (occurrence_id(master, occurrence)?, None),
     };
     let body = build_patch(base, &edit.patch)?;
+    let version = cal_conference_write::version_query(edit.patch.conference_edit().is_some());
     let answer = client
         .patch(
-            &client.url(&format!("{}/{id}?sendUpdates=all", events_path(calendar))),
+            &client.url(&format!(
+                "{}/{id}?sendUpdates=all{version}",
+                events_path(calendar)
+            )),
             "application/json",
             guard,
             serde_json::to_vec(&body).map_err(GoogleError::from)?,
@@ -313,6 +322,9 @@ fn build_create(draft: &EventDraft) -> ProviderResult<Value> {
     if let Some(attendees) = draft_attendees(draft)? {
         body.insert("attendees".to_owned(), attendees);
     }
+    if let Some(conference) = cal_conference_write::for_create(draft)? {
+        body.insert("conferenceData".to_owned(), conference);
+    }
     Ok(Value::Object(body))
 }
 
@@ -377,6 +389,7 @@ fn build_patch(base: &Event, patch: &EventPatch) -> ProviderResult<Value> {
     if let Some(edit) = patch.invitee_edit() {
         body.insert("attendees".to_owned(), merge_attendees(base, edit)?);
     }
+    cal_conference_write::apply_to_patch(base, patch, &mut body)?;
     Ok(Value::Object(body))
 }
 
@@ -468,3 +481,7 @@ mod cal_invite_tests;
 #[cfg(test)]
 #[path = "cal_recurrence_tests.rs"]
 mod cal_recurrence_tests;
+
+#[cfg(test)]
+#[path = "cal_conference_write_tests.rs"]
+mod cal_conference_write_tests;
