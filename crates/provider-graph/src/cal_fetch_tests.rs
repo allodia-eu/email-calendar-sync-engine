@@ -149,10 +149,11 @@ async fn a_series_master_is_re_read_in_its_own_zone_not_the_display_zone() {
         .iter()
         .find(|(url, _)| url.contains("calendarView/delta"))
         .expect("the delta was fetched");
-    assert_eq!(
-        delta_prefer.as_deref(),
-        Some("outlook.timezone=\"Pacific/Auckland\""),
-        "the pass itself still reads in the host's display zone"
+    assert!(
+        delta_prefer
+            .as_deref()
+            .is_some_and(|p| p.starts_with("outlook.timezone=\"Pacific/Auckland\"")),
+        "the pass itself still reads in the host's display zone: {delta_prefer:?}"
     );
     let (_, master_prefer) = asked
         .iter()
@@ -162,6 +163,39 @@ async fn a_series_master_is_re_read_in_its_own_zone_not_the_display_zone() {
         master_prefer.as_deref(),
         Some("outlook.timezone=\"W. Europe Standard Time\""),
         "the master is read in its own originalStartTimeZone"
+    );
+}
+
+#[tokio::test]
+async fn the_delta_asks_for_each_body_as_text() {
+    // An HTML body otherwise reaches the description only as `bodyPreview`, cut at 255
+    // characters, and a notes edit written back from it takes a Teams meeting off the event:
+    // Exchange keeps the meeting only while the body still holds its block (measured).
+    let (client, prefers) = fake_client_recording(
+        delta_routes()
+            .into_iter()
+            .map(|(key, doc)| (key, Ok(doc)))
+            .collect(),
+    );
+    events_page(
+        &client,
+        &calendar_id(),
+        None,
+        None,
+        window(),
+        "Europe/Amsterdam",
+    )
+    .await
+    .unwrap();
+
+    let asked = prefers.lock().unwrap().clone();
+    let (_, delta_prefer) = asked
+        .iter()
+        .find(|(url, _)| url.contains("calendarView/delta"))
+        .expect("the delta was fetched");
+    assert_eq!(
+        delta_prefer.as_deref(),
+        Some("outlook.timezone=\"Europe/Amsterdam\", outlook.body-content-type=\"text\"")
     );
 }
 

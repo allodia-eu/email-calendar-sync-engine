@@ -632,6 +632,16 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   the IANA name), which the adapter stores. Windows zone names (a read without the header)
   still map through the CLDR `windowsZones` table (`windows_zones`, CLDR 49); an unknown
   or `tzone://Microsoft/Custom` zone is preserved as a custom zone, never guessed.
+- **Bodies as text via `Prefer: outlook.body-content-type="text"`.** The delta carries it
+  beside the zone. Exchange then renders each body itself: whole, line by line, each link's
+  target kept as `label<url>`. Without it an HTML body (every body Outlook writes) reaches the
+  description only as `bodyPreview`, cut at 255 characters, and a notes edit written back from
+  that loses the rest. On a Teams meeting it loses the meeting: Exchange keeps
+  `isOnlineMeeting` only while the body still holds Teams' block, and a text body that keeps
+  the block keeps the meeting (measured on a work tenant, both the rich block a meeting made
+  with an HTML body gets and the line-by-line one a text body gets;
+  `tests/live_calendar_conference.rs`). The write stays `contentType: text`, so an edit
+  flattens the formatting of the notes it replaces.
 - **Recurrence mapping.** `patternedRecurrence` `pattern`+`range` → one `RecurrenceRule`:
   `daily`/`weekly`/`absoluteMonthly`(BYMONTHDAY)/`relativeMonthly`(BYDAY+`index`)/
   `absoluteYearly`/`relativeYearly` → `FREQ`+`BY*`; `range` `noEnd`/`numbered`/`endDate`

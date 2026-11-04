@@ -17,6 +17,8 @@ const MASTER: &str = include_str!("../tests/fixtures/calendar/event_series_maste
 const SINGLE: &str = include_str!("../tests/fixtures/calendar/event_single.json");
 const ALLDAY: &str = include_str!("../tests/fixtures/calendar/event_allday.json");
 const ONLINE: &str = include_str!("../tests/fixtures/calendar/event_online_meeting.json");
+const ONLINE_TEXT: &str =
+    include_str!("../tests/fixtures/calendar/event_online_meeting_text_body.json");
 const CALENDARS: &str = include_str!("../tests/fixtures/calendar/calendars.json");
 const CALENDARS_WORK: &str = include_str!("../tests/fixtures/calendar/calendars_work.json");
 const EXTRA_EVENT: &str = include_str!("../tests/fixtures/calendar/event_extra_calendar.json");
@@ -144,6 +146,29 @@ fn an_online_meeting_projects_its_conference_and_preserves_the_teams_payload() {
         .expect("raw Graph event preserved");
     assert_eq!(raw["isOnlineMeeting"], Value::Bool(true));
     assert_eq!(raw["onlineMeetingProvider"], "teamsForBusiness");
+}
+
+#[test]
+fn a_body_read_as_text_is_the_whole_description_with_the_teams_block() {
+    // Read as text, Exchange renders the whole body: the notes past the preview's 255
+    // characters, each link's target as `label<url>`, and Teams' block whole. A notes edit
+    // written back from this keeps the meeting on the event.
+    let event = event(ONLINE_TEXT);
+    let description = event.description.as_deref().unwrap();
+    assert!(description.len() > 255, "{description}");
+    assert!(description.starts_with("Agenda for the quarterly review"));
+    assert!(description.contains("Q3 report<https://example.com/q3-report>"));
+    assert!(description.contains(
+        "Deelnemen: https://teams.microsoft.com/meet/9990000000000016?p=EXAMPLEpasscode000"
+    ));
+
+    assert_eq!(event.conferences.len(), 1);
+    assert!(matches!(
+        event.conferences[0].origin,
+        ConferenceOrigin::Native { .. }
+    ));
+    let notes = event.notes(|_| true).unwrap();
+    assert!(notes.ends_with("decisions and owners."), "{notes}");
 }
 
 #[test]

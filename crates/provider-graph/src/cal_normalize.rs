@@ -219,8 +219,8 @@ fn resolve_zone(name: &str) -> Result<TimeZoneId, GraphError> {
     resolve_zone_name(name).map_err(|e| GraphError::protocol(format!("bad zone {name:?}: {e}")))
 }
 
-/// The event description: the plain-text `body` when Graph sent text, else the
-/// server-computed `bodyPreview`.
+/// The event description: the `body` when Graph sent it as text, which the sync asks for
+/// ([`crate::cal_fetch`]), else the server-computed `bodyPreview`, cut at 255 characters.
 fn description(value: &Value) -> Option<String> {
     let body = value.get("body");
     let text = if body.and_then(|b| opt_str(b, "contentType")) == Some("text") {
