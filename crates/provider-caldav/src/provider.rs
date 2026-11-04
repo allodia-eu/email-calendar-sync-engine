@@ -342,3 +342,7 @@ mod tests;
 #[cfg(test)]
 #[path = "imip_flow_tests.rs"]
 mod imip_flow_tests;
+
+#[cfg(test)]
+#[path = "conference_provider_tests.rs"]
+mod conference_provider_tests;

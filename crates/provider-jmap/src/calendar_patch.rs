@@ -114,12 +114,12 @@ pub(crate) fn patch_to_json(
     if let Some(summary) = patch.summary_edit() {
         properties.insert("title".to_owned(), json!(summary));
     }
-    let conference = crate::calendar_conference_write::plan(base, patch)?;
-    if conference.is_some() && !matches!(edit.target, PatchTarget::Series) {
+    if patch.conference_edit().is_some() && !matches!(edit.target, PatchTarget::Series) {
         return Err(JmapError::protocol(
             "a meeting belongs to the whole series, not one occurrence",
         ));
     }
+    let conference = crate::calendar_conference_write::plan(base, patch)?;
     let description = conference
         .as_ref()
         .and_then(|write| write.description.as_ref())

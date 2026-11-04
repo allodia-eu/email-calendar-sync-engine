@@ -239,3 +239,99 @@ async fn a_meeting_the_server_would_make_is_refused_on_a_patch() {
     assert_eq!(error.class(), FailureClass::InvalidState);
     assert_eq!(exec.request_count(), 0);
 }
+
+#[test]
+fn a_meetings_notes_ride_on_its_join_link() {
+    let NewConference::Attach(mut attached) = jitsi() else {
+        unreachable!()
+    };
+    attached.conference.notes = Some("Open in a browser".into());
+    let update = update(
+        &event(&json!({})),
+        patch().conference(attach(NewConference::Attach(attached))),
+    );
+    let entry = &update["virtualLocations"]["meeting-1"];
+    assert_eq!(entry["description"], json!("Open in a browser"));
+    // The reader takes the meeting's notes from there.
+    let mut raw: Value = json!({
+        "@type": "Event", "id": "l", "uid": "evt-1@test.local", "calendarIds": { "b": true },
+        "title": "Review", "start": "2026-08-01T09:00:00", "timeZone": "Europe/Amsterdam",
+        "duration": "PT30M",
+    });
+    raw["virtualLocations"] = update["virtualLocations"].clone();
+    let read = event_from_json(&raw).unwrap();
+    assert_eq!(
+        read.conferences[0].notes.as_deref(),
+        Some("Open in a browser")
+    );
+}
+
+#[test]
+fn removing_a_meeting_written_only_in_the_text_writes_no_entries() {
+    // Graph and pasted invitations leave a meeting only in the notes and location; the
+    // event then has no `virtualLocations` map to point into.
+    let base = event(&json!({
+        "description": format!("Agenda\n\n{}", jitsi_block()),
+        "locations": { "1": { "@type": "Location", "name": JITSI } },
+    }));
+    assert_eq!(base.conferences.len(), 1, "{:?}", base.conferences);
+    let key = base.conferences[0].key.clone();
+    let update = update(&base, patch().conference(ConferenceEdit::Remove(key)));
+    assert_eq!(
+        Value::Object(update),
+        json!({ "description": "Agenda", "locations/1": null })
+    );
+}
+
+#[test]
+fn a_dial_in_keeps_its_own_description() {
+    let NewConference::Attach(mut attached) = jitsi() else {
+        unreachable!()
+    };
+    let mut dial = EntryPoint::at(ConferenceUri::parse("tel:+31201234567").unwrap());
+    dial.description = Some("Then enter 4711#".into());
+    attached.conference.entry_points.push(dial);
+    let update = update(
+        &event(&json!({})),
+        patch().conference(attach(NewConference::Attach(attached))),
+    );
+    assert_eq!(
+        update["virtualLocations"]["meeting-2"]["description"],
+        json!("Then enter 4711#")
+    );
+    assert!(
+        update["virtualLocations"]["meeting-1"]
+            .get("description")
+            .is_none()
+    );
+}
+
+#[test]
+fn the_patch_object_refuses_a_meeting_on_one_occurrence() {
+    let base = with_talk();
+    let edit = EventEdit::new(
+        &base,
+        PatchTarget::Instance(Occurrence::starting(base.start.clone())),
+        patch().conference(ConferenceEdit::Remove(ConferenceKey::new("unknown"))),
+    );
+    let error = crate::calendar_patch::patch_to_json(&base, &edit, None).unwrap_err();
+    assert!(error.to_string().contains("whole series"), "{error}");
+}
+
+#[test]
+fn a_create_asking_the_server_for_a_meeting_is_refused() {
+    let draft = EventDraft::new(
+        engine_core::ids::CalendarId::try_from("b").unwrap(),
+        engine_core::ids::Uid::new("evt-1@test.local").unwrap(),
+        "Review",
+        event(&json!({})).start,
+        event(&json!({})).start,
+        "2026-07-14T10:00:00Z".parse().unwrap(),
+    )
+    .conference(NewConference::Native(ConferenceService::Teams));
+    let error = apply_to_create(&draft, &mut Map::new()).unwrap_err();
+    assert!(
+        error.to_string().contains("no meetings of its own"),
+        "{error}"
+    );
+}

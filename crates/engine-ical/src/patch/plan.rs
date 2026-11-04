@@ -93,14 +93,10 @@ pub(super) fn plan(
             &TextEdit::Set(summary.to_owned()),
         );
     }
-    let conference = match base {
-        Some(base) => super::conference::plan(doc, vevent, base, patch)?,
-        None if patch.conference_edit().is_some() => {
-            return Err(IcalError::new(
-                "a meeting belongs to the whole series, not one occurrence",
-            ));
-        }
-        None => None,
+    // An occurrence's patch has no base: `patch_event_ical` refuses a meeting edit on one.
+    let conference = match (base, patch.conference_edit()) {
+        (Some(base), Some(edit)) => Some(super::conference::plan(doc, vevent, base, patch, edit)?),
+        _ => None,
     };
     let description = conference
         .as_ref()

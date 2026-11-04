@@ -4,8 +4,8 @@
 //! location are what an invitee on one of them sees (`calendar-semantics.md`, "Writing a
 //! meeting").
 
-use engine_core::calendar::{Conference, ConferenceUri, with_text_block, without_text_block};
-use engine_provider::NewConference;
+use engine_core::calendar::{Conference, ConferenceUri, with_text_block};
+use engine_provider::{AttachedConference, NewConference};
 
 use crate::{error::IcalError, scheduling_write::escape_parameter, unfold::unescape_text};
 
@@ -17,32 +17,21 @@ pub(crate) const MEETING_PROPERTIES: [&str; 3] = [
     "X-MICROSOFT-SKYPETEAMSMEETINGURL",
 ];
 
-/// A meeting ready to be written: the notes with its block, its join link, and its
+/// A meeting ready to be written on a create: the notes with its block, its join link, and its
 /// `CONFERENCE` lines, unfolded.
 pub(crate) struct Attachment {
-    pub(crate) conference: Conference,
     pub(crate) notes: String,
     pub(crate) join: String,
     pub(crate) lines: Vec<String>,
 }
 
-/// What putting `new` on an event whose notes are `notes` writes. A block `notes` already
-/// carry for the same meeting is replaced, never repeated.
+/// What putting `new` on a new event whose notes are `notes` writes.
 ///
 /// # Errors
 ///
-/// [`IcalError`] for a [`NewConference::Native`], since no iCalendar server makes a meeting
-/// of its own, and for a meeting without a web link to join it at.
+/// [`IcalError`] for a [`NewConference::Native`], and for a meeting without a web link.
 pub(crate) fn attachment(notes: &str, new: &NewConference) -> Result<Attachment, IcalError> {
-    let attached = match new {
-        NewConference::Native(service) => {
-            return Err(IcalError::new(format!(
-                "this calendar's server makes no meetings of its own, so it cannot make a \
-                 {service:?} one; attach a meeting made elsewhere"
-            )));
-        }
-        NewConference::Attach(attached) => attached,
-    };
+    let attached = attached(new)?;
     let conference = &attached.conference;
     let join = conference
         .join()
@@ -51,25 +40,36 @@ pub(crate) fn attachment(notes: &str, new: &NewConference) -> Result<Attachment,
         .text_block(&attached.text)
         .unwrap_or_else(|| unreachable!("a meeting with a join link has a block"));
     Ok(Attachment {
-        conference: conference.clone(),
-        notes: with_text_block(&without_text_block(notes, conference), &block),
+        notes: with_text_block(notes, &block),
         join: join.as_str().to_owned(),
         lines: conference_lines(conference),
     })
 }
 
-/// One `CONFERENCE` line per way in, the join link first. The meeting's name labels its join
-/// link, which is where the reader takes it from; each other way in keeps its own label.
+/// The meeting a [`NewConference::Attach`] puts on.
+///
+/// # Errors
+///
+/// [`IcalError`] for a [`NewConference::Native`], since no iCalendar server makes a meeting of
+/// its own.
+pub(crate) fn attached(new: &NewConference) -> Result<&AttachedConference, IcalError> {
+    match new {
+        NewConference::Native(service) => Err(IcalError::new(format!(
+            "this calendar's server makes no meetings of its own, so it cannot make a \
+             {service:?} one; attach a meeting made elsewhere"
+        ))),
+        NewConference::Attach(attached) => Ok(attached),
+    }
+}
+
+/// One `CONFERENCE` line per way in ([`Conference::labelled_ways_in`]).
 ///
 /// A `URI` value is not TEXT, so it is written unescaped (RFC 5545 §3.3.13); a `tel:` keeps its
 /// commas as they are.
-fn conference_lines(conference: &Conference) -> Vec<String> {
-    let join = conference.join();
-    let mut points: Vec<_> = conference.entry_points.iter().collect();
-    points.sort_by_key(|point| Some(&point.uri) != join);
-    points
-        .into_iter()
-        .map(|point| {
+pub(crate) fn conference_lines(conference: &Conference) -> Vec<String> {
+    conference
+        .labelled_ways_in()
+        .map(|(point, label)| {
             let mut line = "CONFERENCE;VALUE=URI".to_owned();
             let features: Vec<String> = point
                 .offered_features()
@@ -80,11 +80,6 @@ fn conference_lines(conference: &Conference) -> Vec<String> {
                 line.push_str(";FEATURE=");
                 line.push_str(&features.join(","));
             }
-            let label = if Some(&point.uri) == join {
-                conference.label.as_ref().or(point.label.as_ref())
-            } else {
-                point.label.as_ref()
-            };
             if let Some(label) = label {
                 line.push_str(";LABEL=");
                 line.push_str(&escape_parameter(label));

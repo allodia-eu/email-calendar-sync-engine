@@ -52,6 +52,7 @@
 mod conference;
 mod delete;
 mod invitation;
+mod meeting_text;
 mod patch;
 mod rsvp;
 mod writes;
@@ -69,6 +70,7 @@ pub use invitation::{
     CalendarAddress, InvitationError, Invitee, InviteePatch, InviteeRole, MeetingDraft,
     SchedulingIdentity,
 };
+pub use meeting_text::{MeetingText, meeting_text};
 pub use patch::{EventEdit, EventPatch, PatchTarget, RecurrenceEdit, TextEdit};
 pub use rsvp::{EventRsvp, ReplyDelivery, RsvpResponse};
 use serde::{Deserialize, Serialize};

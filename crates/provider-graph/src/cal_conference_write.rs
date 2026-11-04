@@ -13,11 +13,10 @@
 //! The body is written as text, as every Graph notes edit is (`cal_write`).
 
 use engine_core::calendar::{
-    Conference, ConferenceOrigin, ConferenceService, ConferenceText, Event, with_text_block,
-    without_text_block,
+    Conference, ConferenceService, ConferenceText, Event, with_text_block,
 };
 use engine_provider::{
-    EventDraft, EventPatch, NewConference, ProviderError, ProviderResult, TextEdit,
+    EventDraft, EventPatch, NewConference, ProviderError, ProviderResult, TextEdit, meeting_text,
 };
 use serde_json::{Map, Value, json};
 
@@ -45,7 +44,7 @@ pub(crate) fn apply_to_create(
 }
 
 /// Adds what `patch`'s conference edit writes to the patch's `body`, over the notes and
-/// location the same patch already sets.
+/// location the same patch already sets ([`meeting_text`]).
 pub(crate) fn apply_to_patch(
     base: &Event,
     patch: &EventPatch,
@@ -54,51 +53,30 @@ pub(crate) fn apply_to_patch(
     let Some(edit) = patch.conference_edit() else {
         return Ok(());
     };
-    let before = patch.description_after(base).unwrap_or_default();
-    let mut notes = before.to_owned();
-    // A location the patch sets is the person's; only the stored one is the meeting's to clear.
-    let edits_location = patch.location_edit().is_some();
-    let mut location = match patch.location_edit() {
-        Some(TextEdit::Set(text)) => text.clone(),
-        Some(TextEdit::Clear) => String::new(),
-        None => stored_location(base),
+    if let Some(NewConference::Native(service)) = edit.adds() {
+        ask_for(service, body)?;
+    }
+    let Some(text) = meeting_text(base, patch, &stored_location(base))? else {
+        return Ok(());
     };
-    let mut location_changed = false;
-    if let Some(key) = edit.removes() {
-        let conference = base.conference(key).ok_or_else(not_held)?;
-        notes = without_text_block(&notes, conference).into_owned();
-        let stand_in = matches!(conference.origin, ConferenceOrigin::Native { .. })
-            && base.locations.is_empty();
-        let is_link = conference
-            .join()
-            .is_some_and(|uri| uri.as_str() == location);
-        if !edits_location && !location.is_empty() && (stand_in || is_link) {
-            location.clear();
-            location_changed = true;
-        }
-    }
-    match edit.adds() {
-        None => {}
-        Some(NewConference::Native(service)) => ask_for(service, body)?,
-        Some(NewConference::Attach(attached)) => {
-            let (conference, text) = (&attached.conference, &attached.text);
-            let (join, block) = block(conference, text)?;
-            // A block the notes already carry for this meeting is replaced, never repeated.
-            notes = with_text_block(&without_text_block(&notes, conference), &block);
-            if location.is_empty() {
-                location = join;
-                location_changed = true;
-            }
-        }
-    }
     // An unchanged body is not written: a text write flattens the HTML Exchange holds.
-    if notes != before {
-        body.insert("body".to_owned(), text_body(&notes));
+    if let Some(notes) = &text.notes {
+        body.insert("body".to_owned(), text_body(text_value(notes)));
     }
-    if location_changed {
-        body.insert("location".to_owned(), json!({ "displayName": location }));
+    if let Some(location) = &text.location {
+        body.insert(
+            "location".to_owned(),
+            json!({ "displayName": text_value(location) }),
+        );
     }
     Ok(())
+}
+
+fn text_value(edit: &TextEdit) -> &str {
+    match edit {
+        TextEdit::Set(text) => text,
+        TextEdit::Clear => "",
+    }
 }
 
 /// Asks Exchange for a meeting on `service`; it makes Teams meetings only.
@@ -125,11 +103,6 @@ fn block(conference: &Conference, text: &ConferenceText) -> ProviderResult<(Stri
         .text_block(text)
         .unwrap_or_else(|| unreachable!("a meeting with a join link has a block"));
     Ok((join.as_str().to_owned(), block))
-}
-
-/// The refusal of a removal naming a meeting the event does not hold.
-fn not_held() -> ProviderError {
-    ProviderError::invalid_state("the event holds no meeting with that key")
 }
 
 /// The location as Graph holds it, Exchange's stand-in included, which the projection leaves

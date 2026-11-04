@@ -9,10 +9,8 @@
 //! - **A JMAP server makes no meetings of its own**; the adapter refuses one before anything is
 //!   sent (`engine_provider::refuse_native_conference`).
 
-use engine_core::calendar::{
-    Conference, ConferenceUri, Event, with_text_block, without_text_block,
-};
-use engine_provider::{EventDraft, EventPatch, NewConference, TextEdit};
+use engine_core::calendar::{Conference, ConferenceUri, Event, with_text_block};
+use engine_provider::{EventDraft, EventPatch, NewConference, TextEdit, meeting_text};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -56,7 +54,9 @@ pub(crate) struct ConferenceWrite {
     pub(crate) virtual_locations: Vec<(String, Value)>,
 }
 
-/// Plans `patch`'s conference edit against `base`; `None` when the patch has none.
+/// Plans `patch`'s conference edit against `base`; `None` when the patch has none. The notes and
+/// location come from [`meeting_text`]; what is this transport's own is which
+/// `virtualLocations` entries and locations the edit names.
 ///
 /// # Errors
 ///
@@ -73,38 +73,27 @@ pub(crate) fn plan(base: &Event, patch: &EventPatch) -> Result<Option<Conference
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let before = patch.description_after(base).unwrap_or_default();
-    let mut notes = before.to_owned();
-    // A location the patch sets is the person's; only the stored one is the meeting's to clear.
-    let edits_location = patch.location_edit().is_some();
-    let mut location = match patch.location_edit() {
-        Some(TextEdit::Set(text)) => text.clone(),
-        Some(TextEdit::Clear) => String::new(),
-        None => base
-            .locations
-            .first()
-            .and_then(|location| location.name.clone())
-            .unwrap_or_default(),
-    };
-    let mut location_write = None;
-    let mut removed = Map::new();
+    let stored_location = base
+        .locations
+        .first()
+        .and_then(|location| location.name.as_deref())
+        .unwrap_or_default();
+    let text = meeting_text(base, patch, stored_location)
+        .map_err(|error| JmapError::protocol(error.to_string()))?
+        .unwrap_or_else(|| unreachable!("a patch with a conference edit has a text plan"));
 
+    let mut removed = Map::new();
     if let Some(key) = edit.removes() {
         let conference = base
             .conference(key)
-            .ok_or_else(|| JmapError::protocol("the event holds no meeting with that key"))?;
-        notes = without_text_block(&notes, conference).into_owned();
+            .unwrap_or_else(|| unreachable!("meeting_text refused a key the event lacks"));
         for id in ids_where(&stored, |uri| conference.joined_at(uri)) {
             removed.insert(id, Value::Null);
-        }
-        if !edits_location && join_matches(conference, &location) {
-            location.clear();
-            location_write = Some(location_ids(raw.as_ref(), conference));
         }
     }
     let mut added = Map::new();
     if let Some(new) = edit.adds() {
-        let (conference, block) = attached(new)?;
+        let (conference, _) = attached(new)?;
         // Entries the event already holds for the same ways in are replaced, never repeated.
         for id in ids_where(&stored, |uri| {
             conference
@@ -114,12 +103,13 @@ pub(crate) fn plan(base: &Event, patch: &EventPatch) -> Result<Option<Conference
         }) {
             removed.insert(id, Value::Null);
         }
-        notes = with_text_block(&without_text_block(&notes, conference), &block);
         added = entries(conference, &stored);
-        if location.trim().is_empty() {
-            location_write = Some(location_edit(base, &TextEdit::Set(join(conference))));
-        }
     }
+    // A cleared location is the removed meeting's link; only the locations named so go.
+    let location = text.location.map(|location| match location {
+        TextEdit::Clear => locations_named(raw.as_ref(), stored_location),
+        set @ TextEdit::Set(_) => location_edit(base, &set),
+    });
 
     // A pointer into a map the event does not have is an `invalidPatch` (RFC 8620 §5.3), so an
     // event without one is given the whole map.
@@ -136,15 +126,9 @@ pub(crate) fn plan(base: &Event, patch: &EventPatch) -> Result<Option<Conference
             .map(|(id, value)| (format!("virtualLocations/{}", escape_pointer(&id)), value))
             .collect()
     };
-    let changed = notes != before;
-    let description = if notes.is_empty() {
-        TextEdit::Clear
-    } else {
-        TextEdit::Set(notes)
-    };
     Ok(Some(ConferenceWrite {
-        description: changed.then_some(description),
-        location: location_write,
+        description: text.notes,
+        location,
         virtual_locations,
     }))
 }
@@ -170,36 +154,29 @@ fn join(conference: &Conference) -> String {
         .unwrap_or_default()
 }
 
-fn join_matches(conference: &Conference, location: &str) -> bool {
-    conference
-        .join()
-        .is_some_and(|uri| uri.as_str() == location.trim())
-}
-
-/// One `VirtualLocation` per way in, the join link first, at ids `stored` does not use. The
-/// meeting's name labels its join link, which is where the reader takes it from.
+/// One `VirtualLocation` per way in ([`Conference::labelled_ways_in`]), at ids `stored` does
+/// not use. The join link carries the meeting's notes, which is where the reader takes them
+/// from.
 fn entries(conference: &Conference, stored: &Map<String, Value>) -> Map<String, Value> {
     let join = conference.join();
-    let mut points: Vec<_> = conference.entry_points.iter().collect();
-    points.sort_by_key(|point| Some(&point.uri) != join);
     let mut ids = (1..)
         .map(|n| format!("meeting-{n}"))
         .filter(|id| !stored.contains_key(id));
-    points
-        .into_iter()
-        .map(|point| {
+    conference
+        .labelled_ways_in()
+        .map(|(point, label)| {
             let mut entry = Map::new();
             entry.insert("@type".to_owned(), json!("VirtualLocation"));
             entry.insert("uri".to_owned(), json!(point.uri.as_str()));
-            let label = if Some(&point.uri) == join {
-                conference.label.as_ref().or(point.label.as_ref())
-            } else {
-                point.label.as_ref()
-            };
             if let Some(label) = label {
                 entry.insert("name".to_owned(), json!(label));
             }
-            if let Some(description) = &point.description {
+            let description = if Some(&point.uri) == join {
+                conference.notes.as_ref().or(point.description.as_ref())
+            } else {
+                point.description.as_ref()
+            };
+            if let Some(description) = description {
                 entry.insert("description".to_owned(), json!(description));
             }
             let features: Map<String, Value> = point
@@ -231,15 +208,13 @@ fn ids_where(stored: &Map<String, Value>, names: impl Fn(&ConferenceUri) -> bool
         .collect()
 }
 
-/// The pointers removing each location whose name is `conference`'s join link.
-fn location_ids(raw: Option<&Value>, conference: &Conference) -> Vec<(String, Value)> {
+/// The pointers removing each location named `name`.
+fn locations_named(raw: Option<&Value>, name: &str) -> Vec<(String, Value)> {
     raw.and_then(|raw| raw.get("locations"))
         .and_then(Value::as_object)
         .into_iter()
         .flatten()
-        .filter(|(_, location)| {
-            opt_str(location, "name").is_some_and(|name| join_matches(conference, name))
-        })
+        .filter(|(_, location)| opt_str(location, "name").map(str::trim) == Some(name.trim()))
         .map(|(id, _)| (format!("locations/{}", escape_pointer(id)), Value::Null))
         .collect()
 }

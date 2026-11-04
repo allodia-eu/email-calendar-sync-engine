@@ -245,6 +245,23 @@ impl Conference {
             .map(|entry| &entry.uri)
     }
 
+    /// Each way in, the join link first, with the label a flat list stores for it: the
+    /// meeting's name on the join link, which is where [`group_flat`] reads the name from, and
+    /// each other way in's own.
+    pub fn labelled_ways_in(&self) -> impl Iterator<Item = (&EntryPoint, Option<&str>)> {
+        let join = self.join();
+        let mut points: Vec<&EntryPoint> = self.entry_points.iter().collect();
+        points.sort_by_key(|point| Some(&point.uri) != join);
+        points.into_iter().map(move |point| {
+            let label = if Some(&point.uri) == join {
+                self.label.as_deref().or(point.label.as_deref())
+            } else {
+                point.label.as_deref()
+            };
+            (point, label)
+        })
+    }
+
     /// Whether following `uri` joins this meeting: one of its ways in is the same meeting
     /// ([`ConferenceUri::same_meeting`]), or `uri` runs on its service and this is the event's
     /// one meeting there, which the calendar server made or a vendor property names. The

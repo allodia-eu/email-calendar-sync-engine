@@ -6,12 +6,12 @@
 //! its link; putting one on writes its `CONFERENCE` lines, its block and, when the event has no
 //! location, its link as the location ([`crate::conference_write`]).
 
-use engine_core::calendar::{Event, without_text_block};
-use engine_provider::{EventPatch, TextEdit};
+use engine_core::calendar::Event;
+use engine_provider::{ConferenceEdit, EventPatch, TextEdit, meeting_text};
 
 use super::{
     super::{
-        conference_write::{MEETING_PROPERTIES, attachment, property_uri},
+        conference_write::{MEETING_PROPERTIES, attached, conference_lines, property_uri},
         lines::Document,
         unfold::split_once_unquoted,
     },
@@ -20,7 +20,7 @@ use super::{
 use crate::error::IcalError;
 
 /// The edits a conference edit implies. The notes and location are the text the event ends
-/// with, and replace the patch's own edits of them, which they already include.
+/// with ([`meeting_text`]), and replace the patch's own edits of them, which they include.
 pub(super) struct ConferenceWrite {
     pub(super) description: Option<TextEdit>,
     pub(super) location: Option<TextEdit>,
@@ -28,8 +28,7 @@ pub(super) struct ConferenceWrite {
     pub(super) insert: Vec<String>,
 }
 
-/// Plans `patch`'s conference edit on `vevent`, whose projection is `base`; `None` when the
-/// patch has none.
+/// Plans `patch`'s conference edit `edit` on `vevent`, whose projection is `base`.
 ///
 /// # Errors
 ///
@@ -40,65 +39,41 @@ pub(super) fn plan(
     vevent: &Vevent,
     base: &Event,
     patch: &EventPatch,
-) -> Result<Option<ConferenceWrite>, IcalError> {
-    let Some(edit) = patch.conference_edit() else {
-        return Ok(None);
-    };
-    let before = patch.description_after(base).unwrap_or_default();
-    let mut notes = before.to_owned();
-    // A location the patch sets is the person's; only the stored one is the meeting's to clear.
-    let edits_location = patch.location_edit().is_some();
-    let mut location = match patch.location_edit() {
-        Some(TextEdit::Set(text)) => text.clone(),
-        Some(TextEdit::Clear) => String::new(),
-        None => base
-            .locations
-            .first()
-            .and_then(|location| location.name.clone())
-            .unwrap_or_default(),
-    };
-    let mut location_changed = false;
+    edit: &ConferenceEdit,
+) -> Result<ConferenceWrite, IcalError> {
+    let stored_location = base
+        .locations
+        .first()
+        .and_then(|location| location.name.as_deref())
+        .unwrap_or_default();
+    let text = meeting_text(base, patch, stored_location)
+        .map_err(|error| IcalError::new(error.to_string()))?
+        .unwrap_or_else(|| unreachable!("a patch with a conference edit has a text plan"));
     let mut remove = Vec::new();
-
     if let Some(key) = edit.removes() {
         let conference = base
             .conference(key)
-            .ok_or_else(|| IcalError::new("the event holds no meeting with that key"))?;
-        notes = without_text_block(&notes, conference).into_owned();
+            .unwrap_or_else(|| unreachable!("meeting_text refused a key the event lacks"));
         remove.extend(meeting_lines(doc, vevent, |uri| conference.joined_at(uri)));
-        let is_link = conference
-            .join()
-            .is_some_and(|uri| uri.as_str() == location.trim());
-        if !edits_location && is_link {
-            location.clear();
-            location_changed = true;
-        }
     }
     let mut insert = Vec::new();
     if let Some(new) = edit.adds() {
-        let meeting = attachment(&notes, new)?;
+        let conference = &attached(new)?.conference;
         // Lines the event already holds for the same ways in are replaced, never repeated.
         remove.extend(meeting_lines(doc, vevent, |uri| {
-            meeting
-                .conference
+            conference
                 .entry_points
                 .iter()
                 .any(|point| point.uri == *uri)
         }));
-        notes = meeting.notes;
-        insert = meeting.lines;
-        if location.trim().is_empty() {
-            location = meeting.join;
-            location_changed = true;
-        }
+        insert = conference_lines(conference);
     }
-
-    Ok(Some(ConferenceWrite {
-        description: (notes != before).then(|| text_edit(notes)),
-        location: location_changed.then(|| text_edit(location)),
+    Ok(ConferenceWrite {
+        description: text.notes,
+        location: text.location,
         remove,
         insert,
-    }))
+    })
 }
 
 /// The groups of `vevent`'s meeting properties whose URI `names`.
@@ -122,12 +97,4 @@ fn meeting_lines(
                     .is_some_and(|uri| names(&uri))
         })
         .collect()
-}
-
-fn text_edit(text: String) -> TextEdit {
-    if text.is_empty() {
-        TextEdit::Clear
-    } else {
-        TextEdit::Set(text)
-    }
 }

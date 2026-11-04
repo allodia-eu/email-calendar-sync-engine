@@ -701,7 +701,9 @@ sees:
   one of its own; `NewConference::Attach` stores one made elsewhere. `ConferenceEdit::Set`
   puts one on, replacing a named one, and `Remove` takes one off. A meeting belongs to the
   series, so an occurrence edit carrying one is refused (`EventEdit::refuse_conference_on_occurrence`).
-  Measured per adapter:
+  What an edit leaves in the notes and location is decided once, by `meeting_text`, for every
+  adapter that writes a meeting into them; an adapter decides only which of its own fields name
+  the meeting. Measured per adapter:
   - **Graph.** Teams is `isOnlineMeeting: true` with `teamsForBusiness`; Exchange appends its
     block and stand-in location, and keeps changing the event while it sets up the meeting,
     so a patch on a revision read just after the create can be refused as stale (`412`).

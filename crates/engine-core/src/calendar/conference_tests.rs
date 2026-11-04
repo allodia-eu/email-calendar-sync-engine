@@ -168,3 +168,31 @@ fn a_way_in_offers_what_it_states_else_what_its_kind_offers() {
     stated.features = [ConferenceFeature::Chat].into();
     assert_eq!(stated.offered_features(), [ConferenceFeature::Chat].into());
 }
+
+#[test]
+fn the_join_link_comes_first_under_the_meetings_name() {
+    let mut dial = EntryPoint::at(ConferenceUri::parse("tel:+31201234567").unwrap());
+    dial.label = Some("+31 20 1234567".into());
+    let mut web = EntryPoint::at(ConferenceUri::parse("https://meet.example.org/a").unwrap());
+    web.label = Some("Open in a browser".into());
+    let conference = Conference {
+        key: ConferenceKey::new("k"),
+        service: None,
+        origin: ConferenceOrigin::Attached,
+        entry_points: vec![dial, web],
+        label: Some("Team call".into()),
+        meeting_id: None,
+        notes: None,
+    };
+    let ways: Vec<(&str, Option<&str>)> = conference
+        .labelled_ways_in()
+        .map(|(point, label)| (point.uri.as_str(), label))
+        .collect();
+    assert_eq!(
+        ways,
+        [
+            ("https://meet.example.org/a", Some("Team call")),
+            ("tel:+31201234567", Some("+31 20 1234567")),
+        ]
+    );
+}
