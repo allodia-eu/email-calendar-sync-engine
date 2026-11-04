@@ -766,6 +766,17 @@ sees:
     `JoinWebUrl` and deletes each match; Graph answers 404 for one that is gone, and after a
     delete the same key makes a new meeting. `live_teams_meetings` checks both against a
     work account.
+  - **Nextcloud Talk** (`TalkMeetings`, in `provider-caldav`) makes a public conversation
+    (`roomType` 3) named after the title, which a guest joins at
+    `<server>/index.php/call/<token>`. Talk keeps no key of the caller's, so a repeated
+    request makes a second conversation. Where the administrator forces a password on public
+    conversations (`force-passwords` in the capabilities) the key is the password, carried as
+    the join entry's `password`; elsewhere there is none, because a guest would then need more
+    than the link. A delete takes the token from the link only when the link is under this
+    server's `call` path, so a link to another server never names a conversation here; Talk
+    answers 404 for one that is gone. The conversation is a regular one: an event carrying its
+    link does not make it an event conversation, so Talk's event retention never removes it.
+    `live_talk` runs against the Nextcloud harness, whose hook installs a pinned Talk.
 
 ## Supported recurrence subset
 

@@ -38,6 +38,8 @@
 //!   ([`EventWrite`](engine_provider::EventWrite)), because an RSVP is naturally a finished
 //!   document rather than a property patch.
 //! - `provider` — the [`Provider`](engine_provider::Provider) implementation.
+//! - `talk` — [`TalkMeetings`], the Nextcloud Talk meeting service: not a calendar adapter, but it
+//!   speaks to the same server with the same [`Credentials`].
 
 mod caldav_config;
 mod calendar;
@@ -60,6 +62,7 @@ mod request;
 mod response;
 pub mod schedule_status;
 mod sync;
+mod talk;
 #[cfg(test)]
 mod test_support;
 mod throttle;
@@ -99,6 +102,7 @@ pub use credential_hosts::CredentialHosts;
 pub use engine_http::UserAgent;
 pub use error::CalDavError;
 pub use provider::CalDavProvider;
+pub use talk::TalkMeetings;
 pub use transport::Credentials;
 
 /// Parses arbitrary bytes as an iCalendar object resource through the full

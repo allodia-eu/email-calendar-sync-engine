@@ -363,10 +363,10 @@ jobs:
         working-directory: docker/nextcloud
         run: docker compose up -d --wait
 
-      - name: Run the gated Nextcloud CalDAV and CardDAV integration tests (live)
+      - name: Run the gated Nextcloud CalDAV, CardDAV and Talk integration tests (live)
         env:
           NEXTCLOUD_HTTP_ADDR: 127.0.0.1:18082
-        run: cargo test -p provider-caldav --test live_nextcloud --test live_nextcloud_contacts -- --nocapture
+        run: cargo test -p provider-caldav --test live_nextcloud --test live_nextcloud_contacts --test live_talk -- --nocapture
 
       - name: Dump Nextcloud logs on failure
         if: failure()

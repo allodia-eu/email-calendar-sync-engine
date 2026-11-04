@@ -15,6 +15,8 @@ committing: these come from throwaway harness accounts only
 | `options-dav-stalwart.txt` | Stalwart | The `DAV:` response header of an `OPTIONS` on the calendar home — **with** `calendar-auto-schedule` (RFC 6638 §2). |
 | `options-dav-sabredav.txt` | SabreDAV | The same header **without** it. |
 | `concurrency-limit-stalwart.json` | Stalwart | The body of the `400` a `PUT` over the account's concurrency cap is refused with — RFC 8620's `limit` problem details, `maxConcurrentRequests`, on a DAV endpoint (`throttle.rs`). Byte-for-byte; it names no account. |
+| `talk-capabilities.json` | Nextcloud | `GET /ocs/v2.php/cloud/capabilities` with Talk installed and nothing configured: `spreed.config.conversations` says a conversation may be made and needs no password (`talk.rs`). |
+| `talk-room-created.json` | Nextcloud | The answer to making a public conversation (`roomType` 3), whose `token` names it in its link (`talk.rs`). |
 
 ## The two `OPTIONS` fixtures are the discriminating pair
 
