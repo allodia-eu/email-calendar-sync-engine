@@ -733,8 +733,11 @@ sees:
     `virtualLocations` and their names.
   - **Our block** (`Conference::text_block`) is a rule of 40 `-=` characters, the meeting's
     name (its label, else the caller's word for a video meeting), `Join: <link>`, its ID,
-    passcode and dial-in numbers, and the rule again. The words come from the caller in a
-    `ConferenceText`, since the engine has no locale. It is recognised like Teams' and
+    passcode and dial-in numbers, and the rule again. A number's code (its `access_code`,
+    else its `pin`) follows the numbers once when every number shares it, as a Teams phone
+    conference ID is shared, and stands beside its number otherwise. The words come from the
+    caller in a `ConferenceText`, since the engine has no locale; a write queued before
+    `dial_in_code` existed reads it as empty and leaves the codes out. It is recognised like Teams' and
     Google's blocks, so `notes` leaves it out, and removing the meeting takes it out of the
     notes with every other block that joins it (`without_text_block`).
   `live_calendar_conference_write` in `provider-graph`, `provider-google` and `provider-jmap`,

@@ -210,3 +210,23 @@ async fn a_meeting_without_a_join_link_cannot_be_found() {
     assert!(err.to_string().contains("join link"), "{err}");
     assert!(requests.lock().unwrap().is_empty());
 }
+
+#[test]
+fn the_notes_tell_a_caller_the_phone_conference_id() {
+    let words = engine_core::calendar::ConferenceText {
+        meeting: "Video meeting".into(),
+        join: "Join".into(),
+        meeting_id: "Meeting ID".into(),
+        passcode: "Passcode".into(),
+        dial_in: "Dial in".into(),
+        dial_in_code: "Conference ID".into(),
+    };
+    let block = conference(&answer_with_numbers())
+        .unwrap()
+        .text_block(&words)
+        .unwrap();
+    assert!(
+        block.contains("Dial in: +31 800 000 0000\nConference ID: 123456789\n"),
+        "{block}"
+    );
+}

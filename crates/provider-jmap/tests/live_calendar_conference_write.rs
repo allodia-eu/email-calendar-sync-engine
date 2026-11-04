@@ -45,6 +45,7 @@ fn meeting(service: ConferenceService, label: &str, uris: &[&str]) -> NewConfere
             meeting_id: "Meeting ID".into(),
             passcode: "Passcode".into(),
             dial_in: "Dial in".into(),
+            dial_in_code: "Conference ID".into(),
         },
     )
 }
