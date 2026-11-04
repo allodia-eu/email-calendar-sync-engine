@@ -194,13 +194,13 @@ fn categories(message: &Value) -> Vec<String> {
 }
 
 /// `value` as an OData string literal: quoted, with a quote inside doubled.
-fn literal(value: &str) -> String {
+pub(crate) fn literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
 /// Percent-encodes what a query value cannot carry literally, leaving the OData syntax
 /// (`/`, `(`, `:`, `'`) that Graph reads as written.
-fn encode(value: &str) -> String {
+pub(crate) fn encode(value: &str) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {

@@ -30,6 +30,7 @@ pub(super) fn words() -> ConferenceText {
         meeting_id: "Meeting ID".into(),
         passcode: "Passcode".into(),
         dial_in: "Dial in".into(),
+        dial_in_code: "Conference ID".into(),
     }
 }
 

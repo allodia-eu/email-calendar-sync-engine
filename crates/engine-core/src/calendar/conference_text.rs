@@ -4,7 +4,8 @@
 //! iCalendar `CONFERENCE` and JSCalendar `virtualLocations` are invisible to Outlook, Google
 //! Calendar and Thunderbird, and Graph has no field for a meeting it did not make, so a meeting
 //! put on such an event also goes into its notes: a rule, the meeting's name, `Join: <link>`,
-//! its ID and passcode, each dial-in number, and the rule again. The rule is fixed ASCII and the
+//! its ID and passcode, each dial-in number with the code a caller enters after dialling, and
+//! the rule again. The rule is fixed ASCII and the
 //! same in every language, so [`super::conference_block`] recognises the block whoever wrote
 //! the words.
 
@@ -12,7 +13,9 @@ use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Conference, EntryKind, conference_block::without_blocks, conference_detect::links};
+use super::{
+    Conference, EntryKind, EntryPoint, conference_block::without_blocks, conference_detect::links,
+};
 
 /// The line above and below the block. No Markdown reader takes it for a heading or a fence.
 pub(super) const RULE: &str = "-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=";
@@ -31,6 +34,10 @@ pub struct ConferenceText {
     pub passcode: String,
     /// Before each dial-in number ("Dial in").
     pub dial_in: String,
+    /// Before the code a caller enters after dialling ("Conference ID"). Empty in a write
+    /// queued before the word existed, which then leaves the codes out as it did.
+    #[serde(default)]
+    pub dial_in_code: String,
 }
 
 impl Conference {
@@ -58,12 +65,44 @@ impl Conference {
         if let Some(passcode) = passcode {
             lines.push(format!("{}: {passcode}", words.passcode));
         }
-        for number in self.entry_points.iter().filter_map(|e| e.phone_number()) {
-            lines.push(format!("{}: {number}", words.dial_in));
+        let dial_ins: Vec<(&str, Option<&str>)> = self
+            .entry_points
+            .iter()
+            .filter_map(|entry| {
+                let code = dial_in_code(entry).filter(|_| !words.dial_in_code.is_empty());
+                Some((entry.phone_number()?, code))
+            })
+            .collect();
+        // One code every number shares (a Teams phone conference ID) is said once, after them.
+        let shared = match dial_ins.split_first() {
+            Some(((_, Some(code)), rest))
+                if rest.iter().all(|(_, other)| other == &Some(*code)) =>
+            {
+                Some(*code)
+            }
+            _ => None,
+        };
+        for (number, code) in &dial_ins {
+            match code {
+                Some(code) if shared.is_none() => lines.push(format!(
+                    "{}: {number} ({}: {code})",
+                    words.dial_in, words.dial_in_code
+                )),
+                _ => lines.push(format!("{}: {number}", words.dial_in)),
+            }
+        }
+        if let Some(code) = shared {
+            lines.push(format!("{}: {code}", words.dial_in_code));
         }
         lines.push(RULE.to_owned());
         Some(lines.join("\n"))
     }
+}
+
+/// The code a caller enters after dialling `entry`: its access code, or its PIN.
+fn dial_in_code(entry: &EntryPoint) -> Option<&str> {
+    let access = &entry.access;
+    access.access_code.as_deref().or(access.pin.as_deref())
 }
 
 /// `notes` with `block` after them, a blank line between.

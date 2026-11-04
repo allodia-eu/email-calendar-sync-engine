@@ -733,8 +733,11 @@ sees:
     `virtualLocations` and their names.
   - **Our block** (`Conference::text_block`) is a rule of 40 `-=` characters, the meeting's
     name (its label, else the caller's word for a video meeting), `Join: <link>`, its ID,
-    passcode and dial-in numbers, and the rule again. The words come from the caller in a
-    `ConferenceText`, since the engine has no locale. It is recognised like Teams' and
+    passcode and dial-in numbers, and the rule again. A number's code (its `access_code`,
+    else its `pin`) follows the numbers once when every number shares it, as a Teams phone
+    conference ID is shared, and stands beside its number otherwise. The words come from the
+    caller in a `ConferenceText`, since the engine has no locale; a write queued before
+    `dial_in_code` existed reads it as empty and leaves the codes out. It is recognised like Teams' and
     Google's blocks, so `notes` leaves it out, and removing the meeting takes it out of the
     notes with every other block that joins it (`without_text_block`).
   `live_calendar_conference_write` in `provider-graph`, `provider-google` and `provider-jmap`,
@@ -755,6 +758,14 @@ sees:
   - **Jitsi** (`JitsiMeetings`) has no API: the meeting is `https://<server>/<key>`, made
     without a request, and there is nothing to delete. The server is an `https` address
     without a query or fragment, a path kept.
+  - **Teams** (`TeamsMeetings`, in `provider-graph`) uses `onlineMeetings/createOrGet` with
+    the key as `externalId`. The meeting is the signed-in user's whatever mailbox the client
+    is rooted at, because Graph makes one only for `/me`. Its answer becomes the join link with
+    its passcode, the meeting ID and each dial-in number, which carries `audioConferencing`'s
+    phone conference ID as its `access_code`. A delete looks the meeting up by
+    `JoinWebUrl` and deletes each match; Graph answers 404 for one that is gone, and after a
+    delete the same key makes a new meeting. `live_teams_meetings` checks both against a
+    work account.
 
 ## Supported recurrence subset
 

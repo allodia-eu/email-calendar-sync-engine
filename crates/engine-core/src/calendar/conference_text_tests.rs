@@ -10,6 +10,7 @@ fn words() -> ConferenceText {
         meeting_id: "Meeting ID".into(),
         passcode: "Passcode".into(),
         dial_in: "Dial in".into(),
+        dial_in_code: "Conference ID".into(),
     }
 }
 
@@ -103,4 +104,71 @@ fn a_teams_block_comes_out_for_the_teams_meeting_it_joins() {
                 Deelnemen: https://teams.microsoft.com/meet/123456789?p=abc\r\n\
                 Vergadering-id: 123 456 789\r\n";
     assert_eq!(without_text_block(text, &teams), "Notes first.");
+}
+
+fn phone(number: &str, access_code: Option<&str>, pin: Option<&str>) -> EntryPoint {
+    let mut entry = EntryPoint::at(uri(&format!("tel:{number}")));
+    entry.access = AccessCodes {
+        access_code: access_code.map(str::to_owned),
+        pin: pin.map(str::to_owned),
+        ..AccessCodes::default()
+    };
+    entry
+}
+
+fn with_numbers(numbers: Vec<EntryPoint>) -> String {
+    let mut meeting = jitsi();
+    meeting.entry_points.extend(numbers);
+    meeting.text_block(&words()).unwrap()
+}
+
+#[test]
+fn a_code_every_number_shares_is_said_once_after_them() {
+    let block = with_numbers(vec![
+        phone("+31201234567", Some("123456789"), None),
+        phone("+318000000000", Some("123456789"), None),
+    ]);
+    assert!(
+        block.contains("Dial in: +31201234567\nDial in: +318000000000\nConference ID: 123456789\n"),
+        "{block}"
+    );
+}
+
+#[test]
+fn a_code_of_its_own_is_said_beside_its_number() {
+    let block = with_numbers(vec![
+        phone("+31201234567", Some("111"), None),
+        phone("+318000000000", None, Some("222")),
+        phone("+3233333333", None, None),
+    ]);
+    assert!(
+        block.contains(
+            "Dial in: +31201234567 (Conference ID: 111)\n\
+             Dial in: +318000000000 (Conference ID: 222)\n\
+             Dial in: +3233333333\n"
+        ),
+        "{block}"
+    );
+    assert!(!block.contains("\nConference ID:"), "{block}");
+}
+
+#[test]
+fn numbers_without_a_code_are_said_alone() {
+    let block = with_numbers(vec![phone("+31201234567", None, None)]);
+    assert!(block.contains("Dial in: +31201234567\n"), "{block}");
+    assert!(!block.contains("Conference ID"), "{block}");
+}
+
+#[test]
+fn words_queued_before_the_code_had_one_leave_the_codes_out() {
+    let queued = r#"{"meeting":"Video meeting","join":"Join","meeting_id":"Meeting ID","passcode":"Passcode","dial_in":"Dial in"}"#;
+    let words: ConferenceText = serde_json::from_str(queued).unwrap();
+    assert_eq!(words.dial_in_code, "");
+    let mut meeting = jitsi();
+    meeting
+        .entry_points
+        .push(phone("+31201234567", Some("123456789"), None));
+    let block = meeting.text_block(&words).unwrap();
+    assert!(block.contains("Dial in: +31201234567\n"), "{block}");
+    assert!(!block.contains("123456789"), "{block}");
 }
