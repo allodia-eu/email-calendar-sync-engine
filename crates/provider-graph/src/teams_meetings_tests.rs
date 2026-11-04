@@ -59,6 +59,7 @@ fn service(routes: Vec<(&str, FakeRoute)>) -> (TeamsMeetings, crate::test_suppor
 #[tokio::test]
 async fn a_meeting_is_made_with_the_key_as_its_external_id() {
     let (teams, requests) = service(vec![("/me/onlineMeetings/createOrGet", Ok(answer()))]);
+    assert_eq!(teams.service(), ConferenceService::Teams);
     teams.create_meeting(&request()).await.unwrap();
     let requests = requests.lock().unwrap();
     let (method, url, body) = &requests[0];
