@@ -132,11 +132,31 @@ impl TalkMeetings {
     }
 
     async fn rules(&self) -> ProviderResult<Rules> {
+        self.capabilities()
+            .await?
+            .ok_or_else(|| ProviderError::permanent("the server has no Talk"))
+    }
+
+    /// What the server's capabilities say about making a conversation; `None` without Talk.
+    async fn capabilities(&self) -> ProviderResult<Option<Rules>> {
         let data = self
             .send(self.request(Method::GET, CAPABILITIES))
             .await?
             .unwrap_or(Value::Null);
-        rules(&data).ok_or_else(|| ProviderError::permanent("the server has no Talk"))
+        Ok(rules(&data))
+    }
+
+    /// Whether this account can make a meeting here: the server has Talk, and lets the account
+    /// start a conversation. Asked of the server's capabilities, as a creation asks them first.
+    ///
+    /// # Errors
+    ///
+    /// The server's refusal or a transport failure. A server without Talk is `Ok(false)`.
+    pub async fn offered(&self) -> ProviderResult<bool> {
+        Ok(self
+            .capabilities()
+            .await?
+            .is_some_and(|rules| rules.can_create))
     }
 
     /// The link of the conversation whose token is `token`.
