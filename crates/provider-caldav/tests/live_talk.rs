@@ -109,6 +109,10 @@ async fn live_a_conversation_is_made_for_guests_and_deleted() {
     };
     let talk = harness.talk();
     harness.force_passwords(false).await;
+    assert!(
+        talk.offered().await.expect("capabilities"),
+        "the harness has Talk"
+    );
 
     let made = talk.create_meeting(&request()).await.expect("create");
     let join = made.join().expect("a join link").clone();

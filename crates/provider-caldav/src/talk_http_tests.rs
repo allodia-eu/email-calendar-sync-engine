@@ -126,6 +126,32 @@ async fn a_server_without_talk_is_refused() {
 }
 
 #[tokio::test]
+async fn talk_is_offered_where_the_account_may_make_a_conversation() {
+    let (server, seen) = mock_server_capturing(vec![http("200 OK", CAPABILITIES)]);
+    assert!(talk(&server).offered().await.unwrap());
+    assert!(
+        seen.lock().unwrap()[0].starts_with("GET /ocs/v2.php/cloud/capabilities "),
+        "only the capabilities are asked"
+    );
+
+    let (server, _) = mock_server_capturing(vec![http(
+        "200 OK",
+        &capabilities_with("can-create", false),
+    )]);
+    assert!(!talk(&server).offered().await.unwrap());
+
+    let without = json!({ "ocs": { "data": { "capabilities": { "core": {} } } } }).to_string();
+    let (server, _) = mock_server_capturing(vec![http("200 OK", &without)]);
+    assert!(!talk(&server).offered().await.unwrap());
+}
+
+#[tokio::test]
+async fn a_server_that_refuses_the_question_does_not_say_talk_is_missing() {
+    let (server, _) = mock_server_capturing(vec![http("401 Unauthorized", "{}")]);
+    assert!(talk(&server).offered().await.is_err());
+}
+
+#[tokio::test]
 async fn a_refusal_or_an_answer_without_a_conversation_is_an_error() {
     let refused = r#"{"ocs":{"meta":{"statuscode":400},"data":{"error":"password"}}}"#;
     let (server, _) = mock_server_capturing(vec![

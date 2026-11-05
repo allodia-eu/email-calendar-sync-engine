@@ -774,7 +774,9 @@ sees:
     the join entry's `password`; elsewhere there is none, because a guest would then need more
     than the link. A delete takes the token from the link only when the link is under this
     server's `call` path, so a link to another server never names a conversation here; Talk
-    answers 404 for one that is gone. The conversation is a regular one: an event carrying its
+    answers 404 for one that is gone. `offered` asks the capabilities alone, so a caller can
+    tell a server without Talk, or an account Talk lets start no conversation, from one it can
+    use before any meeting is wanted. The conversation is a regular one: an event carrying its
     link does not make it an event conversation, so Talk's event retention never removes it.
     `live_talk` runs against the Nextcloud harness, whose hook installs a pinned Talk.
 
