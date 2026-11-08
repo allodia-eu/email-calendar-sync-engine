@@ -278,7 +278,6 @@ where those get fixed rather than a red build on someone's unrelated change. The
 MSRV — that floor is `rust-version` in the root `Cargo.toml` and moves independently.
 
 ```sh
-scripts/dev/claim-build-dir.sh        # make what follows judge THIS checkout (see below)
 scripts/ci/check-file-length.sh       # every tracked *.rs must be <= 500 lines
 scripts/ci/check-fixture-identifiers.sh   # no real domains in fixtures or docs
 cargo +nightly fmt --all              # fix formatting first (nightly rustfmt.toml)
@@ -290,22 +289,14 @@ cargo test --workspace --all-features
 cargo doc --workspace --all-features --no-deps
 ```
 
-⚠️ **`claim-build-dir.sh` is not decoration on the first line either.**
-[`.cargo/config.toml`](.cargo/config.toml) points `build.build-dir` at one directory every checkout
-shares, so the dependency compile is paid for once rather than once per worktree. **Cargo cannot
-tell those checkouts apart.** It names an artifact, and the fingerprint guarding it, from the
-workspace-*relative* path, so they all land on the same `deps/<crate>-<hash>` and the same
-fingerprint entry, and freshness then comes down to mtimes against a relative file list. A checkout
-whose sources predate the build another checkout last ran is declared **fresh** and is handed that
-checkout's binary: a suite reports `ok` for an assertion this tree cannot satisfy, and a worktree
-created before another worktree built is exactly the shape that collects it.
-
-The script leaves a marker naming the checkout whose artifacts are in there, and runs
-`cargo clean --workspace` when the marker names someone else, which drops the *members'* artifacts
-and leaves every dependency compiled. So it costs a rebuild of this repository's own crates after a
-switch, and nothing at all when you built here last. Everything outside the gate — a `cargo test`
-typed by hand — claims nothing and is not covered, so when a result cannot be squared with the diff,
-run the gate, or re-run the step with `CARGO_BUILD_BUILD_DIR` pointed somewhere private.
+**Every checkout builds in its own `target/`**, Cargo's default, so a new worktree's first build
+compiles the whole dependency tree and holds several GB of its own. ⚠️ Never point two checkouts at
+one build directory, a personal `build-dir` or `CARGO_TARGET_DIR` included: Cargo cannot tell them
+apart and hands one the other's binaries, so a suite passes for code this tree does not contain
+([`.cargo/config.toml`](.cargo/config.toml)). Sharing compile work between worktrees is kache's
+job, set up once per machine
+([`docs/agent-guidance/rust.md`](docs/agent-guidance/rust.md) → "Share the compile work with
+kache").
 
 **Warnings are denied through Cargo, not through `RUSTFLAGS`.** `CARGO_BUILD_WARNINGS=deny`
 (Cargo's `build.warnings`) fails any build, clippy, test or doc run in which one of this

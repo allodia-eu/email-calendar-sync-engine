@@ -340,7 +340,7 @@ fn build_tokens(
 
 fn tokens_path() -> String {
     std::env::var("YAHOO_TOKENS")
-        .unwrap_or_else(|_| format!("{}/.local/tokens.json", env!("CARGO_MANIFEST_DIR")))
+        .unwrap_or_else(|_| format!("{}/.local/tokens.json", manifest_dir()))
 }
 
 fn load_tokens() -> Res<Value> {
@@ -403,4 +403,11 @@ fn rand_bytes(n: usize) -> Res<Vec<u8>> {
 /// Hex, for the `state`/`nonce` values — URL-safe with no encoding to think about.
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// This crate's directory, as the running cargo names it rather than as the compile that built this
+/// binary did: a compiler cache can hand one checkout a binary compiled in another
+/// (`.cargo/config.toml`). The compile-time value is the fallback for running it outside cargo.
+fn manifest_dir() -> String {
+    std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_owned())
 }

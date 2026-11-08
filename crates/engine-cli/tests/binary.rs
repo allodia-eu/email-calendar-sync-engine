@@ -10,8 +10,25 @@ use engine_core::{
     time::{CalendarDateTime, LocalDateTime},
 };
 
+/// The `engine-cli` this `cargo test` built.
+///
+/// ⚠️ Not `env!("CARGO_BIN_EXE_engine-cli")` alone: that is resolved when the test is *compiled*,
+/// and a compiler cache can hand this checkout a test binary compiled in another one, carrying the
+/// other checkout's absolute path ([`.cargo/config.toml`](../../../.cargo/config.toml)). Cargo
+/// exports the same variable into the test *process*, computed by the run happening now; the
+/// compile-time value is the fallback for running the test executable outside cargo.
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_engine-cli"))
+    Command::new(
+        std::env::var_os("CARGO_BIN_EXE_engine-cli")
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_engine-cli").into()),
+    )
+}
+
+#[test]
+fn cargo_names_the_binary_at_run_time() {
+    // What `bin` relies on: without it every run would fall back to the compiled-in path.
+    let binary = std::env::var_os("CARGO_BIN_EXE_engine-cli").expect("exported by cargo");
+    assert!(std::path::Path::new(&binary).exists());
 }
 
 #[test]
