@@ -229,7 +229,11 @@ impl Executor for Arc<FakeExecutor> {
 }
 
 pub(crate) fn fixture(name: &str) -> Value {
-    let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    // Read at run time, not with `env!` alone: a cached test binary can come from another
+    // checkout (`.cargo/config.toml`).
+    let dir = std::env::var("CARGO_MANIFEST_DIR")
+        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_owned());
+    let path = format!("{dir}/tests/fixtures/{name}");
     serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}")))
         .unwrap()
 }

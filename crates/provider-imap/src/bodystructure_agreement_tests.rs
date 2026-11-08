@@ -35,7 +35,11 @@ const EXPECTED: &[(&str, bool)] = &[
 ];
 
 fn shapes() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/attachment-shapes")
+    // Read at run time, not with `env!` alone: a cached test binary can come from another
+    // checkout (`.cargo/config.toml`).
+    let dir = std::env::var("CARGO_MANIFEST_DIR")
+        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_owned());
+    Path::new(&dir).join("tests/fixtures/attachment-shapes")
 }
 
 #[test]

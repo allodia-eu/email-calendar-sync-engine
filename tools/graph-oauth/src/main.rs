@@ -419,7 +419,7 @@ fn resolve_tokens_path(profile: Option<&str>) -> String {
     if let Ok(path) = std::env::var("GRAPH_TOKENS") {
         return path;
     }
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/.local");
+    let dir = format!("{}/.local", manifest_dir());
     match profile {
         Some(name) => format!("{dir}/tokens-{name}.json"),
         None => format!("{dir}/tokens.json"),
@@ -486,4 +486,11 @@ fn rand_bytes(n: usize) -> Res<Vec<u8>> {
     let mut buf = vec![0u8; n];
     f.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+/// This crate's directory, as the running cargo names it rather than as the compile that built this
+/// binary did: a compiler cache can hand one checkout a binary compiled in another
+/// (`.cargo/config.toml`). The compile-time value is the fallback for running it outside cargo.
+fn manifest_dir() -> String {
+    std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_owned())
 }

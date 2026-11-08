@@ -95,7 +95,7 @@ struct Account {
 
 fn account_path() -> String {
     std::env::var("JMAP_ACCOUNT")
-        .unwrap_or_else(|_| format!("{}/.local/account.json", env!("CARGO_MANIFEST_DIR")))
+        .unwrap_or_else(|_| format!("{}/.local/account.json", manifest_dir()))
 }
 
 /// Reads a `--name value` flag out of `args`.
@@ -489,4 +489,11 @@ fn cmd_bench(args: &[String]) -> Res<()> {
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
     Ok(())
+}
+
+/// This crate's directory, as the running cargo names it rather than as the compile that built this
+/// binary did: a compiler cache can hand one checkout a binary compiled in another
+/// (`.cargo/config.toml`). The compile-time value is the fallback for running it outside cargo.
+fn manifest_dir() -> String {
+    std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_owned())
 }
