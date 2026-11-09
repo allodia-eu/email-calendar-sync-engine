@@ -11,6 +11,14 @@ USER="$NEXTCLOUD_ADMIN_USER"
 
 $OCC user:setting "$USER" settings email "$HARNESS_EMAIL"
 
+# No login throttling. Suites refuse sign-ins on purpose (a wrong password, the harness password a
+# separate server does not take), every request comes from the Docker gateway, and Nextcloud counts
+# each refusal against that address: after about ten it delays every login by 25 seconds and its
+# Login Flow answers `429`, so the next suite's first sign-in misses its wait. The count outlives a
+# run, since the database lives as long as the container.
+$OCC config:system:set auth.bruteforce.protection.enabled --type=boolean --value=false
+$OCC config:system:set ratelimit.protection.enabled --type=boolean --value=false
+
 $OCC dav:create-calendar "$USER" harness
 for ics in /seed/calendar/*.ics; do
     $OCC calendar:import --errors=1 "$USER" harness "$ics"

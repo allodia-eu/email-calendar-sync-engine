@@ -29,8 +29,9 @@ once fail one of them with "database is locked", which a slower CI runner meets.
 - `docker-compose.yml`: Nextcloud and its PostgreSQL database, each pinned by digest.
   Nextcloud is published on loopback port 18082 and health-gated on the seed's marker and on
   `status.php` reporting an installed server; the database is not published.
-- `hooks/seed.sh`: the image's post-installation hook. It gives the account the address
-  `alice@test.local`, creates the `harness` calendar and imports the shared
+- `hooks/seed.sh`: the image's post-installation hook. It turns off Nextcloud's brute-force
+  protection and its rate limits, since suites refuse sign-ins on purpose and every request
+  comes from one address, gives the account the address `alice@test.local`, creates the `harness` calendar and imports the shared
   [`../stalwart/seed/calendar/*.ics`](../stalwart/seed/calendar/) into it, and creates the
   `harness` address book. It then downloads the pinned Talk release, checks its sha256 and
   enables it.
