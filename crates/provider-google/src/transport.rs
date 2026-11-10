@@ -229,23 +229,23 @@ impl GoogleClient {
 
     /// Builds an absolute **People API** URL from an API-relative path (`/v1/people/…`).
     ///
-    /// People is the one Google API this client speaks that is not served from
-    /// [`GOOGLE_BASE`] (see [`PEOPLE_BASE`]), so contact paths are rooted separately. A
-    /// client built with a custom base — a replay server or a proxy — still wins, so the
-    /// offline tests and any host-supplied origin keep working unchanged.
+    /// People is not served from [`GOOGLE_BASE`] (see [`PEOPLE_BASE`]), so contact paths are
+    /// rooted separately. A client built with a custom base — a replay server or a proxy —
+    /// still wins, so the offline tests and any host-supplied origin keep working unchanged.
     pub(crate) fn people_url(&self, path: &str) -> String {
-        if self.base == GOOGLE_BASE {
-            format!("{PEOPLE_BASE}{path}")
-        } else {
-            format!("{}{path}", self.base)
-        }
+        self.url_at(PEOPLE_BASE, path)
     }
 
     /// Builds an absolute **Meet API** URL from an API-relative path (`/v2/spaces`). Meet has
     /// a host of its own ([`MEET_BASE`]), and a client built with a custom base keeps it.
     pub(crate) fn meet_url(&self, path: &str) -> String {
+        self.url_at(MEET_BASE, path)
+    }
+
+    /// `path` at `host`, an API's own host, unless this client was built with a custom base.
+    fn url_at(&self, host: &str, path: &str) -> String {
         if self.base == GOOGLE_BASE {
-            format!("{MEET_BASE}{path}")
+            format!("{host}{path}")
         } else {
             format!("{}{path}", self.base)
         }
