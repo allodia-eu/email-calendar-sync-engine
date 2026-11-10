@@ -198,7 +198,7 @@ flowchart TD
         SYNC["<b>engine-sync</b><br/>streaming sync loop +<br/>crash-safe write outbox"]
         SEARCH["<b>engine-search</b><br/>query DSL → ranked,<br/>coverage-aware results"]
         MODEL["<b>engine-core</b><br/>normalized domains:<br/>Message · Thread · Mailbox<br/>Event · Calendar<br/>ContactCard · Person"]
-        FORMATS["format layers<br/><b>engine-mime</b> · <b>engine-ical</b><br/><b>engine-rfc5322</b> · <b>engine-recurrence</b><br/>parse in · assemble out<br/>expand recurrences"]
+        FORMATS["format layers<br/><b>engine-mime</b> · <b>engine-html</b> · <b>engine-ical</b><br/><b>engine-rfc5322</b> · <b>engine-recurrence</b><br/>parse in · assemble out<br/>expand recurrences"]
         STORE["<b>engine-store</b> trait<br/>→ <b>store-sqlite</b><br/>local-first SQLite<br/>FTS index · raw blobs<br/>offline reads &amp; search"]
 
         API --> SYNC
@@ -333,6 +333,7 @@ the connection stops right there), see [`docs/outbox-and-sending.md`](docs/outbo
 │   ├── engine-search/            # Query DSL and executor
 │   ├── engine-recurrence/        # Recurrence expansion
 │   ├── engine-mime/              # Inbound MIME body extraction
+│   ├── engine-html/              # Mail HTML sanitiser and reading document
 │   ├── engine-rfc5322/           # Outbound RFC 5322 / MIME assembly
 │   ├── engine-ical/              # iCalendar parse, build, and patch
 │   ├── engine-tls/               # Shared TLS trust policy
