@@ -33,6 +33,9 @@ pub(crate) const GOOGLE_BASE: &str = "https://www.googleapis.com";
 /// rooted here instead.
 pub(crate) const PEOPLE_BASE: &str = "https://people.googleapis.com";
 
+/// The Meet REST API root, where `spaces.create` is served.
+pub(crate) const MEET_BASE: &str = "https://meet.googleapis.com";
+
 /// An authenticated request against a Google API.
 ///
 /// Implemented by [`HttpTransport`](crate::http_transport) (live reqwest) and, in
@@ -226,13 +229,23 @@ impl GoogleClient {
 
     /// Builds an absolute **People API** URL from an API-relative path (`/v1/people/…`).
     ///
-    /// People is the one Google API this client speaks that is not served from
-    /// [`GOOGLE_BASE`] (see [`PEOPLE_BASE`]), so contact paths are rooted separately. A
-    /// client built with a custom base — a replay server or a proxy — still wins, so the
-    /// offline tests and any host-supplied origin keep working unchanged.
+    /// People is not served from [`GOOGLE_BASE`] (see [`PEOPLE_BASE`]), so contact paths are
+    /// rooted separately. A client built with a custom base — a replay server or a proxy —
+    /// still wins, so the offline tests and any host-supplied origin keep working unchanged.
     pub(crate) fn people_url(&self, path: &str) -> String {
+        self.url_at(PEOPLE_BASE, path)
+    }
+
+    /// Builds an absolute **Meet API** URL from an API-relative path (`/v2/spaces`). Meet has
+    /// a host of its own ([`MEET_BASE`]), and a client built with a custom base keeps it.
+    pub(crate) fn meet_url(&self, path: &str) -> String {
+        self.url_at(MEET_BASE, path)
+    }
+
+    /// `path` at `host`, an API's own host, unless this client was built with a custom base.
+    fn url_at(&self, host: &str, path: &str) -> String {
         if self.base == GOOGLE_BASE {
-            format!("{PEOPLE_BASE}{path}")
+            format!("{host}{path}")
         } else {
             format!("{}{path}", self.base)
         }
@@ -421,6 +434,10 @@ mod tests {
             client.people_url("/v1/people/me/connections"),
             format!("{PEOPLE_BASE}/v1/people/me/connections")
         );
+        assert_eq!(
+            client.meet_url("/v2/spaces"),
+            format!("{MEET_BASE}/v2/spaces")
+        );
         // Gmail and Calendar are unaffected — they stay on the universal host.
         assert_eq!(
             client.url("/gmail/v1/users/me/labels"),
@@ -438,6 +455,10 @@ mod tests {
         assert_eq!(
             custom.people_url("/v1/people/me/connections"),
             "http://127.0.0.1:9/v1/people/me/connections"
+        );
+        assert_eq!(
+            custom.meet_url("/v2/spaces"),
+            "http://127.0.0.1:9/v2/spaces"
         );
     }
 }

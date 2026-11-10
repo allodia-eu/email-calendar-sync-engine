@@ -766,6 +766,17 @@ sees:
     `JoinWebUrl` and deletes each match; Graph answers 404 for one that is gone, and after a
     delete the same key makes a new meeting. `live_teams_meetings` checks both against a
     work account.
+  - **Google Meet** (`MeetMeetings`, in `provider-google`) makes a space with the Meet REST
+    API's `spaces.create`, on `meet.googleapis.com`, with an empty body: Meet names the space
+    itself, so the title and times are not sent. Its answer becomes the join link
+    (`meetingUri`), the meeting code as the meeting ID, and each `phoneAccess` number with its
+    PIN. Meet keeps no key of the caller's, so a repeated request makes a second space, and the
+    API has no delete: `delete_meeting` sends nothing, and a space no event names is one
+    nobody has the link to. The token needs `meetings.space.created`, and a grant without it
+    is refused with a permanent `403`. A personal account makes a space too; its answer has
+    no `phoneAccess`, and its `accessType` is `TRUSTED`, so a guest the host's organisation
+    does not know asks to join and the host lets them in. `live_meet_meetings` makes one
+    against a real account.
   - **Nextcloud Talk** (`TalkMeetings`, in `provider-caldav`) makes a public conversation
     (`roomType` 3) named after the title, which a guest joins at
     `<server>/index.php/call/<token>`. Talk keeps no key of the caller's, so a repeated

@@ -134,6 +134,8 @@ on the account.
 | `calendar/event_recurring_master.json` | a `GET …/events/{id}` series master | `recurrence` `RRULE` + zoned start/end |
 | `calendar/event_allday.json` | an all-day event | `start.date`/`end.date` (zoneless) |
 | `calendar/event_meet.json` | a Google Meet event | `conferenceData`/`hangoutLink` (join credential scrubbed) |
+| `calendar/meet_space.json` | `POST https://meet.googleapis.com/v2/spaces` with `{}`, on a personal account | the space `MeetMeetings` reads a meeting from: `meetingUri` and `meetingCode` (both scrubbed, as is the space's `name`), and that a personal account's space carries **no** `phoneAccess` |
+| `error/meet_space_without_scope.json` | the same call with a token that does not hold `meetings.space.created` | the `403` `ACCESS_TOKEN_SCOPE_INSUFFICIENT` a grant without the scope gets, which is permanent rather than a rate limit |
 | `calendar/event_invitation_answered.json` | an `events.import`ed invitation, answered `tentative` with a note | an event the account did **not** organize, read back after an RSVP: my status, and the organizer merged with their own `attendees[]` entry (Finding 16) |
 | `calendar/event_organizer_declined.json` | a self-organized event answered `declined` | the same address as `organizer` *and* attendee → **one** participant, roles `{owner, attendee}`, carrying the answer — not the organizer's implied `accepted` (Finding 16) |
 
