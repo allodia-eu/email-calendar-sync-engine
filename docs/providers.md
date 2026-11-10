@@ -400,6 +400,9 @@ Expired People sync tokens restart only their source as a snapshot; contact
 groups are always paginated snapshots because their list API has no sync token.
 See `docs/agent-guidance/google.md` and `contacts.md` for scopes and mappings.
 
+`MeetMeetings` makes a Meet meeting for an event on any calendar, through the Meet REST API
+(`POST meet.googleapis.com/v2/spaces`). It needs `meetings.space.created`.
+
 Google meeting writes use attendee arrays and `sendUpdates=all` for create, roster changes
 and delete. Roster edits refuse an incomplete `attendeesOmitted` event. Google accepts more
 than 200 guests, but stops propagating response status to guests above that threshold.
