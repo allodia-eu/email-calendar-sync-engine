@@ -85,11 +85,14 @@ fn tag_name(tag: &str) -> (&str, bool) {
 }
 
 /// Where the raw content of `name`, starting at `from`, ends: at its closing tag.
+///
+/// Searched in place, stopping at the first match: lowercasing the rest of the body for every
+/// raw-text element would make a body of many small `<style>` blocks quadratic.
 fn raw_text_end(html: &str, from: usize, name: &str) -> usize {
-    let needle = format!("</{}", name.to_ascii_lowercase());
-    html[from..]
-        .to_ascii_lowercase()
-        .find(&needle)
+    let needle = format!("</{name}");
+    html.as_bytes()[from..]
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
         .map_or(html.len(), |at| from + at)
 }
 

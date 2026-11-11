@@ -97,3 +97,25 @@ fn linking_twice_changes_nothing() {
 fn sanitize_only(html: &str) -> String {
     crate::sanitize::sanitizer().clean(html).to_string()
 }
+
+#[test]
+fn a_style_sheet_ends_at_its_closing_tag_in_any_case() {
+    let out = clean("<STYLE>a{}</Style><p>see https://example.com</p>");
+    assert!(
+        out.contains(r#"<a href="https://example.com" rel="noopener noreferrer">"#),
+        "{out}"
+    );
+}
+
+#[test]
+fn many_style_sheets_are_read_in_one_pass() {
+    // Each sheet is searched to its own end only; a scan of the rest of the body per sheet reads
+    // about three gigabytes here.
+    let body = "<style></style>".repeat(20_000);
+    let out = clean(&format!("{body}<p>https://example.com</p>"));
+    assert!(
+        out.contains("<a href=\"https://example.com\""),
+        "{}",
+        &out[out.len() - 200..]
+    );
+}
