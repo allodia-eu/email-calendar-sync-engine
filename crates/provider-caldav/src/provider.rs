@@ -15,7 +15,7 @@
 
 use async_trait::async_trait;
 use engine_core::{
-    calendar::{Calendar, Event},
+    calendar::Event,
     ids::{AccountId, CalendarId, DavCollectionId, EventId, Uid},
     sync::{SyncScope, SyncState, SyncUpdate},
 };
@@ -23,7 +23,7 @@ use engine_provider::{
     CalendarListing, CalendarUserAddresses, CalendarWrites, Capabilities, ConnectObserver,
     ConnectStep, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite,
     EventWriteReceipt, IgnoreConnectSteps, OverrideSurvival, Provider, ProviderResult,
-    RsvpControls, ScopeSync, WriteGuard,
+    RsvpControls, ScopeSync, SharedAccount, SharedAccounts, WriteGuard,
 };
 
 use crate::{
@@ -77,6 +77,12 @@ pub struct CalDavProvider {
     principal: Option<String>,
     /// The address set, when discovery already read it off the principal.
     addresses: Option<CalendarUserAddresses>,
+    /// The principal the credential signs in as: where shared-store discovery starts
+    /// (`crate::shared`), and whose calendars have no `Calendar::owner`. The same as
+    /// `principal` unless this provider is bound to a shared store.
+    user: Option<String>,
+    /// Each foreign owner principal's address, once read (`crate::owners`).
+    owners: crate::owners::Owners,
     multigets: Multigets,
 }
 
@@ -113,7 +119,23 @@ impl CalDavProvider {
             &config.user_agent,
         )?
         .with_credential_hosts(config.credential_hosts);
-        Self::with_executor(Box::new(client), &config.discovery_path, observer).await
+        match &config.shared_account {
+            Some(store) => {
+                Self::with_executor_bound(Box::new(client), store.as_str(), observer).await
+            }
+            None => Self::with_executor(Box::new(client), &config.discovery_path, observer).await,
+        }
+    }
+
+    /// Builds a provider bound to the shared store whose principal is `principal`
+    /// ([`CalDavConfig::with_shared_account`]).
+    pub(crate) async fn with_executor_bound(
+        executor: Box<dyn DavExecutor>,
+        principal: &str,
+        observer: &dyn ConnectObserver,
+    ) -> Result<Self, CalDavError> {
+        let home = discovery::discover_shared_home(executor.as_ref(), principal, observer).await?;
+        Self::over_home(executor, home, observer).await
     }
 
     /// Builds a provider over an arbitrary executor (the live client, or a fake in
@@ -124,6 +146,15 @@ impl CalDavProvider {
         observer: &dyn ConnectObserver,
     ) -> Result<Self, CalDavError> {
         let home = discovery::discover_home(executor.as_ref(), discovery_path, observer).await?;
+        Self::over_home(executor, home, observer).await
+    }
+
+    /// The rest of a connect, once discovery settled on `home`.
+    async fn over_home(
+        executor: Box<dyn DavExecutor>,
+        home: discovery::CalendarHome,
+        observer: &dyn ConnectObserver,
+    ) -> Result<Self, CalDavError> {
         observer.step(&ConnectStep::discovered(&home.href));
         // The calendar home is where every collection is resolved from: the endpoint this
         // connect settles on, on whichever origin serves it.
@@ -141,6 +172,15 @@ impl CalDavProvider {
             .with_calendar_writes(WriteGuard::Enforced, CALDAV_OVERRIDE_SURVIVAL)
             .with_calendar_rsvp(CALDAV_RSVP)
             .with_conference_writes();
+        // Other principals' homes are found from the user's own principal (`crate::shared`),
+        // so there is a way to look once discovery knows it. Whether one is there is the
+        // listing's answer: the routes are read off the principal, which a lenient server's
+        // discovery never asks, and asking it at every connect would cost each one a request.
+        let capabilities = if home.user.is_some() {
+            capabilities.with_shared_accounts(SharedAccounts::Enumerable)
+        } else {
+            capabilities
+        };
         Ok(Self {
             executor,
             capabilities: if scheduling {
@@ -151,6 +191,8 @@ impl CalDavProvider {
             home_href,
             principal: home.principal,
             addresses: home.addresses,
+            user: home.user,
+            owners: crate::owners::Owners::default(),
             multigets: Multigets::default(),
         })
     }
@@ -226,9 +268,20 @@ impl Provider for CalDavProvider {
         let listed = discovery::list_calendars(self.executor.as_ref(), &self.home_href).await?;
         let tags = listed
             .iter()
-            .filter_map(|(calendar, tag)| Some((calendar.id.clone(), tag.clone()?)))
+            .filter_map(|(calendar, tag, _)| Some((calendar.id.clone(), tag.clone()?)))
             .collect();
-        let calendars: Vec<Calendar> = listed.into_iter().map(|(calendar, _)| calendar).collect();
+        let mut calendars = Vec::with_capacity(listed.len());
+        for (mut calendar, _, owner) in listed {
+            calendar.owner = self
+                .owners
+                .address_of(
+                    self.executor.as_ref(),
+                    owner.as_deref(),
+                    self.user.as_deref(),
+                )
+                .await?;
+            calendars.push(calendar);
+        }
         let present = calendars.iter().map(|c| c.id.key().clone()).collect();
         Ok(CalendarListing {
             sync: ScopeSync::new(
@@ -253,6 +306,18 @@ impl Provider for CalDavProvider {
             cursor,
         )
         .await?)
+    }
+
+    /// The other principals' calendar homes the credential may read (`crate::shared`): the
+    /// same answer whichever store this provider is bound to, since it starts from the
+    /// credential's own principal.
+    async fn list_shared_accounts(&self) -> ProviderResult<Vec<SharedAccount>> {
+        let Some(user) = &self.user else {
+            return Err(engine_provider::ProviderError::invalid_state(
+                "the server named no principal to look for shared calendars from",
+            ));
+        };
+        Ok(crate::shared::list(self.executor.as_ref(), user).await?)
     }
 }
 impl engine_provider::MailboxWrites for CalDavProvider {}

@@ -276,8 +276,8 @@ async fn caldav_storing_an_invitation_is_a_guarded_create() {
 /// Stalwart reports `DAV:current-user-privilege-set` on Alice's own calendar, and it
 /// grants `DAV:write` — so the collection the write tests above target reports itself
 /// writable. The read-only half of this pair is SabreDAV's shared calendar
-/// (`live_sabredav.rs`); Stalwart's harness account owns everything it can see, so it
-/// cannot produce a collection it may not write.
+/// (`live_sabredav.rs`), and, since the harness shares dave's calendar with alice, the same
+/// calendar as Stalwart lists it in her home (`live_shared_calendars.rs`).
 #[tokio::test]
 async fn caldav_reports_its_own_calendar_as_writable() {
     let Some((provider, account)) = connect("caldav_reports_the_bound_calendar_as_writable").await

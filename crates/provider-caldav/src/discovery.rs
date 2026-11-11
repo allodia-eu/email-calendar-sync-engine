@@ -46,6 +46,10 @@ pub(crate) struct CalendarHome {
     /// The principal's address set, when discovery read the principal itself; `None` when
     /// the home was found without asking it.
     pub(crate) addresses: Option<CalendarUserAddresses>,
+    /// The principal the **credential** signs in as. The same as `principal` for the user's
+    /// own home; for a shared one ([`discover_shared_home`]) it is still the user's, which is
+    /// what shared-store discovery starts from whichever store is bound.
+    pub(crate) user: Option<String>,
 }
 
 /// Resolves the calendar home, starting at `start_href`.
@@ -79,6 +83,7 @@ pub(crate) async fn discover_home(
         // does), which says nothing about the user; only a reported set is kept.
         return Ok(CalendarHome {
             href: follow(exec, &at, &href)?,
+            user: principal.clone(),
             principal,
             addresses: address_set(&bootstrap),
         });
@@ -98,8 +103,43 @@ pub(crate) async fn discover_home(
         .ok_or_else(|| CalDavError::protocol("principal PROPFIND returned no calendar-home-set"))?;
     Ok(CalendarHome {
         href: follow(exec, &at, &href)?,
+        user: Some(principal.clone()),
         principal: Some(principal),
         addresses: Some(address_set(&from_principal).unwrap_or(CalendarUserAddresses::NotEnabled)),
+    })
+}
+
+/// Resolves the calendar home of **another** principal the credential may read: a shared
+/// store, bound by the principal URL `crate::shared` handed out.
+///
+/// The principal is asked directly. Its `calendar-home-set` is the store's home and its
+/// `calendar-user-address-set` the store's calendar user — its owner's addresses, never the
+/// credential's, which is the bound-store rule (`engine_provider::calendar_user`). The
+/// `current-user-principal` the same answer carries is the credential's own, kept so the
+/// bound provider can still list the stores the credential reaches.
+///
+/// # Errors
+///
+/// Returns [`CalDavError`] on a transport/HTTP failure, a principal on an origin the
+/// credential may not go to, or one that names no calendar home — a share since withdrawn
+/// fails the connect, not every call after it.
+pub(crate) async fn discover_shared_home(
+    exec: &dyn DavExecutor,
+    principal: &str,
+    observer: &dyn ConnectObserver,
+) -> Result<CalendarHome, CalDavError> {
+    let start = trusted_start(exec, principal)?;
+    let (answer, at) = propfind_principal(exec, &start, observer).await?;
+    let href = home_set(&answer).ok_or_else(|| {
+        CalDavError::protocol(
+            "the shared principal names no calendar-home-set; the credential may have lost access",
+        )
+    })?;
+    Ok(CalendarHome {
+        href: follow(exec, &at, &href)?,
+        user: current_user_principal(&answer).and_then(|user| follow(exec, &at, &user).ok()),
+        principal: Some(at),
+        addresses: Some(address_set(&answer).unwrap_or(CalendarUserAddresses::NotEnabled)),
     })
 }
 
@@ -282,7 +322,12 @@ pub(crate) async fn authenticate_before_reading(exec: &dyn DavExecutor, href: &s
     }
 }
 
-/// Lists the calendar collections under `home_href`, each with the tag the listing showed.
+/// One calendar collection a home listed: the calendar, the tag the listing showed, and the
+/// href of its `DAV:owner`, resolved against the home.
+pub(crate) type ListedCalendar = (Calendar, Option<CollectionTag>, Option<String>);
+
+/// Lists the calendar collections under `home_href`, each with the tag the listing showed
+/// and its owner principal.
 ///
 /// # Errors
 ///
@@ -290,7 +335,7 @@ pub(crate) async fn authenticate_before_reading(exec: &dyn DavExecutor, href: &s
 pub(crate) async fn list_calendars(
     exec: &dyn DavExecutor,
     home_href: &str,
-) -> Result<Vec<(Calendar, Option<CollectionTag>)>, CalDavError> {
+) -> Result<Vec<ListedCalendar>, CalDavError> {
     let listing = exec
         .send(
             DavMethod::Propfind,
@@ -309,6 +354,10 @@ pub(crate) async fn list_calendars(
             Ok((
                 calendar_from_response(response)?,
                 collection_tag(&response.props),
+                response
+                    .props
+                    .get("owner")
+                    .and_then(|owner| resolve_reference(home_href, owner).ok()),
             ))
         })
         .collect()

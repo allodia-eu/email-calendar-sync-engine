@@ -10,14 +10,15 @@ ways that exercise the client: the **two-step RFC 6764 discovery** (the
 seed as Stalwart, so one dataset validates both servers and the same assertions
 hold in [`provider-caldav`'s gated tests](../../crates/provider-caldav/tests/).
 
-Two things it proves that **Stalwart cannot** (see "Which server proves what" in
+Things it proves that **Stalwart cannot** (see "Which server proves what" in
 [`caldav.md`](../../docs/agent-guidance/caldav.md)):
 
 - **A read-only calendar.** Its seed gives Alice a *second* collection — one Bob owns
   and shares with her read-only — so a single `PROPFIND` of one calendar home returns
   two collections with two different answers to "what may I do here"
-  (`DAV:current-user-privilege-set`, RFC 3744 §5.4). On the Stalwart harness Alice owns
-  every calendar she can see, so it can only ever show the writable answer.
+  (`DAV:current-user-privilege-set`, RFC 3744 §5.4). Stalwart can now show the read-only
+  answer too, through Dave's shared calendar, which it lists in Alice's home; SabreDAV's
+  share differs in naming the sharee, Alice, as its `DAV:owner`.
 - **Calendar-proxy delegation.** Dave makes Alice his `calendar-proxy-read` member and the
   `support@test.local` principal makes her its `calendar-proxy-write` member
   (`delegation.php`), so her own principal names both homes in

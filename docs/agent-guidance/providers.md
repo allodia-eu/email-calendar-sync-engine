@@ -190,7 +190,8 @@ If product pressure changes the order, the domain model tests still need JMAP an
     | IMAP | the other-users' and shared namespaces (RFC 2342), one store per owner below each | `Enumerable` when the session has `NAMESPACE` **and** `ACL` — a server without ACLs has no way for one user to share with another | mail | the folder list, every placement and a folder write's top level are scoped to that store; its connections come from the credential's pool |
     | Graph (mail) | none that lists; `/users/{address}` answers or does not | `ByAddress` | mail | `MailboxPrincipal::shared` roots every request at `/users/{address}` |
     | Gmail | delegation is real but needs a service account with domain-wide delegation, never a user token | `Unsupported` | — | — |
-    | CalDAV / CardDAV | no discovery of another principal's home yet | `Unsupported` | — | — |
+    | CalDAV | the user principal's CalendarServer proxy sets, and the principals its `principal-collection-set` lists, each kept only when its home lists a calendar the credential may read (`caldav.md`) | `Enumerable` when discovery knows the user's principal | calendars | discovery asks the store's principal: its home, and its address set as the calendar user |
+    | CardDAV | the same gap for address books, surveyed and not closed (`caldav.md`) | `Unsupported` | — | — |
     | Graph (calendar) · Google Calendar | not yet asked | `Unsupported` | — | — |
 - Provider errors should classify retryable, authentication, rate-limit, invalid-state, conflict, and permanent failures.
 - Provider adapters must expose whether a sync response is a delta or a complete snapshot.

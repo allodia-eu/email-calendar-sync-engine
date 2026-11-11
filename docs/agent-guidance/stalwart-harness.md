@@ -28,11 +28,12 @@ part of it.
 > `DAV:current-user-privilege-set` case is SabreDAV's to prove, and it seeds a shared
 > calendar for exactly that.
 >
-> That second fact is about **her own calendar home**, and stays true: every collection
-> `calendar-home-set` names is hers. It is no longer true of her *mail*, nor of calendars in
-> *other* stores: the shared-mailbox fixture below gives her one mail store she holds every
-> right on and one she may only read, and the shared-calendar fixture gives her a writable
-> group calendar and a read-only one of Dave's — each in its owner's home, not hers.
+> That second fact **no longer holds**, for mail or calendars. The shared-mailbox fixture
+> below gives her one mail store she holds every right on and one she may only read, and the
+> shared-calendar fixture gives her a writable group calendar and a read-only one of Dave's.
+> Each lives in its owner's home, and Stalwart lists both in **her** home too, beside her own
+> (`provider-caldav/tests/live_shared_calendars.rs`), so the read-only privilege case is now
+> provable on Stalwart as well as SabreDAV.
 
 ## What it is
 
