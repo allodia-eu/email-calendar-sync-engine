@@ -192,7 +192,8 @@ If product pressure changes the order, the domain model tests still need JMAP an
     | Gmail | delegation is real but needs a service account with domain-wide delegation, never a user token | `Unsupported` | — | — |
     | CalDAV | the user principal's CalendarServer proxy sets, and the principals its `principal-collection-set` lists, each kept only when its home lists a calendar the credential may read (`caldav.md`) | `Enumerable` when discovery knows the user's principal | calendars | discovery asks the store's principal: its home, and its address set as the calendar user |
     | CardDAV | the same gap for address books, surveyed and not closed (`caldav.md`) | `Unsupported` | — | — |
-    | Graph (calendar) · Google Calendar | not yet asked | `Unsupported` | — | — |
+    | Graph (calendar) | none that lists; `/users/{address}/calendar` answers or does not (`graph.md`) | `ByAddress` | calendars | `MailboxPrincipal::shared` roots every calendar request at `/users/{address}` |
+    | Google Calendar | a share arrives in the user's own `calendarList`; another user's store needs domain-wide delegation (`google.md`) | `Unsupported` | — | — |
 - Provider errors should classify retryable, authentication, rate-limit, invalid-state, conflict, and permanent failures.
 - Provider adapters must expose whether a sync response is a delta or a complete snapshot.
 - Provider object ids may not be stable across container moves; adapters expose a stable or immutable id as the `ProviderKey`, plus a version token (ETag, `changeKey`, MODSEQ) for concurrency.

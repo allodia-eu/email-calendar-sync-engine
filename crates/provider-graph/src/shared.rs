@@ -1,4 +1,12 @@
-//! Checking that a delegated credential can open a named mailbox.
+//! Checking that a delegated credential can open a named mailbox, or its calendar.
+//!
+//! Each Graph provider asks about the domain **it** serves (`engine_provider::shared`): the
+//! mail provider probes the mailbox's Inbox ([`resolve`]), the calendar provider its default
+//! calendar ([`resolve_calendar`], `GET /users/{address}/calendar?$select=id`). A host that wants
+//! both asks both and onboards the store once. The two probes share everything else: the
+//! address check, what each answer means, and the own-store refusal, which compares the default
+//! calendar's id with `/me/calendar`'s the way the Inbox probe compares Inbox ids (observed:
+//! a shared mailbox's default calendar id differs from the delegate's own).
 //!
 //! Graph has **no list route** for this: nothing answers "which mailboxes have been shared
 //! with me". `GET /users/{address}/…` either works or it does not, so the adapter
@@ -47,9 +55,28 @@ use serde_json::Value;
 
 use crate::{error::GraphError, principal::MailboxPrincipal, transport::GraphClient};
 
-/// The probe path under a mailbox root: its Inbox, and nothing but the id — the status is
-/// the answer, and the id is what the own-mailbox check compares.
-const PROBE: &str = "/mailFolders/inbox?$select=id";
+/// One domain's probe: a path under a mailbox root asking for nothing but an id — the status
+/// is the answer, and the id is what the own-store check compares.
+struct Probe {
+    path: &'static str,
+    domain: SearchDomain,
+    /// What a refusal calls the thing the path reaches.
+    what: &'static str,
+}
+
+/// The mail provider's probe: the mailbox's Inbox.
+const INBOX: Probe = Probe {
+    path: "/mailFolders/inbox?$select=id",
+    domain: SearchDomain::Mail,
+    what: "mailbox",
+};
+
+/// The calendar provider's probe: the mailbox's default calendar.
+const CALENDAR: Probe = Probe {
+    path: "/calendar?$select=id",
+    domain: SearchDomain::Calendar,
+    what: "calendar",
+};
 
 /// Resolves `address` to a mailbox this credential can open that is not its own.
 ///
@@ -63,53 +90,72 @@ const PROBE: &str = "/mailFolders/inbox?$select=id";
 /// - Anything else keeps its own class, so a throttle stays rate-limited and an outage retryable —
 ///   neither is ever reported as "no such mailbox".
 pub(crate) async fn resolve(client: &GraphClient, address: &str) -> ProviderResult<SharedAccount> {
+    resolve_with(client, address, &INBOX).await
+}
+
+/// Resolves `address` to a calendar this credential can open that is not its own: the
+/// calendar provider's half, with the same errors as [`resolve`].
+///
+/// # Errors
+///
+/// As [`resolve`], for the default calendar rather than the Inbox.
+pub(crate) async fn resolve_calendar(
+    client: &GraphClient,
+    address: &str,
+) -> ProviderResult<SharedAccount> {
+    resolve_with(client, address, &CALENDAR).await
+}
+
+async fn resolve_with(
+    client: &GraphClient,
+    address: &str,
+    probe: &Probe,
+) -> ProviderResult<SharedAccount> {
     let principal = MailboxPrincipal::user(address)?;
     let probed = client
-        .get(&client.principal_url(&principal, PROBE))
+        .get(&client.principal_url(&principal, probe.path))
         .await
-        .map_err(|err| classify(err, address))?;
-    if let Some(own) = own_inbox_id(client).await?
-        && inbox_id(&probed)? == own
+        .map_err(|err| classify(err, address, probe))?;
+    if let Some(own) = own_id(client, probe).await?
+        && probed_id(&probed)? == own
     {
         return Err(ProviderError::permanent(format!(
-            "{address:?} is this credential's own mailbox, not one shared with it"
+            "{address:?} is this credential's own {}, not one shared with it",
+            probe.what
         )));
     }
     let handle = SharedAccountId::new(
         ProviderKey::new(address.to_owned()).expect("a validated address is never empty"),
     );
-    // The mail provider's probe is the Inbox, so mail is what it found.
-    Ok(
-        SharedAccount::new(handle, address, StoreDomains::of(SearchDomain::Mail))
-            .with_address(address),
-    )
+    // A probe answers for its own domain, so that is what the store is known to offer.
+    Ok(SharedAccount::new(handle, address, StoreDomains::of(probe.domain)).with_address(address))
 }
 
-/// The signed-in user's own Inbox id, or `None` when the credential has no mailbox of its
-/// own (a licensed user without Exchange Online answers `404`) — in which case nothing it
-/// resolves can be its own.
-async fn own_inbox_id(client: &GraphClient) -> ProviderResult<Option<String>> {
+/// The signed-in user's own id at the probe's path, or `None` when the credential has no
+/// mailbox of its own (a licensed user without Exchange Online answers `404`) — in which case
+/// nothing it resolves can be its own.
+async fn own_id(client: &GraphClient, probe: &Probe) -> ProviderResult<Option<String>> {
     match client
-        .get(&client.principal_url(&MailboxPrincipal::Me, PROBE))
+        .get(&client.principal_url(&MailboxPrincipal::Me, probe.path))
         .await
     {
-        Ok(own) => Ok(Some(inbox_id(&own)?)),
+        Ok(own) => Ok(Some(probed_id(&own)?)),
         Err(GraphError::Status { status: 404, .. }) => Ok(None),
         Err(err) => Err(err.into()),
     }
 }
 
 /// The `id` of a probe answer.
-fn inbox_id(folder: &Value) -> Result<String, GraphError> {
-    folder
+fn probed_id(answer: &Value) -> Result<String, GraphError> {
+    answer
         .get("id")
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .ok_or_else(|| GraphError::protocol("mail folder answer carries no id"))
+        .ok_or_else(|| GraphError::protocol("the probe answer carries no id"))
 }
 
 /// Maps a failed probe onto the contract [`resolve`] documents.
-fn classify(err: GraphError, address: &str) -> ProviderError {
+fn classify(err: GraphError, address: &str, probe: &Probe) -> ProviderError {
     let GraphError::Status { status, code, .. } = &err else {
         // A transport failure or an unreadable body says nothing about the mailbox, so it
         // keeps its own class.
@@ -119,12 +165,14 @@ fn classify(err: GraphError, address: &str) -> ProviderError {
         // Deliberately not "does not exist": one of these is a mailbox that is there and
         // simply not shared, and Graph will not say which.
         404 => ProviderError::permanent(format!(
-            "no mailbox at {address:?} that this credential can open ({code:?})"
+            "no {} at {address:?} that this credential can open ({code:?})",
+            probe.what
         ))
         .with_source(err),
         403 => ProviderError::authentication(format!(
-            "this credential's grant does not cover the mailbox at {address:?} ({code:?}); \
-             it needs consent to the shared-mailbox scopes"
+            "this credential's grant does not cover the {} at {address:?} ({code:?}); \
+             it needs consent to the shared scopes",
+            probe.what
         ))
         .with_source(err),
         _ => err.into(),
@@ -134,3 +182,7 @@ fn classify(err: GraphError, address: &str) -> ProviderError {
 #[cfg(test)]
 #[path = "shared_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "shared_calendar_tests.rs"]
+mod calendar_tests;
