@@ -415,9 +415,9 @@ impl Provider for JmapProvider {
         Ok(crate::identity::set_name(executor, &account, identity, name).await?)
     }
 
-    /// The session's shared accounts (`crate::shared`); the session was fetched at connect.
+    /// The session's shared accounts, each asked what it holds (`crate::shared`).
     async fn list_shared_accounts(&self) -> ProviderResult<Vec<SharedAccount>> {
-        Ok(crate::shared::list(self.executor.session()))
+        Ok(crate::shared::list(self.executor.as_ref()).await?)
     }
 
     async fn report_message(

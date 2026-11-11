@@ -20,8 +20,8 @@
 //!   *own* advertised origin: a URL the server deliberately puts elsewhere is left alone
 //!   (`rebase_template`).
 
-use engine_core::ids::SharedAccountId;
-use engine_provider::{OverrideSurvival, SharedAccounts, WriteGuard};
+use engine_core::{ids::SharedAccountId, sync::SearchDomain};
+use engine_provider::{OverrideSurvival, SharedAccounts, StoreDomains, WriteGuard};
 use reqwest::Url;
 use serde_json::Value;
 
@@ -118,6 +118,9 @@ pub struct Session {
     /// Every account the session lists — the credential's own and each shared with it —
     /// or `None` when it carries no `accounts` map at all.
     accounts: Option<Vec<SessionAccount>>,
+    /// The domains the *server* serves, whatever this client is addressed at: what a shared
+    /// account can be asked about (`crate::shared`).
+    served: StoreDomains,
     /// The account this client is bound to, when it opens a shared mailbox rather than
     /// the credential's own.
     bound: Option<String>,
@@ -283,10 +286,17 @@ impl Session {
             capabilities = capabilities.with_idle();
         }
 
-        // Discovery is the accounts map itself, so it is there whenever the server serves
-        // mail and a map to read — whatever this client is bound to, because what a
-        // credential can reach is a fact about the credential (`crate::shared`).
-        if server_has(capability::MAIL) && accounts.is_some() {
+        // Discovery reads the accounts map, so it is there whenever the server serves a domain
+        // a store can hold and a map to read — whatever this client is bound to, because what
+        // a credential can reach is a fact about the credential (`crate::shared`).
+        let mut served = StoreDomains::none();
+        if server_has(capability::MAIL) {
+            served = served.with(SearchDomain::Mail);
+        }
+        if server_has(capability::CALENDARS) {
+            served = served.with(SearchDomain::Calendar);
+        }
+        if !served.is_empty() && accounts.is_some() {
             capabilities = capabilities.with_shared_accounts(SharedAccounts::Enumerable);
         }
 
@@ -321,6 +331,7 @@ impl Session {
             calendar_account_id,
             contact_account_id,
             accounts,
+            served,
             bound,
             limits,
             capabilities,
@@ -405,6 +416,17 @@ impl Session {
     /// carries no `accounts` map.
     pub(crate) fn accounts(&self) -> &[SessionAccount] {
         self.accounts.as_deref().unwrap_or(&[])
+    }
+
+    /// The shared account this client is bound to, or `None` for the credential's own.
+    pub(crate) fn bound_account(&self) -> Option<&SessionAccount> {
+        let bound = self.bound.as_deref()?;
+        self.accounts().iter().find(|account| account.id == bound)
+    }
+
+    /// The domains the server serves (`crate::shared`).
+    pub(crate) fn served(&self) -> StoreDomains {
+        self.served
     }
 
     /// One domain's account id, or the error that says why there is none.

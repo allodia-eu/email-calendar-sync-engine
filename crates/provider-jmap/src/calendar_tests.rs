@@ -1,4 +1,6 @@
-use engine_core::calendar::{ConferenceOrigin, ConferenceUri, DetectedIn, RecurrenceSkip};
+use engine_core::calendar::{
+    CalendarAccess, ConferenceOrigin, ConferenceUri, DetectedIn, RecurrenceSkip,
+};
 use serde_json::json;
 
 use super::*;
@@ -31,6 +33,50 @@ fn calendar_container_normalizes() {
     let calendar = calendar_from_json(&doc["list"][0]).unwrap();
     assert!(calendar.is_default);
     assert!(calendar.name.contains("Stalwart Calendar"));
+}
+
+/// A calendar shared read-only (captured: dave's, as alice) carries the rights it was shared
+/// with; the user's own calendar keeps every right.
+#[test]
+fn a_calendar_carries_the_callers_rights() {
+    let own: Value = serde_json::from_str(CALENDAR_GET).unwrap();
+    assert_eq!(
+        calendar_from_json(&own["list"][0]).unwrap().access,
+        CalendarAccess::owner()
+    );
+    let shared: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/calendar_get_shared_read_only.json"
+    ))
+    .unwrap();
+    let calendar = calendar_from_json(&shared["methodResponses"][0][1]["list"][0]).unwrap();
+    assert_eq!(
+        calendar.access,
+        CalendarAccess {
+            may_read: true,
+            may_write: false,
+            may_share: false,
+            may_delete: false,
+            may_rsvp: false,
+            may_read_free_busy: true,
+        }
+    );
+}
+
+#[test]
+fn a_right_missing_from_the_object_is_withheld_and_no_object_is_the_owners() {
+    let partial = json!({ "id": "c", "myRights": { "mayReadItems": true, "mayWriteAll": true } });
+    let access = calendar_from_json(&partial).unwrap().access;
+    assert!(access.may_read && access.may_write);
+    assert!(!access.may_rsvp && !access.may_share && !access.may_delete);
+    assert!(!access.may_read_free_busy);
+    // `mayWriteOwn` alone is not `may_write`: it covers the user's own events, and a host
+    // offering to edit someone else's would be refused.
+    let own_only = json!({ "id": "c", "myRights": { "mayReadItems": true, "mayWriteOwn": true } });
+    assert!(!calendar_from_json(&own_only).unwrap().access.may_write);
+    assert_eq!(
+        calendar_from_json(&json!({ "id": "c" })).unwrap().access,
+        CalendarAccess::owner()
+    );
 }
 
 #[test]

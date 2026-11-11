@@ -25,13 +25,13 @@ fn bound(base: String, handle: &str) -> JmapConfig {
 
 #[tokio::test]
 async fn a_bound_config_addresses_every_call_at_the_shared_account() {
-    let config = bound(mock_server(vec![http_ok(SESSION)]), "f");
+    let config = bound(mock_server(vec![http_ok(SESSION)]), "g");
     assert!(format!("{config:?}").contains("shared_account"));
     let client = JmapClient::connect(config).await.unwrap();
-    // The group's account `f`, where an unbound client would address alice's primary `c`.
+    // The group's account `g`, where an unbound client would address alice's primary `c`.
     let session = client.session();
-    assert_eq!(session.mail_account_id().unwrap(), "f");
-    assert_eq!(session.submission_account_id().unwrap(), "f");
+    assert_eq!(session.mail_account_id().unwrap(), "g");
+    assert_eq!(session.submission_account_id().unwrap(), "g");
 }
 
 #[tokio::test]

@@ -72,13 +72,19 @@ impl CalendarWrites for JmapProvider {
         Ok(crate::calendar_write::delete_event(executor, &account, base, deletion).await?)
     }
 
-    /// One `ParticipantIdentity/get` on the calendars account (`crate::participant_identity`).
+    /// One `ParticipantIdentity/get` on the calendars account (`crate::participant_identity`),
+    /// narrowed to the owner's identities when the client is bound to a shared account.
     async fn calendar_user_addresses(
         &self,
         _account: &AccountId,
     ) -> ProviderResult<CalendarUserAddresses> {
         let (executor, account) = (self.executor.as_ref(), self.calendar_account()?);
-        Ok(crate::participant_identity::calendar_user_addresses(executor, &account).await?)
+        let answer =
+            crate::participant_identity::calendar_user_addresses(executor, &account).await?;
+        Ok(match executor.session().bound_account() {
+            None => answer,
+            Some(store) => crate::participant_identity::for_store(answer, store),
+        })
     }
 }
 

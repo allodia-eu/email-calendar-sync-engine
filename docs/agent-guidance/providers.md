@@ -186,7 +186,7 @@ If product pressure changes the order, the domain model tests still need JMAP an
 
     | Adapter | Mechanism | `SharedAccounts` | Domains reported | Binding |
     |---|---|---|---|---|
-    | JMAP | the session's `accounts` map, `isPersonal: false` (RFC 8620 §1.6.2); on a JMAP Sharing server, the shares the user subscribed to (RFC 9670) | `Enumerable` when the server serves mail and an `accounts` map | mail | every domain the shared account exposes is addressed at it |
+    | JMAP | the session's `accounts` map, `isPersonal: false` (RFC 8620 §1.6.2); on a JMAP Sharing server, the shares the user subscribed to (RFC 9670). Each claimed domain is then **asked** (`Mailbox/get` / `Calendar/get`, `ids: []`, one request), because `accountCapabilities` overclaims (STALWART-1) | `Enumerable` when the server serves mail or calendars and an `accounts` map | mail, calendars — each where the store answers | every domain the shared account exposes is addressed at it |
     | IMAP | the other-users' and shared namespaces (RFC 2342), one store per owner below each | `Enumerable` when the session has `NAMESPACE` **and** `ACL` — a server without ACLs has no way for one user to share with another | mail | the folder list, every placement and a folder write's top level are scoped to that store; its connections come from the credential's pool |
     | Graph (mail) | none that lists; `/users/{address}` answers or does not | `ByAddress` | mail | `MailboxPrincipal::shared` roots every request at `/users/{address}` |
     | Gmail | delegation is real but needs a service account with domain-wide delegation, never a user token | `Unsupported` | — | — |
