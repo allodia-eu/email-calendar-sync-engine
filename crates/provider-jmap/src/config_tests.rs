@@ -3,7 +3,7 @@
 //! (`tests/fixtures/session_shared_accounts.json`): the binding reaches the session, and a
 //! handle the session does not list fails the connect instead of every call after it.
 
-use engine_core::{error::FailureClass, ids::SharedMailboxId};
+use engine_core::{error::FailureClass, ids::SharedAccountId};
 
 use super::{Credentials, JmapConfig};
 use crate::{
@@ -20,13 +20,13 @@ fn bound(base: String, handle: &str) -> JmapConfig {
         engine_http::test_server::user_agent(),
     )
     .with_session_path("/jmap/session")
-    .with_shared_mailbox(SharedMailboxId::try_from(handle).unwrap())
+    .with_shared_account(SharedAccountId::try_from(handle).unwrap())
 }
 
 #[tokio::test]
 async fn a_bound_config_addresses_every_call_at_the_shared_account() {
     let config = bound(mock_server(vec![http_ok(SESSION)]), "f");
-    assert!(format!("{config:?}").contains("shared_mailbox"));
+    assert!(format!("{config:?}").contains("shared_account"));
     let client = JmapClient::connect(config).await.unwrap();
     // The group's account `f`, where an unbound client would address alice's primary `c`.
     let session = client.session();

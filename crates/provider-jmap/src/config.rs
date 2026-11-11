@@ -6,7 +6,7 @@
 use core::fmt;
 use std::sync::Arc;
 
-use engine_core::ids::SharedMailboxId;
+use engine_core::ids::SharedAccountId;
 use engine_provider::ConnectObserver;
 use engine_tls::TlsClientConfig;
 
@@ -75,7 +75,7 @@ pub struct JmapConfig {
     pub(crate) retry: engine_http::RetryConfig,
     pub(crate) user_agent: engine_http::UserAgent,
     pub(crate) connect_observer: Option<Arc<dyn ConnectObserver>>,
-    pub(crate) shared_mailbox: Option<SharedMailboxId>,
+    pub(crate) shared_account: Option<SharedAccountId>,
 }
 
 impl JmapConfig {
@@ -97,14 +97,14 @@ impl JmapConfig {
             retry: engine_http::RetryConfig::default(),
             user_agent,
             connect_observer: None,
-            shared_mailbox: None,
+            shared_account: None,
         }
     }
 
     /// Binds this client to a mailbox shared **with** the credential rather than to the
     /// credential's own: `handle` is what
-    /// [`list_shared_mailboxes`](engine_provider::Provider::list_shared_mailboxes) or
-    /// [`resolve_shared_mailbox`](engine_provider::Provider::resolve_shared_mailbox) handed
+    /// [`list_shared_accounts`](engine_provider::Provider::list_shared_accounts) or
+    /// [`resolve_shared_account`](engine_provider::Provider::resolve_shared_account) handed
     /// back.
     ///
     /// Every method call then carries that account's id instead of the `primaryAccounts`
@@ -116,8 +116,8 @@ impl JmapConfig {
     /// or a handle from another server) fails [`JmapClient::connect`](crate::JmapClient::connect)
     /// rather than every call after it.
     #[must_use]
-    pub fn with_shared_mailbox(mut self, handle: SharedMailboxId) -> Self {
-        self.shared_mailbox = Some(handle);
+    pub fn with_shared_account(mut self, handle: SharedAccountId) -> Self {
+        self.shared_account = Some(handle);
         self
     }
 
@@ -179,7 +179,7 @@ impl fmt::Debug for JmapConfig {
             .field("session_path", &self.session_path)
             .field("session_urls", &self.session_urls)
             .field("user_agent", &self.user_agent)
-            .field("shared_mailbox", &self.shared_mailbox)
+            .field("shared_account", &self.shared_account)
             .finish_non_exhaustive()
     }
 }

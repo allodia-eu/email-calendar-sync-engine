@@ -27,9 +27,7 @@ use engine_core::{
     mail::{EmailAddress, MailboxAccess, MailboxRole, Message},
     sync::SyncUpdate,
 };
-use engine_provider::{
-    Draft, MailboxEdit, MailboxWrites, Provider, SharedMailbox, SharedMailboxes,
-};
+use engine_provider::{Draft, MailboxEdit, MailboxWrites, Provider, SharedAccount, SharedAccounts};
 use imap_live::{
     FULL_SHARE_OWNER, LiveProvider, READ_ONLY_SHARE_OWNER, SERVERS, Server, connect,
     connect_shared, folders,
@@ -39,9 +37,9 @@ use stalwart_harness::SHARED_MESSAGE_ID;
 /// A seeded `Message-ID` of the account's own, which must never turn up in a shared store.
 const OWN_SEED_ID: &str = "baseline-0001@test.local";
 
-async fn discover(provider: &LiveProvider, address: &str) -> SharedMailbox {
+async fn discover(provider: &LiveProvider, address: &str) -> SharedAccount {
     provider
-        .resolve_shared_mailbox(address)
+        .resolve_shared_account(address)
         .await
         .unwrap_or_else(|err| panic!("{address} should resolve: {err}"))
 }
@@ -66,7 +64,7 @@ async fn shared_store(
     server: &Server,
     owner: &str,
     test: &str,
-) -> Option<(SharedMailbox, Vec<engine_core::mail::Mailbox>)> {
+) -> Option<(SharedAccount, Vec<engine_core::mail::Mailbox>)> {
     let own = connect(server, test).await?;
     let store = discover(&own, owner).await;
     let provider = connect_shared(server, &store.handle, "INBOX", test).await?;
@@ -82,12 +80,12 @@ async fn both_shares_are_discovered_and_the_credentials_own_is_not_one() {
             continue;
         };
         assert_eq!(
-            provider.connection_info().capabilities.shared_mailboxes(),
-            SharedMailboxes::Enumerable,
+            provider.connection_info().capabilities.shared_accounts(),
+            SharedAccounts::Enumerable,
             "{}",
             server.label
         );
-        let stores = provider.list_shared_mailboxes().await.unwrap();
+        let stores = provider.list_shared_accounts().await.unwrap();
         let owners: Vec<&str> = stores.iter().filter_map(|s| s.address.as_deref()).collect();
         for owner in [FULL_SHARE_OWNER, READ_ONLY_SHARE_OWNER] {
             assert!(owners.contains(&owner), "{}: {stores:?}", server.label);
@@ -96,7 +94,7 @@ async fn both_shares_are_discovered_and_the_credentials_own_is_not_one() {
         }
         for not_shared in [server.account, "nobody@test.local"] {
             let err = provider
-                .resolve_shared_mailbox(not_shared)
+                .resolve_shared_account(not_shared)
                 .await
                 .unwrap_err();
             assert_eq!(err.class(), FailureClass::Permanent, "{}", server.label);
@@ -112,7 +110,7 @@ async fn the_credentials_own_folder_list_holds_none_of_a_shared_store() {
             continue;
         };
         let handles: Vec<String> = provider
-            .list_shared_mailboxes()
+            .list_shared_accounts()
             .await
             .unwrap()
             .into_iter()

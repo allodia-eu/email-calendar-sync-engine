@@ -1,13 +1,16 @@
 //! Shared-mailbox discovery: the session's `accounts` map, projected as neutral
-//! [`SharedMailbox`] entries.
+//! [`SharedAccount`] entries.
 //!
 //! No request is issued. The map arrived with the session
 //! [`JmapClient::connect`](crate::JmapClient::connect) already fetched, which is why
 //! enumeration is free on this protocol. Resolving an address needs nothing of its own
 //! either: the trait's default reads this list (`engine_provider::Provider`).
 
-use engine_core::ids::{ProviderKey, SharedMailboxId};
-use engine_provider::SharedMailbox;
+use engine_core::{
+    ids::{ProviderKey, SharedAccountId},
+    sync::SearchDomain,
+};
+use engine_provider::{SharedAccount, StoreDomains};
 
 use crate::{request::capability, session::Session, session_accounts::SessionAccount};
 
@@ -18,7 +21,7 @@ use crate::{request::capability, session::Session, session_accounts::SessionAcco
 /// as "add another mailbox" only if it is not there to filter. An account shared for
 /// another domain alone (a calendar, an address book) is left out too, because it is not
 /// a mailbox and binding a mail client to it could sync nothing.
-pub(crate) fn list(session: &Session) -> Vec<SharedMailbox> {
+pub(crate) fn list(session: &Session) -> Vec<SharedAccount> {
     session
         .accounts()
         .iter()
@@ -29,17 +32,17 @@ pub(crate) fn list(session: &Session) -> Vec<SharedMailbox> {
 
 /// One account as a neutral entry. Its handle is the JMAP account id — opaque and
 /// server-assigned, and what
-/// [`JmapConfig::with_shared_mailbox`](crate::JmapConfig::with_shared_mailbox) takes back.
+/// [`JmapConfig::with_shared_account`](crate::JmapConfig::with_shared_account) takes back.
 ///
 /// RFC 8620 §1.6.2 calls the account `name` "usually the primary email address", so it is
 /// reported as the address only when it has the shape of one; otherwise it is only a
 /// label. An unnamed account is labelled by its id.
-fn project(account: &SessionAccount) -> SharedMailbox {
-    let handle = SharedMailboxId::new(
+fn project(account: &SessionAccount) -> SharedAccount {
+    let handle = SharedAccountId::new(
         ProviderKey::new(account.id.clone()).expect("an empty account id is dropped at parse"),
     );
     let label = account.name.clone().unwrap_or_else(|| account.id.clone());
-    let mailbox = SharedMailbox::new(handle, label);
+    let mailbox = SharedAccount::new(handle, label, StoreDomains::of(SearchDomain::Mail));
     match account
         .name
         .as_deref()

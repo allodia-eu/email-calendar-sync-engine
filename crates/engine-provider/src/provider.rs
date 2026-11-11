@@ -12,14 +12,14 @@ use engine_core::{
 use crate::{
     CalendarListing, CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream,
     HandOver, MailEdit, MailEditReceipt, MailboxWrites, MessageReport, ProviderError,
-    ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SharedMailbox,
+    ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SharedAccount,
     SourceStream, SubmissionReceipt, error::unsupported,
 };
 // Named only by intra-doc links, which rustdoc resolves against this module's scope.
 #[allow(unused_imports, reason = "named by intra-doc links only")]
 use crate::{
     Capabilities, EmailChunk, IdentityControls, PageToken, PassMode, ReportControls, RsvpControls,
-    SharedMailboxes,
+    SharedAccounts,
 };
 
 /// A read/sync provider adapter for one account's mail, calendar and submission.
@@ -409,21 +409,21 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
         Err(unsupported("changing the sender name"))
     }
 
-    /// Every mail store this credential can open besides its default one (`crate::shared`): a
+    /// Every store this credential can open besides its default one (`crate::shared`): a
     /// fact about the **credential**, like [`connection_info`](Self::connection_info), the same
-    /// whichever store this provider is bound to. [`SharedMailboxes::Enumerable`] overrides it.
+    /// whichever store this provider is bound to. [`SharedAccounts::Enumerable`] overrides it.
     ///
     /// # Errors
     ///
     /// A classified [`ProviderError`]; the default is
     /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
-    async fn list_shared_mailboxes(&self) -> ProviderResult<Vec<SharedMailbox>> {
-        Err(unsupported("listing shared mailboxes"))
+    async fn list_shared_accounts(&self) -> ProviderResult<Vec<SharedAccount>> {
+        Err(unsupported("listing shared accounts"))
     }
 
-    /// The mail store at `address`, if this credential can open it. The default matches
-    /// [`list_shared_mailboxes`](Self::list_shared_mailboxes) by [`SharedMailbox::answers_to`];
-    /// an adapter that can only answer by address ([`SharedMailboxes::ByAddress`]) overrides it.
+    /// The store at `address`, if this credential can open it. The default matches
+    /// [`list_shared_accounts`](Self::list_shared_accounts) by [`SharedAccount::answers_to`];
+    /// an adapter that can only answer by address ([`SharedAccounts::ByAddress`]) overrides it.
     ///
     /// # Errors
     ///
@@ -432,7 +432,7 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
     /// never shared with it: the server will not say which), and
     /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState) on an
     /// adapter with no mechanism at all.
-    async fn resolve_shared_mailbox(&self, address: &str) -> ProviderResult<SharedMailbox> {
+    async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
         crate::shared::resolve_by_listing(self, address).await
     }
 

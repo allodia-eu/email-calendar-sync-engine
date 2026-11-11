@@ -7,7 +7,7 @@
 //! connect already fetches. On a server implementing JMAP Sharing (RFC 9670) it lists the
 //! shares the user has subscribed to, so there a share appears once accepted.
 //!
-//! Binding a client to one of those accounts (`JmapConfig::with_shared_mailbox`) changes
+//! Binding a client to one of those accounts (`JmapConfig::with_shared_account`) changes
 //! exactly one thing: which account id each domain's calls carry. Unbound, a domain is
 //! addressed at its `primaryAccounts` entry, as it always was. Bound, every domain the
 //! bound account exposes is addressed at the bound account instead, and a domain it does

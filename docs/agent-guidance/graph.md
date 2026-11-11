@@ -364,6 +364,8 @@ not run against a mailbox yet.
 
 ## Shared mailboxes (the multi-mailbox model)
 
+The neutral seam is `SharedAccounts` (`providers.md`). The mail provider's Inbox probe reports a store with `StoreDomains` mail; its calendar is the calendar provider's to report.
+
 One signed-in user (one OAuth credential) can access several mailboxes: their own
 and any shared/other mailbox they hold delegate access to — Graph addresses the
 latter as `…/users/{address}/mailFolders('Inbox')/messages`, using the user's
@@ -396,10 +398,10 @@ So adding a shared mailbox is, for the engine, just another account pointed at a
 so it skips for the personal account the rest of the live suite uses — and so no real
 address is ever written into the repository).
 
-### Onboarding: `resolve_shared_mailbox`, and only that
+### Onboarding: `resolve_shared_account`, and only that
 
 - **There is no list route.** Nothing in Graph answers "which mailboxes have been shared with
-  me", so the adapter advertises `SharedMailboxes::ByAddress`, leaves `list_shared_mailboxes`
+  me", so the adapter advertises `SharedAccounts::ByAddress`, leaves `list_shared_accounts`
   at its rejecting default, and a host asks the user to type an address. The resolver probes
   `GET /users/{addr}/mailFolders/inbox?$select=id` — a mail-folder read, needing only the
   `Mail.Read*.Shared` scope a sync of that mailbox needs anyway.

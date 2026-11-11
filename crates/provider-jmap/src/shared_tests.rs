@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use engine_core::{error::FailureClass, mail::MailboxAccess, sync::SyncUpdate};
-use engine_provider::SharedMailboxes;
+use engine_provider::SharedAccounts;
 use serde_json::{Value, json};
 
 use super::{provider_test_support::*, *};
@@ -39,10 +39,10 @@ fn bound(handle: Option<&str>, responses: Vec<Value>) -> (JmapProvider, Arc<Fake
 async fn the_session_lists_the_mailboxes_shared_with_the_credential_and_not_its_own() {
     let (provider, exec) = bound(None, vec![]);
     assert_eq!(
-        provider.connection_info().capabilities.shared_mailboxes(),
-        SharedMailboxes::Enumerable
+        provider.connection_info().capabilities.shared_accounts(),
+        SharedAccounts::Enumerable
     );
-    let listed = provider.list_shared_mailboxes().await.unwrap();
+    let listed = provider.list_shared_accounts().await.unwrap();
     let handles: Vec<&str> = listed.iter().map(|m| m.handle.as_str()).collect();
     // The group mailbox and bob's read-only share — alice's own account is not there, so a
     // host renders this list as "add another mailbox" without filtering it.
@@ -57,6 +57,11 @@ async fn the_session_lists_the_mailboxes_shared_with_the_credential_and_not_its_
         .find(|m| m.handle.as_str() == SUPPORT)
         .unwrap();
     assert_eq!(support.address.as_deref(), Some("support@test.local"));
+    assert!(
+        support
+            .domains
+            .contains(engine_core::sync::SearchDomain::Mail)
+    );
     assert_eq!(support.name, "support@test.local");
     // No request: the accounts map arrived with the session connect already fetched.
     assert_eq!(exec.request_count(), 0);
@@ -70,14 +75,14 @@ async fn an_account_name_that_is_not_an_address_is_offered_as_a_label_only() {
     doc["accounts"][BOB]["name"] = json!("Bob's Mailbox");
     let exec = Arc::new(FakeExecutor::bound_to(&doc, None, vec![]));
     let provider = JmapProvider::with_executor(Box::new(exec));
-    let listed = provider.list_shared_mailboxes().await.unwrap();
+    let listed = provider.list_shared_accounts().await.unwrap();
     let bob = listed.iter().find(|m| m.handle.as_str() == BOB).unwrap();
     assert_eq!(
         (bob.name.as_str(), bob.address.as_deref()),
         ("Bob's Mailbox", None)
     );
     let err = provider
-        .resolve_shared_mailbox("bob@test.local")
+        .resolve_shared_account("bob@test.local")
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::Permanent);
@@ -87,7 +92,7 @@ async fn an_account_name_that_is_not_an_address_is_offered_as_a_label_only() {
 async fn an_address_resolves_through_the_listing_and_the_own_account_never_does() {
     let (provider, _) = bound(None, vec![]);
     let support = provider
-        .resolve_shared_mailbox("Support@Test.Local")
+        .resolve_shared_account("Support@Test.Local")
         .await
         .unwrap();
     assert_eq!(support.handle.as_str(), SUPPORT);
@@ -97,7 +102,7 @@ async fn an_address_resolves_through_the_listing_and_the_own_account_never_does(
     for not_shared in ["alice@test.local", "nobody@test.local"] {
         assert_eq!(
             provider
-                .resolve_shared_mailbox(not_shared)
+                .resolve_shared_account(not_shared)
                 .await
                 .unwrap_err()
                 .class(),
@@ -152,15 +157,15 @@ async fn discovery_does_not_depend_on_what_the_client_is_bound_to() {
     let (unbound, _) = bound(None, vec![]);
     let (bound_to_support, _) = bound(Some(SUPPORT), vec![]);
     assert_eq!(
-        unbound.list_shared_mailboxes().await.unwrap(),
-        bound_to_support.list_shared_mailboxes().await.unwrap()
+        unbound.list_shared_accounts().await.unwrap(),
+        bound_to_support.list_shared_accounts().await.unwrap()
     );
 }
 
 #[test]
 fn a_handle_the_session_does_not_list_fails_at_connect() {
     let base = reqwest::Url::parse("http://127.0.0.1:18080").unwrap();
-    let stale = engine_core::ids::SharedMailboxId::try_from("zzz").unwrap();
+    let stale = engine_core::ids::SharedAccountId::try_from("zzz").unwrap();
     let err = Session::parse(
         &session_doc(),
         &base,
@@ -192,7 +197,7 @@ async fn a_domain_the_shared_account_does_not_expose_is_not_advertised() {
         "{err}"
     );
     // Discovery stays: the credential can still find the other shares.
-    assert_eq!(caps.shared_mailboxes(), SharedMailboxes::Enumerable);
+    assert_eq!(caps.shared_accounts(), SharedAccounts::Enumerable);
 }
 
 #[test]
@@ -204,8 +209,8 @@ fn a_session_without_an_accounts_map_offers_no_discovery() {
     let exec = FakeExecutor::bound_to(&doc, None, vec![]);
     assert!(exec.session().capabilities().mail());
     assert_eq!(
-        exec.session().capabilities().shared_mailboxes(),
-        SharedMailboxes::Unsupported
+        exec.session().capabilities().shared_accounts(),
+        SharedAccounts::Unsupported
     );
     assert!(exec.session().accounts().is_empty());
 }

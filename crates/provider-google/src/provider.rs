@@ -72,7 +72,7 @@ impl GmailProvider {
     /// feature, but not one a user credential reaches — the route that would serve it,
     /// `users/{userId}` for another user, needs a service account with domain-wide
     /// delegation. So the capability stays
-    /// [`SharedMailboxes::Unsupported`](engine_provider::SharedMailboxes::Unsupported) and
+    /// [`SharedAccounts::Unsupported`](engine_provider::SharedAccounts::Unsupported) and
     /// both discovery verbs keep their rejecting defaults, rather than offering an onboarding
     /// flow that could only fail (`google.md`).
     #[must_use]

@@ -90,7 +90,7 @@ impl FakeExecutor {
         responses: Vec<Value>,
     ) -> Self {
         let base = Url::parse("http://127.0.0.1:18080").unwrap();
-        let handle = handle.map(|h| engine_core::ids::SharedMailboxId::try_from(h).unwrap());
+        let handle = handle.map(|h| engine_core::ids::SharedAccountId::try_from(h).unwrap());
         let session = Session::parse(
             session_doc,
             &base,

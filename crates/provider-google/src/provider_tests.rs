@@ -380,20 +380,20 @@ fn gmail_advertises_a_writable_sender_name() {
 #[tokio::test]
 async fn gmail_offers_no_shared_mailbox_mechanism() {
     use engine_core::error::FailureClass;
-    use engine_provider::SharedMailboxes;
+    use engine_provider::SharedAccounts;
 
     // A deliberate "no": reaching another user's mailbox over the Gmail API needs a service
     // account with domain-wide delegation, not the user token this adapter holds. Anything
     // else would offer a host an onboarding flow that could only fail.
     let provider = GmailProvider::new(fake_client(vec![]));
     assert_eq!(
-        provider.connection_info().capabilities.shared_mailboxes(),
-        SharedMailboxes::Unsupported
+        provider.connection_info().capabilities.shared_accounts(),
+        SharedAccounts::Unsupported
     );
     for err in [
-        provider.list_shared_mailboxes().await.unwrap_err(),
+        provider.list_shared_accounts().await.unwrap_err(),
         provider
-            .resolve_shared_mailbox("shared@example.test")
+            .resolve_shared_account("shared@example.test")
             .await
             .unwrap_err(),
     ] {

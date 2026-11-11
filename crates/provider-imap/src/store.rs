@@ -17,10 +17,11 @@
 //! [`foreign`](Namespaces::foreign) alike.
 
 use engine_core::{
-    ids::{MailboxId, ProviderKey, SharedMailboxId},
+    ids::{MailboxId, ProviderKey, SharedAccountId},
     mail::{Mailbox, MailboxRole},
+    sync::SearchDomain,
 };
-use engine_provider::{ProviderError, ProviderResult, SharedMailbox};
+use engine_provider::{ProviderError, ProviderResult, SharedAccount, StoreDomains};
 
 use crate::tokenize::{Item, items_of};
 
@@ -172,7 +173,7 @@ pub(crate) enum MailStore {
         /// The namespaces whose folders are someone else's.
         foreign: Vec<Namespace>,
     },
-    /// One store under a foreign namespace, bound with `ImapAccount::with_shared_mailbox`.
+    /// One store under a foreign namespace, bound with `ImapAccount::with_shared_account`.
     Shared {
         /// The store's own path as a namespace: the handle, and the delimiter below it.
         root: Namespace,
@@ -296,10 +297,11 @@ impl MailStore {
 /// The component below the prefix is the store's owner. It is an address on every server
 /// observed (Stalwart, and Dovecot keyed by address), and is reported as one only when it
 /// has that shape; a server keyed by bare user names gives a label and no address.
-pub(crate) fn shared_store(namespace: &Namespace, name: &str) -> Option<SharedMailbox> {
+pub(crate) fn shared_store(namespace: &Namespace, name: &str) -> Option<SharedAccount> {
     let owner = namespace.owner_of(name)?;
-    let handle = SharedMailboxId::new(ProviderKey::new(name.to_owned()).ok()?);
-    let store = SharedMailbox::new(handle, owner);
+    let handle = SharedAccountId::new(ProviderKey::new(name.to_owned()).ok()?);
+    // An IMAP provider serves mail alone, so mail is all it can say the store offers.
+    let store = SharedAccount::new(handle, owner, StoreDomains::of(SearchDomain::Mail));
     Some(if looks_like_address(owner) {
         store.with_address(owner)
     } else {

@@ -21,7 +21,7 @@ use engine_core::{
     mail::{MailboxAccess, MailboxRole},
     sync::SyncUpdate,
 };
-use engine_provider::{Provider, SharedMailboxes};
+use engine_provider::{Provider, SharedAccounts};
 use provider_graph::{GraphClient, GraphProvider, MailboxPrincipal};
 
 fn account() -> AccountId {
@@ -62,22 +62,22 @@ async fn live_a_granted_mailbox_resolves_and_nothing_else_does() {
     let own = provider(&token, MailboxPrincipal::Me);
     // No route lists shared mailboxes, and the capability says so.
     assert_eq!(
-        own.connection_info().capabilities.shared_mailboxes(),
-        SharedMailboxes::ByAddress
+        own.connection_info().capabilities.shared_accounts(),
+        SharedAccounts::ByAddress
     );
     assert_eq!(
-        own.list_shared_mailboxes().await.unwrap_err().class(),
+        own.list_shared_accounts().await.unwrap_err().class(),
         FailureClass::InvalidState
     );
 
     let resolved = own
-        .resolve_shared_mailbox(&shared)
+        .resolve_shared_account(&shared)
         .await
         .expect("the mailbox is shared with this credential");
     assert_eq!(resolved.handle.as_str(), shared);
     // An address is not case-normalized by whoever typed it, and Graph resolves it anyway.
     assert!(
-        own.resolve_shared_mailbox(&shared.to_uppercase())
+        own.resolve_shared_account(&shared.to_uppercase())
             .await
             .is_ok()
     );
@@ -86,7 +86,7 @@ async fn live_a_granted_mailbox_resolves_and_nothing_else_does() {
     // mailbox: terminal, so a host asks the user to check it rather than retrying.
     let domain = shared.rsplit_once('@').map(|(_, d)| d).unwrap();
     let err = own
-        .resolve_shared_mailbox(&format!("no-such-mailbox-e2e-probe@{domain}"))
+        .resolve_shared_account(&format!("no-such-mailbox-e2e-probe@{domain}"))
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::Permanent);
@@ -110,7 +110,7 @@ async fn live_the_credentials_own_mailbox_is_never_a_shared_one() {
         identity.address.email.clone(),
         identity.address.email.to_uppercase(),
     ] {
-        let err = own.resolve_shared_mailbox(&own_address).await.unwrap_err();
+        let err = own.resolve_shared_account(&own_address).await.unwrap_err();
         assert_eq!(err.class(), FailureClass::Permanent);
         assert!(err.detail().contains("own mailbox"), "{err}");
     }
@@ -132,7 +132,7 @@ async fn live_an_address_that_could_restructure_the_url_never_reaches_graph() {
         format!("{shared}/mailFolders/sentitems"),
         "a@b.example\\me".to_owned(),
     ] {
-        match own.resolve_shared_mailbox(&hostile).await {
+        match own.resolve_shared_account(&hostile).await {
             Ok(resolved) => panic!("{hostile:?} resolved to {resolved:?}"),
             Err(err) => assert!(err.detail().contains("invalid mailbox address"), "{err}"),
         }
@@ -147,7 +147,7 @@ async fn live_a_client_bound_to_the_shared_mailbox_reads_its_folders() {
         return;
     };
     let handle = provider(&token, MailboxPrincipal::Me)
-        .resolve_shared_mailbox(&shared)
+        .resolve_shared_account(&shared)
         .await
         .expect("resolves")
         .handle;

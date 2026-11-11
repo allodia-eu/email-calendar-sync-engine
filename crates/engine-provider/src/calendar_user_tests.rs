@@ -75,3 +75,57 @@ fn a_partial_set_recognises_what_it_names_and_rules_nothing_out() {
         "an alias it does not list"
     );
 }
+
+/// The bound-store rule (`calendar_user`'s module docs): in a store opened for another
+/// principal, the calendar user is that store's owner, never the credential.
+mod bound_store {
+    use super::*;
+
+    const OWNER: &str = "support@example.org";
+    const USER: &str = "alice@example.org";
+
+    fn known(addresses: &[&str]) -> CalendarUserAddresses {
+        CalendarUserAddresses::Known(addresses.iter().map(|&a| a.to_owned()).collect())
+    }
+
+    #[test]
+    fn an_answer_naming_the_owner_alone_is_for_the_store() {
+        assert!(known(&[OWNER]).is_for_store(OWNER, USER));
+        assert!(CalendarUserAddresses::Including(vec![OWNER.to_owned()]).is_for_store(OWNER, USER));
+        // Case-insensitively, as addresses compare.
+        assert!(known(&["Support@Example.org"]).is_for_store(OWNER, USER));
+        // An owner's aliases are the owner's too: a principal's address set may list several.
+        assert!(known(&[OWNER, "helpdesk@example.org"]).is_for_store(OWNER, USER));
+    }
+
+    #[test]
+    fn an_answer_that_schedules_as_nobody_is_honest_about_the_store() {
+        // A share the user may read but not schedule in: no address is theirs to use.
+        for set in [
+            CalendarUserAddresses::NotEnabled,
+            CalendarUserAddresses::Unknown,
+            known(&[]),
+        ] {
+            assert!(set.is_for_store(OWNER, USER), "{set:?}");
+        }
+    }
+
+    #[test]
+    fn an_answer_that_names_the_credential_speaks_for_the_wrong_principal() {
+        // What JMAP's `ParticipantIdentity/get` returns on any account: the user's own
+        // identities, the group's among them.
+        assert!(!known(&[USER, OWNER]).is_for_store(OWNER, USER));
+        assert!(!known(&[USER]).is_for_store(OWNER, USER));
+        assert!(!CalendarUserAddresses::Including(vec![USER.to_owned()]).is_for_store(OWNER, USER));
+    }
+
+    #[test]
+    fn an_answer_naming_someone_else_entirely_is_not_for_the_store() {
+        assert!(!known(&["carol@example.org"]).is_for_store(OWNER, USER));
+    }
+
+    #[test]
+    fn in_the_users_own_store_the_owner_is_the_user() {
+        assert!(known(&[USER]).is_for_store(USER, USER));
+    }
+}

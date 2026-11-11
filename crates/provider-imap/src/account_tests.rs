@@ -112,8 +112,8 @@ async fn a_watch_spends_one_connection_until_it_is_dropped() {
 async fn a_shared_store_spends_the_budget_of_the_login_that_opens_it() {
     let (account, recorded) =
         account_over(&["* OK [UIDVALIDITY 1] ok\r\na3 OK [READ-ONLY] EXAMINE done\r\n"]).await;
-    let handle = engine_core::ids::SharedMailboxId::try_from("Shared Folders/support@test.local");
-    let shared = account.with_shared_mailbox(handle.unwrap());
+    let handle = engine_core::ids::SharedAccountId::try_from("Shared Folders/support@test.local");
+    let shared = account.with_shared_account(handle.unwrap());
     let headroom = account.watch_headroom();
 
     // The account cannot dial, so the store's watch succeeding means it took the account's

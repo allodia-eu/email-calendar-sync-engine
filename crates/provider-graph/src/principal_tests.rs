@@ -81,14 +81,14 @@ fn every_other_character_is_encoded_and_arrives_as_data() {
 
 #[test]
 fn a_stored_handle_binds_the_mailbox_it_names_and_is_rechecked() {
-    let handle = SharedMailboxId::try_from("shared@example.test").unwrap();
+    let handle = SharedAccountId::try_from("shared@example.test").unwrap();
     assert_eq!(
         MailboxPrincipal::shared(&handle).unwrap().root(),
         "/users/shared@example.test"
     );
     // A handle is stored by the host between discovery and binding; one this adapter would
     // never have produced is refused, not spliced.
-    let tampered = SharedMailboxId::try_from("shared@example.test/../me").unwrap();
+    let tampered = SharedAccountId::try_from("shared@example.test/../me").unwrap();
     assert!(MailboxPrincipal::shared(&tampered).is_err());
 }
 

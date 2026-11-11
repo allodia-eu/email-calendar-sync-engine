@@ -7,7 +7,7 @@
 //! be right about that rather than about what the documentation implies.
 
 use engine_core::error::FailureClass;
-use engine_provider::{Provider, SharedMailboxes};
+use engine_provider::{Provider, SharedAccounts};
 use serde_json::{Value, json};
 
 use super::*;
@@ -173,15 +173,20 @@ async fn the_provider_can_resolve_by_address_and_cannot_list() {
         engine_core::ids::MailboxId::try_from("folder-inbox").unwrap(),
     );
     assert_eq!(
-        provider.connection_info().capabilities.shared_mailboxes(),
-        SharedMailboxes::ByAddress
+        provider.connection_info().capabilities.shared_accounts(),
+        SharedAccounts::ByAddress
     );
     assert_eq!(
-        provider.list_shared_mailboxes().await.unwrap_err().class(),
+        provider.list_shared_accounts().await.unwrap_err().class(),
         FailureClass::InvalidState
     );
-    let resolved = provider.resolve_shared_mailbox(SHARED).await.unwrap();
+    let resolved = provider.resolve_shared_account(SHARED).await.unwrap();
     assert_eq!(resolved.handle.as_str(), SHARED);
+    // The mail provider probed the Inbox, so mail is what it can vouch for.
+    assert_eq!(
+        resolved.domains,
+        engine_provider::StoreDomains::of(engine_core::sync::SearchDomain::Mail)
+    );
 }
 
 #[test]

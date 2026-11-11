@@ -16,7 +16,7 @@
 #![allow(dead_code, unreachable_pub)]
 
 use engine_core::{
-    ids::{AccountId, MailboxId, SharedMailboxId},
+    ids::{AccountId, MailboxId, SharedAccountId},
     mail::Mailbox,
     sync::SyncUpdate,
 };
@@ -92,10 +92,10 @@ pub async fn connect_to(server: &Server, mailbox: &str, test: &str) -> Option<Li
 }
 
 /// Like [`connect_to`], scoped to the shared store `handle` names — the binding a host makes
-/// after discovery (`ImapAccount::with_shared_mailbox`).
+/// after discovery (`ImapAccount::with_shared_account`).
 pub async fn connect_shared(
     server: &Server,
-    handle: &SharedMailboxId,
+    handle: &SharedAccountId,
     mailbox: &str,
     test: &str,
 ) -> Option<LiveProvider> {
@@ -104,7 +104,7 @@ pub async fn connect_shared(
 
 async fn dial(
     server: &Server,
-    shared: Option<&SharedMailboxId>,
+    shared: Option<&SharedAccountId>,
     mailbox: &str,
     test: &str,
 ) -> Option<LiveProvider> {
@@ -125,7 +125,7 @@ async fn dial(
         .await
         .unwrap_or_else(|err| panic!("connect to the {} harness: {err}", server.label));
     if let Some(handle) = shared {
-        account = account.with_shared_mailbox(handle.clone());
+        account = account.with_shared_account(handle.clone());
     }
     Some(account.provider(MailboxId::try_from(mailbox).unwrap()))
 }

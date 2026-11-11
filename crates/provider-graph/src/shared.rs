@@ -2,7 +2,7 @@
 //!
 //! Graph has **no list route** for this: nothing answers "which mailboxes have been shared
 //! with me". `GET /users/{address}/…` either works or it does not, so the adapter
-//! advertises [`SharedMailboxes::ByAddress`](engine_provider::SharedMailboxes::ByAddress)
+//! advertises [`SharedAccounts::ByAddress`](engine_provider::SharedAccounts::ByAddress)
 //! and a host asks the user to type an address.
 //!
 //! The probe is the mailbox's Inbox, asking for its id alone. A mail-folder read,
@@ -38,8 +38,11 @@
 //! `/users/{upn}` or `/users/{address in another case}`, and different for a shared mailbox.
 //! So the resolver reads the caller's own Inbox id too and refuses a match.
 
-use engine_core::ids::{ProviderKey, SharedMailboxId};
-use engine_provider::{ProviderError, ProviderResult, SharedMailbox};
+use engine_core::{
+    ids::{ProviderKey, SharedAccountId},
+    sync::SearchDomain,
+};
+use engine_provider::{ProviderError, ProviderResult, SharedAccount, StoreDomains};
 use serde_json::Value;
 
 use crate::{error::GraphError, principal::MailboxPrincipal, transport::GraphClient};
@@ -59,7 +62,7 @@ const PROBE: &str = "/mailFolders/inbox?$select=id";
 /// - The caller's own mailbox, by whatever address → `Permanent`.
 /// - Anything else keeps its own class, so a throttle stays rate-limited and an outage retryable —
 ///   neither is ever reported as "no such mailbox".
-pub(crate) async fn resolve(client: &GraphClient, address: &str) -> ProviderResult<SharedMailbox> {
+pub(crate) async fn resolve(client: &GraphClient, address: &str) -> ProviderResult<SharedAccount> {
     let principal = MailboxPrincipal::user(address)?;
     let probed = client
         .get(&client.principal_url(&principal, PROBE))
@@ -72,10 +75,14 @@ pub(crate) async fn resolve(client: &GraphClient, address: &str) -> ProviderResu
             "{address:?} is this credential's own mailbox, not one shared with it"
         )));
     }
-    let handle = SharedMailboxId::new(
+    let handle = SharedAccountId::new(
         ProviderKey::new(address.to_owned()).expect("a validated address is never empty"),
     );
-    Ok(SharedMailbox::new(handle, address).with_address(address))
+    // The mail provider's probe is the Inbox, so mail is what it found.
+    Ok(
+        SharedAccount::new(handle, address, StoreDomains::of(SearchDomain::Mail))
+            .with_address(address),
+    )
 }
 
 /// The signed-in user's own Inbox id, or `None` when the credential has no mailbox of its
