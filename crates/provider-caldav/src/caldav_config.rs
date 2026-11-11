@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use engine_core::ids::SharedAccountId;
 use engine_provider::ConnectObserver;
 use engine_tls::TlsClientConfig;
 
@@ -37,6 +38,9 @@ pub struct CalDavConfig {
     pub(crate) connect_observer: Option<Arc<dyn ConnectObserver>>,
     /// Private for the same reason; set through [`CalDavConfig::with_credential_hosts`].
     pub(crate) credential_hosts: Option<Arc<dyn CredentialHosts>>,
+    /// The shared store this provider opens instead of the credential's own; set through
+    /// [`CalDavConfig::with_shared_account`].
+    pub(crate) shared_account: Option<SharedAccountId>,
 }
 
 impl core::fmt::Debug for CalDavConfig {
@@ -52,6 +56,7 @@ impl core::fmt::Debug for CalDavConfig {
             .field("user_agent", &self.user_agent)
             .field("connect_observer", &self.connect_observer.is_some())
             .field("credential_hosts", &self.credential_hosts.is_some())
+            .field("shared_account", &self.shared_account)
             .finish()
     }
 }
@@ -75,6 +80,7 @@ impl CalDavConfig {
             user_agent,
             connect_observer: None,
             credential_hosts: None,
+            shared_account: None,
         }
     }
 
@@ -90,6 +96,16 @@ impl CalDavConfig {
     #[must_use]
     pub fn with_discovery_path(mut self, path: impl Into<String>) -> Self {
         self.discovery_path = path.into();
+        self
+    }
+
+    /// Opens the calendars of the shared store `handle` names instead of the credential's own:
+    /// a handle [`list_shared_accounts`](engine_provider::Provider::list_shared_accounts)
+    /// reported, which is that store's principal URL. Discovery starts at that principal, and
+    /// its calendar user is that store's owner (`engine_provider::calendar_user`).
+    #[must_use]
+    pub fn with_shared_account(mut self, handle: SharedAccountId) -> Self {
+        self.shared_account = Some(handle);
         self
     }
 

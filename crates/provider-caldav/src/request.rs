@@ -13,6 +13,26 @@ pub(crate) const PRINCIPAL_PROPFIND: &str = concat!(
     r#"<c:calendar-user-address-set/></d:prop></d:propfind>"#,
 );
 
+/// `PROPFIND` (Depth 0) of the user's own principal for the two routes to other principals'
+/// calendar homes (`crate::shared`): the CalendarServer proxy sets, which name the principals
+/// that delegated to this user, and RFC 3744 §5.8's `principal-collection-set`, the
+/// collections that list principals.
+pub(crate) const DELEGATION_PROPFIND: &str = concat!(
+    r#"<?xml version="1.0" encoding="utf-8"?>"#,
+    r#"<d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">"#,
+    r#"<d:prop><cs:calendar-proxy-read-for/><cs:calendar-proxy-write-for/>"#,
+    r#"<d:principal-collection-set/></d:prop></d:propfind>"#,
+);
+
+/// `PROPFIND` describing principals (Depth 1 on a principal collection, Depth 0 on one
+/// principal): what a store is called, where its calendars are, and whose address it is.
+pub(crate) const PRINCIPAL_DESCRIPTION_PROPFIND: &str = concat!(
+    r#"<?xml version="1.0" encoding="utf-8"?>"#,
+    r#"<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
+    r#"<d:prop><d:displayname/><c:calendar-home-set/>"#,
+    r#"<c:calendar-user-address-set/></d:prop></d:propfind>"#,
+);
+
 /// `PROPFIND` (Depth 1) listing a calendar home's collections and their metadata.
 ///
 /// `current-user-privilege-set` (RFC 3744 §5.4) is what the *authenticated* principal
@@ -25,7 +45,7 @@ pub(crate) const CALENDAR_LIST_PROPFIND: &str = concat!(
     r#"<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" "#,
     r#"xmlns:cs="http://calendarserver.org/ns/" xmlns:ic="http://apple.com/ns/ical/">"#,
     r#"<d:prop><d:resourcetype/><d:displayname/><d:sync-token/><cs:getctag/>"#,
-    r#"<d:current-user-privilege-set/>"#,
+    r#"<d:current-user-privilege-set/><d:owner/>"#,
     r#"<ic:calendar-color/><c:calendar-description/><c:supported-calendar-component-set/>"#,
     r#"</d:prop></d:propfind>"#,
 );

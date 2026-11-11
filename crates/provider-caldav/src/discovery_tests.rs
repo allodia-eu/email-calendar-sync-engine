@@ -263,7 +263,7 @@ const HOME_WITH_REMINDERS: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:
 async fn a_collection_of_tasks_alone_is_not_listed_as_a_calendar() {
     let exec = Replay::new(vec![ok(HOME_WITH_REMINDERS)]);
     let calendars = list_calendars(&exec, "/1/calendars/").await.unwrap();
-    let hrefs: Vec<&str> = calendars.iter().map(|(c, _)| c.id.as_str()).collect();
+    let hrefs: Vec<&str> = calendars.iter().map(|(c, ..)| c.id.as_str()).collect();
     // One that names no components, absent or empty, holds any of them (RFC 4791 §5.2.3),
     // events included.
     assert_eq!(

@@ -15,6 +15,10 @@ committing: these come from throwaway harness accounts only
 | `options-dav-stalwart.txt` | Stalwart | The `DAV:` response header of an `OPTIONS` on the calendar home — **with** `calendar-auto-schedule` (RFC 6638 §2). |
 | `options-dav-sabredav.txt` | SabreDAV | The same header **without** it. |
 | `concurrency-limit-stalwart.json` | Stalwart | The body of the `400` a `PUT` over the account's concurrency cap is refused with — RFC 8620's `limit` problem details, `maxConcurrentRequests`, on a DAV endpoint (`throttle.rs`). Byte-for-byte; it names no account. |
+| `shared-delegation-{stalwart,sabredav,nextcloud}.xml` | each | Alice's principal asked for the proxy sets and `principal-collection-set` (`DELEGATION_PROPFIND`): Stalwart answers the proxy sets `404`; SabreDAV names dave (read) and support (write); Nextcloud names bob (read) and four principal collections. |
+| `shared-principals-{stalwart,sabredav}.xml`, `shared-principals-nextcloud-405.xml` | each | The principal collection at Depth 1: Stalwart lists alice, bob, dave and support; SabreDAV lists everyone with the closed principals' properties `403`; Nextcloud refuses `405`. |
+| `shared-home-*.xml` | each | A candidate's calendar home: dave's and support's open, SabreDAV's bob listed but closed (`207`, every property `403`), Nextcloud's bob open through the delegation. Each calendar carries `DAV:owner`. |
+| `shared-principal-stalwart-dave.xml`, `shared-principal-nextcloud-bob.xml` | Stalwart, Nextcloud | One principal asked directly: what bound discovery reads (home, address set, and the credential's `current-user-principal`). |
 | `talk-capabilities.json` | Nextcloud | `GET /ocs/v2.php/cloud/capabilities` with Talk installed and nothing configured: `spreed.config.conversations` says a conversation may be made and needs no password (`talk.rs`). |
 | `talk-room-created.json` | Nextcloud | The answer to making a public conversation (`roomType` 3), whose `token` names it in its link (`talk.rs`). |
 

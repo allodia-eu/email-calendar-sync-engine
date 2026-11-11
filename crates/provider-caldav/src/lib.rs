@@ -57,10 +57,12 @@ mod error;
 mod href;
 pub mod imip;
 mod multiget;
+mod owners;
 mod provider;
 mod request;
 mod response;
 pub mod schedule_status;
+mod shared;
 mod sync;
 mod talk;
 #[cfg(test)]
@@ -73,6 +75,8 @@ mod vcard_property;
 mod vcard_write;
 mod write;
 
+#[cfg(test)]
+mod bound_tests;
 #[cfg(test)]
 mod carddav_class_tests;
 #[cfg(test)]

@@ -352,6 +352,60 @@ are split escape-aware so the writer and the parser agree.
   rather than panicking on hostile input; a single malformed resource is **skipped**,
   never failing the whole sync pass.
 
+## Shared stores: other principals' calendar homes
+
+A colleague's delegated calendar, or a group's, lives in **another principal's home**, which
+the user's `calendar-home-set` never names. It is offered through the neutral
+`SharedAccounts` seam (`providers.md`) as a store with `StoreDomains` calendars
+(`crate::shared`).
+
+- **Two routes, both from the user's principal** (`DELEGATION_PROPFIND`): the CalendarServer
+  proxy sets `calendar-proxy-read-for` / `-write-for`, which name the principals that made the
+  user their proxy, and RFC 3744 §5.8's `principal-collection-set`, listed at Depth 1
+  (`PRINCIPAL_DESCRIPTION_PROPFIND`, which also reads each principal's name, home and
+  address). A proxy-only principal is described with a Depth-0 `PROPFIND` of its own.
+- **A listed principal is not a readable one.** Stalwart's principal collection lists every
+  principal the user holds *any* share from (bob, for his INBOX); SabreDAV's lists every
+  principal and withholds their properties. So each candidate's home is listed with the
+  calendar-list `PROPFIND`, and the store is offered only when that lists a calendar the
+  credential is granted properties on. Stalwart refuses a closed home `403`; SabreDAV answers
+  it `207` with every property `403` inside, which is why the status alone cannot decide.
+  `401`, `403`, `404` and `405` read as "not for this credential"; anything else fails the
+  listing, because a server fault is not an empty store.
+- **Per server** (live, `live_shared_calendars.rs` and `live_sabredav_delegation.rs`):
+  Stalwart has no proxy sets (`404`) and lists principals; SabreDAV answers both routes;
+  Nextcloud answers the proxy sets and refuses to list its four principal collections `405`
+  ("Listing members of this collection is disabled"), so the proxy sets are its only route
+  (observed by hand with a second user; the fixture carries one).
+- **`Enumerable` whenever discovery knows the user's principal.** Whether either route
+  answers is read off the principal, and on Stalwart discovery finds the home at the
+  well-known without asking the principal, so deciding at connect would add a request to every
+  connect. A server answering neither route lists nothing.
+- **The handle is the principal URL, and binding asks it directly**
+  (`CalDavConfig::with_shared_account`, `discovery::discover_shared_home`). Its
+  `calendar-home-set` is the store's home and its `calendar-user-address-set` the store's
+  calendar user, `NotEnabled` when it names none. That is the bound-store rule
+  (`engine_provider::calendar_user`), and it is why binding is not the stored-principal resume
+  path: that path keeps an address set only when the resource it asked reported one, and
+  otherwise asks the `current-user-principal` later — the credential's own, whose addresses
+  would then answer for someone else's store (`bound_tests.rs` pins the difference). The same
+  answer names the credential's principal, kept so a bound provider still lists what the
+  credential reaches. Every principal and home is followed under discovery's credential scope
+  (`discovery::follow`).
+- **`Calendar::owner` comes from `DAV:owner`** (`crate::owners`), asked in the calendar-list
+  `PROPFIND` and read as the owner principal's address, one `PROPFIND` per owner per provider.
+  A calendar the user's principal owns has none. Observed: a calendar in another principal's
+  home names that principal on all three servers; Stalwart **also lists the calendars shared
+  with the user in the user's own home**, each naming its true owner; Nextcloud's in-home share
+  (`…_shared_by_bob`) names its owner; SabreDAV names an in-home share's **sharee** as its
+  owner and offers nothing else without its sharing plugin, so `bob-readonly` stays ownerless.
+- **CardDAV has the same gap, and it is not closed here.** Address books are found through the
+  principal's `addressbook-home-set` alone. The principal-collection route would carry over to
+  another principal's `addressbook-home-set`; the proxy sets would not, being a calendar
+  extension. Stalwart's JMAP shares already carry contacts (the shared accounts list
+  `urn:ietf:params:jmap:contacts`), but no harness store shares an address book, so nothing
+  here would be tested against a real server yet.
+
 ## CalDAV writes
 
 - **The write verbs are neutral; the iCalendar is CalDAV's business.** A host states
@@ -853,7 +907,8 @@ the preservation assertion is written. Observed against each:
 | `ETag` on `PUT` | Yes (create + update) | Yes (create + update) | Yes (create + update) |
 | Stale `If-Match` | `412` | `412` | `412` |
 | Master + `RECURRENCE-ID` in one resource | Accepted | Accepted | Accepted |
-| Read-only collection | **Cannot produce one** — the harness account owns everything it can see | **The privilege fixture**: Bob's calendar, shared to Alice read-only | Two **address books**: the instance's users and an app's recently contacted |
+| Read-only collection | Dave's calendar, shared to Alice read-only and listed **in her home** beside her own (`live_shared_calendars.rs`) | **The privilege fixture**: Bob's calendar, shared to Alice read-only | Two **address books**: the instance's users and an app's recently contacted |
+| Another principal's home | Listed in the principal collection; a home she may not read answers `403` | Named in the proxy sets (`delegation.php`); a home she may not read answers `207` with everything `403` | Named in the proxy sets; the principal collections refuse listing `405` (observed by hand: the fixture has one user) |
 | Scheduling (RFC 6638) | **Full auto-schedule** — advertises `calendar-auto-schedule`, exposes `CALDAV:schedule-inbox-URL` | **None** — the fixture loads no `Schedule\Plugin`, so its `DAV:` header lists `calendar-access` and not `calendar-auto-schedule` | Advertises `calendar-auto-schedule` |
 | `Capabilities::calendar_scheduling` | `true` | `false` — **the only negative case in the repo** | `true`: the positive answer on the same server software |
 | Home | `default` and `work` | `default` and `work`, beside Bob's read-only share | `harness` and `work`, beside `personal`, a generated birthday calendar, an inbox and an outbox, so a test names `harness` |
@@ -872,8 +927,10 @@ Two consequences to keep in mind before touching these tests:
   (`docker/sabredav/entrypoint.sh`) gives Alice a second collection — one Bob owns and
   shares with her **read-only** — so one `PROPFIND` of one calendar home returns two
   collections with two different answers, and `sabredav_reports_a_read_only_share_as_unwritable`
-  asserts both. Stalwart's account owns every calendar it can see, so it can only prove
-  the writable half (`caldav_reports_the_bound_calendar_as_writable`). The offline locks
+  asserts both. Stalwart proves the writable half on Alice's own calendar
+  (`caldav_reports_the_bound_calendar_as_writable`) and, since the harness shares Dave's
+  calendar with her, the read-only half on that one, which Stalwart lists in her home
+  (`live_shared_calendars.rs`). The offline locks
   are captured transcripts of both servers' real responses
   (`tests/fixtures/calendar-home.xml`, `calendar-home-sabredav.xml`).
 - **Fuzzing:** `fuzz/` (a separate cargo-fuzz workspace) gained
