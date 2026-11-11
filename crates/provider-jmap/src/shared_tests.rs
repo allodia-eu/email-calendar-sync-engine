@@ -127,6 +127,44 @@ async fn an_account_that_answers_for_neither_domain_is_not_listed() {
 }
 
 #[tokio::test]
+async fn a_domain_the_credential_is_forbidden_is_not_held_and_the_rest_still_lists() {
+    // RFC 8620 §3.6.2's `forbidden` for one domain of one share says that domain is not this
+    // credential's to read, not that the server failed: the share's mail still lists, and so
+    // does every other store.
+    let mut answer = probe();
+    answer["methodResponses"][1] = json!(["error", { "type": "forbidden" }, "1"]);
+    let (provider, _) = bound(None, vec![answer]);
+    let listed = provider.list_shared_accounts().await.unwrap();
+    assert_eq!(listed.len(), 3, "{listed:?}");
+    assert_eq!(domains(&listed, BOB), [SearchDomain::Mail]);
+}
+
+#[tokio::test]
+async fn the_stores_keep_the_order_the_session_lists_them_in() {
+    let (provider, _) = bound(None, vec![probe()]);
+    let handles: Vec<String> = provider
+        .list_shared_accounts()
+        .await
+        .unwrap()
+        .iter()
+        .map(|m| m.handle.as_str().to_owned())
+        .collect();
+    let session: Vec<String> = Session::parse(
+        &session_doc(),
+        &reqwest::Url::parse("http://127.0.0.1:18080").unwrap(),
+        SessionUrlPolicy::RebaseToConnection,
+        None,
+    )
+    .unwrap()
+    .accounts()
+    .iter()
+    .filter(|a| !a.personal)
+    .map(|a| a.id.clone())
+    .collect();
+    assert_eq!(handles, session);
+}
+
+#[tokio::test]
 async fn a_probe_that_fails_for_another_reason_fails_the_listing() {
     // Only "this account does not hold that" means absent. A server error is not an empty
     // store, or a blip would drop a store from the list a host shows.

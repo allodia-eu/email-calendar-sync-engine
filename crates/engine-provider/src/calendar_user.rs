@@ -87,16 +87,19 @@ impl CalendarUserAddresses {
 impl CalendarUserAddresses {
     /// Whether this answer keeps the bound-store rule for a store owned by `owner` and opened
     /// with `credential`'s sign-in (see the module docs): it recognises the owner or nobody,
-    /// and never `credential` unless that **is** the owner.
+    /// and never `credential` unless that **is** the owner. In the user's own store the owner
+    /// is the user, so the answer must recognise them, though it may name more of their
+    /// addresses.
     ///
     /// An answer recognising nobody passes, since it claims nothing: a store the user may only
     /// read, an adapter that does not ask.
     #[must_use]
     pub fn is_for_store(&self, owner: &str, credential: &str) -> bool {
-        if addresses_match(owner, credential) {
+        if self.addresses().is_empty() {
             return true;
         }
-        self.addresses().is_empty() || (self.recognises(owner) && !self.recognises(credential))
+        self.recognises(owner)
+            && (addresses_match(owner, credential) || !self.recognises(credential))
     }
 }
 

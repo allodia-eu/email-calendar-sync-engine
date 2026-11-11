@@ -384,7 +384,10 @@ the user's `calendar-home-set` never names. It is offered through the neutral
 - **The handle is the principal URL, and binding asks it directly**
   (`CalDavConfig::with_shared_account`, `discovery::discover_shared_home`). Its
   `calendar-home-set` is the store's home and its `calendar-user-address-set` the store's
-  calendar user, `NotEnabled` when it names none. That is the bound-store rule
+  calendar user, `NotEnabled` when it names none — and `NotEnabled` too when the home lists no
+  calendar the user may write, since in a store they may only read they schedule as nobody
+  (one calendar listing, asked when a host asks; live on Stalwart and SabreDAV, where dave's
+  store is read-only and the group's writable). That is the bound-store rule
   (`engine_provider::calendar_user`), and it is why binding is not the stored-principal resume
   path: that path keeps an address set only when the resource it asked reported one, and
   otherwise asks the `current-user-principal` later — the credential's own, whose addresses
@@ -394,6 +397,10 @@ the user's `calendar-home-set` never names. It is offered through the neutral
   (`discovery::follow`).
 - **`Calendar::owner` comes from `DAV:owner`** (`crate::owners`), asked in the calendar-list
   `PROPFIND` and read as the owner principal's address, one `PROPFIND` per owner per provider.
+  An owner is asked only on an origin the connection already sends the credential to:
+  `DAV:owner` is the server's content, and naming another host must not widen where the
+  credential goes (`credential_scope.rs`). A lookup that fails leaves the owner unknown for that
+  pass rather than failing the calendar sync over a label.
   A calendar the user's principal owns has none. Observed: a calendar in another principal's
   home names that principal on all three servers; Stalwart **also lists the calendars shared
   with the user in the user's own home**, each naming its true owner; Nextcloud's in-home share

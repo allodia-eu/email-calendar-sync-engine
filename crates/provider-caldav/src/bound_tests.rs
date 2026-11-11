@@ -44,8 +44,10 @@ async fn bound_to_dave(more: Vec<crate::transport::HttpResponse>) -> (CalDavProv
 }
 
 #[tokio::test]
-async fn a_bound_provider_serves_the_stores_home_as_its_owner() {
-    let (provider, exec) = bound_to_dave(vec![]).await;
+async fn a_bound_store_the_user_may_write_answers_as_its_owner() {
+    // A home listing a calendar the user may write (captured: the support group's).
+    let (provider, exec) =
+        bound_to_dave(vec![ok(&fixture("shared-home-stalwart-support.xml"))]).await;
     // Discovery asked the bound principal, not the well-known or alice's.
     assert_eq!(
         exec.seen()[0].1,
@@ -62,6 +64,17 @@ async fn a_bound_provider_serves_the_stores_home_as_its_owner() {
     assert_eq!(
         provider.connection_info().capabilities.shared_accounts(),
         SharedAccounts::Enumerable
+    );
+}
+
+/// The rule's other half: in a store the user may only read, they schedule as nobody, which
+/// is what JMAP answers for the same store. Dave's real home is read-only for alice.
+#[tokio::test]
+async fn a_bound_store_the_user_may_only_read_answers_nobody() {
+    let (provider, _) = bound_to_dave(vec![ok(&fixture("shared-home-stalwart-dave.xml"))]).await;
+    assert_eq!(
+        provider.calendar_user_addresses(&account()).await.unwrap(),
+        CalendarUserAddresses::NotEnabled
     );
 }
 

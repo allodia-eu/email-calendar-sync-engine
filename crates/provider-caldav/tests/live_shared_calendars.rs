@@ -15,7 +15,9 @@ use engine_core::{
     ids::{AccountId, SharedAccountId},
     sync::{SearchDomain, SyncUpdate},
 };
-use engine_provider::{CalendarWrites, Provider, SharedAccount, SharedAccounts};
+use engine_provider::{
+    CalendarUserAddresses, CalendarWrites, Provider, SharedAccount, SharedAccounts,
+};
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials};
 use stalwart_harness::{
     CALENDAR_SHARE_OWNER, GROUP_CALENDAR_EVENT_UID, Harness, SHARED_CALENDAR_EVENT_UID,
@@ -145,7 +147,13 @@ async fn the_shared_stores_are_found_and_open_as_their_owners(server: Server) {
 
         let answer = bound.calendar_user_addresses(&account()).await.unwrap();
         assert!(answer.is_for_store(owner, USER), "{owner}: {answer:?}");
-        assert!(answer.recognises(owner), "{owner}: {answer:?}");
+        // Where alice may write, she schedules as the owner; where she may only read, as
+        // nobody — the same answer JMAP gives for dave's store.
+        if writable {
+            assert!(answer.recognises(owner), "{owner}: {answer:?}");
+        } else {
+            assert_eq!(answer, CalendarUserAddresses::NotEnabled, "{owner}");
+        }
         // A bound provider lists the same stores: what a credential reaches is its own fact.
         assert_eq!(bound.list_shared_accounts().await.unwrap(), listed);
     }

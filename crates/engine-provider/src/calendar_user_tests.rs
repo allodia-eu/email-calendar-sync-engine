@@ -127,5 +127,13 @@ mod bound_store {
     #[test]
     fn in_the_users_own_store_the_owner_is_the_user() {
         assert!(known(&[USER]).is_for_store(USER, USER));
+        // The user's own answer may name more of their addresses (a group they schedule as).
+        assert!(known(&[USER, OWNER]).is_for_store(USER, USER));
+        assert!(CalendarUserAddresses::NotEnabled.is_for_store(USER, USER));
+    }
+
+    #[test]
+    fn an_own_store_answer_that_misses_the_user_is_not_for_the_store() {
+        assert!(!known(&["carol@example.org"]).is_for_store(USER, USER));
     }
 }
