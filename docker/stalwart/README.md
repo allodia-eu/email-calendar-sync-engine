@@ -33,7 +33,7 @@ export STALWART_IMAP_STARTTLS_ADDR=127.0.0.1:11143 # IMAP STARTTLS
 export STALWART_SMTP_STARTTLS_ADDR=127.0.0.1:11587 # SMTP submission STARTTLS
 export STALWART_ACCOUNT=alice@test.local
 export STALWART_PASSWORD=harness-alice-pw
-cargo test -p stalwart-harness --test smoke -- --nocapture
+cargo test -p stalwart-harness --test smoke --test smoke_shared_stores -- --nocapture
 ```
 
 Reset to a clean slate (the harness re-bootstraps from empty volumes; CI always
@@ -71,6 +71,7 @@ file since v0.16 — see the design doc).
 | `alice@test.local`  | `harness-alice-pw` | primary; holds the whole seed (mail + calendar + contacts) |
 | `bob@test.local`    | `harness-bob-pw`   | scratch: SMTP recipient, and **organizer** in the scheduling suite |
 | `carol@test.local`  | `harness-carol-pw` | scratch: **attendee** in the scheduling suite |
+| `dave@test.local`   | `harness-dave-pw`  | shares one calendar with Alice, read-only, and nothing else |
 | `admin`             | `harness-admin-pw` | fallback admin (management)   |
 
 Bob and Carol hold none of the seed. RFC 6638 auto-scheduling makes the server mail

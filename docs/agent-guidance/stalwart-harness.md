@@ -28,9 +28,11 @@ part of it.
 > `DAV:current-user-privilege-set` case is SabreDAV's to prove, and it seeds a shared
 > calendar for exactly that.
 >
-> That second fact is about **calendars**, and stays true. It is no longer true of her
-> *mail*: the shared-mailbox fixture below gives her one store she holds every right on and
-> one she may only read, which is what makes the read-only `MailboxAccess` path provable here.
+> That second fact is about **her own calendar home**, and stays true: every collection
+> `calendar-home-set` names is hers. It is no longer true of her *mail*, nor of calendars in
+> *other* stores: the shared-mailbox fixture below gives her one mail store she holds every
+> right on and one she may only read, and the shared-calendar fixture gives her a writable
+> group calendar and a read-only one of Dave's — each in its owner's home, not hers.
 
 ## What it is
 
@@ -254,7 +256,8 @@ and the cross-compile build.
 | `alice@test.local` | **the whole shared seed** (mail, calendar, contacts) | every read/sync/write suite; several assert its exact mailbox and calendar counts |
 | `bob@test.local` | nothing | scratch: the SMTP recipient in the submission tests, the **organizer** in the scheduling suite, and the **grantor** of the read-only share below |
 | `carol@test.local` | nothing | scratch: the **attendee** in the scheduling suite |
-| `support@test.local` | `12-shared.eml` in its INBOX | a **group** principal — a mailbox with no credentials of its own, which Alice belongs to |
+| `dave@test.local` | one calendar, `Dave Shared`, with one event | the **calendar-only** grantor: shares that calendar with Alice read-only, and no mail |
+| `support@test.local` | `12-shared.eml` in its INBOX, `support-rota.ics` in its calendar | a **group** principal — a mailbox with no credentials of its own, which Alice belongs to |
 
 `Harness::scratch` exposes the two scratch accounts as a pair. They exist because
 some server behaviour cannot be observed without writing to a mailbox: RFC 6638
@@ -294,6 +297,38 @@ silently outliving its evidence.
 answers `NO Mailbox does not exist.` — they are path components, not mailboxes — and pipelined
 `MYRIGHTS` complete out of order (`imap-smtp.md`). The Dovecot harness carries the same two
 shares with the same owners, so the IMAP contract runs against both (`docker/dovecot/README.md`).
+
+### The shared-calendar fixture: what a store holds is not what it claims
+
+The stores Alice can reach besides her own differ in **what** they hold, because a client
+cannot learn that from the session:
+
+| Store | Mail | Calendars |
+| --- | --- | --- |
+| `support@` (group) | every right | its calendar, every right, `support-rota.ics` |
+| bob | `lr` on his INBOX | none — his calendar home answers `403` |
+| dave | none | `Dave Shared`, read-only (JMAP `shareWith` set as dave in `seed.sh`), `dave-shared.ics` |
+| carol | none | none — not in Alice's session at all |
+
+What `smoke_shared_stores.rs` pins, both directions each:
+
+- **JMAP `accountCapabilities` overclaims.** Bob's, dave's and the group's accounts all list
+  mail *and* calendars. Bob's refuses `Calendar/get` and dave's refuses `Mailbox/get`, each
+  `accountNotSupportedByMethod`. So the only way to learn what a shared account holds is to
+  ask its methods (`docs/spec-deviations.md`).
+- **`ParticipantIdentity/get` answers for the user, not the account.** On dave's and the
+  group's accounts it returns Alice's two identities and never dave's. On bob's it refuses.
+- **A shared calendar arrives unsubscribed** (`isSubscribed: false`) and carries the rights it
+  was shared with in `myRights`. Dave's default calendar is not shared, and is not seen.
+- **Over CalDAV, Alice's principal names her home alone.** `calendar-proxy-read-for` /
+  `-write-for` answer `404` and `group-membership` is empty although she is in the group.
+  `principal-collection-set` is `/dav/pal/`, and a Depth-1 `PROPFIND` there lists every
+  principal she holds *any* share from (bob for his INBOX included, carol not). Their homes
+  answer `403` for bob and carol and `207` for dave and the group. A shared home lists only
+  the collections shared from it, each naming its owner in `DAV:owner`.
+
+The SabreDAV fixture carries the same two stores as calendar-proxy delegations, which
+Stalwart does not implement (`docker/sabredav/README.md`).
 
 ## Rate limiters are disarmed on purpose
 
@@ -426,6 +461,16 @@ every run rather than assumed. SabreDAV and Nextcloud seed the same pair.
 | `work/planning.ics`      | A zoned event in the second calendar: it syncs under that calendar's scope and names that calendar, never the first. |
 | `work/offsite.ics`       | An all-day event in the second calendar, so the pair is not one shape twice. |
 
+Two more calendar fixtures live in `seed/calendar/shared/` and go into stores that are not
+Alice's (see "The shared-calendar fixture" above). SabreDAV and Nextcloud import only the top
+level and `work/`, so they are not in either server's copy of Alice's calendars; SabreDAV's
+`delegation.php` puts them into its delegating principals' homes instead.
+
+| Fixture                  | Invariant it protects |
+| ------------------------ | --------------------- |
+| `shared/dave-shared.ics` | In dave's `Dave Shared` calendar: a store reached for its calendar alone syncs *its* events. |
+| `shared/support-rota.ics`| In the group's calendar: a writable shared store's events, in none of Alice's calendars. |
+
 These map directly onto the requirements in `providers.md` (Stalwart Test Spine)
 and `calendar-semantics.md` (time model, recurrence subset, iTIP/iMIP).
 
@@ -466,7 +511,7 @@ run. Non-negotiable:
 See `docker/stalwart/README.md` for the exact commands, host-port table, and
 account list. In short: `docker compose up -d --wait` (self-bootstraps + seeds,
 healthy when ready), export `STALWART_*`, and
-`cargo test -p stalwart-harness --test smoke`.
+`cargo test -p stalwart-harness --test smoke --test smoke_shared_stores`.
 
 ## Gotchas observed against the live server
 
