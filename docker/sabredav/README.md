@@ -18,6 +18,14 @@ Two things it proves that **Stalwart cannot** (see "Which server proves what" in
   two collections with two different answers to "what may I do here"
   (`DAV:current-user-privilege-set`, RFC 3744 §5.4). On the Stalwart harness Alice owns
   every calendar she can see, so it can only ever show the writable answer.
+- **Calendar-proxy delegation.** Dave makes Alice his `calendar-proxy-read` member and the
+  `support@test.local` principal makes her its `calendar-proxy-write` member
+  (`delegation.php`), so her own principal names both homes in
+  `calendar-proxy-read-for` / `-write-for` — the CalendarServer extension SabreDAV implements
+  and Stalwart answers `404`. Each delegated home holds one calendar with one event, the same
+  `seed/calendar/shared/` fixtures Stalwart shares. Bob delegates nothing, and his home is the
+  shape to remember: SabreDAV answers its `PROPFIND` `207` with every property `403` inside,
+  where Stalwart refuses with a plain `403` (`provider-caldav/tests/live_sabredav_delegation.rs`).
 - **Byte-verbatim storage.** SabreDAV hands back the exact iCalendar it was given, where
   Stalwart reserializes (re-folding lines, reordering `RRULE` parts). So the structural
   patcher's preservation guarantee is provable here in its strictest form.
@@ -47,9 +55,13 @@ a SQLite backend, served by the PHP built-in web server, seeded over CalDAV.
 - `server.php` — a minimal CalDAV server: **HTTP Basic** auth against one throwaway
   account (the engine client uses Basic, not the stock PDO backend's Digest), the
   PDO principal/calendar backends, and a `/.well-known/caldav` redirect.
-- `entrypoint.sh` — initializes the SQLite DB from the schema, seeds the two principals
-  (Alice, and Bob who owns the read-only share), starts the server, seeds the calendar
-  via CalDAV, writes a readiness marker, then runs the server in the foreground.
+- `entrypoint.sh` — initializes the SQLite DB from the schema, seeds the principals
+  (Alice, and Bob who owns the read-only share), runs `delegation.php`, starts the server,
+  seeds the calendar via CalDAV, writes a readiness marker, then runs the server in the
+  foreground.
+- `delegation.php` — the proxy fixture: Dave's and Support's principals, their proxy groups
+  with Alice in one each, and a calendar apiece, created through SabreDAV's own PDO backend
+  (only Alice can authenticate, so they cannot be `PUT` as their owners).
 - `seed.sh` — `MKCALENDAR` + `PUT` the shared `../stalwart/seed/calendar/*.ics`.
 - `docker-compose.yml` — the single service, health-gated on the post-seed marker.
 
@@ -82,6 +94,8 @@ Without `SABREDAV_HTTP_ADDR` set, the gated test **skips**, so the offline
 | Password    | `sabredav-alice-pw` (throwaway)         |
 | Calendar    | `/calendars/alice@test.local/default/` — hers, writable |
 | Calendar    | `/calendars/alice@test.local/bob-readonly/` — Bob's, shared **read-only** |
+| Calendar    | `/calendars/dave@test.local/shared/` — Dave's; Alice is his **read** proxy |
+| Calendar    | `/calendars/support@test.local/default/` — Support's; Alice is its **write** proxy |
 
 Only the writable `default` collection is seeded with events and is the one the
 provider binds by default; `bob-readonly` exists to be *listed*, so the privilege

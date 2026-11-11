@@ -21,12 +21,17 @@
 
 mod http;
 mod imap;
+mod shared_stores;
 mod smtp;
 
 use std::time::{Duration, Instant};
 
 pub use http::{HttpResponse, base64_encode};
 pub use imap::{ImapProbe, run_probe};
+pub use shared_stores::{
+    CALENDAR_SHARE_OWNER, GROUP_CALENDAR_EVENT_UID, SHARED_CALENDAR_EVENT_UID,
+    SHARED_CALENDAR_NAME, dav_propfind,
+};
 
 /// Environment variable whose presence gates all Stalwart-dependent tests.
 pub const GATE_VAR: &str = "STALWART_HTTP_ADDR";

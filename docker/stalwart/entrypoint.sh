@@ -260,6 +260,9 @@ ensure_account alice "Alice Tester" "${HARNESS_ALICE_PW:-harness-alice-pw}"
 # the scheduling scenarios run entirely between these two scratch accounts.
 ensure_account bob "Bob Tester" "${HARNESS_BOB_PW:-harness-bob-pw}"
 ensure_account carol "Carol Tester" "${HARNESS_CAROL_PW:-harness-carol-pw}"
+# Dave shares one calendar with Alice, read-only, and nothing else: the calendar-only half of
+# the shared-store fixture (Bob's INBOX is the mail-only half). seed.sh makes the share.
+ensure_account dave "Dave Tester" "${HARNESS_DAVE_PW:-harness-dave-pw}"
 
 relax_inbound_throttles
 relax_anonymous_http_limit

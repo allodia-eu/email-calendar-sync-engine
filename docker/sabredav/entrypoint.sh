@@ -47,6 +47,9 @@ if [ ! -f "$DB" ]; then
         (calendarid, principaluri, access, displayname, uri, share_href, share_invitestatus) \
         VALUES (${SHARED_CAL_ID}, 'principals/${HARNESS_USER}', 2, 'Bob (read-only)', \
                 'bob-readonly', 'mailto:${HARNESS_USER}', 2);"
+    # Calendar-proxy delegation: two principals whose whole calendar home Alice can open —
+    # one read-only, one writable — reached from her principal's `calendar-proxy-*-for`.
+    php delegation.php
     echo "initialized SabreDAV database for ${HARNESS_USER} (+ Bob's read-only share)"
 fi
 
