@@ -90,7 +90,7 @@ pub use engine_core::{
     // reach-around this re-export block exists to prevent.
     ids::{
         AccountId, AddressBookId, CalendarId, ContactId, EventId, MailboxId, MessageIdHeader,
-        OrganizationId, PersonId, ProviderKey, SharedMailboxId, ThreadId, Uid,
+        OrganizationId, PersonId, ProviderKey, SharedAccountId, ThreadId, Uid,
     },
     mail::{
         AttachmentPartId, EmailAddress, InlinePart, Keyword, Mailbox, MailboxAccess, MailboxRole,
@@ -153,8 +153,8 @@ pub use engine_provider::{
     MeetingService, MessageReport, NewConference, Occurrence, OverrideSurvival, PatchTarget,
     Provider, RecurrenceEdit, ReplyDelivery, ReportControls, ReportEvidence, ReportReceipt,
     ReportVerdict, ReportVerdicts, RsvpControls, RsvpResponse, SchedulingIdentity, SenderIdentity,
-    SenderIdentityId, SentCopy, SharedMailbox, SharedMailboxes, SourceStream, SubmissionReceipt,
-    TextEdit, WriteGuard, WritePrecondition,
+    SenderIdentityId, SentCopy, SharedAccount, SharedAccounts, SourceStream, StoreDomains,
+    SubmissionReceipt, TextEdit, WriteGuard, WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,

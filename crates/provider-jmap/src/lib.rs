@@ -147,7 +147,7 @@ impl JmapClient {
             &document,
             &served_by,
             config.session_urls,
-            config.shared_mailbox.as_ref(),
+            config.shared_account.as_ref(),
         )?;
         // What this server said it allows, stated once for the whole account. RFC 8620 §2
         // scopes `maxConcurrentRequests` to the API endpoint and defines no companion for

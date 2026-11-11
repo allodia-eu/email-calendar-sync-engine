@@ -29,7 +29,7 @@
 //! **signed-in user's own** Inbox. So the path separators Graph re-parses are refused
 //! here, and nothing relies on the server continuing to refuse the rest.
 
-use engine_core::ids::SharedMailboxId;
+use engine_core::ids::SharedAccountId;
 
 use crate::error::GraphError;
 
@@ -88,8 +88,8 @@ impl MailboxPrincipal {
         MailboxAddress::new(address).map(Self::User)
     }
 
-    /// The mailbox a [`SharedMailboxId`] from
-    /// [`resolve_shared_mailbox`](engine_provider::Provider::resolve_shared_mailbox) names —
+    /// The mailbox a [`SharedAccountId`] from
+    /// [`resolve_shared_account`](engine_provider::Provider::resolve_shared_account) names —
     /// the binding half of onboarding a shared mailbox, and the name every adapter gives it.
     ///
     /// The handle is re-checked rather than trusted: it is stored by the host between the
@@ -98,7 +98,7 @@ impl MailboxPrincipal {
     /// # Errors
     ///
     /// [`GraphError::InvalidAddress`] for a handle this adapter would never have produced.
-    pub fn shared(handle: &SharedMailboxId) -> Result<Self, GraphError> {
+    pub fn shared(handle: &SharedAccountId) -> Result<Self, GraphError> {
         Self::user(handle.as_str())
     }
 

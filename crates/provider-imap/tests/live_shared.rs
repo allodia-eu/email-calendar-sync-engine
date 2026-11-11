@@ -5,7 +5,7 @@
 //! too.
 //!
 //! The host's flow is the one exercised: log in once, take the shared store's view of that
-//! account with `ImapAccount::with_shared_mailbox`, list the store's folders through a provider
+//! account with `ImapAccount::with_shared_account`, list the store's folders through a provider
 //! bound to a placeholder, then bind one per folder to an id *from that list* — no path is
 //! built here that a host could not have been handed.
 //!
@@ -16,11 +16,11 @@ use std::time::Duration;
 
 use engine_core::{
     error::FailureClass,
-    ids::{AccountId, MailboxId, MessageIdHeader, SharedMailboxId},
+    ids::{AccountId, MailboxId, MessageIdHeader, SharedAccountId},
     mail::{EmailAddress, Mailbox, MailboxRole, Message},
     sync::{SyncObject, SyncUpdate},
 };
-use engine_provider::{Draft, Provider, SharedMailbox, SharedMailboxes};
+use engine_provider::{Draft, Provider, SharedAccount, SharedAccounts};
 use provider_imap::{Credentials, ImapAccount, ImapConfig, ImapProvider};
 use stalwart_harness::{Harness, SHARED_GROUP_ACCOUNT};
 use tokio_rustls::client::TlsStream;
@@ -107,13 +107,13 @@ fn has_message_id(messages: &[Message], id: &str) -> bool {
 
 /// Logs in with `config`, discovers `address`, then takes that store's view of the account —
 /// the two halves of onboarding, over one login.
-async fn scoped_to(config: &ImapConfig, address: &str) -> (SharedMailbox, LiveAccount) {
+async fn scoped_to(config: &ImapConfig, address: &str) -> (SharedAccount, LiveAccount) {
     let account = login(config).await;
     let store = bind(&account, "INBOX")
-        .resolve_shared_mailbox(address)
+        .resolve_shared_account(address)
         .await
         .unwrap_or_else(|err| panic!("{address} should resolve: {err}"));
-    let shared = account.with_shared_mailbox(store.handle.clone());
+    let shared = account.with_shared_account(store.handle.clone());
     (store, shared)
 }
 
@@ -138,10 +138,10 @@ async fn live_a_credential_nothing_is_shared_with_gets_an_empty_list_not_a_refus
         "INBOX",
     );
     assert_eq!(
-        bob.connection_info().capabilities.shared_mailboxes(),
-        SharedMailboxes::Enumerable
+        bob.connection_info().capabilities.shared_accounts(),
+        SharedAccounts::Enumerable
     );
-    assert_eq!(bob.list_shared_mailboxes().await.unwrap(), []);
+    assert_eq!(bob.list_shared_accounts().await.unwrap(), []);
 }
 
 #[tokio::test]
@@ -151,8 +151,8 @@ async fn live_a_handle_the_credential_cannot_open_is_refused() {
     };
     let alice = as_alice(&harness).await;
     // Well-formed, under the shared namespace — and nothing there for alice.
-    let gone = alice.with_shared_mailbox(
-        SharedMailboxId::try_from("Shared Folders/nobody@test.local").unwrap(),
+    let gone = alice.with_shared_account(
+        SharedAccountId::try_from("Shared Folders/nobody@test.local").unwrap(),
     );
     let err = bind(&gone, "INBOX")
         .sync_mailboxes(&account(), None)
@@ -161,7 +161,7 @@ async fn live_a_handle_the_credential_cannot_open_is_refused() {
     assert_eq!(err.class(), FailureClass::Permanent);
 
     // Not under any foreign namespace at all: not a handle discovery produced.
-    let bogus = alice.with_shared_mailbox(SharedMailboxId::try_from("Archive").unwrap());
+    let bogus = alice.with_shared_account(SharedAccountId::try_from("Archive").unwrap());
     let err = bind(&bogus, "INBOX")
         .sync_mailboxes(&account(), None)
         .await

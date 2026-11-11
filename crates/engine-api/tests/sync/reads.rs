@@ -2,7 +2,7 @@
 //! and structured mail/calendar search, malformed-query rejection, and the mailbox/
 //! message and calendar/event lists.
 
-use engine_api::{ApiError, Engine, TimeZoneId};
+use engine_api::{ApiError, Engine, SearchDomain, TimeZoneId};
 
 use super::*;
 
@@ -227,6 +227,42 @@ async fn lists_synced_calendars_and_events() {
     let other = AccountId::try_from("nobody").unwrap();
     assert_eq!(engine.calendars(&other).await.unwrap(), []);
     assert_eq!(engine.events(&other).await.unwrap(), []);
+}
+
+/// A store opened through another principal is just another account (`providers.md` → "A
+/// shared store is just another account"), and the same meeting lives in both: the organiser's
+/// copy in the group calendar, the attendee's in the user's own. Both carry one UID, and on
+/// JMAP even the same server-assigned id, since ids are per account. Each account must keep
+/// its copy, and dropping one must never take the other's away.
+#[tokio::test]
+async fn two_accounts_under_one_credential_each_keep_an_event_with_the_same_uid() {
+    let engine = Engine::open_in_memory().unwrap();
+    let zone = TimeZoneId::iana("Europe/Amsterdam").unwrap();
+    let own = account();
+    let shared = AccountId::try_from("support-shared").unwrap();
+    let both = FakeProvider {
+        events: vec![event("evt-1", "meeting@h", "work")],
+        ..FakeProvider::new()
+    };
+    for store in [&own, &shared] {
+        engine
+            .sync_calendar(&both, store, horizon(), &zone)
+            .await
+            .unwrap();
+    }
+    for store in [&own, &shared] {
+        let events = engine.events(store).await.unwrap();
+        assert_eq!(events.len(), 1, "{store:?}");
+        assert_eq!(events[0].uid, Uid::new("meeting@h").unwrap());
+    }
+
+    // The host lets go of the shared store's calendars; the user's own copy stays.
+    engine
+        .forget_account_domain(&shared, SearchDomain::Calendar)
+        .await
+        .unwrap();
+    assert_eq!(engine.events(&shared).await.unwrap(), []);
+    assert_eq!(engine.events(&own).await.unwrap().len(), 1);
 }
 
 /// `events_by_keys` resolves a *named handful* of events without reading the rest — the

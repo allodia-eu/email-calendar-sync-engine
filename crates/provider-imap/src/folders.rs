@@ -10,7 +10,7 @@ use engine_core::{
     ids::MailboxId,
     mail::{Mailbox, MailboxAccess},
 };
-use engine_provider::{ProviderError, ProviderResult, SharedMailbox};
+use engine_provider::{ProviderError, ProviderResult, SharedAccount};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
@@ -81,7 +81,7 @@ impl<S> ImapProvider<S> {
         T: AsyncRead + AsyncWrite + Unpin + Send,
     {
         let namespaces = self.namespaces_on(connection).await?;
-        match &self.shared_mailbox {
+        match &self.shared_account {
             None => Ok(MailStore::own(&namespaces)),
             Some(handle) => MailStore::shared(&namespaces, handle.as_str()),
         }
@@ -223,7 +223,7 @@ where
 pub(crate) async fn discover<S>(
     connection: &mut Connection<S>,
     namespaces: &Namespaces,
-) -> ProviderResult<Vec<SharedMailbox>>
+) -> ProviderResult<Vec<SharedAccount>>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {

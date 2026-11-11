@@ -16,11 +16,11 @@ use std::time::Duration;
 
 use engine_core::{
     error::FailureClass,
-    ids::{AccountId, MessageIdHeader, SharedMailboxId},
+    ids::{AccountId, MessageIdHeader, SharedAccountId},
     mail::{EmailAddress, MailboxAccess, MailboxRole, Message},
     sync::{SyncObject, SyncUpdate},
 };
-use engine_provider::{Draft, Provider, SharedMailbox, SharedMailboxes};
+use engine_provider::{Draft, Provider, SharedAccount, SharedAccounts};
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use stalwart_harness::{Harness, SHARED_GROUP_ACCOUNT, SHARED_MESSAGE_ID};
 
@@ -64,13 +64,13 @@ async fn connect(config: JmapConfig) -> JmapProvider {
 
 /// Discovers `address` with an unbound client, then binds a second one to it — the two
 /// halves of onboarding.
-async fn bound_to(harness: &Harness, address: &str) -> (SharedMailbox, JmapProvider) {
+async fn bound_to(harness: &Harness, address: &str) -> (SharedAccount, JmapProvider) {
     let discovery = connect(config(harness)).await;
     let store = discovery
-        .resolve_shared_mailbox(address)
+        .resolve_shared_account(address)
         .await
         .unwrap_or_else(|err| panic!("{address} should resolve: {err}"));
-    let provider = connect(config(harness).with_shared_mailbox(store.handle.clone())).await;
+    let provider = connect(config(harness).with_shared_account(store.handle.clone())).await;
     (store, provider)
 }
 
@@ -94,10 +94,10 @@ async fn live_the_session_lists_what_is_shared_with_the_credential() {
     };
     let provider = connect(config(&harness)).await;
     assert_eq!(
-        provider.connection_info().capabilities.shared_mailboxes(),
-        SharedMailboxes::Enumerable
+        provider.connection_info().capabilities.shared_accounts(),
+        SharedAccounts::Enumerable
     );
-    let listed = provider.list_shared_mailboxes().await.expect("enumerable");
+    let listed = provider.list_shared_accounts().await.expect("enumerable");
     let addresses: Vec<&str> = listed.iter().filter_map(|m| m.address.as_deref()).collect();
     let owner = harness.read_only_share_owner().address.clone();
     assert!(addresses.contains(&SHARED_GROUP_ACCOUNT), "{listed:?}");
@@ -107,13 +107,13 @@ async fn live_the_session_lists_what_is_shared_with_the_credential() {
 
     // Resolving by address converges on the handle the list reported.
     let resolved = provider
-        .resolve_shared_mailbox(SHARED_GROUP_ACCOUNT)
+        .resolve_shared_account(SHARED_GROUP_ACCOUNT)
         .await
         .expect("the group mailbox resolves");
     assert!(listed.iter().any(|m| m.handle == resolved.handle));
     for not_shared in [harness.account.as_str(), "nobody@test.local"] {
         let err = provider
-            .resolve_shared_mailbox(not_shared)
+            .resolve_shared_account(not_shared)
             .await
             .unwrap_err();
         assert_eq!(err.class(), FailureClass::Permanent, "{not_shared}: {err}");
@@ -191,8 +191,8 @@ async fn live_a_handle_the_session_no_longer_lists_fails_at_connect() {
     let Some(harness) = ready("live_a_handle_the_session_no_longer_lists_fails_at_connect") else {
         return;
     };
-    let stale = SharedMailboxId::try_from("no-such-account").unwrap();
-    let Err(err) = JmapProvider::connect(config(&harness).with_shared_mailbox(stale)).await else {
+    let stale = SharedAccountId::try_from("no-such-account").unwrap();
+    let Err(err) = JmapProvider::connect(config(&harness).with_shared_account(stale)).await else {
         panic!("a handle the session does not list must not connect");
     };
     assert!(err.to_string().contains("lost access"), "{err}");

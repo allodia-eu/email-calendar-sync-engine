@@ -8,7 +8,7 @@
 //! and grows as protocol features are added.
 
 use crate::{
-    IdentityControls, OverrideSurvival, ReportControls, RsvpControls, SharedMailboxes, WriteGuard,
+    IdentityControls, OverrideSurvival, ReportControls, RsvpControls, SharedAccounts, WriteGuard,
 };
 
 /// The data domains a provider supports.
@@ -73,10 +73,10 @@ pub struct Capabilities {
     pub(crate) contact_writes: Option<WriteGuard>,
     pub(crate) contact_groups: bool,
     pub(crate) contact_photos: bool,
-    /// How the credential can find mail stores besides its own. Not a flag: "the server
+    /// How the credential can find stores besides its own. Not a flag: "the server
     /// lists them" and "the server answers only for an address you name" are different
     /// promises, and a host's onboarding differs between them (`crate::shared`).
-    pub(crate) shared_mailboxes: SharedMailboxes,
+    pub(crate) shared_accounts: SharedAccounts,
 }
 
 impl Capabilities {
@@ -105,7 +105,7 @@ impl Capabilities {
             contact_writes: None,
             contact_groups: false,
             contact_photos: false,
-            shared_mailboxes: SharedMailboxes::Unsupported,
+            shared_accounts: SharedAccounts::Unsupported,
         }
     }
 

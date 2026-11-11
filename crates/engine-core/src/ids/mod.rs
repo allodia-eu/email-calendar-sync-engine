@@ -216,7 +216,7 @@ pub use calendar::{CalendarId, EventId, Uid};
 pub use contact::{AddressBookId, ContactId, PersonId};
 pub use dav::DavCollectionId;
 pub use mail::{BlobId, MailboxId, MessageId, MessageIdHeader, PartId, ThreadId};
-pub use shared::SharedMailboxId;
+pub use shared::SharedAccountId;
 
 #[cfg(test)]
 mod tests {

@@ -7,11 +7,11 @@
 
 use engine_core::{
     error::FailureClass,
-    ids::{AccountId, MailboxId, SharedMailboxId},
+    ids::{AccountId, MailboxId, SharedAccountId},
     mail::{MailboxAccess, MailboxRole},
     sync::SyncUpdate,
 };
-use engine_provider::{Provider, SharedMailboxes};
+use engine_provider::{Provider, SharedAccounts};
 use futures_util::StreamExt;
 
 use crate::{
@@ -44,7 +44,7 @@ async fn session(extensions: &[&str], server: &[&str]) -> (Connection<MockStream
 fn provider(connection: Connection<MockStream>, shared: Option<&str>) -> ImapProvider<MockStream> {
     let mut provider =
         ImapProvider::with_connection(connection, MailboxId::try_from("INBOX").unwrap());
-    provider.shared_mailbox = shared.map(|handle| SharedMailboxId::try_from(handle).unwrap());
+    provider.shared_account = shared.map(|handle| SharedAccountId::try_from(handle).unwrap());
     provider
 }
 
@@ -289,16 +289,23 @@ async fn discovery_lists_one_store_per_owner_and_caches_the_namespaces() {
     .await;
     let provider = provider(connection, None);
     assert_eq!(
-        provider.connection_info().capabilities.shared_mailboxes(),
-        SharedMailboxes::Enumerable
+        provider.connection_info().capabilities.shared_accounts(),
+        SharedAccounts::Enumerable
     );
-    let stores = provider.list_shared_mailboxes().await.unwrap();
+    let stores = provider.list_shared_accounts().await.unwrap();
     let handles: Vec<&str> = stores.iter().map(|s| s.handle.as_str()).collect();
     assert_eq!(handles, [SUPPORT, BOB]);
+    // An IMAP provider serves mail, so mail is all it reports a store to offer.
+    for store in &stores {
+        assert_eq!(
+            store.domains,
+            engine_provider::StoreDomains::of(engine_core::sync::SearchDomain::Mail)
+        );
+    }
     assert_eq!(stores[1].address.as_deref(), Some("bob@test.local"));
     // The address resolves through the list, to the handle discovery reported.
     let resolved = provider
-        .resolve_shared_mailbox("Support@Test.Local")
+        .resolve_shared_account("Support@Test.Local")
         .await
         .unwrap();
     assert_eq!(resolved.handle.as_str(), SUPPORT);
@@ -314,11 +321,11 @@ async fn a_server_that_cannot_share_offers_no_discovery() {
     let (connection, recorded) = session(&["NAMESPACE"], &[]).await;
     let provider = provider(connection, None);
     assert_eq!(
-        provider.connection_info().capabilities.shared_mailboxes(),
-        SharedMailboxes::Unsupported
+        provider.connection_info().capabilities.shared_accounts(),
+        SharedAccounts::Unsupported
     );
     assert_eq!(
-        provider.list_shared_mailboxes().await.unwrap_err().class(),
+        provider.list_shared_accounts().await.unwrap_err().class(),
         FailureClass::InvalidState
     );
     assert!(!written(&recorded).contains("NAMESPACE"));
@@ -331,7 +338,7 @@ async fn first_streamed(folder: &str, server: &[&str]) -> (engine_provider::Prov
     let (connection, recorded) = session(FULL, &script).await;
     let mut provider =
         ImapProvider::with_connection(connection, MailboxId::try_from(folder).unwrap());
-    provider.shared_mailbox = Some(SharedMailboxId::try_from(SUPPORT).unwrap());
+    provider.shared_account = Some(SharedAccountId::try_from(SUPPORT).unwrap());
     let account = account();
     let err = {
         let window = engine_core::sync::SyncWindow::full();

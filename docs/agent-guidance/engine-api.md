@@ -388,21 +388,24 @@ facade"*).
   read when a host asks. What the engine owns there is the protocol.
   Passing a call straight to the provider is legitimate when the answer is not ours to
   keep; reach for the outbox when a side effect must survive a crash.
-  `list_shared_mailboxes`/`resolve_shared_mailbox` are the second pair: which mailboxes a
-  credential can open is the server's to say, and a discovered store becomes an account only
+  `list_shared_accounts`/`resolve_shared_account` are the second pair: which stores — shared
+  mailboxes, delegated calendars — a credential can open, and which of those domains each
+  offers (`SharedAccount::domains`), is the server's to say, and a discovered store becomes an account only
   when the host onboards it — under an `AccountId` of its choosing, with a provider bound to
   the returned handle through the adapter that produced it. Read
-  `Capabilities::shared_mailboxes()` first: `Enumerable` affords a list to pick from,
+  `Capabilities::shared_accounts()` first: `Enumerable` affords a list to pick from,
   `ByAddress` needs the user to type an address, `Unsupported` means neither verb answers.
-  The re-exported `SharedMailbox`, `SharedMailboxes`, `SharedMailboxId` and `MailboxAccess`
-  are everything a host names along the way (`tests/shared_mailboxes.rs` imports nothing else).
+  The re-exported `SharedAccount`, `SharedAccounts`, `SharedAccountId`, `StoreDomains`,
+  `SearchDomain` and `MailboxAccess` are everything a host names along the way
+  (`tests/shared_accounts.rs` imports nothing else). The seam was called "shared mailboxes"
+  until calendars joined it; it was renamed, not doubled, so a host has one onboarding flow.
 - **Reject host input at the facade, before any request.** `set_sender_name` refuses a
   name carrying a control character or longer than 128 characters, as
   `ApiError::InvalidInput`. The RFC 5322 assembler refuses the same bytes, but by then
   the user has a mailbox that cannot send and no idea why — and the error message names
   the offending codepoint rather than echoing it, since an error travels into logs and
   dialogs and would carry the injected payload with it.
-  `resolve_shared_mailbox` applies the same rule to the address a user typed: anything that is
+  `resolve_shared_account` applies the same rule to the address a user typed: anything that is
   not one `local@domain` of at most 254 octets, free of whitespace and control characters, is
   `InvalidInput` before any request. A shape check, not a grammar — an adapter may refuse more
   (Graph refuses the path separators it re-parses) — but nothing that fails it reaches one.

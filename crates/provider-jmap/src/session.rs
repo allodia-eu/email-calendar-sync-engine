@@ -20,8 +20,8 @@
 //!   *own* advertised origin: a URL the server deliberately puts elsewhere is left alone
 //!   (`rebase_template`).
 
-use engine_core::ids::SharedMailboxId;
-use engine_provider::{OverrideSurvival, SharedMailboxes, WriteGuard};
+use engine_core::ids::SharedAccountId;
+use engine_provider::{OverrideSurvival, SharedAccounts, WriteGuard};
 use reqwest::Url;
 use serde_json::Value;
 
@@ -141,7 +141,7 @@ impl Session {
         value: &Value,
         base: &Url,
         policy: SessionUrlPolicy,
-        bound: Option<&SharedMailboxId>,
+        bound: Option<&SharedAccountId>,
     ) -> Result<Self, JmapError> {
         let advertised_api = value
             .get("apiUrl")
@@ -287,7 +287,7 @@ impl Session {
         // mail and a map to read — whatever this client is bound to, because what a
         // credential can reach is a fact about the credential (`crate::shared`).
         if server_has(capability::MAIL) && accounts.is_some() {
-            capabilities = capabilities.with_shared_mailboxes(SharedMailboxes::Enumerable);
+            capabilities = capabilities.with_shared_accounts(SharedAccounts::Enumerable);
         }
 
         let limits = caps

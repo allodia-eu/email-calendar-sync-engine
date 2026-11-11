@@ -89,7 +89,7 @@ async fn live_a_client_bound_to_a_shared_mailbox_sends_as_it() {
         return;
     };
     let handle = provider(&token, MailboxPrincipal::Me)
-        .resolve_shared_mailbox(&shared)
+        .resolve_shared_account(&shared)
         .await
         .expect("the mailbox is shared with this credential")
         .handle;

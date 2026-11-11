@@ -118,7 +118,7 @@ is authoritative for the `provider-caldav` calendar client.
   was a property of the *type* — one per bound folder, idle or not, all re-dialled in one
   burst on every network drop (measured: 107 connections in four hours on one Android
   device). Two `ImapAccount`s for one account are two budgets; build one. A mail store shared
-  with that login is a view of it (`ImapAccount::with_shared_mailbox`, under "Shared
+  with that login is a view of it (`ImapAccount::with_shared_account`, under "Shared
   mailboxes"), not a second account.
 - **Why the engine must bound it, not the server.** IMAP has no way to learn a server's
   connection limit, and only some servers say when it was hit: RFC 5530 has no "too many
@@ -929,6 +929,8 @@ folders into Trash is proven offline only: all three servers file a folder insid
 
 ## Shared mailboxes: namespaces, stores and rights
 
+An IMAP store is offered through the neutral `SharedAccounts` seam (`providers.md`) and reported with `StoreDomains` mail, the only domain this provider serves.
+
 `LIST "" "*"` answers for every principal at once: the credential's own folders and every
 folder shared with it, flat and interleaved. Before this was read against `NAMESPACE` two
 things went wrong — a folder list held two principals' folders, and the `\Sent` a sent copy
@@ -938,11 +940,11 @@ everything below runs against Stalwart and both Dovecots (`live_imap_shared_cont
 
 - **A provider covers one store** (`MailStore`): the credential's own — the whole tree minus
   every foreign namespace — or one shared store, bound with
-  `ImapAccount::with_shared_mailbox`. The folder list, the Sent/Drafts placement (on a pooled
+  `ImapAccount::with_shared_account`. The folder list, the Sent/Drafts placement (on a pooled
   connection *and* the retry's checked one), a fallback folder's creation and a folder write's
   top level are all scoped to it. A server without `NAMESPACE` yields the old behaviour
   exactly: everything is the credential's own.
-- **A shared store spends its login's budget.** `with_shared_mailbox` is a view of the
+- **A shared store spends its login's budget.** `with_shared_account` is a view of the
   credential's `ImapAccount`, not a second account: its providers and watches borrow from the
   same pool. The store is opened by the same login, and a server's connection limit is per
   login (Dovecot's `mail_max_userip_connections`), so a pool per store would spend that limit

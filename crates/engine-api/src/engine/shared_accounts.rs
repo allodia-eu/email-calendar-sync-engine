@@ -1,5 +1,5 @@
-//! Finding the mail stores a credential can open besides its own — the onboarding step
-//! of a shared mailbox.
+//! Finding the stores a credential can open besides its own — the onboarding step
+//! of a shared mailbox or a delegated calendar.
 //!
 //! Neither call touches the store, like [`sender_identities`](Engine::sender_identities):
 //! what a credential can reach is the server's to say and nothing the engine keeps. A
@@ -8,7 +8,7 @@
 //! to the returned handle through the adapter that produced it — and from then on every
 //! sync, read and search path treats it as the ordinary account it is (`providers.md`).
 
-use engine_provider::{Provider, SharedMailbox};
+use engine_provider::{Provider, SharedAccount};
 use engine_sync::SyncError;
 
 use crate::{ApiError, Engine};
@@ -18,15 +18,15 @@ use crate::{ApiError, Engine};
 const MAX_ADDRESS_OCTETS: usize = 254;
 
 impl Engine {
-    /// Every mail store `provider`'s credential can open besides the one it opens by
+    /// Every store `provider`'s credential can open besides the one it opens by
     /// default.
     ///
     /// **Read
-    /// [`Capabilities::shared_mailboxes`](engine_provider::Capabilities::shared_mailboxes)
-    /// first.** Only an [`Enumerable`](engine_provider::SharedMailboxes::Enumerable) adapter
-    /// answers this; a [`ByAddress`](engine_provider::SharedMailboxes::ByAddress) one can only
+    /// [`Capabilities::shared_accounts`](engine_provider::Capabilities::shared_accounts)
+    /// first.** Only an [`Enumerable`](engine_provider::SharedAccounts::Enumerable) adapter
+    /// answers this; a [`ByAddress`](engine_provider::SharedAccounts::ByAddress) one can only
     /// be asked about an address the user types, through
-    /// [`resolve_shared_mailbox`](Self::resolve_shared_mailbox).
+    /// [`resolve_shared_account`](Self::resolve_shared_account).
     ///
     /// The answer does not depend on which store `provider` is bound to, so any provider
     /// holding the credential will do.
@@ -36,17 +36,17 @@ impl Engine {
     /// Returns [`ApiError::Sync`] wrapping the provider failure, which is
     /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState) on an
     /// adapter that cannot list.
-    pub async fn list_shared_mailboxes<P: Provider>(
+    pub async fn list_shared_accounts<P: Provider>(
         &self,
         provider: &P,
-    ) -> Result<Vec<SharedMailbox>, ApiError> {
+    ) -> Result<Vec<SharedAccount>, ApiError> {
         provider
-            .list_shared_mailboxes()
+            .list_shared_accounts()
             .await
             .map_err(|err| ApiError::Sync(SyncError::Provider(err)))
     }
 
-    /// The mail store at `address`, if `provider`'s credential can open it.
+    /// The store at `address`, if `provider`'s credential can open it.
     ///
     /// `address` is what the user typed, so it is checked here before any request: it must
     /// be a single `local@domain` with neither half empty, at most 254 octets, and free of
@@ -62,14 +62,14 @@ impl Engine {
     /// *not a store this credential can open* — on some servers that includes one that
     /// exists but was never shared, because the server will not say which — so a host
     /// asks the user to check the address rather than retrying.
-    pub async fn resolve_shared_mailbox<P: Provider>(
+    pub async fn resolve_shared_account<P: Provider>(
         &self,
         provider: &P,
         address: &str,
-    ) -> Result<SharedMailbox, ApiError> {
+    ) -> Result<SharedAccount, ApiError> {
         validate_address(address)?;
         provider
-            .resolve_shared_mailbox(address)
+            .resolve_shared_account(address)
             .await
             .map_err(|err| ApiError::Sync(SyncError::Provider(err)))
     }

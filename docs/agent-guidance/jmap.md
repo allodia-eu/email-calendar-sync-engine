@@ -737,9 +737,11 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
 
 ## Shared mailboxes: the session's `accounts` map
 
+Offered through the neutral `SharedAccounts` seam (`providers.md`); each store is reported with `StoreDomains` mail.
+
 RFC 8620 §1.6.2's `accounts` map lists **every** account the credential can reach, the user's
 own marked `isPersonal: true`; the rest are stores shared with it. The client used to parse
-`primaryAccounts` and discard the map, which is why `list_shared_mailboxes()` needs no
+`primaryAccounts` and discard the map, which is why `list_shared_accounts()` needs no
 request — the answer arrived with the session `connect` already fetched (`crate::shared`,
 `crate::session_accounts`). On a server implementing JMAP Sharing (RFC 9670) the map holds
 the shares the user has **subscribed** to, so a share appears there once accepted.
@@ -750,7 +752,7 @@ the shares the user has **subscribed** to, so a share appears there once accepte
   the primary email address") is offered as the address only when it has an address's shape.
   `Enumerable` is advertised whenever the server serves mail and an `accounts` map, whatever
   the client is bound to. Resolving an address reads this list (the trait's default).
-- **Binding is `JmapConfig::with_shared_mailbox(handle)`.** Every domain the bound account
+- **Binding is `JmapConfig::with_shared_account(handle)`.** Every domain the bound account
   exposes in its own `accountCapabilities` is then addressed at it — mail, submission,
   calendars, contacts — and a domain it does not expose is simply not advertised, with an
   accessor error that names the reason. The handle is checked at connect, so a withdrawn or

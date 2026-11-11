@@ -550,7 +550,7 @@ Restoring the old mapping fails the live test on `writer: share`. The captured e
 
 ## Shared mailboxes: Gmail has no usable mechanism
 
-`GmailProvider` advertises `SharedMailboxes::Unsupported`, and that is a decision rather than
+`GmailProvider` advertises `SharedAccounts::Unsupported`, and that is a decision rather than
 an omission. Gmail delegation is a real product feature, but a user credential cannot reach it:
 the API route that would serve it, `users/{userId}` for another user, needs a **service
 account with domain-wide delegation** — a different credential model from the user bearer

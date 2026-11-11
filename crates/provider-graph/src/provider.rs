@@ -24,7 +24,7 @@ use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, IdentityControls,
     KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites,
     PageToken, PassMode, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
-    ScopeSync, SenderIdentity, SharedMailbox, SharedMailboxes, SubmissionReceipt, SyncKind,
+    ScopeSync, SenderIdentity, SharedAccount, SharedAccounts, SubmissionReceipt, SyncKind,
     split_page,
 };
 
@@ -104,7 +104,7 @@ impl GraphProvider {
                 // Graph cannot list the mailboxes shared with a credential, only answer for
                 // one named by address (`crate::shared`). Unconditional: it is a property of
                 // the credential, and one granted nothing simply resolves nothing.
-                .with_shared_mailboxes(SharedMailboxes::ByAddress),
+                .with_shared_accounts(SharedAccounts::ByAddress),
             since: None,
             categories: Categories::default(),
         }
@@ -391,7 +391,7 @@ impl Provider for GraphProvider {
     /// the credential's own (`crate::shared`). The only discovery Graph offers: no route
     /// lists the mailboxes shared with a credential, so enumeration stays at its rejecting
     /// default.
-    async fn resolve_shared_mailbox(&self, address: &str) -> ProviderResult<SharedMailbox> {
+    async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
         crate::shared::resolve(&self.client, address).await
     }
 }

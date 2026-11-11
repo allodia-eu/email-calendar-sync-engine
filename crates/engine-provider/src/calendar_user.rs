@@ -12,6 +12,16 @@
 //! schedules as. The last two name only the mailbox's primary address and none of its aliases,
 //! so their answer is [`CalendarUserAddresses::Including`]: enough to recognise an address,
 //! never to rule one out.
+//!
+//! # In a store that is not the credential's
+//!
+//! A provider bound to a shared account (`crate::shared`) answers for **that store**: its
+//! calendar user is the store's owner, not the principal the credential signs in as. A meeting
+//! created there is organised as the owner, so an answer naming the credential's own addresses
+//! would have a host recognise the wrong person's invitations. Where the user may read the
+//! store but not schedule as its owner, the honest answer names nobody.
+//! [`CalendarUserAddresses::is_for_store`] states the rule once, and every adapter's live test
+//! against a bound store holds its answer to it.
 
 use engine_core::scheduling::addresses_match;
 
@@ -71,6 +81,22 @@ impl CalendarUserAddresses {
             Self::NotEnabled => true,
             Self::Including(_) | Self::Unknown => false,
         }
+    }
+}
+
+impl CalendarUserAddresses {
+    /// Whether this answer keeps the bound-store rule for a store owned by `owner` and opened
+    /// with `credential`'s sign-in (see the module docs): it recognises the owner or nobody,
+    /// and never `credential` unless that **is** the owner.
+    ///
+    /// An answer recognising nobody passes, since it claims nothing: a store the user may only
+    /// read, an adapter that does not ask.
+    #[must_use]
+    pub fn is_for_store(&self, owner: &str, credential: &str) -> bool {
+        if addresses_match(owner, credential) {
+            return true;
+        }
+        self.addresses().is_empty() || (self.recognises(owner) && !self.recognises(credential))
     }
 }
 

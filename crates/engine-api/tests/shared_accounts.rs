@@ -1,4 +1,4 @@
-//! The shared-mailbox onboarding step, as a host drives it: through `engine_api` alone.
+//! The shared-account onboarding step, as a host drives it: through `engine_api` alone.
 //!
 //! Every name a host needs is imported from `engine_api` — the fake adapter is the only
 //! thing that reaches into `engine_provider`, because an adapter is what a host does *not*
@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use engine_api::{
-    ApiError, Capabilities, Engine, FailureClass, Mailbox, MailboxAccess, Provider, SharedMailbox,
-    SharedMailboxId, SharedMailboxes, SyncError,
+    ApiError, Capabilities, Engine, FailureClass, Mailbox, MailboxAccess, Provider, SearchDomain,
+    SharedAccount, SharedAccountId, SharedAccounts, StoreDomains, SyncError,
 };
 use engine_provider::{CalendarWrites, ConnectionInfo, MailboxWrites, ProviderResult};
 
@@ -27,15 +27,19 @@ impl Provider for Enumerable {
         ConnectionInfo::new(
             Capabilities::none()
                 .with_mail()
-                .with_shared_mailboxes(SharedMailboxes::Enumerable),
+                .with_shared_accounts(SharedAccounts::Enumerable),
         )
     }
 
-    async fn list_shared_mailboxes(&self) -> ProviderResult<Vec<SharedMailbox>> {
+    async fn list_shared_accounts(&self) -> ProviderResult<Vec<SharedAccount>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(vec![
-            SharedMailbox::new(SharedMailboxId::try_from("f").unwrap(), "Support")
-                .with_address("support@example.test"),
+            SharedAccount::new(
+                SharedAccountId::try_from("f").unwrap(),
+                "Support",
+                StoreDomains::of(SearchDomain::Mail).with(SearchDomain::Calendar),
+            )
+            .with_address("support@example.test"),
         ])
     }
 }
@@ -50,21 +54,26 @@ async fn a_host_lists_and_resolves_through_the_facade() {
     let provider: Box<dyn Provider> = Box::new(Enumerable::default());
 
     assert_eq!(
-        provider.connection_info().capabilities.shared_mailboxes(),
-        SharedMailboxes::Enumerable
+        provider.connection_info().capabilities.shared_accounts(),
+        SharedAccounts::Enumerable
     );
-    let listed = engine.list_shared_mailboxes(&provider).await.unwrap();
+    let listed = engine.list_shared_accounts(&provider).await.unwrap();
     assert_eq!(listed.len(), 1);
+    // What a host dials for the store: every domain it offers, named with facade types.
+    assert_eq!(
+        listed[0].domains.iter().collect::<Vec<_>>(),
+        [SearchDomain::Mail, SearchDomain::Calendar]
+    );
 
     let resolved = engine
-        .resolve_shared_mailbox(&provider, "Support@Example.Test")
+        .resolve_shared_account(&provider, "Support@Example.Test")
         .await
         .unwrap();
-    let handle: &SharedMailboxId = &resolved.handle;
+    let handle: &SharedAccountId = &resolved.handle;
     assert_eq!(handle, &listed[0].handle);
 
     let missing = engine
-        .resolve_shared_mailbox(&provider, "nobody@example.test")
+        .resolve_shared_account(&provider, "nobody@example.test")
         .await
         .unwrap_err();
     // Terminal, so a host asks the user to check the address rather than retrying — and
@@ -87,7 +96,7 @@ async fn an_address_that_is_not_one_never_reaches_the_provider() {
         "x@example.test\n",
     ] {
         let err = engine
-            .resolve_shared_mailbox(&provider, bad)
+            .resolve_shared_account(&provider, bad)
             .await
             .unwrap_err();
         assert!(matches!(err, ApiError::InvalidInput(_)), "{bad:?}: {err:?}");

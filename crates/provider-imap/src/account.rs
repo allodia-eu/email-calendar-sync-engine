@@ -17,10 +17,10 @@ use std::{
     time::Duration,
 };
 
-use engine_core::ids::{MailboxId, SharedMailboxId};
+use engine_core::ids::{MailboxId, SharedAccountId};
 use engine_provider::{
     Capabilities, ConnectionInfo, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
-    SharedMailboxes, TlsVersion,
+    SharedAccounts, TlsVersion,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -48,7 +48,7 @@ use crate::{
 /// Build **one per account** and bind every folder through it. Two `ImapAccount`s for the same
 /// account are two budgets, which is the bug this type exists to prevent. A mail store shared
 /// with the credential is no exception: it is opened by the same login, so it is reached
-/// through [`with_shared_mailbox`](Self::with_shared_mailbox), which spends the same budget.
+/// through [`with_shared_account`](Self::with_shared_account), which spends the same budget.
 pub struct ImapAccount<S> {
     pool: Arc<ImapPool<S>>,
     /// Shared by every provider this account binds; each send dials its own SMTP connection.
@@ -59,8 +59,8 @@ pub struct ImapAccount<S> {
     /// the pool dials the same server as the same user, so this describes all of them.
     connection_info: ConnectionInfo,
     /// The shared mail store this account's providers cover, or `None` for the credential's
-    /// own (`with_shared_mailbox`).
-    shared_mailbox: Option<SharedMailboxId>,
+    /// own (`with_shared_account`).
+    shared_account: Option<SharedAccountId>,
     /// The server's `NAMESPACE` answer, learned the first time a provider needs it
     /// (`crate::folders`) and kept for every provider of the login, whichever store it covers.
     namespaces: Arc<OnceLock<Namespaces>>,
@@ -74,7 +74,7 @@ impl<S> core::fmt::Debug for ImapAccount<S> {
             .field("pool", &self.pool)
             .field("since", &self.since)
             .field("connection_info", &self.connection_info)
-            .field("shared_mailbox", &self.shared_mailbox)
+            .field("shared_account", &self.shared_account)
             .finish_non_exhaustive()
     }
 }
@@ -151,7 +151,7 @@ impl<S> ImapAccount<S> {
                 tls_version,
                 ..ConnectionInfo::new(capabilities)
             },
-            shared_mailbox: None,
+            shared_account: None,
             namespaces: Arc::new(OnceLock::new()),
             gmail,
         }
@@ -177,8 +177,8 @@ impl<S> ImapAccount<S> {
 
     /// The same account, covering a mail store shared **with** the credential rather than the
     /// credential's own: `handle` is what
-    /// [`list_shared_mailboxes`](engine_provider::Provider::list_shared_mailboxes) or
-    /// [`resolve_shared_mailbox`](engine_provider::Provider::resolve_shared_mailbox) handed
+    /// [`list_shared_accounts`](engine_provider::Provider::list_shared_accounts) or
+    /// [`resolve_shared_account`](engine_provider::Provider::resolve_shared_account) handed
     /// back — the store's path under the server's shared namespace. Dials nothing.
     ///
     /// Its providers list that store's folders alone, re-rooted so they read like any
@@ -191,13 +191,13 @@ impl<S> ImapAccount<S> {
     /// than dialling a pool of its own: the server's connection limit is per login, and a
     /// second budget would spend it twice.
     #[must_use]
-    pub fn with_shared_mailbox(&self, handle: SharedMailboxId) -> Self {
+    pub fn with_shared_account(&self, handle: SharedAccountId) -> Self {
         Self {
             pool: Arc::clone(&self.pool),
             smtp: self.smtp.clone(),
             since: self.since,
             connection_info: self.connection_info,
-            shared_mailbox: Some(handle),
+            shared_account: Some(handle),
             namespaces: Arc::clone(&self.namespaces),
             gmail: self.gmail,
         }
@@ -208,7 +208,7 @@ impl<S> ImapAccount<S> {
     /// offer over IMAP. Dials nothing.
     #[must_use]
     pub fn gmail(&self) -> Option<GmailMail<S>> {
-        (self.gmail && self.shared_mailbox.is_none())
+        (self.gmail && self.shared_account.is_none())
             .then(|| GmailMail::new(Arc::clone(&self.pool)))
     }
 
@@ -222,7 +222,7 @@ impl<S> ImapAccount<S> {
             self.smtp.clone(),
             self.since,
             self.connection_info,
-            self.shared_mailbox.clone(),
+            self.shared_account.clone(),
             Arc::clone(&self.namespaces),
         )
     }
@@ -320,7 +320,7 @@ fn capabilities<S>(connection: &Connection<S>, smtp: bool) -> Capabilities {
     // command (`crate::folders`).
     if connection.negotiated.has(Extension::Namespace) && connection.negotiated.has(Extension::Acl)
     {
-        capabilities = capabilities.with_shared_mailboxes(SharedMailboxes::Enumerable);
+        capabilities = capabilities.with_shared_accounts(SharedAccounts::Enumerable);
     }
     capabilities
 }
