@@ -103,3 +103,60 @@ async fn the_calendar_provider_resolves_by_address_and_cannot_list() {
     let resolved = provider.resolve_shared_account(SHARED).await.unwrap();
     assert_eq!(resolved.domains, StoreDomains::of(SearchDomain::Calendar));
 }
+
+/// The bound-store rule's two halves under `/users/{shared}`: the shared mailbox is the
+/// calendar user where the delegate may write its calendar, and nobody where they may only read
+/// it (`engine_provider::calendar_user`). `canEdit` is the shape the default calendar answered
+/// live; a read-only delegate is not on the test tenant, so its `false` is the documented field
+/// rather than a capture.
+mod bound_calendar_user {
+    use engine_provider::{CalendarUserAddresses, CalendarWrites};
+    use serde_json::json as value;
+
+    use super::*;
+
+    async fn answer(can_edit: bool) -> (CalendarUserAddresses, bool) {
+        let routes = vec![
+            (
+                "/users/shared@example.test?$select=displayName,mail,userPrincipalName",
+                Ok(value!({ "displayName": "Shared", "mail": SHARED,
+                    "userPrincipalName": SHARED })),
+            ),
+            (
+                "/users/shared@example.test/calendar?$select=canEdit",
+                Ok(value!({ "canEdit": can_edit })),
+            ),
+        ];
+        let client =
+            fake_client_fallible(routes).with_principal(MailboxPrincipal::user(SHARED).unwrap());
+        let provider = GraphCalendarProvider::new(
+            client,
+            CalendarWindow::new(
+                engine_core::time::CalendarDate::new(2026, 1, 1).unwrap(),
+                engine_core::time::CalendarDate::new(2027, 1, 1).unwrap(),
+            ),
+            engine_core::time::TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+        );
+        let account = engine_core::ids::AccountId::try_from("bound").unwrap();
+        let got = provider.calendar_user_addresses(&account).await.unwrap();
+        let ok = got.is_for_store(SHARED, "delegate@example.test");
+        (got, ok)
+    }
+
+    #[tokio::test]
+    async fn a_calendar_the_delegate_may_edit_schedules_as_the_shared_mailbox() {
+        let (got, ok) = answer(true).await;
+        assert_eq!(
+            got,
+            CalendarUserAddresses::Including(vec![SHARED.to_owned()])
+        );
+        assert!(ok);
+    }
+
+    #[tokio::test]
+    async fn a_calendar_the_delegate_may_only_read_schedules_as_nobody() {
+        let (got, ok) = answer(false).await;
+        assert_eq!(got, CalendarUserAddresses::NotEnabled);
+        assert!(ok);
+    }
+}

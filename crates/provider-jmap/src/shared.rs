@@ -14,8 +14,6 @@
 //! Resolving an address needs nothing of its own: the trait's default reads this list
 //! (`engine_provider::Provider`).
 
-use std::collections::BTreeMap;
-
 use engine_core::{
     ids::{ProviderKey, SharedAccountId},
     sync::SearchDomain,
@@ -41,10 +39,15 @@ const ASKED: [(SearchDomain, &str, &str); 2] = [
     ),
 ];
 
-/// The method errors that say an account does not hold a domain (RFC 8620 §3.6.2). Any
-/// other error fails the listing: a server fault is not an empty store, and reading it as
-/// one would drop a store from the list a host shows on a blip.
-const NOT_HELD: [&str; 2] = ["accountNotSupportedByMethod", "accountNotFound"];
+/// The method errors that say an account does not hold a domain for this credential (RFC 8620
+/// §3.6.2): it does not support the method, is not there, or the credential may not use the
+/// method on it. Any other error fails the listing: a server fault is not an empty store, and
+/// reading it as one would drop a store from the list a host shows on a blip.
+const NOT_HELD: [&str; 3] = [
+    "accountNotSupportedByMethod",
+    "accountNotFound",
+    "forbidden",
+];
 
 /// The stores shared with this credential: every account the session marks as not the
 /// user's own (`isPersonal: false`), with the domains it actually answers for. An account
@@ -73,7 +76,8 @@ pub(crate) async fn list(executor: &dyn Executor) -> Result<Vec<SharedAccount>, 
             .filter(|(d, ..)| served.contains(*d))
             .map(|(_, urn, _)| *urn),
     );
-    let mut held: BTreeMap<&str, (&SessionAccount, StoreDomains)> = BTreeMap::new();
+    // In the order the session lists the accounts, which is the order a host shows them.
+    let mut held: Vec<(&SessionAccount, StoreDomains)> = Vec::new();
     let per_request = session.limits().max_calls_in_request.max(1);
     for batch in questions.chunks(per_request) {
         let mut request = Request::new(using.clone());
@@ -86,12 +90,10 @@ pub(crate) async fn list(executor: &dyn Executor) -> Result<Vec<SharedAccount>, 
         let response = executor.execute(&request).await?;
         for ((account, domain, _), call) in batch.iter().zip(&calls) {
             match response.result(call) {
-                Ok(_) => {
-                    let entry = held
-                        .entry(account.id.as_str())
-                        .or_insert((*account, StoreDomains::none()));
-                    entry.1 = entry.1.with(*domain);
-                }
+                Ok(_) => match held.iter_mut().find(|(known, _)| known.id == account.id) {
+                    Some((_, domains)) => *domains = domains.with(*domain),
+                    None => held.push((*account, StoreDomains::of(*domain))),
+                },
                 Err(JmapError::Method { error_type, .. })
                     if NOT_HELD.contains(&error_type.as_str()) => {}
                 Err(err) => return Err(err),
@@ -99,7 +101,7 @@ pub(crate) async fn list(executor: &dyn Executor) -> Result<Vec<SharedAccount>, 
         }
     }
     Ok(held
-        .into_values()
+        .into_iter()
         .map(|(account, domains)| project(account, domains))
         .collect())
 }

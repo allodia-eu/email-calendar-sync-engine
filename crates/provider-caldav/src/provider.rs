@@ -197,6 +197,15 @@ impl CalDavProvider {
         })
     }
 
+    /// Whether this provider opens a store shared with the credential rather than its own.
+    fn is_bound(&self) -> bool {
+        match (&self.principal, &self.user) {
+            (Some(principal), Some(user)) => !crate::shared::same_resource(principal, user),
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+
     /// The principal URL the server named during discovery, absolute, when it named one: what a
     /// host stores and starts the next connect from (RFC 6764 §6), rather than the calendar home,
     /// which the principal names afresh on every connect.
@@ -386,11 +395,26 @@ impl CalendarWrites for CalDavProvider {
 
     /// The principal's `calendar-user-address-set`: kept from discovery when it read the
     /// principal, otherwise asked of the principal now. Unknown when the server named none.
+    ///
+    /// In a shared store the user may only read, the answer is `NotEnabled`: they schedule as
+    /// nobody there, whatever the owner's principal lists (`engine_provider::calendar_user`).
+    /// Whether they may write is read off the home's calendars, one listing, asked only when
+    /// the owner's set names anyone.
     async fn calendar_user_addresses(
         &self,
         _account: &AccountId,
     ) -> ProviderResult<CalendarUserAddresses> {
         if let Some(addresses) = &self.addresses {
+            if self.is_bound() && !addresses.addresses().is_empty() {
+                let listed =
+                    discovery::list_calendars(self.executor.as_ref(), &self.home_href).await?;
+                if !listed
+                    .iter()
+                    .any(|(calendar, ..)| calendar.access.may_write)
+                {
+                    return Ok(CalendarUserAddresses::NotEnabled);
+                }
+            }
             return Ok(addresses.clone());
         }
         let Some(principal) = &self.principal else {

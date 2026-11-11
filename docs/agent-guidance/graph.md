@@ -450,8 +450,11 @@ Probed live on a work tenant (2026-11-10 and 11), a delegate with Full Access, t
   `POST /users/{shared}/events/{id}/accept` answers for the shared mailbox, the organiser's copy
   turning accepted. An event id is per mailbox: the shared one's is `404` under `/me/events`.
 - **The calendar user is the shared mailbox**: `calendar_user_addresses` reads the principal's
-  identity (`crate::identity`), which is the bound mailbox, so the bound-store rule
-  (`engine_provider::calendar_user`) holds with no adapter change.
+  identity (`crate::identity`), which is the bound mailbox — where the delegate may edit its
+  default calendar. Bound, the provider first reads that calendar's `canEdit` and answers
+  `NotEnabled` when it is `false`: a read-only delegate schedules as nobody there
+  (`engine_provider::calendar_user`). Live, Full Access reads `canEdit: true`; the `false` case is
+  the documented field, unobserved, like the read-only delegate below.
 - **Two oddities, pinned rather than relied on.** The delegate's own copy of a meeting they
   made from the shared calendar reads *accepted* before anyone answered — every run since
   2026-11-10. And once (not reproduced since) the shared mailbox received two acceptance

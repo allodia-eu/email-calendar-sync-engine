@@ -752,8 +752,9 @@ the shares the user has **subscribed** to, so a share appears there once accepte
   pinned in `smoke_shared_stores.rs`). So `list_shared_accounts()` **asks**: one request
   carrying a `Mailbox/get` and a `Calendar/get` with `ids: []` per shared account, for each
   domain the server serves and the account claims, split only past `maxCallsInRequest`.
-  `accountNotSupportedByMethod` or `accountNotFound` means the domain is not there; any other
-  method error fails the listing, because a server fault is not an empty store. Enumeration
+  `accountNotSupportedByMethod`, `accountNotFound` or `forbidden` means the domain is not there
+  for this credential; any other method error fails the listing, because a server fault is not
+  an empty store. Stores keep the order the session lists them in. Enumeration
   used to cost nothing (the map arrives with the session); it now costs that request.
 - **What is listed:** accounts with `isPersonal: false` that answer for at least one domain,
   each with `domains` naming those that answered. The user's own is left out (a host already
@@ -772,7 +773,8 @@ the shares the user has **subscribed** to, so a share appears there once accepte
   group, never dave (pinned live). So a bound client keeps the identities whose address is the
   account's `name`: the group's address in the group store; **none** in dave's read-only share,
   where alice cannot schedule as dave, which reads `NotEnabled`; and `Unknown` where the name is
-  no address (`participant_identity::for_store`). A meeting created in the group calendar is
+  no address, or where the answer was partial (`Including`) and so cannot rule the owner out
+  (`participant_identity::for_store`). A meeting created in the group calendar is
   organised as the group and scheduled by the server: the attendee's copy names
   `organizerCalendarAddress: mailto:support@…` (`live_shared_calendars.rs`).
 - **A calendar's rights are its `myRights`.** `Calendar.myRights` becomes `Calendar::access`

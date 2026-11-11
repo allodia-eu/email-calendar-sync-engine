@@ -50,7 +50,8 @@ pub(crate) async fn calendar_user_addresses(
 /// 8620 §1.6.2: "usually the primary email address"); the answer keeps the identities that are
 /// the owner's. None of them is when the user may not schedule as the owner — a calendar
 /// shared read-only — and that is [`CalendarUserAddresses::NotEnabled`]: in this store the
-/// user schedules as nobody. A store whose name is no address cannot be answered for.
+/// user schedules as nobody — unless the answer was partial (`Including`), which cannot rule the
+/// owner out and so is `Unknown`. A store whose name is no address cannot be answered for.
 pub(crate) fn for_store(
     answer: CalendarUserAddresses,
     store: &SessionAccount,
@@ -69,10 +70,12 @@ pub(crate) fn for_store(
         .cloned()
         .collect();
     match answer {
-        CalendarUserAddresses::Known(_) | CalendarUserAddresses::Including(_)
-            if the_owners.is_empty() =>
-        {
+        // A whole set without the owner rules the owner out; a partial one cannot.
+        CalendarUserAddresses::Known(_) if the_owners.is_empty() => {
             CalendarUserAddresses::NotEnabled
+        }
+        CalendarUserAddresses::Including(_) if the_owners.is_empty() => {
+            CalendarUserAddresses::Unknown
         }
         CalendarUserAddresses::Known(_) => CalendarUserAddresses::Known(the_owners),
         CalendarUserAddresses::Including(_) => CalendarUserAddresses::Including(the_owners),
@@ -147,6 +150,21 @@ mod tests {
                 "a.smith@example.org".to_owned(),
             ])
         );
+    }
+
+    #[test]
+    fn a_partial_answer_without_the_owner_cannot_rule_the_owner_out() {
+        let store = crate::session_accounts::parse_accounts(&json!({ "accounts": {
+            "g": { "name": "support@example.org", "isPersonal": false }
+        }}))
+        .unwrap()
+        .remove(0);
+        // "These addresses, maybe more": the owner may be among the ones not named.
+        let partial = CalendarUserAddresses::Including(vec!["alice@example.org".to_owned()]);
+        assert_eq!(for_store(partial, &store), CalendarUserAddresses::Unknown);
+        // A whole set that misses the owner does rule it out.
+        let whole = CalendarUserAddresses::Known(vec!["alice@example.org".to_owned()]);
+        assert_eq!(for_store(whole, &store), CalendarUserAddresses::NotEnabled);
     }
 
     #[test]

@@ -27,6 +27,7 @@ use engine_provider::{
 use crate::{
     cal_fetch::{self, CalendarWindow, EventsPage},
     cal_override, cal_write,
+    principal::MailboxPrincipal,
     transport::GraphClient,
 };
 
@@ -276,6 +277,18 @@ impl CalendarWrites for GraphCalendarProvider {
         &self,
         _account: &AccountId,
     ) -> ProviderResult<CalendarUserAddresses> {
+        // Bound to a shared mailbox, the delegate schedules as that mailbox only where they may
+        // write its calendar; read-only, they schedule as nobody there
+        // (`engine_provider::calendar_user`). The default calendar's `canEdit` says which.
+        if !matches!(self.client.principal(), MailboxPrincipal::Me) {
+            let calendar = self
+                .client
+                .get(&self.client.url("/calendar?$select=canEdit"))
+                .await?;
+            if calendar.get("canEdit").and_then(serde_json::Value::as_bool) == Some(false) {
+                return Ok(CalendarUserAddresses::NotEnabled);
+            }
+        }
         let identities = crate::identity::sender_identity(&self.client).await?;
         Ok(CalendarUserAddresses::Including(
             identities

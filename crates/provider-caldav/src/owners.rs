@@ -13,7 +13,6 @@
 use std::{collections::BTreeMap, sync::Mutex};
 
 use crate::{
-    discovery::follow,
     error::CalDavError,
     shared::{describe, principal_address, same_resource},
     transport::DavExecutor,
@@ -27,6 +26,13 @@ pub(crate) struct Owners(Mutex<BTreeMap<String, Option<String>>>);
 impl Owners {
     /// The address of the calendar owner `owner`, or `None` when the calendar is the user's
     /// (`user`), names no owner, or its owner names no address.
+    ///
+    /// Also `None`, never an error, when the owner cannot be asked: an owner on an origin this
+    /// connection has not already sent the credential to is not asked at all — `DAV:owner` is
+    /// the server's content, and naming another host must not widen where the credential goes
+    /// (`credential_scope.rs`) — and a lookup that fails leaves the owner unknown rather than
+    /// failing the calendar sync over a label. A failure is not remembered, so the next sync
+    /// asks again.
     pub(crate) async fn address_of(
         &self,
         exec: &dyn DavExecutor,
@@ -45,12 +51,13 @@ impl Owners {
         if let Some(known) = self.0.lock().expect("owners lock").get(owner) {
             return Ok(known.clone());
         }
-        // An owner on an origin the credential may not go to is not asked.
-        let address = match follow(exec, owner, owner) {
-            Ok(url) => describe(exec, &url)
-                .await?
-                .and_then(|props| principal_address(&props)),
-            Err(_) => None,
+        let address = if exec.sends_credential_to(owner) {
+            match describe(exec, owner).await {
+                Ok(props) => props.and_then(|props| principal_address(&props)),
+                Err(_) => return Ok(None),
+            }
+        } else {
+            None
         };
         self.0
             .lock()
@@ -101,6 +108,64 @@ mod tests {
             None
         );
         assert!(exec.reads().is_empty());
+    }
+
+    /// A connection that has sent the credential to `home` and nowhere else.
+    struct OneOrigin(Replay);
+
+    #[async_trait::async_trait]
+    impl DavExecutor for OneOrigin {
+        async fn send(
+            &self,
+            method: crate::transport::DavMethod,
+            href: &str,
+            depth: &str,
+            body: String,
+        ) -> Result<crate::transport::HttpResponse, CalDavError> {
+            self.0.send(method, href, depth, body).await
+        }
+
+        async fn send_write(
+            &self,
+            request: crate::transport::WriteRequest,
+        ) -> Result<crate::transport::HttpResponse, CalDavError> {
+            self.0.send_write(request).await
+        }
+
+        fn sends_credential_to(&self, href: &str) -> bool {
+            href.starts_with("https://dav.example.test/")
+        }
+    }
+
+    #[tokio::test]
+    async fn an_owner_on_another_origin_is_never_asked() {
+        // A calendar's `DAV:owner` is the server's content; naming another host must not make
+        // that host one the credential goes to (`credential_scope.rs`).
+        let exec = OneOrigin(Replay::new(vec![ok(DAVE)]));
+        let owners = Owners::default();
+        let elsewhere = Some("https://elsewhere.example.test/principals/dave/");
+        assert_eq!(
+            owners.address_of(&exec, elsewhere, None).await.unwrap(),
+            None
+        );
+        assert!(exec.0.reads().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_lookup_leaves_the_owner_unknown_and_is_asked_again() {
+        // One owner's principal failing must not fail the user's calendar sync over a label.
+        let exec = Replay::new(vec![status(500, "boom"), ok(DAVE)]);
+        let owners = Owners::default();
+        let dave = Some("https://dav.example.test/principals/dave/");
+        assert_eq!(owners.address_of(&exec, dave, None).await.unwrap(), None);
+        assert_eq!(
+            owners
+                .address_of(&exec, dave, None)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("dave@example.test")
+        );
     }
 
     #[tokio::test]
