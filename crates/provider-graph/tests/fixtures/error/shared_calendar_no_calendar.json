@@ -1,0 +1,18 @@
+{
+  "error": {
+    "code": "ErrorItemNotFound",
+    "message": "The specified object was not found in the store.",
+    "innererror": {
+      "message": "An item with the specified id 'scrubbed-folder-id' wasn't found in the store.",
+      "type": "Microsoft.Exchange.Data.StoreObjects.ObjectNotFoundException",
+      "internalexception": {
+        "message": "Default folder Calendar not found.",
+        "type": "Microsoft.Exchange.Data.StoreObjects.DefaultFolders.Exceptions.DefaultFolderNotFoundException",
+        "internalexception": {
+          "message": "MapiExceptionNotFound: GetPropertiesSpecific operation has failed (hr=0x8004010f, ec=-2147221233) [diagnostic trace removed]",
+          "type": "Microsoft.Mapi.MapiExceptionNotFound"
+        }
+      }
+    }
+  }
+}

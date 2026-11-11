@@ -48,6 +48,10 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `error/shared_mailbox_invalid_user.json` | the probe, for an address not in the tenant | `404 ErrorInvalidUser` |
 | `error/shared_mailbox_not_enabled.json` | the probe, for a principal whose mailbox is inactive or on-premises | `404 MailboxNotEnabledForRESTAPI` (captured in the #89 probe, not re-captured) |
 | `error/shared_mailbox_no_inbox.json` | the probe, for a principal that is not a mailbox (a group) | `404 ErrorItemNotFound`, "Default folder Inbox not found" (captured in the #89 probe, not re-captured) |
+| `calendar/shared_calendar_probe.json` | `GET /users/{shared}/calendar?$select=id` | the shared-calendar probe's success shape, scrubbed as `mail/shared_mailbox_probe.json`; the id is a placeholder |
+| `calendar/own_calendar_probe.json` | `GET /me/calendar?$select=id` | the id the own-calendar check compares against, the user scrubbed to a zero object id |
+| `error/shared_calendar_invalid_user.json` | the calendar probe, for an address not in the tenant | `404 ErrorInvalidUser` |
+| `error/shared_calendar_no_calendar.json` | the calendar probe, for a group address | `404 ErrorItemNotFound` "Default folder Calendar not found"; the item id and the MAPI trace (encoded SIDs and server names) are cut |
 | `calendar/online_meeting.json` | `POST /me/onlineMeetings/createOrGet` `{externalId,subject,startDateTime,endDateTime}` | what `TeamsMeetings` reads from a new meeting: `joinWebUrl`, `joinMeetingIdSettings` with its passcode, and no `audioConferencing` on an account without that licence. A **work/school** tenant, so the organiser, tenant, thread and meeting ids are scrubbed in every form the URLs carry them; `joinInformation` is a placeholder |
 | `calendar/online_meeting_lookup.json` | `GET /me/onlineMeetings?$filter=JoinWebUrl eq '…'` | finding that meeting again by its join link, which is how a delete names it |
 | `error/online_meeting_not_found.json` | the same lookup after the meeting's `DELETE` | `404 NotFound` (`3004`), which a delete treats as already gone |

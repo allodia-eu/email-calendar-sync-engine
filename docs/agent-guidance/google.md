@@ -555,8 +555,15 @@ an omission. Gmail delegation is a real product feature, but a user credential c
 the API route that would serve it, `users/{userId}` for another user, needs a **service
 account with domain-wide delegation** — a different credential model from the user bearer
 token this adapter holds. Advertising anything else would offer a host an onboarding flow that
-could only fail, so both discovery verbs keep their rejecting defaults (`providers.md`). Google
-*Calendar* sharing is a separate mechanism, the `accessRole` above.
+could only fail, so both discovery verbs keep their rejecting defaults (`providers.md`).
+
+`GoogleCalendarProvider` advertises `Unsupported` too, for the calendar half of the same
+question (`SharedAccounts`, `providers.md`). A calendar shared with the user arrives **in the
+user's own `calendarList`**, with its rights in `accessRole` (above, five roles live-verified),
+so it already syncs under the user's own account. What has no route is the other shape, a
+calendar opened as part of **another user's store**: like Gmail's `users/{userId}`, reaching
+another user's calendars needs a service account with domain-wide delegation, not a user
+token. So there is nothing to bind, and a host never needs to ask.
 
 ## Testing (3-tier, mirroring Graph — `AGENTS.md` offline-mock caveat)
 
