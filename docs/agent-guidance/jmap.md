@@ -735,28 +735,55 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   fix has to be provider-neutral (CalDAV discovers the same fact from `OPTIONS`, per #107),
   so it is tracked separately rather than patched into the JMAP adapter.
 
-## Shared mailboxes: the session's `accounts` map
+## Shared accounts: the session's `accounts` map, asked what each holds
 
-Offered through the neutral `SharedAccounts` seam (`providers.md`); each store is reported with `StoreDomains` mail.
+Offered through the neutral `SharedAccounts` seam (`providers.md`). A JMAP provider serves mail
+and calendars, so it reports both domains, each only where the store answers for it.
 
 RFC 8620 §1.6.2's `accounts` map lists **every** account the credential can reach, the user's
-own marked `isPersonal: true`; the rest are stores shared with it. The client used to parse
-`primaryAccounts` and discard the map, which is why `list_shared_accounts()` needs no
-request — the answer arrived with the session `connect` already fetched (`crate::shared`,
+own marked `isPersonal: true`; the rest are stores shared with it (`crate::shared`,
 `crate::session_accounts`). On a server implementing JMAP Sharing (RFC 9670) the map holds
 the shares the user has **subscribed** to, so a share appears there once accepted.
 
-- **What is listed:** accounts with `isPersonal: false` that expose `urn:ietf:params:jmap:mail`.
-  The user's own is left out (a host already holds it), and so is an account shared for another
-  domain alone — it is not a mailbox. The handle is the account id; the account `name` ("usually
-  the primary email address") is offered as the address only when it has an address's shape.
-  `Enumerable` is advertised whenever the server serves mail and an `accounts` map, whatever
-  the client is bound to. Resolving an address reads this list (the trait's default).
+- **The map says which stores, not what is in them.** Each account lists its domains in
+  `accountCapabilities`, and Stalwart v1.0.2 lists mail *and* calendars on every shared
+  account, whatever was shared: bob's INBOX-only share refuses `Calendar/get`, dave's
+  calendar-only share refuses `Mailbox/get`, both `accountNotSupportedByMethod` (STALWART-1,
+  pinned in `smoke_shared_stores.rs`). So `list_shared_accounts()` **asks**: one request
+  carrying a `Mailbox/get` and a `Calendar/get` with `ids: []` per shared account, for each
+  domain the server serves and the account claims, split only past `maxCallsInRequest`.
+  `accountNotSupportedByMethod` or `accountNotFound` means the domain is not there; any other
+  method error fails the listing, because a server fault is not an empty store. Enumeration
+  used to cost nothing (the map arrives with the session); it now costs that request.
+- **What is listed:** accounts with `isPersonal: false` that answer for at least one domain,
+  each with `domains` naming those that answered. The user's own is left out (a host already
+  holds it). The handle is the account id; the account `name` ("usually the primary email
+  address") is offered as the address only when it has an address's shape. `Enumerable` is
+  advertised whenever the server serves mail or calendars and an `accounts` map, whatever the
+  client is bound to. Resolving an address reads this list (the trait's default), so it costs
+  the same request.
 - **Binding is `JmapConfig::with_shared_account(handle)`.** Every domain the bound account
   exposes in its own `accountCapabilities` is then addressed at it — mail, submission,
   calendars, contacts — and a domain it does not expose is simply not advertised, with an
   accessor error that names the reason. The handle is checked at connect, so a withdrawn or
   foreign one fails `connect` rather than every call after it.
+- **A bound store's calendar user is its owner.** `ParticipantIdentity/get` answers with the
+  **user's** identities on any account: on the group's and on dave's it returns alice and the
+  group, never dave (pinned live). So a bound client keeps the identities whose address is the
+  account's `name`: the group's address in the group store; **none** in dave's read-only share,
+  where alice cannot schedule as dave, which reads `NotEnabled`; and `Unknown` where the name is
+  no address (`participant_identity::for_store`). A meeting created in the group calendar is
+  organised as the group and scheduled by the server: the attendee's copy names
+  `organizerCalendarAddress: mailto:support@…` (`live_shared_calendars.rs`).
+- **A calendar's rights are its `myRights`.** `Calendar.myRights` becomes `Calendar::access`
+  (`crate::calendar_rights`), the way a mailbox's becomes `Mailbox::access`: a missing right is
+  withheld and a missing object is `owner()`. `may_write` is `mayWriteAll` alone — `mayWriteOwn`
+  covers only the user's own events. Before `NORMALIZER_VERSION` 15 no JMAP calendar's rights
+  were read, so dave's read-only calendar claimed it could be written. A shared calendar also
+  arrives `isSubscribed: false`, read into `Calendar::is_subscribed`, which no host reads yet.
+- **Binding is unchanged by calendars**, and a host dials only the domains `domains` names: the
+  bound client's capabilities still come from the overclaiming `accountCapabilities`, so a
+  client bound to dave's account advertises mail it will be refused.
 - **Rights come from each `Mailbox.myRights`; the account flag cannot answer.** The flag is
   what gates `mail_writes` (as RFC 8620 defines it), and on Stalwart it is coarser than the
   folders. v0.16 reported `isReadOnly: false` for the account bob shares read-only, whose one

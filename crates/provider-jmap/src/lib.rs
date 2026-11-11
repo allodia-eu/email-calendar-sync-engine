@@ -39,6 +39,7 @@ mod calendar;
 mod calendar_conference;
 mod calendar_conference_write;
 mod calendar_patch;
+mod calendar_rights;
 mod calendar_rsvp;
 mod calendar_rule;
 mod calendar_write;

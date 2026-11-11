@@ -9,7 +9,11 @@
 
 use std::sync::Arc;
 
-use engine_core::{error::FailureClass, mail::MailboxAccess, sync::SyncUpdate};
+use engine_core::{
+    error::FailureClass,
+    mail::MailboxAccess,
+    sync::{SearchDomain, SyncUpdate},
+};
 use engine_provider::SharedAccounts;
 use serde_json::{Value, json};
 
@@ -23,7 +27,8 @@ use crate::{
 /// stable across a fresh bootstrap, so the live suite resolves them by name; only here,
 /// where the fixture pins them, are they spelled out.
 const ALICE: &str = "c";
-const SUPPORT: &str = "f";
+const SUPPORT: &str = "g";
+const DAVE: &str = "f";
 const BOB: &str = "d";
 
 fn session_doc() -> Value {
@@ -35,35 +40,141 @@ fn bound(handle: Option<&str>, responses: Vec<Value>) -> (JmapProvider, Arc<Fake
     (JmapProvider::with_executor(Box::new(exec.clone())), exec)
 }
 
+fn probe() -> Value {
+    fixture("shared_accounts_probe_response.json")
+}
+
+fn domains(listed: &[engine_provider::SharedAccount], handle: &str) -> Vec<SearchDomain> {
+    listed
+        .iter()
+        .find(|m| m.handle.as_str() == handle)
+        .unwrap_or_else(|| panic!("{handle} is not listed: {listed:?}"))
+        .domains
+        .iter()
+        .collect()
+}
+
 #[tokio::test]
-async fn the_session_lists_the_mailboxes_shared_with_the_credential_and_not_its_own() {
-    let (provider, exec) = bound(None, vec![]);
+async fn the_listing_asks_each_shared_account_what_it_holds() {
+    let (provider, exec) = bound(None, vec![probe()]);
     assert_eq!(
         provider.connection_info().capabilities.shared_accounts(),
         SharedAccounts::Enumerable
     );
     let listed = provider.list_shared_accounts().await.unwrap();
-    let handles: Vec<&str> = listed.iter().map(|m| m.handle.as_str()).collect();
-    // The group mailbox and bob's read-only share — alice's own account is not there, so a
-    // host renders this list as "add another mailbox" without filtering it.
-    assert_eq!(listed.len(), 2, "{listed:?}");
-    assert!(
-        handles.contains(&SUPPORT) && handles.contains(&BOB),
-        "{handles:?}"
+    // Every shared account claims mail and calendars (STALWART-1); asked, bob holds mail
+    // alone, dave a calendar alone, and the group both. Alice's own account is not there,
+    // so a host renders this list as "add another account" without filtering it.
+    assert_eq!(listed.len(), 3, "{listed:?}");
+    assert_eq!(domains(&listed, BOB), [SearchDomain::Mail]);
+    assert_eq!(domains(&listed, DAVE), [SearchDomain::Calendar]);
+    assert_eq!(
+        domains(&listed, SUPPORT),
+        [SearchDomain::Mail, SearchDomain::Calendar]
     );
-    assert!(!handles.contains(&ALICE));
+    assert!(!listed.iter().any(|m| m.handle.as_str() == ALICE));
     let support = listed
         .iter()
         .find(|m| m.handle.as_str() == SUPPORT)
         .unwrap();
     assert_eq!(support.address.as_deref(), Some("support@test.local"));
-    assert!(
-        support
-            .domains
-            .contains(engine_core::sync::SearchDomain::Mail)
-    );
     assert_eq!(support.name, "support@test.local");
-    // No request: the accounts map arrived with the session connect already fetched.
+
+    // One request, asking each claimed domain of each shared account for no objects.
+    assert_eq!(exec.request_count(), 1);
+    let request = exec.requests.lock().unwrap()[0].clone();
+    let calls: Vec<(String, String)> = request["methodCalls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|call| {
+            assert_eq!(call[1]["ids"], json!([]), "{call}");
+            (
+                call[0].as_str().unwrap().to_owned(),
+                call[1]["accountId"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let expected: Vec<(String, String)> = [BOB, DAVE, SUPPORT]
+        .iter()
+        .flat_map(|id| {
+            [
+                ("Mailbox/get".to_owned(), (*id).to_owned()),
+                ("Calendar/get".to_owned(), (*id).to_owned()),
+            ]
+        })
+        .collect();
+    assert_eq!(calls, expected);
+    let using = request["using"].to_string();
+    assert!(
+        using.contains("jmap:mail") && using.contains("jmap:calendars"),
+        "{using}"
+    );
+}
+
+#[tokio::test]
+async fn an_account_that_answers_for_neither_domain_is_not_listed() {
+    let mut answer = probe();
+    // Bob's mail refuses too: nothing in his store answers, so there is nothing to open.
+    answer["methodResponses"][0] = json!(["error", { "type": "accountNotSupportedByMethod" }, "0"]);
+    let (provider, _) = bound(None, vec![answer]);
+    let listed = provider.list_shared_accounts().await.unwrap();
+    assert!(
+        !listed.iter().any(|m| m.handle.as_str() == BOB),
+        "{listed:?}"
+    );
+    assert_eq!(listed.len(), 2);
+}
+
+#[tokio::test]
+async fn a_probe_that_fails_for_another_reason_fails_the_listing() {
+    // Only "this account does not hold that" means absent. A server error is not an empty
+    // store, or a blip would drop a store from the list a host shows.
+    let mut answer = probe();
+    answer["methodResponses"][3] = json!(["error", { "type": "serverFail" }, "3"]);
+    let (provider, _) = bound(None, vec![answer]);
+    provider.list_shared_accounts().await.unwrap_err();
+}
+
+#[tokio::test]
+async fn only_the_domains_an_account_claims_and_the_server_serves_are_asked() {
+    let mut doc = session_doc();
+    // A server without calendars: the probe asks for mail alone.
+    doc["capabilities"]
+        .as_object_mut()
+        .unwrap()
+        .remove("urn:ietf:params:jmap:calendars");
+    // And an account not claiming mail is not asked about it.
+    doc["accounts"][DAVE]["accountCapabilities"]
+        .as_object_mut()
+        .unwrap()
+        .remove("urn:ietf:params:jmap:mail");
+    let answer = json!({ "methodResponses": [
+        ["Mailbox/get", { "accountId": BOB, "list": [] }, "0"],
+        ["Mailbox/get", { "accountId": SUPPORT, "list": [] }, "1"],
+    ]});
+    let exec = Arc::new(FakeExecutor::bound_to(&doc, None, vec![answer]));
+    let provider = JmapProvider::with_executor(Box::new(exec.clone()));
+    let listed = provider.list_shared_accounts().await.unwrap();
+    assert_eq!(domains(&listed, BOB), [SearchDomain::Mail]);
+    assert_eq!(domains(&listed, SUPPORT), [SearchDomain::Mail]);
+    assert_eq!(listed.len(), 2, "{listed:?}");
+    let request = exec.requests.lock().unwrap()[0].clone();
+    let methods = request["methodCalls"].to_string();
+    assert!(!methods.contains("Calendar/get"), "{methods}");
+    assert!(!request["using"].to_string().contains("calendars"));
+}
+
+#[tokio::test]
+async fn a_session_with_no_shared_account_lists_nothing_without_asking() {
+    let mut doc = session_doc();
+    doc["accounts"]
+        .as_object_mut()
+        .unwrap()
+        .retain(|id, _| id == ALICE);
+    let exec = Arc::new(FakeExecutor::bound_to(&doc, None, vec![]));
+    let provider = JmapProvider::with_executor(Box::new(exec.clone()));
+    assert_eq!(provider.list_shared_accounts().await.unwrap(), []);
     assert_eq!(exec.request_count(), 0);
 }
 
@@ -73,7 +184,7 @@ async fn an_account_name_that_is_not_an_address_is_offered_as_a_label_only() {
     // come back as something a host would send mail to, or match a typed address.
     let mut doc = session_doc();
     doc["accounts"][BOB]["name"] = json!("Bob's Mailbox");
-    let exec = Arc::new(FakeExecutor::bound_to(&doc, None, vec![]));
+    let exec = Arc::new(FakeExecutor::bound_to(&doc, None, vec![probe(), probe()]));
     let provider = JmapProvider::with_executor(Box::new(exec));
     let listed = provider.list_shared_accounts().await.unwrap();
     let bob = listed.iter().find(|m| m.handle.as_str() == BOB).unwrap();
@@ -90,7 +201,7 @@ async fn an_account_name_that_is_not_an_address_is_offered_as_a_label_only() {
 
 #[tokio::test]
 async fn an_address_resolves_through_the_listing_and_the_own_account_never_does() {
-    let (provider, _) = bound(None, vec![]);
+    let (provider, _) = bound(None, vec![probe(), probe(), probe()]);
     let support = provider
         .resolve_shared_account("Support@Test.Local")
         .await
@@ -154,8 +265,8 @@ async fn a_bound_client_on_a_writable_share_keeps_writes_and_send() {
 async fn discovery_does_not_depend_on_what_the_client_is_bound_to() {
     // What a credential can reach is a fact about the credential: a client bound to one
     // share lists the same shares as an unbound one.
-    let (unbound, _) = bound(None, vec![]);
-    let (bound_to_support, _) = bound(Some(SUPPORT), vec![]);
+    let (unbound, _) = bound(None, vec![probe()]);
+    let (bound_to_support, _) = bound(Some(SUPPORT), vec![probe()]);
     assert_eq!(
         unbound.list_shared_accounts().await.unwrap(),
         bound_to_support.list_shared_accounts().await.unwrap()
@@ -213,4 +324,80 @@ fn a_session_without_an_accounts_map_offers_no_discovery() {
         SharedAccounts::Unsupported
     );
     assert!(exec.session().accounts().is_empty());
+}
+
+#[tokio::test]
+async fn the_questions_are_split_at_the_servers_call_limit() {
+    let mut doc = session_doc();
+    doc["capabilities"]["urn:ietf:params:jmap:core"]["maxCallsInRequest"] = json!(4);
+    // The six questions of the captured probe, answered four and then two.
+    let all = probe()["methodResponses"].as_array().unwrap().clone();
+    let renumber = |answers: &[Value]| {
+        let answers: Vec<Value> = answers
+            .iter()
+            .enumerate()
+            .map(|(n, answer)| json!([answer[0], answer[1], n.to_string()]))
+            .collect();
+        json!({ "methodResponses": answers })
+    };
+    let exec = Arc::new(FakeExecutor::bound_to(
+        &doc,
+        None,
+        vec![renumber(&all[..4]), renumber(&all[4..])],
+    ));
+    let provider = JmapProvider::with_executor(Box::new(exec.clone()));
+    let listed = provider.list_shared_accounts().await.unwrap();
+    assert_eq!(exec.request_count(), 2);
+    assert_eq!(listed.len(), 3, "{listed:?}");
+    assert_eq!(
+        domains(&listed, SUPPORT),
+        [SearchDomain::Mail, SearchDomain::Calendar]
+    );
+}
+
+/// In a bound store the calendar user is the store's owner (`engine_provider::calendar_user`).
+/// `ParticipantIdentity/get` answers with the *user's* identities on any account (pinned in
+/// `smoke_shared_stores.rs`), so the bound answer keeps those that are the owner's.
+mod calendar_user {
+    use engine_provider::{CalendarUserAddresses, CalendarWrites};
+
+    use super::*;
+
+    const USER: &str = "alice@test.local";
+
+    async fn answer(doc: &Value, handle: &str) -> CalendarUserAddresses {
+        let identities = fixture("participant_identity_shared_response.json");
+        let exec = Arc::new(FakeExecutor::bound_to(doc, Some(handle), vec![identities]));
+        let provider = JmapProvider::with_executor(Box::new(exec.clone()));
+        let answer = provider.calendar_user_addresses(&account()).await.unwrap();
+        let (_, method, arguments) = exec.sole_call();
+        assert_eq!(method, "ParticipantIdentity/get");
+        assert_eq!(arguments["accountId"], json!(handle));
+        answer
+    }
+
+    #[tokio::test]
+    async fn a_store_the_user_schedules_in_answers_with_its_owners_address_alone() {
+        let got = answer(&session_doc(), SUPPORT).await;
+        assert_eq!(
+            got,
+            CalendarUserAddresses::Known(vec!["support@test.local".to_owned()])
+        );
+        assert!(got.is_for_store("support@test.local", USER));
+    }
+
+    #[tokio::test]
+    async fn a_store_the_user_cannot_schedule_as_answers_nobody() {
+        // Dave's calendar is shared read-only, and no identity of alice's is his.
+        let got = answer(&session_doc(), DAVE).await;
+        assert_eq!(got, CalendarUserAddresses::NotEnabled);
+        assert!(got.is_for_store("dave@test.local", USER));
+    }
+
+    #[tokio::test]
+    async fn a_store_whose_owner_has_no_address_cannot_be_answered_for() {
+        let mut doc = session_doc();
+        doc["accounts"][SUPPORT]["name"] = json!("Support Team");
+        assert_eq!(answer(&doc, SUPPORT).await, CalendarUserAddresses::Unknown);
+    }
 }

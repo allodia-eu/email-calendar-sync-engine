@@ -112,4 +112,10 @@ pub use store::Store;
 /// - `14`: a Graph online meeting reads as removable: Exchange takes it off an event whose body is
 ///   written without Teams' block. A stored one keeps `removable: false` until the re-snapshot
 ///   re-reads it.
-pub const NORMALIZER_VERSION: u32 = 14;
+/// - `15`: a JMAP calendar carries the caller's
+///   [`CalendarAccess`](engine_core::calendar::CalendarAccess), read from its `myRights`, where
+///   every JMAP calendar claimed `owner()`. A calendar shared read-only — in the user's own account
+///   or in another store bound to — said it could be written, deleted and shared. The JMAP calendar
+///   list is a delta, so an unchanged calendar would keep the default indefinitely; the re-snapshot
+///   is what makes each one say what it really allows.
+pub const NORMALIZER_VERSION: u32 = 15;

@@ -32,7 +32,7 @@
     "urn:ietf:params:jmap:emailpush": {},
     "urn:ietf:params:jmap:metadata": {},
     "urn:ietf:params:jmap:webpush-vapid": {
-      "applicationServerKey": "BEO4J27kYTOlE5B7P8jOFc3xFLqPtmNaphtupkAbngYuiFQL61tf_KYJDlJCVrVm3ttYDNIAWuBSeBYW0bysngk"
+      "applicationServerKey": "BDhFcBSAxS__UluD4qwK5EwttD8wRApGTN3Y9L_9VYRarlKAYHH7DkF9fWWVBYM0XWSKvOmrGhwnvK1RFPKjrGY"
     },
     "urn:ietf:params:jmap:websocket": {
       "url": "wss://mail.test.local/jmap/ws",
@@ -286,7 +286,7 @@
         }
       }
     },
-    "f": {
+    "g": {
       "name": "support@test.local",
       "isPersonal": false,
       "isReadOnly": false,
@@ -528,7 +528,7 @@
         },
         "urn:ietf:params:jmap:principals:owner": {
           "accountIdForPrincipal": "c",
-          "principalId": "f"
+          "principalId": "g"
         }
       }
     },
@@ -697,6 +697,172 @@
           "principalId": "d"
         }
       }
+    },
+    "f": {
+      "name": "dave@test.local",
+      "isPersonal": false,
+      "isReadOnly": true,
+      "accountCapabilities": {
+        "urn:ietf:params:jmap:mail": {
+          "maxMailboxesPerEmail": 100,
+          "maxMailboxDepth": 10,
+          "maxSizeMailboxName": 255,
+          "maxSizeAttachmentsPerEmail": 50000000,
+          "emailQuerySortOptions": [
+            "receivedAt",
+            "size",
+            "from",
+            "to",
+            "subject",
+            "sentAt",
+            "hasKeyword",
+            "allInThreadHaveKeyword",
+            "someInThreadHaveKeyword"
+          ],
+          "mayCreateTopLevelMailbox": true
+        },
+        "urn:ietf:params:jmap:contacts": {
+          "maxAddressBooksPerCard": 10,
+          "mayCreateAddressBook": false
+        },
+        "urn:ietf:params:jmap:contacts:parse": {},
+        "urn:ietf:params:jmap:calendars": {
+          "maxCalendarsPerEvent": 10,
+          "minDateTime": "0001-01-01T00:00:00Z",
+          "maxDateTime": "9999-12-31T23:59:59Z",
+          "maxExpandedQueryDuration": "P52W1D",
+          "maxParticipantsPerEvent": 20,
+          "mayCreateCalendar": false
+        },
+        "urn:ietf:params:jmap:calendars:parse": {},
+        "urn:ietf:params:jmap:websocket": {},
+        "urn:ietf:params:jmap:blob": {
+          "maxSizeBlobSet": 7499488,
+          "maxDataSources": 16,
+          "supportedTypeNames": [
+            "Email",
+            "Thread",
+            "SieveScript",
+            "CalendarEvent",
+            "ContactCard"
+          ],
+          "supportedDigestAlgorithms": [
+            "sha",
+            "sha-256",
+            "sha-512"
+          ]
+        },
+        "urn:ietf:params:jmap:principals": {
+          "currentUserPrincipalId": "c"
+        },
+        "urn:ietf:params:jmap:principals:availability": {
+          "maxAvailabilityDuration": "P52W1D"
+        },
+        "urn:ietf:params:jmap:filenode": {
+          "maxFileNodeDepth": 64,
+          "maxSizeFileNodeName": 255,
+          "forbiddenNameChars": "/<>:\"\\|?*",
+          "forbiddenNodeNames": [
+            ".",
+            "..",
+            "CON",
+            "PRN",
+            "AUX",
+            "NUL",
+            "COM0",
+            "COM1",
+            "COM2",
+            "COM3",
+            "COM4",
+            "COM5",
+            "COM6",
+            "COM7",
+            "COM8",
+            "COM9",
+            "LPT0",
+            "LPT1",
+            "LPT2",
+            "LPT3",
+            "LPT4",
+            "LPT5",
+            "LPT6",
+            "LPT7",
+            "LPT8",
+            "LPT9"
+          ],
+          "fileNodeQuerySortOptions": [
+            "name",
+            "size",
+            "created",
+            "modified",
+            "mediaType",
+            "nodeType",
+            "tree"
+          ],
+          "supportedNodeTypes": [
+            "Directory",
+            "File",
+            "SymLink"
+          ],
+          "mayCreateTopLevelFileNode": false,
+          "caseInsensitiveNames": false,
+          "webTrashUrl": null,
+          "webUrlTemplate": null,
+          "webWriteUrlTemplate": null
+        },
+        "urn:ietf:params:jmap:mail:share": {},
+        "urn:stalwart:jmap": {},
+        "urn:ietf:params:jmap:metadata": {
+          "dataTypes": {
+            "Email": {
+              "namespaces": [],
+              "supportsVendorNamespaces": true,
+              "supportsPrivate": true,
+              "maxDepth": 8
+            },
+            "Mailbox": {
+              "namespaces": [],
+              "supportsVendorNamespaces": true,
+              "supportsPrivate": true,
+              "maxDepth": 8
+            },
+            "Calendar": {
+              "namespaces": [],
+              "supportsVendorNamespaces": true,
+              "supportsPrivate": true,
+              "maxDepth": 8
+            },
+            "CalendarEvent": {
+              "namespaces": [],
+              "supportsVendorNamespaces": true,
+              "supportsPrivate": true,
+              "maxDepth": 8
+            },
+            "AddressBook": {
+              "namespaces": [],
+              "supportsVendorNamespaces": true,
+              "supportsPrivate": true,
+              "maxDepth": 8
+            },
+            "ContactCard": {
+              "namespaces": [],
+              "supportsVendorNamespaces": true,
+              "supportsPrivate": true,
+              "maxDepth": 8
+            },
+            "FileNode": {
+              "namespaces": [],
+              "supportsVendorNamespaces": true,
+              "supportsPrivate": true,
+              "maxDepth": 8
+            }
+          }
+        },
+        "urn:ietf:params:jmap:principals:owner": {
+          "accountIdForPrincipal": "c",
+          "principalId": "f"
+        }
+      }
     }
   },
   "primaryAccounts": {
@@ -724,5 +890,5 @@
   "downloadUrl": "https://mail.test.local/jmap/download/{accountId}/{blobId}/{name}?accept={type}",
   "uploadUrl": "https://mail.test.local/jmap/upload/{accountId}/",
   "eventSourceUrl": "https://mail.test.local/jmap/eventsource/?types={types}&closeafter={closeafter}&ping={ping}",
-  "state": "94b1917e"
+  "state": "2605a75d"
 }

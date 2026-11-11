@@ -54,6 +54,7 @@ pub(crate) fn calendar_from_json(value: &Value) -> Result<Calendar, JmapError> {
         calendar.is_default = default;
     }
     calendar.time_zone = parse_zone(value, "timeZone")?;
+    calendar.access = crate::calendar_rights::calendar_rights(value.get("myRights"));
     Ok(calendar)
 }
 
