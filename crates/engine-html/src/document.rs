@@ -136,6 +136,15 @@ fn base_css(scheme: MessageScheme) -> &'static str {
     })
 }
 
+/// What a blocked image leaves behind: its box, so the layout holds, and nothing in it. A renderer
+/// otherwise draws a refused load as a broken-image icon beside the alt text, which reads as a
+/// fault in the message rather than a choice the reader has not made yet. Every image not inline is
+/// blocked under [`RemoteImages::Blocked`], so `data:` is the one source left showing; an
+/// unresolved `cid:` is hidden as well, being as broken. A screen reader skips the image too, as a
+/// sighted reader sees nothing there; the host's "load remote images" offer is what says they are
+/// held back.
+const BLOCKED_IMAGES_CSS: &str = "img:not([src^=\"data:\" i]){visibility:hidden!important}";
+
 /// Wraps a sanitised body fragment in a complete HTML document; with a strict
 /// Content-Security-Policy and base styling; ready for a host's renderer to load. Shared in
 /// Rust so the security boundary (the CSP) and the base presentation are **identical across
@@ -146,9 +155,9 @@ fn base_css(scheme: MessageScheme) -> &'static str {
 /// blocks scripts, frames, and every remote load; `style-src 'unsafe-inline'` allows the
 /// message's presentational CSS. With [`RemoteImages::Blocked`] (the default) `img-src data:`
 /// blocks every remote image: so a message cannot phone home or track the open until the user
-/// explicitly loads images (`north-star.md`); with [`RemoteImages::Allowed`], remote http(s)
-/// images (and CSS backgrounds) load. The host passes the user's per-message choice here and
-/// re-renders.
+/// explicitly loads images (`north-star.md`), and a blocked image is drawn as an empty box rather
+/// than a broken one; with [`RemoteImages::Allowed`], remote http(s) images (and CSS backgrounds)
+/// load. The host passes the user's per-message choice here and re-renders.
 ///
 /// `scheme` is the page the reader is looking at it on: a dark render moves the message's own
 /// colours to suit a dark page (`html.md`, "Reading in a dark theme").
@@ -187,9 +196,9 @@ pub(super) fn render_titled_document(
     } else {
         format!("<title>{escaped_title}</title>")
     };
-    let img_src = match remote_images {
-        RemoteImages::Allowed => "https: http: data:",
-        RemoteImages::Blocked => "data:",
+    let (img_src, blocked_css) = match remote_images {
+        RemoteImages::Allowed => ("https: http: data:", ""),
+        RemoteImages::Blocked => ("data:", BLOCKED_IMAGES_CSS),
     };
     let base_css = base_css(scheme);
     let body_fragment = scheme::adapt(body_fragment, scheme);
@@ -211,7 +220,7 @@ pub(super) fn render_titled_document(
          base-uri 'none'; form-action 'none'; \
          img-src {img_src}; style-src 'unsafe-inline'; font-src data:\">\
          <meta name=\"viewport\" content=\"width=device-width\">{title}\
-         <style>{base_css}{reflow_css}</style></head><body>{body_fragment}</body></html>"
+         <style>{base_css}{blocked_css}{reflow_css}</style></head><body>{body_fragment}</body></html>"
     )
 }
 

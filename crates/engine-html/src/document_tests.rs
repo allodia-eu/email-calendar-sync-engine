@@ -164,6 +164,17 @@ fn render_document_gates_remote_images_on_the_flag() {
 }
 
 #[test]
+fn a_blocked_image_keeps_its_box_and_shows_nothing_in_it() {
+    // Hidden rather than removed, so the layout holds; an inline image still shows.
+    let rule = "img:not([src^=\"data:\" i]){visibility:hidden!important}";
+    let blocked = render_document("<img src=\"https://x/a.png\">", Blocked, Light);
+    assert!(blocked.contains(rule), "{blocked}");
+    // Once the reader allows them, remote images draw as themselves.
+    let allowed = render_document("<img src=\"https://x/a.png\">", Allowed, Dark);
+    assert!(!allowed.contains("visibility:hidden"), "{allowed}");
+}
+
+#[test]
 fn the_document_carries_the_message_its_own_breakpoint() {
     // The whole point of building the sheet per message: the breakpoint is the width *this*
     // message was written for, so the browser engine reflows it in a narrower pane and leaves it

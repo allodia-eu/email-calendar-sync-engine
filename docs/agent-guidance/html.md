@@ -86,7 +86,9 @@ and base styling, so the security boundary and the presentation are identical on
 - `img-src data:` under `RemoteImages::Blocked`, which every message opens with: only inline
   images render, so a message cannot phone home or track the open. `RemoteImages::Allowed` adds
   `https: http:`, on the reader's choice for that message; the host re-renders. Plain `http` is in
-  because senders still write it, mostly in signatures.
+  because senders still write it, mostly in signatures. While blocked, every image that is not a
+  `data:` one is `visibility:hidden`: its box keeps the layout, and no broken-image icon or alt
+  text suggests the message is at fault.
 - `style-src 'unsafe-inline'` for the message's own CSS, `font-src data:`, and no `script-src`.
 - The base sheet's one rule a message cannot override is `img{max-width:100%;height:auto!important}`:
   without the `!important` an image whose height the message pins keeps it while its width shrinks,
