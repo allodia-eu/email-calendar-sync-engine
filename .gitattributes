@@ -1,0 +1,9 @@
+# Every text file is LF, in the index and in every checkout, whatever a host's `core.autocrlf`
+# says. A Windows checkout otherwise writes CRLF, and bash reads the `\r` as part of a command, so
+# a fixture's shell hook fails with "not found" inside its container.
+* text=auto eol=lf
+
+# Committed CRLF on purpose, as a server sent them: a delivered invitation and a CalDAV response
+# recorded byte for byte.
+crates/engine-api/tests/fixtures/stalwart-invitation.eml -text
+crates/provider-caldav/tests/fixtures/sync-initial.xml -text
