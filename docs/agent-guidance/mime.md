@@ -47,9 +47,11 @@ store caches on demand — `store-and-sync.md`) into `MessageBody { plain, html 
   RFC 8621, which mail-parser 1.0 follows exactly, makes such a part an attachment and
   copies the `text/plain` in as the HTML stand-in, but an alternative's children are
   versions of one body by definition (RFC 2046 §5.1.4), and IMAP's list-time
-  `has_attachment` already never counts a `text/html` on a bare name. A host **must sanitize** before rendering
-  (`north-star.md` security: HTML mail is sanitized, remote images blocked by
-  default). Rendering HTML is a later slice.
+  `has_attachment` already never counts a `text/html` on a bare name. It stays unsanitized
+  here on purpose: this crate interprets bytes and decides no rendering policy. A host
+  **must sanitize** before rendering (`north-star.md` security: HTML mail is sanitized, remote
+  images blocked by default), and does it with **`engine-html`** (`html.md`): its `sanitize`,
+  then `render_document` for the strict-CSP document the host's renderer loads.
 
 `extract_inline_parts` decodes a message's inline (`cid:`-referenced) parts into
 `Vec<InlinePart>` — one per **binary** leaf part of the message itself (not of a message it
@@ -57,9 +59,10 @@ forwards) that declares a `Content-ID`, the only
 parts a `cid:` URL can address (RFC 2392). Each `InlinePart` carries the id with angle
 brackets stripped, the `Content-Type` media type (parameters stripped), and the
 content-transfer-decoded bytes. A host inlines these for `<img src="cid:…">` references
-in the (sanitized) HTML body. **Policy stays with the host**: which media types are safe
-to inline, and the inert form they are inlined as (e.g. an `image/*`-only `data:` URI),
-are decided by the renderer, not here — the bytes are hostile input. Text and
+in the (sanitized) HTML body. **Policy stays out of this crate**: which media types are safe
+to inline, and the inert form they are inlined as (an `image/*`-only `data:` URI), are
+decided by the renderer, `engine-html`'s `inline_cid_images` (`html.md`), not here — the
+bytes are hostile input. Text and
 `multipart/*` parts, and parts without a `Content-ID`, are skipped.
 
 `encoded_word::decode` is the same decoding one level up, on **header** text: it resolves

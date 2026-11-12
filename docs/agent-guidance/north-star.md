@@ -50,6 +50,7 @@ pim-sync-engine/
 │   ├── engine-search/           # Query AST, ranking, filters, RRF.
 │   ├── engine-recurrence/       # Deterministic recurrence -> occurrence expansion (bundled tzdb).
 │   ├── engine-mime/             # MIME/RFC 5322 body extraction (mail-parser) -> MessageBody (implemented).
+│   ├── engine-html/             # Mail HTML sanitiser, strict-CSP reading document, link-scheme policy (implemented).
 │   ├── engine-index/            # Text extraction, chunks, embedding seam.
 │   ├── engine-cli/              # Headless ingestion/search/maintenance harness (CLI host).
 │   ├── crypto-keystore/         # Platform credential/key abstraction.
@@ -135,7 +136,7 @@ Every write is a durable pending operation before any provider side effect:
 ## Security And Privacy
 
 Mail and calendar data are hostile input and sensitive data:
-- HTML email is sanitized before rendering.
+- HTML email is sanitized before rendering, by every host with the one sanitiser in `engine-html` (`html.md`); the body fetch itself returns it unsanitized (`mime.md`).
 - Remote images are blocked by default and fetched through host policy.
 - MIME parsing is fuzz-tested.
 - iCalendar and JMAP JSON parsing are fuzz-tested.
