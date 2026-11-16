@@ -4,13 +4,14 @@
 use crate::Capabilities;
 
 impl Capabilities {
-    /// Marks the transport's event fetch as **windowed**: a calendar's events are fetched only
-    /// inside the date window the engine names in
-    /// [`Provider::sync_events_within`](crate::Provider::sync_events_within), and a delta reports
-    /// changes only as far as the window its cursor was opened over.
+    /// Marks the transport's event fetch as **windowed**: a snapshot lists only the events inside
+    /// the date window the engine names in [`Provider::sync_events`](crate::Provider::sync_events),
+    /// so the stored calendar is complete only inside the window its cursor was opened over.
     ///
-    /// Graph's `calendarView/delta` takes a mandatory range and its `deltaLink` keeps it; Google's
-    /// `events.list` takes `timeMin`/`timeMax` for the snapshot its `syncToken` continues. CalDAV
+    /// Graph's `calendarView/delta` takes a mandatory range and its `deltaLink` reports changes
+    /// only inside it; Google's `events.list` takes `timeMin`/`timeMax` for the snapshot its
+    /// `syncToken` continues, and that token reports changes past them too (both measured), but
+    /// neither ever lists an event that was there before and did not change. CalDAV
     /// and JMAP fetch a calendar whole, so they never advertise this, and the engine never has
     /// to fetch a range of theirs twice.
     #[must_use]

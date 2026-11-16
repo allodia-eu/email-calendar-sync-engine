@@ -306,7 +306,9 @@ impl Provider for CalDavProvider {
         _account: &AccountId,
         calendar: &CalendarId,
         cursor: Option<&SyncState>,
+        _window: engine_core::time::Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
+        // `sync-collection` reports the calendar whole, so there is no window to open over.
         Ok(crate::sync::sync_events(
             self.executor.as_ref(),
             &self.multigets,

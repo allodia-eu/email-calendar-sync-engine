@@ -235,6 +235,7 @@ impl Provider for FakeProvider {
         _account: &AccountId,
         _calendar: &CalendarId,
         cursor: Option<&SyncState>,
+        _window: engine_core::time::Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
         if cursor.is_some() {
             return Ok(ScopeSync::new(

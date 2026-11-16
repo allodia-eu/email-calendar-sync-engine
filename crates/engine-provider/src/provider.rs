@@ -467,6 +467,11 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
     /// since `cursor`. Where several calendars share one scope, any of them answers for all.
     /// Providers advertising [`Capabilities::calendars`] override this.
     ///
+    /// `window` is the date range the engine wants the scope to hold. A transport that fetches
+    /// inside one ([`Capabilities::windowed_events`]) opens any cursor it must open (none yet, or
+    /// one the server expired) over it, and a delta keeps the window its cursor was opened over;
+    /// one that fetches a calendar whole ignores it.
+    ///
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]; the default returns
@@ -476,25 +481,9 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
         account: &AccountId,
         calendar: &CalendarId,
         cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Event>> {
-        let _ = (account, calendar, cursor);
-        Err(unsupported("calendar sync"))
-    }
-
-    /// [`sync_events`](Self::sync_events), opening any cursor it must open over `window`. Only a
-    /// transport advertising [`Capabilities::windowed_events`] reads it; the default ignores it.
-    ///
-    /// # Errors
-    ///
-    /// As [`sync_events`](Self::sync_events).
-    async fn sync_events_within(
-        &self,
-        account: &AccountId,
-        calendar: &CalendarId,
-        cursor: Option<&SyncState>,
         window: Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
-        let _ = window;
-        self.sync_events(account, calendar, cursor).await
+        let _ = (account, calendar, cursor, window);
+        Err(unsupported("calendar sync"))
     }
 }

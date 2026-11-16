@@ -33,7 +33,7 @@ async fn an_event_snapshot_larger_than_one_get_arrives_whole() {
     server.seed("CalendarEvent", (0..1203).map(event));
 
     let sync = provider_over(&server)
-        .sync_events(&account(), &any_calendar(), None)
+        .sync_events(&account(), &any_calendar(), None, whole())
         .await
         .unwrap();
 
@@ -56,7 +56,7 @@ async fn a_server_that_caps_its_query_is_paged_to_the_end() {
     server.seed("CalendarEvent", (0..250).map(event));
 
     let sync = provider_over(&server)
-        .sync_events(&account(), &any_calendar(), None)
+        .sync_events(&account(), &any_calendar(), None, whole())
         .await
         .unwrap();
 
@@ -77,7 +77,7 @@ async fn a_destroy_during_the_walk_is_checked_against_a_fresh_listing() {
     let provider = provider_over(&server);
 
     let sync = provider
-        .sync_events(&account(), &any_calendar(), None)
+        .sync_events(&account(), &any_calendar(), None, whole())
         .await
         .unwrap();
 
@@ -94,7 +94,12 @@ async fn a_destroy_during_the_walk_is_checked_against_a_fresh_listing() {
     assert_eq!(server.request_count(), 4, "the walk, then a listing of ids");
 
     let delta = provider
-        .sync_events(&account(), &any_calendar(), Some(&sync.next_cursor))
+        .sync_events(
+            &account(),
+            &any_calendar(),
+            Some(&sync.next_cursor),
+            whole(),
+        )
         .await
         .unwrap();
     let SyncUpdate::Delta { removed, .. } = &delta.update else {
@@ -136,7 +141,7 @@ async fn an_event_delta_larger_than_one_get_arrives_whole() {
     });
 
     let sync = provider_over(&server)
-        .sync_events(&account(), &any_calendar(), Some(&since))
+        .sync_events(&account(), &any_calendar(), Some(&since), whole())
         .await
         .unwrap();
 
@@ -167,7 +172,7 @@ async fn a_paged_delta_keeps_the_last_word_on_each_object() {
     });
 
     let sync = provider_over(&server)
-        .sync_events(&account(), &any_calendar(), Some(&since))
+        .sync_events(&account(), &any_calendar(), Some(&since), whole())
         .await
         .unwrap();
 
@@ -267,7 +272,12 @@ async fn more_changes_without_a_new_state_recovers_with_a_snapshot() {
     let (provider, exec) = super::provider_test_support::recording(vec![stuck, snapshot]);
 
     let sync = provider
-        .sync_events(&account(), &any_calendar(), Some(&SyncState::new("s1")))
+        .sync_events(
+            &account(),
+            &any_calendar(),
+            Some(&SyncState::new("s1")),
+            whole(),
+        )
         .await
         .unwrap();
 
@@ -279,4 +289,13 @@ async fn more_changes_without_a_new_state_recovers_with_a_snapshot() {
 /// JMAP's event state is account-wide, so which calendar asks for it does not matter.
 fn any_calendar() -> engine_core::ids::CalendarId {
     engine_core::ids::CalendarId::try_from("any").unwrap()
+}
+
+/// The window an event fetch names: JMAP reads the account whole and ignores it.
+fn whole() -> engine_core::time::Horizon {
+    engine_core::time::Horizon::new(
+        "2000-01-01T00:00:00Z".parse().unwrap(),
+        "2100-01-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap()
 }

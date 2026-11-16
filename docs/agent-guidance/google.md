@@ -400,14 +400,14 @@ read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
 - **Sync** (`cal_fetch`): `events.list` with a per-calendar `nextSyncToken`. The window
   (`timeMin`/`timeMax`) applies only to the initial snapshot (a `syncToken` request cannot
   also carry a window). Google takes it as optional, but the provider advertises
-  `windowed_events` and the engine always names one (`sync_events_within`): the host's
-  horizon at the first sync, or the union a `reach_calendar` reopens over. `with_window` serves
-  only a caller driving `sync_events` itself. **What a `syncToken` taken after a bounded list
-  reports outside its bounds is undocumented**: `events.list` forbids `timeMin`/`timeMax`
-  beside a `syncToken`, so the incremental request carries no window, which suggests it reports
-  every change, but Google does not say so and it is not yet measured. The engine does not
-  depend on the answer: it reopens the cursor over the union rather than listing a range beside
-  it, so a reached event is current either way. A `410` on a stale `syncToken`
+  `windowed_events` and the engine always names one (the `window` of `sync_events`): the
+  host's horizon at the first sync, or the union a `reach_calendar` reopens over. The provider
+  takes no window of its own. **A `syncToken` taken after a bounded list reports changes past
+  its bounds**: undocumented (`events.list` only forbids `timeMin`/`timeMax` beside a
+  `syncToken`), and measured in `tests/live_calendar_window.rs`, with an event created inside
+  the bounds as the control. Unlike a Graph `deltaLink`, which does not. It still never lists an
+  event that existed past the bounds and did not change, so the engine reopens the cursor over
+  the union rather than relying on the feed. A `410` on a stale `syncToken`
   classifies as `NeedsResync` → snapshot restart (the same mechanism as Gmail's
   history-expiry; here the error classifier maps `410` directly, no special case).
   **A subscribed holiday calendar never syncs incrementally.** Its snapshot carries a

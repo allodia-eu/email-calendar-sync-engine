@@ -45,7 +45,7 @@ fn amsterdam(local: &str) -> CalendarDateTime {
 /// A full snapshot, and the state it was taken at — the cursor a first sync persists.
 async fn snapshot(provider: &JmapProvider) -> (Vec<Event>, SyncState) {
     let synced = provider
-        .sync_events(&account(), &any_calendar(), None)
+        .sync_events(&account(), &any_calendar(), None, whole())
         .await
         .expect("snapshot");
     let SyncUpdate::Snapshot { objects, .. } = synced.update else {
@@ -60,7 +60,7 @@ async fn delta(
     cursor: &SyncState,
 ) -> (Vec<Event>, Vec<ProviderKey>, SyncState) {
     let synced = provider
-        .sync_events(&account(), &any_calendar(), Some(cursor))
+        .sync_events(&account(), &any_calendar(), Some(cursor), whole())
         .await
         .expect("delta");
     let SyncUpdate::Delta {
@@ -191,6 +191,15 @@ async fn a_delta_redelivers_our_own_write() {
 }
 
 /// JMAP's event state is account-wide, so which calendar asks for it does not matter.
+/// The window an event fetch names: JMAP reads the account whole and ignores it.
+fn whole() -> engine_core::time::Horizon {
+    engine_core::time::Horizon::new(
+        "2000-01-01T00:00:00Z".parse().unwrap(),
+        "2100-01-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap()
+}
+
 fn any_calendar() -> engine_core::ids::CalendarId {
     engine_core::ids::CalendarId::try_from("any").unwrap()
 }

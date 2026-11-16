@@ -262,7 +262,7 @@ async fn calendar_first_sync_snapshots_collections_and_events() {
     assert_eq!(present.len(), 1);
 
     let events = provider(vec![fixture("event_snapshot_response.json")])
-        .sync_events(&account(), &any_calendar(), None)
+        .sync_events(&account(), &any_calendar(), None, whole())
         .await
         .unwrap();
     assert!(events.is_snapshot());
@@ -327,7 +327,7 @@ async fn permanent_fetch_errors_propagate() {
     assert!(p.sync_email(&account(), None).await.is_err());
     assert!(p.sync_calendars(&account(), None).await.is_err());
     assert!(
-        p.sync_events(&account(), &any_calendar(), None)
+        p.sync_events(&account(), &any_calendar(), None, whole())
             .await
             .is_err()
     );
@@ -363,7 +363,7 @@ async fn missing_account_ids_surface_as_errors() {
     assert!(bare.sync_email(&account(), None).await.is_err());
     assert!(bare.sync_calendars(&account(), None).await.is_err());
     assert!(
-        bare.sync_events(&account(), &any_calendar(), None)
+        bare.sync_events(&account(), &any_calendar(), None, whole())
             .await
             .is_err()
     );
@@ -424,4 +424,13 @@ fn a_batch_carries_many_sources_only_where_the_account_answers_blob_get() {
 /// JMAP's event state is account-wide, so which calendar asks for it does not matter.
 fn any_calendar() -> engine_core::ids::CalendarId {
     engine_core::ids::CalendarId::try_from("any").unwrap()
+}
+
+/// The window an event fetch names: JMAP reads the account whole and ignores it.
+fn whole() -> engine_core::time::Horizon {
+    engine_core::time::Horizon::new(
+        "2000-01-01T00:00:00Z".parse().unwrap(),
+        "2100-01-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap()
 }

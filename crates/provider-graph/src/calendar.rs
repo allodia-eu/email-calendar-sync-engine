@@ -62,13 +62,11 @@ const GRAPH_OVERRIDE_SURVIVAL: OverrideSurvival = OverrideSurvival {
 /// A Microsoft Graph calendar read/sync/write provider for every calendar of one mailbox.
 ///
 /// Construct one with [`GraphCalendarProvider::new`] from a connected
-/// [`GraphClient`](crate::GraphClient) and the date [`window`] each calendar's
-/// `calendarView` covers (Graph calendar sync is inherently time-windowed).
-///
-/// [`window`]: CalendarWindow
+/// [`GraphClient`](crate::GraphClient). Graph calendar sync is inherently time-windowed: each
+/// calendar's `calendarView` covers the window the engine names in
+/// [`Provider::sync_events`].
 pub struct GraphCalendarProvider {
     client: GraphClient,
-    window: CalendarWindow,
     display_zone: TimeZoneId,
     capabilities: Capabilities,
 }
@@ -76,17 +74,15 @@ pub struct GraphCalendarProvider {
 impl core::fmt::Debug for GraphCalendarProvider {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GraphCalendarProvider")
-            .field("window", &self.window)
             .field("display_zone", &self.display_zone.as_str())
             .finish_non_exhaustive()
     }
 }
 
 impl GraphCalendarProvider {
-    /// Serves a connected client's calendars, covering the date `window` and reading event
-    /// times in `display_zone` (the host's IANA display/home zone —
-    /// Graph returns UTC otherwise, which would expand a recurring series
-    /// DST-incorrectly; `calendar-semantics.md`).
+    /// Serves a connected client's calendars, reading event times in `display_zone` (the host's
+    /// IANA display/home zone — Graph returns UTC otherwise, which would expand a recurring
+    /// series DST-incorrectly; `calendar-semantics.md`).
     ///
     /// Graph *enforces* the lost-update guard — a stale `If-Match` ETag is a `412` on a
     /// write — so unlike JMAP it advertises [`WriteGuard::Enforced`].
@@ -97,10 +93,9 @@ impl GraphCalendarProvider {
     /// *organizer* is told, not whether the server is the one telling them. Unlike CalDAV
     /// there is nothing to discover: it is a property of the service, not of the tenant.
     #[must_use]
-    pub fn new(client: GraphClient, window: CalendarWindow, display_zone: TimeZoneId) -> Self {
+    pub fn new(client: GraphClient, display_zone: TimeZoneId) -> Self {
         Self {
             client,
-            window,
             display_zone,
             capabilities: Capabilities::none()
                 .with_calendars()
@@ -161,17 +156,6 @@ impl Provider for GraphCalendarProvider {
     }
 
     async fn sync_events(
-        &self,
-        _account: &AccountId,
-        calendar: &CalendarId,
-        cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Event>> {
-        self.events(calendar, cursor, self.window).await
-    }
-
-    /// The engine names the window here, so the one this provider was built with only serves
-    /// a caller that drives [`sync_events`](Provider::sync_events) itself.
-    async fn sync_events_within(
         &self,
         _account: &AccountId,
         calendar: &CalendarId,

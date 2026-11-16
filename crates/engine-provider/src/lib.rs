@@ -117,6 +117,8 @@ pub use watch::{Watch, WatchEvent};
 pub(crate) const DEFAULT_DRAIN_PAGE: usize = 500;
 
 #[cfg(test)]
+mod calendar_default_tests;
+#[cfg(test)]
 #[path = "draft_tests.rs"]
 mod draft_tests;
 #[cfg(test)]

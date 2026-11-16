@@ -60,19 +60,17 @@ const CALENDAR_LIST_CURSOR: &str = "google-calendars";
 
 /// A Google Calendar read/sync/write provider for every calendar of one account.
 ///
-/// Construct one with [`GoogleCalendarProvider::new`] from a connected [`GoogleClient`];
-/// optionally set a snapshot date [`window`](CalendarWindow)
-/// with [`with_window`](Self::with_window) (Google's window is optional, unlike Graph's).
+/// Construct one with [`GoogleCalendarProvider::new`] from a connected [`GoogleClient`]. A
+/// snapshot covers the window the engine names in [`Provider::sync_events`] (Google's
+/// `timeMin`/`timeMax`, optional to Google and always set here).
 pub struct GoogleCalendarProvider {
     client: GoogleClient,
-    window: Option<CalendarWindow>,
     capabilities: Capabilities,
 }
 
 impl core::fmt::Debug for GoogleCalendarProvider {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GoogleCalendarProvider")
-            .field("window", &self.window)
             .finish_non_exhaustive()
     }
 }
@@ -92,7 +90,6 @@ impl GoogleCalendarProvider {
     pub fn new(client: GoogleClient) -> Self {
         Self {
             client,
-            window: None,
             capabilities: Capabilities::none()
                 .with_calendars()
                 .with_calendar_writes(WriteGuard::Enforced, GOOGLE_OVERRIDE_SURVIVAL)
@@ -102,14 +99,6 @@ impl GoogleCalendarProvider {
                 // `timeMin`/`timeMax` bound the snapshot the `syncToken` continues.
                 .with_windowed_events(),
         }
-    }
-
-    /// Windows the initial (snapshot) event enumeration to `[start, end)` via
-    /// `timeMin`/`timeMax`. A delta ignores it (the `syncToken` encodes the scope).
-    #[must_use]
-    pub fn with_window(mut self, window: CalendarWindow) -> Self {
-        self.window = Some(window);
-        self
     }
 }
 
@@ -152,17 +141,6 @@ impl Provider for GoogleCalendarProvider {
     }
 
     async fn sync_events(
-        &self,
-        _account: &AccountId,
-        calendar: &CalendarId,
-        cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Event>> {
-        self.events(calendar, cursor, self.window).await
-    }
-
-    /// The engine names the window here, so the one set by [`with_window`](Self::with_window)
-    /// only serves a caller that drives [`sync_events`](Provider::sync_events) itself.
-    async fn sync_events_within(
         &self,
         _account: &AccountId,
         calendar: &CalendarId,

@@ -183,6 +183,7 @@ impl Provider for FakeMail {
         _account: &AccountId,
         _calendar: &CalendarId,
         _cursor: Option<&SyncState>,
+        _window: engine_core::time::Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
         let present = self.events.iter().map(|e| e.id.key().clone()).collect();
         Ok(ScopeSync::new(

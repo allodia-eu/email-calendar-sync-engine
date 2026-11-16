@@ -150,8 +150,19 @@ pub(crate) async fn events(
     provider: &CalDavProvider,
     calendar: &CalendarId,
 ) -> Result<Vec<Event>, String> {
+    // CalDAV reads a calendar whole and ignores the window; it is wide for a transport that would
+    // not.
+    let whole = engine_core::time::Horizon::new(
+        "1900-01-01T00:00:00Z"
+            .parse()
+            .map_err(|_| "a valid instant")?,
+        "2200-01-01T00:00:00Z"
+            .parse()
+            .map_err(|_| "a valid instant")?,
+    )
+    .map_err(|err| err.to_string())?;
     let synced = provider
-        .sync_events(&account(), calendar, None)
+        .sync_events(&account(), calendar, None, whole)
         .await
         .map_err(|err| format!("sync failed: {err}"))?;
     Ok(match synced.update {

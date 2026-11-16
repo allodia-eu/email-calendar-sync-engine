@@ -667,10 +667,10 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   overrides off the display-zone reading would miss by a day for any series near midnight.
   Also measured: the header accepts the name Graph itself reported, IANA or Windows
   (`W. Europe Standard Time`), and an all-day series' date does not move under any zone.
-- **Time-windowed, per calendar.** The mandatory date range is the one the engine names in
-  `sync_events_within` (the provider advertises `windowed_events`): the host's horizon at the
-  first sync, or the union a `reach_calendar` reopens over. The `CalendarWindow` the provider
-  is built with serves only a caller driving `sync_events` itself. The `deltaLink` encodes the
+- **Time-windowed, per calendar.** The mandatory date range is the `window` the engine names in
+  `sync_events` (the provider advertises `windowed_events`): the host's horizon at the first
+  sync, or the union a `reach_calendar` reopens over. The provider takes no window of its own.
+  The `deltaLink` encodes the
   range, so it applies only to the request that opens the cursor, and **a delta reports
   changes only inside it**: an event created past the window never arrives through it
   (measured, with an event created inside it at the same moment as the control,

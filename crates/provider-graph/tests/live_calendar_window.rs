@@ -33,7 +33,7 @@ async fn live_a_delta_reports_only_inside_its_window_and_a_reopened_cursor_cover
         eprintln!("skipping live_calendar_window: GRAPH_ACCESS_TOKEN unset");
         return;
     };
-    let provider = calendar_provider(&token);
+    let provider = graph_calendars(&token);
     let calendar = default_calendar(&provider).await;
 
     // Far enough ahead that no other suite writes there: a week opened as the window, and a
@@ -48,7 +48,7 @@ async fn live_a_delta_reports_only_inside_its_window_and_a_reopened_cursor_cover
     let further = days(outside_day, outside_day + time::Duration::days(1));
 
     let opened = provider
-        .sync_events_within(&account(), &calendar, None, window)
+        .sync_events(&account(), &calendar, None, window)
         .await
         .expect("open the cursor over the window");
     assert!(opened.is_snapshot());
@@ -76,7 +76,7 @@ async fn live_a_delta_reports_only_inside_its_window_and_a_reopened_cursor_cover
     // Reopened over the union, the outside event is listed, and its cursor follows it.
     let union = window.union(further);
     let reopened = provider
-        .sync_events_within(&account(), &calendar, None, union)
+        .sync_events(&account(), &calendar, None, union)
         .await
         .expect("reopen over the union");
     let SyncUpdate::Snapshot { objects, .. } = &reopened.update else {
@@ -178,7 +178,7 @@ async fn delta_until(
     let mut seen = Vec::new();
     loop {
         let delta = provider
-            .sync_events_within(&account(), calendar, Some(&cursor), days_never())
+            .sync_events(&account(), calendar, Some(&cursor), days_never())
             .await
             .expect("delta");
         assert!(!delta.is_snapshot(), "a live cursor answers a delta");
@@ -210,7 +210,7 @@ async fn latest(
     id: &EventId,
 ) -> Event {
     let snapshot = provider
-        .sync_events_within(&account(), calendar, None, window)
+        .sync_events(&account(), calendar, None, window)
         .await
         .expect("read back for cleanup");
     let SyncUpdate::Snapshot { objects, .. } = snapshot.update else {

@@ -11,7 +11,8 @@ use crate::{ScopeReach, reach_calendar, run_scope};
 
 /// A windowed transport shaped like Graph's `calendarView/delta`: a snapshot lists the events
 /// inside the window it was opened over, and its cursor names that window, so a delta reports
-/// changes inside it and nowhere else.
+/// changes inside it and nowhere else. Built with `windowed: false` it stands for a transport that
+/// fetches whole, and the engine still names a window it never reads.
 #[derive(Default)]
 struct FakeWindowed {
     windowed: bool,
@@ -100,21 +101,6 @@ impl Provider for FakeWindowed {
 
     async fn sync_events(
         &self,
-        account: &AccountId,
-        calendar: &CalendarId,
-        cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Event>> {
-        assert!(
-            !self.windowed,
-            "a windowed transport is asked through sync_events_within"
-        );
-        let whole = horizon("2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z");
-        self.sync_events_within(account, calendar, cursor, whole)
-            .await
-    }
-
-    async fn sync_events_within(
-        &self,
         _account: &AccountId,
         _calendar: &CalendarId,
         cursor: Option<&SyncState>,
@@ -125,6 +111,12 @@ impl Provider for FakeWindowed {
             .unwrap()
             .push((cursor.is_some(), window));
         let changed = core::mem::take(&mut *self.changed.lock().unwrap());
+        // A transport that fetches whole reads no window at all.
+        let window = if self.windowed {
+            window
+        } else {
+            horizon("2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z")
+        };
         Ok(match cursor {
             None => {
                 let events = self.inside(window, None);
@@ -337,6 +329,11 @@ async fn a_calendar_fetched_whole_is_held_without_a_request() {
     assert_eq!(reach(&provider, &store, june).await, ScopeReach::Held);
     assert_eq!(provider.take_requests(), []);
     assert_eq!(store.fetch_window(&scope()).await.unwrap(), None);
+    assert_eq!(
+        stored(&store).await,
+        vec![key("evt-june")],
+        "fetched whole at the first sync"
+    );
 }
 
 #[tokio::test]

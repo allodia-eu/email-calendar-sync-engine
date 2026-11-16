@@ -11,11 +11,12 @@
 //!
 //! # Reopening, not appending
 //!
-//! The obvious fix, listing the new range once and merging it in, leaves those events stale: a
-//! Graph `deltaLink` reports changes only inside the window it was opened over (measured,
-//! `provider-graph/tests/live_calendar_window.rs`), and Google does not document what a
-//! `syncToken` taken after a bounded list reports outside its bounds. A range fetched beside
-//! the cursor would show the event as it was on the day it was fetched, forever.
+//! The obvious fix, listing the new range once and merging it in, leaves those events stale on
+//! Graph: a `deltaLink` reports changes only inside the window it was opened over, so a range
+//! fetched beside the cursor would show each event as it was on the day it was fetched, forever.
+//! A Google `syncToken` does report changes past the bounds of the list it ended. Both are
+//! measured, in each adapter's `tests/live_calendar_window.rs`; neither is documented. Relying on
+//! the difference would make the store's freshness depend on the transport.
 //!
 //! So [`reach_calendar`] **reopens** the scope's cursor over the union of the window it was
 //! opened over and the range asked for, as a fresh snapshot. One cursor then covers every event
@@ -191,13 +192,10 @@ where
     // A scope with a cursor but no recorded window was opened before windows were recorded,
     // over one the host chose then. The range the host shows is the best stand-in for it.
     let window = recorded.unwrap_or(expansion.horizon).union(range);
-    let fetch = if windowed {
-        EventFetch::Within {
-            window,
-            reopen: true,
-        }
-    } else {
-        EventFetch::Whole
+    let fetch = EventFetch {
+        window,
+        windowed,
+        reopen: windowed,
     };
     let calendar = group.calendars[0].id.clone();
     let scope = EventScope::new(provider, calendar, expansion, None, fetch);

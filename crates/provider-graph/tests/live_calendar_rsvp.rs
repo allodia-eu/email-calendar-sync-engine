@@ -49,10 +49,10 @@ use engine_core::{
     calendar::{Event, ParticipationStatus},
     ids::{AccountId, CalendarId},
     sync::SyncUpdate,
-    time::{CalendarDate, TimeZoneId},
+    time::{Horizon, TimeZoneId},
 };
 use engine_provider::{CalendarWrites, EventRsvp, Provider, RsvpResponse};
-use provider_graph::{CalendarWindow, GraphCalendarProvider, GraphClient};
+use provider_graph::{GraphCalendarProvider, GraphClient};
 
 const GRAPH: &str = "https://graph.microsoft.com/v1.0";
 
@@ -88,11 +88,12 @@ fn http() -> reqwest::Client {
 }
 
 /// The window `calendarView` covers — the seeded meeting sits inside it.
-fn calendar_window() -> CalendarWindow {
-    CalendarWindow::new(
-        CalendarDate::new(2026, 8, 1).unwrap(),
-        CalendarDate::new(2026, 11, 1).unwrap(),
+fn calendar_window() -> Horizon {
+    Horizon::new(
+        "2026-08-01T00:00:00Z".parse().unwrap(),
+        "2026-11-01T00:00:00Z".parse().unwrap(),
     )
+    .unwrap()
 }
 
 /// The address behind a token, so neither account is hardcoded.
@@ -122,11 +123,8 @@ async fn calendar_provider(token: &str) -> (GraphCalendarProvider, CalendarId) {
         &engine_http::test_server::user_agent(),
     )
     .expect("client");
-    let placeholder = GraphCalendarProvider::new(
-        client,
-        calendar_window(),
-        TimeZoneId::iana("Europe/Amsterdam").unwrap(),
-    );
+    let placeholder =
+        GraphCalendarProvider::new(client, TimeZoneId::iana("Europe/Amsterdam").unwrap());
     let calendars = placeholder
         .sync_calendars(&account(), None)
         .await
@@ -148,11 +146,7 @@ async fn calendar_provider(token: &str) -> (GraphCalendarProvider, CalendarId) {
     .expect("client");
     let default = default.id.clone();
     (
-        GraphCalendarProvider::new(
-            client,
-            calendar_window(),
-            TimeZoneId::iana("Europe/Amsterdam").unwrap(),
-        ),
+        GraphCalendarProvider::new(client, TimeZoneId::iana("Europe/Amsterdam").unwrap()),
         default,
     )
 }
@@ -196,7 +190,7 @@ async fn await_invitation(
 ) -> Event {
     for _ in 0..20 {
         let sync = provider
-            .sync_events(&account(), calendar, None)
+            .sync_events(&account(), calendar, None, calendar_window())
             .await
             .expect("sync events");
         let SyncUpdate::Snapshot { objects, .. } = &sync.update else {
@@ -213,7 +207,7 @@ async fn await_invitation(
 /// Re-reads the account's own copy of `uid`.
 async fn reread(provider: &GraphCalendarProvider, calendar: &CalendarId, uid: &str) -> Event {
     let sync = provider
-        .sync_events(&account(), calendar, None)
+        .sync_events(&account(), calendar, None, calendar_window())
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &sync.update else {

@@ -47,7 +47,7 @@ pub(crate) fn amsterdam(local: &str) -> CalendarDateTime {
 /// Every event the account currently holds.
 pub(crate) async fn all_events(provider: &JmapProvider) -> Vec<Event> {
     let events = provider
-        .sync_events(&account(), &any_calendar(), None)
+        .sync_events(&account(), &any_calendar(), None, whole())
         .await
         .unwrap();
     let SyncUpdate::Snapshot { objects, .. } = events.update else {
@@ -112,4 +112,14 @@ pub(crate) async fn setup(name: &str) -> Option<JmapProvider> {
 /// JMAP's event state is account-wide, so which calendar asks for it does not matter.
 fn any_calendar() -> engine_core::ids::CalendarId {
     engine_core::ids::CalendarId::try_from("any").unwrap()
+}
+
+/// The window an event fetch names. This transport reads a calendar whole and ignores it; it is
+/// wide so that it would not narrow one that did not.
+pub(crate) fn whole() -> engine_core::time::Horizon {
+    engine_core::time::Horizon::new(
+        "2000-01-01T00:00:00Z".parse().unwrap(),
+        "2100-01-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap()
 }

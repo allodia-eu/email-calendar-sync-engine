@@ -26,6 +26,15 @@ use stalwart_harness::{
 
 const USER: &str = "alice@test.local";
 
+/// The window an event fetch names: CalDAV reads a calendar whole and ignores it.
+fn whole() -> engine_core::time::Horizon {
+    engine_core::time::Horizon::new(
+        "2000-01-01T00:00:00Z".parse().unwrap(),
+        "2100-01-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap()
+}
+
 fn account() -> AccountId {
     AccountId::try_from("live-caldav-shared").unwrap()
 }
@@ -94,7 +103,7 @@ async fn calendars(provider: &CalDavProvider) -> Vec<Calendar> {
 
 async fn events(provider: &CalDavProvider, calendar: &Calendar) -> Vec<Event> {
     let SyncUpdate::Snapshot { objects, .. } = provider
-        .sync_events(&account(), &calendar.id, None)
+        .sync_events(&account(), &calendar.id, None, whole())
         .await
         .expect("sync events")
         .update

@@ -74,14 +74,17 @@ pub(crate) struct EventScope<'p, P> {
 
 /// How an [`EventScope`] asks its provider for events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EventFetch {
-    /// The transport fetches a calendar whole ([`sync_events`](Provider::sync_events)).
-    Whole,
-    /// The transport fetches inside a window
-    /// ([`windowed_events`](engine_provider::Capabilities::windowed_events)): `window` opens
-    /// any cursor it must open, and `reopen` opens a fresh one over it even where the scope
-    /// has a cursor, which is how a range past the recorded window is fetched.
-    Within { window: Horizon, reopen: bool },
+pub(crate) struct EventFetch {
+    /// The window the provider opens any cursor it must open over
+    /// ([`Provider::sync_events`]); a transport that fetches a calendar whole ignores it.
+    pub(crate) window: Horizon,
+    /// Whether the transport fetches inside a window
+    /// ([`windowed_events`](engine_provider::Capabilities::windowed_events)), so the window a
+    /// snapshot opened over is recorded with its cursor.
+    pub(crate) windowed: bool,
+    /// Open a fresh cursor over `window` even where the scope has one: how a range past the
+    /// recorded window is fetched.
+    pub(crate) reopen: bool,
 }
 
 impl EventFetch {
@@ -93,13 +96,10 @@ impl EventFetch {
         recorded: Option<Horizon>,
         expansion: &ExpansionWindow,
     ) -> Self {
-        if provider.connection_info().capabilities.windowed_events() {
-            Self::Within {
-                window: recorded.unwrap_or(expansion.horizon),
-                reopen: false,
-            }
-        } else {
-            Self::Whole
+        Self {
+            window: recorded.unwrap_or(expansion.horizon),
+            windowed: provider.connection_info().capabilities.windowed_events(),
+            reopen: false,
         }
     }
 }
@@ -148,27 +148,16 @@ impl<P: Provider> ScopeSyncer for EventScope<'_, P> {
         account: &AccountId,
         cursor: Option<&SyncState>,
     ) -> Result<ScopeFetch<Event, (), Self::Halt>, ProviderError> {
-        let sync = match self.fetch {
-            EventFetch::Whole => {
-                self.provider
-                    .sync_events(account, &self.calendar, cursor)
-                    .await
-            }
-            EventFetch::Within { window, reopen } => {
-                let cursor = if reopen { None } else { cursor };
-                self.provider
-                    .sync_events_within(account, &self.calendar, cursor, window)
-                    .await
-            }
-        };
+        let cursor = if self.fetch.reopen { None } else { cursor };
+        let sync = self
+            .provider
+            .sync_events(account, &self.calendar, cursor, self.fetch.window)
+            .await;
         sync.map(|sync| ScopeFetch::Proceed { sync, meta: () })
     }
 
     fn fetch_window(&self, sync: &ScopeSync<Event>) -> Option<Horizon> {
-        match self.fetch {
-            EventFetch::Within { window, .. } if sync.is_snapshot() => Some(window),
-            _ => None,
-        }
+        (self.fetch.windowed && sync.is_snapshot()).then_some(self.fetch.window)
     }
 
     fn derive(&self, sync: &ScopeSync<Event>) -> DerivedWrite {

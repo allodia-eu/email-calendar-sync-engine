@@ -27,7 +27,6 @@ use engine_provider::{
     CalendarWrites, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence,
     PatchTarget, Provider,
 };
-use provider_google::GoogleCalendarProvider;
 
 const SERIES_START: &str = "2026-09-07T09:30:00";
 const OVERRIDDEN: &str = "2026-09-14T09:30:00";
@@ -113,7 +112,7 @@ struct Outcome {
 
 /// Runs one experiment end to end: build a series, override its second occurrence, apply
 /// `edit` to the master, and read the occurrence back.
-async fn measure<F>(provider: &GoogleCalendarProvider, label: &str, edit: F) -> Outcome
+async fn measure<F>(provider: &Windowed, label: &str, edit: F) -> Outcome
 where
     F: FnOnce(&Event) -> EventPatch,
 {
@@ -154,10 +153,7 @@ where
 
 /// A fresh weekly series whose second occurrence has been given its own title, at its own
 /// time. Returns the base to guard the next write with, and the series' id.
-async fn series_with_an_override(
-    provider: &GoogleCalendarProvider,
-    label: &str,
-) -> (Event, EventId) {
+async fn series_with_an_override(provider: &Windowed, label: &str) -> (Event, EventId) {
     let cal = primary(provider).await;
     let mut weekly = RecurrenceRule::new(Frequency::Weekly);
     weekly.bound = RecurrenceBound::Count(NonZeroU32::new(6).unwrap());
@@ -238,7 +234,7 @@ fn base_of(
 
 /// The override map of one series, read back through the adapter's own sync path.
 async fn overrides_of(
-    provider: &GoogleCalendarProvider,
+    provider: &Windowed,
     id: &EventId,
 ) -> BTreeMap<LocalDateTime, RecurrenceOverride> {
     let events = provider

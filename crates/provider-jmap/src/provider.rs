@@ -291,13 +291,13 @@ impl Provider for JmapProvider {
         .into())
     }
 
-    /// Every calendar's events, under the account-wide `CalendarEvent` state: whichever
-    /// calendar asks, the answer is the same.
+    /// Every calendar's events under the account-wide `CalendarEvent` state, whichever asks.
     async fn sync_events(
         &self,
         _account: &AccountId,
         _calendar: &CalendarId,
         cursor: Option<&SyncState>,
+        _window: engine_core::time::Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
         let account = self.calendar_account()?;
         let fetch = MemberFetch {

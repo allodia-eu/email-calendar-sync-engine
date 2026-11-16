@@ -186,19 +186,10 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         account: &AccountId,
         calendar: &CalendarId,
         cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Event>> {
-        (**self).sync_events(account, calendar, cursor).await
-    }
-
-    async fn sync_events_within(
-        &self,
-        account: &AccountId,
-        calendar: &CalendarId,
-        cursor: Option<&SyncState>,
         window: Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
         (**self)
-            .sync_events_within(account, calendar, cursor, window)
+            .sync_events(account, calendar, cursor, window)
             .await
     }
 }

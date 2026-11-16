@@ -50,7 +50,7 @@ impl Provider for Windowed {
         .into())
     }
 
-    async fn sync_events_within(
+    async fn sync_events(
         &self,
         _account: &AccountId,
         _calendar: &CalendarId,

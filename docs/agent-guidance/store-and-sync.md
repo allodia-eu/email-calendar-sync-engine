@@ -585,8 +585,9 @@ window the scope's cursor was opened over and, outside it, only what happened to
 one-off events.
 
 So the engine, not the host's adapter construction, names the window: a windowed scope is
-fetched through `Provider::sync_events_within`, which opens any cursor it must open (none yet,
-or one the server expired) over the window it is given. That window is recorded **with the
+fetched with the window as an argument of `Provider::sync_events`, which opens any cursor it must
+open (none yet, or one the server expired) over it; a transport that fetches whole ignores it, and
+an adapter takes no window at construction. That window is recorded **with the
 cursor**, in the same commit (`ApplyBatch::fetch_window`, `StoreRead::fetch_window`, schema
 v22), so the two cannot disagree: a snapshot records the window it was opened over, and a delta
 records nothing and keeps it. The first sync opens over the expansion window (the host's horizon
@@ -595,9 +596,10 @@ as covering nothing beyond what the host shows.
 
 `engine_sync::reach_calendar` (`Engine::reach_calendar`) fetches a further range. It does not
 list the range beside the cursor, because the cursor would not keep those events current: a
-Graph `deltaLink` reports changes only inside the window it was opened over (measured,
-`provider-graph/tests/live_calendar_window.rs`), and what a Google `syncToken` reports past a
-bounded list is undocumented. It **reopens** the scope's cursor over the union of the recorded
+Graph `deltaLink` reports changes only inside the window it was opened over, and although a Google
+`syncToken` does report changes past a bounded list (both measured, in each adapter's
+`tests/live_calendar_window.rs`), neither ever lists an event that was already there and did not
+change. It **reopens** the scope's cursor over the union of the recorded
 window and the range, as a fresh snapshot, and records the union. One cursor then covers every
 event the store claims to hold, on every transport.
 
