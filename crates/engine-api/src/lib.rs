@@ -168,13 +168,14 @@ pub use engine_store::{
     TzdataVersion,
 };
 pub use engine_sync::{
-    AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,
-    ContactSourceReport, ContactSyncReport, ContactWriteOutcome, DraftPut, DrainOutcome,
-    DrainReport, DrainedOp, EventScopePass, EventScopeSync, EventSyncReport, FolderSync,
-    HorizonExpansion, IgnoreCommits, MailEditOutcome, MailEditSent, MailSyncReport, MailboxChange,
-    MailboxEditOutcome, MailboxNameError, MailboxPlace, PeopleRebuildReport, ProgressSnapshot,
-    PutDraftOutcome, ReportOutcome, StreamTuning, SubmitOutcome, SyncCommit, SyncError,
-    SyncObserver, SyncTiming, ThreadRebuildReport, UnexpandableEvent, validate_mailbox_name,
+    AccountProgress, CalendarReach, CalendarSyncReport, CalendarWriteOutcome,
+    ContactReconcileReport, ContactSourceReport, ContactSyncReport, ContactWriteOutcome, DraftPut,
+    DrainOutcome, DrainReport, DrainedOp, EventScopePass, EventScopeReach, EventScopeSync,
+    EventSyncReport, FolderSync, HorizonExpansion, IgnoreCommits, MailEditOutcome, MailEditSent,
+    MailSyncReport, MailboxChange, MailboxEditOutcome, MailboxNameError, MailboxPlace,
+    PeopleRebuildReport, ProgressSnapshot, PutDraftOutcome, ReportOutcome, ScopeReach,
+    StreamTuning, SubmitOutcome, SyncCommit, SyncError, SyncObserver, SyncTiming,
+    ThreadRebuildReport, UnexpandableEvent, validate_mailbox_name,
 };
 pub use scheduling::InboundScheduling;
 

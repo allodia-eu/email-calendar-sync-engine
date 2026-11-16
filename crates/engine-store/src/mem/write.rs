@@ -152,6 +152,9 @@ impl<C: Clock> Store for MemStore<C> {
         if let Some(next_state) = batch.next_state {
             cell.state = Some(next_state.clone());
             cell.collection_tag = batch.collection_tag.cloned();
+            if let Some(window) = batch.fetch_window {
+                cell.fetch_window = Some(window);
+            }
         }
 
         // Last, and across the **account** rather than the scope: a reply in Sent and its

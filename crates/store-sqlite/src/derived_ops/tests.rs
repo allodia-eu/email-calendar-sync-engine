@@ -11,7 +11,10 @@ use engine_store::{FtsField, OccurrenceRow, TzdataVersion, WorkerId};
 use rusqlite::Connection;
 
 use super::*;
-use crate::scope_ops::{OwnedUpdate, apply, claim, maintenance};
+use crate::{
+    scope_ops::{OwnedUpdate, apply, claim, maintenance},
+    window_ops::CursorRecord,
+};
 
 fn instant(text: &str) -> UtcDateTime {
     text.parse().expect("valid instant")
@@ -104,7 +107,7 @@ fn tombstoning_an_object_cascades_to_its_derived_rows() {
         &[],
         &[],
         false,
-        Some(("c1", None)),
+        Some(&CursorRecord::bare("c1")),
         None,
         instant("2026-01-01T00:00:00Z"),
     )
@@ -127,7 +130,7 @@ fn tombstoning_an_object_cascades_to_its_derived_rows() {
         &[],
         &[],
         false,
-        Some(("c2", None)),
+        Some(&CursorRecord::bare("c2")),
         None,
         instant("2026-01-01T00:00:00Z"),
     )
@@ -156,7 +159,7 @@ fn replaying_occurrences_does_not_duplicate_rows() {
         &[],
         &[],
         false,
-        Some(("c1", None)),
+        Some(&CursorRecord::bare("c1")),
         None,
         instant("2026-01-01T00:00:00Z"),
     )
@@ -170,7 +173,7 @@ fn replaying_occurrences_does_not_duplicate_rows() {
         &[],
         &[],
         false,
-        Some(("c1", None)),
+        Some(&CursorRecord::bare("c1")),
         None,
         instant("2026-01-01T00:00:00Z"),
     )
@@ -195,7 +198,7 @@ fn removed_derived_keys_clear_rows_but_keep_the_object() {
         &[],
         &[],
         false,
-        Some(("c1", None)),
+        Some(&CursorRecord::bare("c1")),
         None,
         instant("2026-01-01T00:00:00Z"),
     )
@@ -231,7 +234,7 @@ fn overridden_and_base_occurrences_coexist() {
         &[],
         &[],
         false,
-        Some(("c1", None)),
+        Some(&CursorRecord::bare("c1")),
         None,
         instant("2026-01-01T00:00:00Z"),
     )
@@ -264,7 +267,7 @@ fn re_expansion_updates_version_and_keeps_instants_byte_stable() {
         &[],
         &[],
         false,
-        Some(("c1", None)),
+        Some(&CursorRecord::bare("c1")),
         None,
         instant("2026-01-01T00:00:00Z"),
     )

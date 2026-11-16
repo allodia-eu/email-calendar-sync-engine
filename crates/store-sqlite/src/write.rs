@@ -19,7 +19,7 @@ use serde::Serialize;
 
 use crate::{
     Clock, SqliteStore, convert::expiry_after, outbox_ops, purge, scope_key, scope_ops,
-    scope_ops::OwnedUpdate, scope_renew, window_ops,
+    scope_ops::OwnedUpdate, scope_renew, window_ops, window_ops::CursorRecord,
 };
 
 #[async_trait]
@@ -66,7 +66,11 @@ impl<C: Clock> Store for SqliteStore<C> {
         let contact_scope = lease.scope().object_kind() == Some(ObjectKind::ContactCard);
         // `None` (a streaming page) leaves the cursor unchanged.
         let next_state = batch.next_state.map(|s| s.as_str().to_owned());
-        let collection_tag = batch.collection_tag.map(|tag| tag.as_str().to_owned());
+        let next_state = next_state.map(|cursor| CursorRecord {
+            cursor,
+            collection_tag: batch.collection_tag.map(|tag| tag.as_str().to_owned()),
+            fetch_window: batch.fetch_window,
+        });
         let observed_from = batch.observed_from;
         let now = self.clock.now();
         self.call(move |conn| {
@@ -79,9 +83,7 @@ impl<C: Clock> Store for SqliteStore<C> {
                 &reconcile,
                 &observations,
                 contact_scope,
-                next_state
-                    .as_deref()
-                    .map(|state| (state, collection_tag.as_deref())),
+                next_state.as_ref(),
                 observed_from,
                 now,
             )

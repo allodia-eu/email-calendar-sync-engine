@@ -147,7 +147,7 @@ pub(crate) fn forget_scope(conn: &mut Connection, scope_key: &str, token: u64) -
         "UPDATE sync_scope
          SET cursor = NULL, lease_expiry = NULL,
              horizon_start = NULL, horizon_end = NULL, expansion_zone = NULL,
-             collection_tag = NULL
+             collection_tag = NULL, fetch_start = NULL, fetch_end = NULL
          WHERE scope_key = ?1",
         [scope_key],
     )

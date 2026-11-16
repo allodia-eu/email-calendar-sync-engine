@@ -18,7 +18,7 @@ use engine_core::{
     calendar::{Calendar, Event},
     ids::CalendarId,
     sync::SyncState,
-    time::CalendarDate,
+    time::{CalendarDate, Horizon},
 };
 use engine_provider::{PageToken, SyncKind, SyncPage};
 use serde_json::Value;
@@ -62,6 +62,16 @@ impl CalendarWindow {
     #[must_use]
     pub fn new(start: CalendarDate, end: CalendarDate) -> Self {
         Self { start, end }
+    }
+}
+
+impl From<Horizon> for CalendarWindow {
+    /// The whole UTC days covering `horizon` ([`Horizon::covering_dates`]): the window the
+    /// engine names in
+    /// [`Provider::sync_events_within`](engine_provider::Provider::sync_events_within).
+    fn from(horizon: Horizon) -> Self {
+        let (start, end) = horizon.covering_dates();
+        Self::new(start, end)
     }
 }
 

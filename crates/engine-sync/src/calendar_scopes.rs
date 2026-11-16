@@ -8,7 +8,7 @@ use engine_core::{
     ids::{AccountId, CalendarId},
     search_index::{OwnerAddresses, project_event},
     sync::{SyncScope, SyncState},
-    time::ExpansionWindow,
+    time::{ExpansionWindow, Horizon},
     version::CollectionTag,
 };
 use engine_provider::{Provider, ProviderError, ScopeSync};
@@ -67,7 +67,41 @@ pub(crate) struct EventScope<'p, P> {
     pub(crate) window: ExpansionWindow,
     /// The listing's tag for the calendar, read before the fetch, recorded with the cursor.
     pub(crate) tag: Option<CollectionTag>,
+    /// How the provider is asked for the scope's events.
+    pub(crate) fetch: EventFetch,
     pub(crate) unexpandable: Mutex<Vec<UnexpandableEvent>>,
+}
+
+/// How an [`EventScope`] asks its provider for events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EventFetch {
+    /// The transport fetches a calendar whole ([`sync_events`](Provider::sync_events)).
+    Whole,
+    /// The transport fetches inside a window
+    /// ([`windowed_events`](engine_provider::Capabilities::windowed_events)): `window` opens
+    /// any cursor it must open, and `reopen` opens a fresh one over it even where the scope
+    /// has a cursor, which is how a range past the recorded window is fetched.
+    Within { window: Horizon, reopen: bool },
+}
+
+impl EventFetch {
+    /// How `provider` is asked for a scope whose recorded fetch window is `recorded`, expanded
+    /// over `expansion`: inside the recorded window where there is one, else the expansion's,
+    /// which is the range the host has asked to see.
+    pub(crate) fn for_scope<P: Provider>(
+        provider: &P,
+        recorded: Option<Horizon>,
+        expansion: &ExpansionWindow,
+    ) -> Self {
+        if provider.connection_info().capabilities.windowed_events() {
+            Self::Within {
+                window: recorded.unwrap_or(expansion.horizon),
+                reopen: false,
+            }
+        } else {
+            Self::Whole
+        }
+    }
 }
 
 impl<'p, P> EventScope<'p, P> {
@@ -76,12 +110,14 @@ impl<'p, P> EventScope<'p, P> {
         calendar: CalendarId,
         window: ExpansionWindow,
         tag: Option<CollectionTag>,
+        fetch: EventFetch,
     ) -> Self {
         Self {
             provider,
             calendar,
             window,
             tag,
+            fetch,
             unexpandable: Mutex::default(),
         }
     }
@@ -112,10 +148,27 @@ impl<P: Provider> ScopeSyncer for EventScope<'_, P> {
         account: &AccountId,
         cursor: Option<&SyncState>,
     ) -> Result<ScopeFetch<Event, (), Self::Halt>, ProviderError> {
-        self.provider
-            .sync_events(account, &self.calendar, cursor)
-            .await
-            .map(|sync| ScopeFetch::Proceed { sync, meta: () })
+        let sync = match self.fetch {
+            EventFetch::Whole => {
+                self.provider
+                    .sync_events(account, &self.calendar, cursor)
+                    .await
+            }
+            EventFetch::Within { window, reopen } => {
+                let cursor = if reopen { None } else { cursor };
+                self.provider
+                    .sync_events_within(account, &self.calendar, cursor, window)
+                    .await
+            }
+        };
+        sync.map(|sync| ScopeFetch::Proceed { sync, meta: () })
+    }
+
+    fn fetch_window(&self, sync: &ScopeSync<Event>) -> Option<Horizon> {
+        match self.fetch {
+            EventFetch::Within { window, .. } if sync.is_snapshot() => Some(window),
+            _ => None,
+        }
     }
 
     fn derive(&self, sync: &ScopeSync<Event>) -> DerivedWrite {

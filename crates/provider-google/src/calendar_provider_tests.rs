@@ -251,3 +251,43 @@ async fn sync_events_restarts_as_a_snapshot_when_the_sync_token_expired() {
     assert!(sync.is_snapshot());
     assert_eq!(sync.next_cursor.as_str(), "v1;events-sync-token-1");
 }
+
+/// The window the engine names bounds the snapshot, not the one set with `with_window`
+/// (August): the route answers only the December range. A delta carries no window at all.
+#[tokio::test]
+async fn sync_events_within_opens_over_the_window_the_engine_names() {
+    use engine_core::time::{CalendarDate, Horizon};
+    let august = crate::CalendarWindow::new(
+        CalendarDate::new(2026, 8, 1).unwrap(),
+        CalendarDate::new(2026, 9, 1).unwrap(),
+    );
+    let p = provider(vec![
+        (
+            "&timeMin=2026-12-01T00:00:00Z&timeMax=2027-01-01T00:00:00Z",
+            json(EVENTS),
+        ),
+        ("syncToken=", json(DELTA)),
+    ])
+    .with_window(august);
+    assert!(p.connection_info().capabilities.windowed_events());
+    let december = Horizon::new(
+        "2026-12-01T00:00:00Z".parse().unwrap(),
+        "2026-12-31T12:00:00Z".parse().unwrap(),
+    )
+    .unwrap();
+    let snapshot = p
+        .sync_events_within(&account(), &calendar(), None, december)
+        .await
+        .unwrap();
+    assert!(snapshot.is_snapshot());
+    let delta = p
+        .sync_events_within(
+            &account(),
+            &calendar(),
+            Some(&snapshot.next_cursor),
+            december,
+        )
+        .await
+        .unwrap();
+    assert!(!delta.is_snapshot());
+}

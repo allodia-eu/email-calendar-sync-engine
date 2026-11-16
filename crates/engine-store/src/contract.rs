@@ -160,6 +160,8 @@ where
     let (store, clock) = make();
     scope_cases::collection_tag_travels_with_the_cursor(&store, &clock).await;
     let (store, clock) = make();
+    scope_cases::fetch_window_travels_with_the_cursor(&store, &clock).await;
+    let (store, clock) = make();
     scope_cases::forget_scope_under_a_stale_lease_is_rejected(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::structured_index_rows_replace_and_clear(&store, &clock).await;

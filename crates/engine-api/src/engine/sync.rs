@@ -10,10 +10,11 @@ use engine_provider::{ContactsProvider, Provider};
 use engine_recurrence::Horizon;
 use engine_store::{MessageSourceCache, PruneReport, SourcesDropped, Store, SweepReport};
 use engine_sync::{
-    CalendarSyncReport, ContactSourceReport, ContactSyncReport, EventSyncReport, HorizonExpansion,
-    MailSyncReport, PeopleRebuildReport, StreamTuning, SyncObserver, ThreadRebuildReport,
-    expand_calendar_horizon, rebuild_thread_index, reconcile_calendar_events, refresh_folders,
-    sync_address_books, sync_calendar, sync_contact_cards, sync_contacts, sync_mail,
+    CalendarReach, CalendarSyncReport, ContactSourceReport, ContactSyncReport, EventSyncReport,
+    HorizonExpansion, MailSyncReport, PeopleRebuildReport, StreamTuning, SyncObserver,
+    ThreadRebuildReport, expand_calendar_horizon, reach_calendar, rebuild_thread_index,
+    reconcile_calendar_events, refresh_folders, sync_address_books, sync_calendar,
+    sync_contact_cards, sync_contacts, sync_mail,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
@@ -418,10 +419,15 @@ impl Engine {
     /// It re-expands every stored event on every call, so widen in coarse chunks
     /// against a persisted watermark rather than calling it per page.
     ///
+    /// A calendar another pass holds is **waited for**, not reported busy: that pass expands
+    /// only what it changes, over the window it found, so nothing else would widen it. The wait
+    /// ends when the pass does (or its lease lapses, if it died); drop the future to stop
+    /// waiting. Expanding only what the store holds, it shows no event a windowed transport
+    /// never fetched: [`reach_calendar`](Engine::reach_calendar) fetches those.
+    ///
     /// # Errors
     ///
-    /// Returns [`ApiError::Busy`] if another sync holds a calendar scope, or
-    /// [`ApiError::Sync`] if the store rejects the apply. An event whose recurrence the
+    /// Returns [`ApiError::Sync`] if the store rejects the apply. An event whose recurrence the
     /// expander cannot handle is **not** an error — it is reported in
     /// [`HorizonExpansion::unexpandable`], so one unsupported rule never stops the rest
     /// of the calendar from materializing.
@@ -441,5 +447,45 @@ impl Engine {
         )
         .await
         .map_err(map_sync_error)
+    }
+
+    /// Makes the store hold every event of `account`'s calendars that falls in `range`, and keeps
+    /// them current from then on.
+    ///
+    /// Most transports fetch a calendar whole, and for them this asks the server nothing. A
+    /// **windowed** one
+    /// ([`Capabilities::windowed_events`](engine_provider::Capabilities::windowed_events):
+    /// Graph, Google) fetches only inside the window its cursor was opened over, the host's
+    /// horizon at the first sync, and the store records that window. A range inside it is
+    /// answered without a request; a range past it reopens the calendar's cursor over the union
+    /// of the two, as a fresh snapshot, so the events it brings are kept current by every sync
+    /// after. A range is never fetched twice: a second call for the same range waits for the
+    /// first, then finds it covered. A calendar another pass holds is waited for, not reported
+    /// busy.
+    ///
+    /// It fetches; it does not widen what is **shown**. A host paging its grid past the horizon
+    /// calls this with the range it is about to show and [`expand_horizon`](Engine::expand_horizon)
+    /// with its new horizon, in either order: each fetched event is expanded over the window the
+    /// store holds. Each reopen re-reads the whole union, so ask in coarse steps, as for
+    /// `expand_horizon`.
+    ///
+    /// While it runs, reads answer from the store as it was; the fetched events land in one
+    /// commit per calendar. A calendar that fails is reported in
+    /// [`CalendarReach::failures`] and records nothing, so asking again fetches it again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the stored calendar list cannot be read. Everything after
+    /// that is reported per calendar, one no [`sync_calendar`](Engine::sync_calendar) has
+    /// reached as [`SyncError::NoExpansionWindow`](engine_sync::SyncError::NoExpansionWindow).
+    pub async fn reach_calendar<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        range: Horizon,
+    ) -> Result<CalendarReach, ApiError> {
+        reach_calendar(provider, &self.store, account, worker(), LEASE_TTL, range)
+            .await
+            .map_err(map_sync_error)
     }
 }

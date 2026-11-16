@@ -41,6 +41,8 @@ mod expansion;
 mod folder_scopes;
 #[path = "sync/interrupted.rs"]
 mod interrupted;
+#[path = "sync/reach.rs"]
+mod reach;
 #[path = "sync/reads.rs"]
 mod reads;
 #[path = "sync/store_lifecycle.rs"]

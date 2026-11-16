@@ -73,6 +73,14 @@ impl<C: Clock> StoreRead for MemStore<C> {
             .and_then(|cell| cell.collection_tag.clone()))
     }
 
+    async fn fetch_window(&self, scope: &SyncScope) -> Result<Option<Horizon>> {
+        Ok(self
+            .lock()
+            .scopes
+            .get(scope)
+            .and_then(|cell| cell.fetch_window))
+    }
+
     async fn object_keys(&self, scope: &SyncScope) -> Result<Vec<ProviderKey>> {
         let inner = self.lock();
         let mut keys: Vec<ProviderKey> = inner

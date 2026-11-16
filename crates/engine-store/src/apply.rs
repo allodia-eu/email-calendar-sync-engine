@@ -28,7 +28,7 @@ use engine_core::{
         MailRefRow, MailRow, MailStateRow, MailThreadRow, MembershipRow,
     },
     sync::{SyncObject, SyncState, SyncUpdate},
-    time::UtcDateTime,
+    time::{Horizon, UtcDateTime},
     version::CollectionTag,
     write::PendingOpId,
 };
@@ -338,6 +338,13 @@ pub struct ApplyBatch<'a, T: SyncObject> {
     /// what is recorded and the next pass fetches it; a tag read afterwards could claim a
     /// change the pass never saw.
     pub collection_tag: Option<&'a CollectionTag>,
+    /// The date window a **windowed** event scope's cursor was opened over, recorded with
+    /// `next_state` and only with it. `None` leaves the recorded window as it is: a delta
+    /// continues the window its cursor was opened over, so only the pass that opened one names it.
+    ///
+    /// Read back by [`StoreRead::fetch_window`](crate::StoreRead::fetch_window): inside it the
+    /// scope holds every event the server has, outside it only what happened to arrive.
+    pub fetch_window: Option<Horizon>,
 }
 
 impl<'a, T: SyncObject> ApplyBatch<'a, T> {
@@ -369,6 +376,7 @@ impl<'a, T: SyncObject> ApplyBatch<'a, T> {
             next_state,
             observed_from: None,
             collection_tag: None,
+            fetch_window: None,
         }
     }
 
@@ -384,6 +392,14 @@ impl<'a, T: SyncObject> ApplyBatch<'a, T> {
     #[must_use]
     pub fn with_collection_tag(mut self, tag: Option<&'a CollectionTag>) -> Self {
         self.collection_tag = tag;
+        self
+    }
+
+    /// Records the window the scope's cursor was opened over
+    /// ([`fetch_window`](Self::fetch_window)).
+    #[must_use]
+    pub fn with_fetch_window(mut self, window: Option<Horizon>) -> Self {
+        self.fetch_window = window;
         self
     }
 

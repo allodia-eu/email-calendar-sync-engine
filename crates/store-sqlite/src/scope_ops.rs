@@ -24,7 +24,7 @@ use rusqlite::{Connection, Transaction};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{contact_ops, convert, derived_ops, source_ops, sql};
+use crate::{contact_ops, convert, derived_ops, source_ops, sql, window_ops::CursorRecord};
 
 /// An owned, type-erased projection of a [`SyncUpdate`], built before the work is
 /// offloaded to the blocking thread (where the generic object type `T` is gone).
@@ -188,7 +188,7 @@ pub(crate) fn apply(
     reconcile: &[PendingReconciliation],
     observations: &[RecipientObservation],
     contact_scope: bool,
-    next_state: Option<(&str, Option<&str>)>,
+    next_state: Option<&CursorRecord>,
     observed_from: Option<UtcDateTime>,
     now: UtcDateTime,
 ) -> Result<SyncApplied> {
@@ -246,12 +246,8 @@ pub(crate) fn apply(
 
     // A streaming page (`next_state == None`) leaves the cursor unchanged so a
     // crash mid-stream re-syncs from the prior cursor rather than skipping pages.
-    if let Some((next_state, collection_tag)) = next_state {
-        sql::execute(
-            &tx,
-            "UPDATE sync_scope SET cursor = ?1, collection_tag = ?2 WHERE scope_key = ?3",
-            (next_state, collection_tag, scope_key),
-        )?;
+    if let Some(record) = next_state {
+        crate::window_ops::record_cursor(&tx, scope_key, record)?;
     }
     tx.commit().map_err(convert::backend)?;
     Ok(applied)

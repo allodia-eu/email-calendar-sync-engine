@@ -75,7 +75,18 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   stored events over a new window with no network, and is also the path for a display-zone
   or tzdata change. Both it and `sync_calendar` report the events they could **not**
   expand (`unexpandable`): those materialize zero occurrences and so render nowhere, and
-  the host is expected to surface that rather than lose them silently.
+  the host is expected to surface that rather than lose them silently. A calendar another
+  pass holds is **waited for**, not answered `Busy`: the holder expands only what it changes,
+  so nothing else would widen it, and a host has nothing better to do than ask again.
+- **Fetch a further range with `reach_calendar`; expanding will not.** `expand_horizon`
+  re-derives what the store holds, and on a windowed transport (Graph, Google) the store holds
+  only the window the calendar's cursor was opened over: the host's horizon at the first sync.
+  A page past it would render its repeating series and lack its one-off events.
+  `reach_calendar(provider, account, range)` makes the store hold every event in `range` and
+  keeps them current: a range inside the recorded window asks nothing, and one past it reopens
+  the cursor over the union. It answers per calendar (`CalendarReach::failures`); a failed one
+  records nothing, so asking again fetches again. A host paging past its horizon calls both, in
+  either order, in coarse steps — each reopen re-reads the whole union.
 - **A provider key resolves to one *message*, not to one row.** The store's key is
   `(scope, key)`, and two of an account's mail scopes can hold the same key: a Microsoft
   Graph move keeps the message's immutable id and Graph mail sync is per folder, so between
@@ -147,10 +158,13 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   parallel, but two of the *same* `(account, scope)` cannot both hold its lease: the
   store returns the retryable `ScopeHeld`, the sync loop surfaces it (it recovers
   only `StaleLease`), and the facade maps it to `ApiError::Busy` — a distinct,
-  retryable signal separate from `ApiError::Sync`. The facade does **not** itself
+  retryable signal separate from `ApiError::Sync`. A *sync* does **not** itself
   queue or auto-retry; a host serializes per account or retries on `Busy`. If a
   future slice wants transparent serialization, add a per-account async lock in the
-  facade — do not widen `run_scope` to swallow `ScopeHeld`.
+  facade — do not widen `run_scope` to swallow `ScopeHeld`. The calendar maintenance calls
+  are the exception, because the holder would not do their work: `expand_horizon` and
+  `reach_calendar` wait out a held scope (`store-and-sync.md` → "A held scope is waited for")
+  and never answer `Busy`.
 - **Abrupt process recovery is explicit.** A host that knows prior workers for the
   store are gone after process death can call `Engine::abandon_sync_leases` once at
   startup. It clears held scope leases and bumps their fencing tokens while

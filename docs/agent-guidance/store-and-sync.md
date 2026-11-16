@@ -566,6 +566,55 @@ occurrence-only clear so a pure horizon advance need not re-project unchanged te
 Today `expand_calendar_horizon` re-expands every event in the scope on every call, so a
 host widens in coarse chunks against its own watermark rather than calling it per page.
 
+**A held scope is waited for, not reported busy.** A sync that finds its scope held gives up,
+because the holder brings the same changes. An expansion cannot: the holder expands only what
+it changed, over the window it found, so giving up leaves the widening undone and the host
+guessing when to ask again. So `expand_calendar_horizon` (and `reach_calendar`, below) poll the
+claim with a backoff capped at a second until the holder releases the lease or its lease
+lapses (`engine-sync/src/scope_wait.rs`). It is polled rather than woken because the holder
+can be another process on the same store. A caller that wants to stop waiting drops the future.
+
+## The fetch window is the store's too
+
+Some transports fetch a calendar only inside a date window (`Capabilities::windowed_events`):
+Graph's `calendarView/delta` takes a mandatory range and its `deltaLink` keeps it; Google's
+`events.list` bounds the snapshot its `syncToken` continues with `timeMin`/`timeMax`. CalDAV and
+JMAP fetch a calendar whole. On a windowed transport the store holds every event inside the
+window the scope's cursor was opened over and, outside it, only what happened to arrive — so
+`expand_calendar_horizon` over a wider horizon draws the repeating series there and none of the
+one-off events.
+
+So the engine, not the host's adapter construction, names the window: a windowed scope is
+fetched through `Provider::sync_events_within`, which opens any cursor it must open (none yet,
+or one the server expired) over the window it is given. That window is recorded **with the
+cursor**, in the same commit (`ApplyBatch::fetch_window`, `StoreRead::fetch_window`, schema
+v22), so the two cannot disagree: a snapshot records the window it was opened over, and a delta
+records nothing and keeps it. The first sync opens over the expansion window (the host's horizon
+then); a scope opened before windows were recorded has a cursor and no window, and is treated
+as covering nothing beyond what the host shows.
+
+`engine_sync::reach_calendar` (`Engine::reach_calendar`) fetches a further range. It does not
+list the range beside the cursor, because the cursor would not keep those events current: a
+Graph `deltaLink` reports changes only inside the window it was opened over (measured,
+`provider-graph/tests/live_calendar_window.rs`), and what a Google `syncToken` reports past a
+bounded list is undocumented. It **reopens** the scope's cursor over the union of the recorded
+window and the range, as a fresh snapshot, and records the union. One cursor then covers every
+event the store claims to hold, on every transport.
+
+- **Not fetched twice.** The recorded window only grows. A range inside it is answered without a
+  request, and a second caller asking for the same range waits for the first one's lease, then
+  finds it covered.
+- **While it runs**, it holds the scope's lease; reads answer from the store as it was, and the
+  fetched events land in one commit per calendar. A sync of the calendar meanwhile reports it
+  held; an expansion waits.
+- **On failure**, nothing is recorded: the old cursor and window stand, the scope reports its
+  error (`CalendarReach::failures`), and asking again fetches the range again.
+- **Cost.** A reopen re-reads the whole union, and its snapshot tombstones any stored event
+  outside it (one a Google feed brought from past the bounds, say). Hosts reach in coarse steps.
+- **Independent of the expansion window.** Reaching fetches; expanding materializes what is
+  shown. A fetched event is expanded over the stored expansion window as any synced event is, so
+  a host paging past its horizon calls both, in either order.
+
 On-demand fetched bodies **are** searchable (resolving the "does opening old mail
 make it searchable?" question: yes), via a separate lease-free body index — **not**
 the scope-derived FTS — so opening a message indexes its body immediately and a

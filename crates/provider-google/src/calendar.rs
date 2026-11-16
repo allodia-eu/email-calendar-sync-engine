@@ -16,6 +16,7 @@ use engine_core::{
     error::FailureClass,
     ids::{AccountId, CalendarId},
     sync::{SyncScope, SyncState, SyncUpdate},
+    time::Horizon,
 };
 use engine_provider::{
     CalendarListing, CalendarUserAddresses, CalendarWrites, Capabilities, ConnectionInfo,
@@ -97,7 +98,9 @@ impl GoogleCalendarProvider {
                 .with_calendar_writes(WriteGuard::Enforced, GOOGLE_OVERRIDE_SURVIVAL)
                 .with_calendar_rsvp(GOOGLE_RSVP)
                 .with_calendar_scheduling()
-                .with_conference_writes(),
+                .with_conference_writes()
+                // `timeMin`/`timeMax` bound the snapshot the `syncToken` continues.
+                .with_windowed_events(),
         }
     }
 
@@ -154,6 +157,32 @@ impl Provider for GoogleCalendarProvider {
         calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
+        self.events(calendar, cursor, self.window).await
+    }
+
+    /// The engine names the window here, so the one set by [`with_window`](Self::with_window)
+    /// only serves a caller that drives [`sync_events`](Provider::sync_events) itself.
+    async fn sync_events_within(
+        &self,
+        _account: &AccountId,
+        calendar: &CalendarId,
+        cursor: Option<&SyncState>,
+        window: Horizon,
+    ) -> ProviderResult<ScopeSync<Event>> {
+        self.events(calendar, cursor, Some(window.into())).await
+    }
+}
+impl engine_provider::MailboxWrites for GoogleCalendarProvider {}
+
+impl GoogleCalendarProvider {
+    /// One events pass over `calendar`: a delta from `cursor`, or a snapshot opened over
+    /// `window` (the whole calendar when `None`) where there is no cursor or Google expired it.
+    async fn events(
+        &self,
+        calendar: &CalendarId,
+        cursor: Option<&SyncState>,
+        window: Option<CalendarWindow>,
+    ) -> ProviderResult<ScopeSync<Event>> {
         cal_id::listed(calendar)?;
         // Drain every `events.list` page into one update. A snapshot reconciles (its
         // `present` set tombstones absent rows); a delta carries explicit removals.
@@ -170,7 +199,7 @@ impl Provider for GoogleCalendarProvider {
                 calendar,
                 cursor,
                 page_token.as_ref(),
-                self.window,
+                window,
             )
             .await
             {
@@ -212,7 +241,6 @@ impl Provider for GoogleCalendarProvider {
         Ok(ScopeSync::new(update, next_cursor))
     }
 }
-impl engine_provider::MailboxWrites for GoogleCalendarProvider {}
 
 #[async_trait]
 impl CalendarWrites for GoogleCalendarProvider {

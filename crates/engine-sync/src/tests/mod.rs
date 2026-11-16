@@ -46,6 +46,7 @@ use super::{
 };
 
 mod calendar_fanout;
+mod calendar_reach;
 mod calendar_sync;
 mod calendar_write;
 mod contact_sync;

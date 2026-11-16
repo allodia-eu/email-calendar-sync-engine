@@ -42,13 +42,13 @@ use engine_core::{
     calendar::Event,
     ids::{AccountId, ProviderKey},
     search_index::{OwnerAddresses, project_event},
-    sync::ObjectKind,
+    sync::{ObjectKind, SyncScope},
     time::{ExpansionWindow, Horizon, TimeZoneId},
 };
 use engine_recurrence::expand;
 use engine_store::{DerivedWrite, LeaseRequest, Store, StoreRead, WorkerId};
 
-use crate::SyncError;
+use crate::{SyncError, scope_wait::while_held};
 
 /// What a [`expand_calendar_horizon`] pass materialized, and what it could not.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -129,51 +129,79 @@ where
         .into_iter()
         .filter(|scope| scope.object_kind() == Some(ObjectKind::Event))
     {
-        // Already expanded over exactly this window? Then re-deriving every event would only
-        // reproduce the stored rows — skip it, and never claim the lease. This is a lease-free
-        // read (the sync/reconcile paths resolve the same window before claiming), so it costs
-        // nothing when the pass does have work to do.
-        if store.expansion_window(&scope).await?.as_ref() == Some(&window) {
-            report.skipped += 1;
-            continue;
-        }
-        let claim = store
-            .claim_sync_scope(account.clone(), &scope, req.clone())
-            .await?;
-        let mut derived = DerivedWrite::empty();
-        for key in store.object_keys(&scope).await? {
-            let Some(payload) = store.object_payload(&scope, &key).await? else {
-                continue;
-            };
-            let event: Event =
-                serde_json::from_value(payload).map_err(|err| SyncError::decode(&err))?;
-            // Clear this event's rows before rewriting them, so an instant that moved
-            // (a horizon shrink, a tzdata bump) leaves no stale occurrence behind.
-            derived.removed.push(key.clone());
-            derived.push_event(project_event(&event, &OwnerAddresses::default()));
-            match expand(&event, &horizon, host_zone) {
-                Ok(occurrences) => derived.occurrences.extend(occurrences),
-                Err(reason) => report.unexpandable.push(UnexpandableEvent {
-                    event: key,
-                    reason: reason.to_string(),
-                }),
+        // A scope another pass holds is waited out: that pass expands only what it changes,
+        // over the window it found, so nobody else would widen this one.
+        let expanded = while_held(|| expand_scope(store, account, &scope, &req, &window)).await?;
+        match expanded {
+            Some((occurrences, unexpandable)) => {
+                report.occurrences += occurrences;
+                report.unexpandable.extend(unexpandable);
             }
+            None => report.skipped += 1,
         }
-        report.occurrences += derived.occurrences.len();
-        // Best-effort release on failure, so a held lease cannot block the next sync.
-        if let Err(err) = store.apply_maintenance(&claim.lease, &derived).await {
-            let _ = store.release_sync_scope(claim.lease).await;
-            return Err(err.into());
-        }
-        // This is the ONE path that moves the window, and it has just re-expanded every
-        // event in the scope to match — so record it. A sync (or a post-write reconcile)
-        // then re-expands whatever it changed over this window, instead of over whatever
-        // horizon its caller happened to hold.
-        if let Err(err) = store.set_expansion_window(&claim.lease, &window).await {
-            let _ = store.release_sync_scope(claim.lease).await;
-            return Err(err.into());
-        }
-        store.release_sync_scope(claim.lease).await?;
     }
     Ok(report)
+}
+
+/// Re-expands one scope over `window`, returning the occurrences it wrote and the events the
+/// expander refused, or `None` when the scope is already expanded over exactly `window`.
+///
+/// Fails [`SyncError::is_busy`] having done nothing when another pass holds the scope.
+async fn expand_scope<S>(
+    store: &S,
+    account: &AccountId,
+    scope: &SyncScope,
+    req: &LeaseRequest,
+    window: &ExpansionWindow,
+) -> Result<Option<(usize, Vec<UnexpandableEvent>)>, SyncError>
+where
+    S: Store + StoreRead,
+{
+    // Already expanded over exactly this window? Then re-deriving every event would only
+    // reproduce the stored rows — skip it, and never claim the lease. This is a lease-free
+    // read (the sync/reconcile paths resolve the same window before claiming), so it costs
+    // nothing when the pass does have work to do. Read again on every try, so a scope the
+    // holder of its lease has just expanded the same way is not expanded twice.
+    if store.expansion_window(scope).await?.as_ref() == Some(window) {
+        return Ok(None);
+    }
+    let claim = store
+        .claim_sync_scope(account.clone(), scope, req.clone())
+        .await?;
+    let mut derived = DerivedWrite::empty();
+    let mut unexpandable = Vec::new();
+    for key in store.object_keys(scope).await? {
+        let Some(payload) = store.object_payload(scope, &key).await? else {
+            continue;
+        };
+        let event: Event =
+            serde_json::from_value(payload).map_err(|err| SyncError::decode(&err))?;
+        // Clear this event's rows before rewriting them, so an instant that moved
+        // (a horizon shrink, a tzdata bump) leaves no stale occurrence behind.
+        derived.removed.push(key.clone());
+        derived.push_event(project_event(&event, &OwnerAddresses::default()));
+        match expand(&event, &window.horizon, &window.zone) {
+            Ok(occurrences) => derived.occurrences.extend(occurrences),
+            Err(reason) => unexpandable.push(UnexpandableEvent {
+                event: key,
+                reason: reason.to_string(),
+            }),
+        }
+    }
+    let occurrences = derived.occurrences.len();
+    // Best-effort release on failure, so a held lease cannot block the next sync.
+    if let Err(err) = store.apply_maintenance(&claim.lease, &derived).await {
+        let _ = store.release_sync_scope(claim.lease).await;
+        return Err(err.into());
+    }
+    // This is the ONE path that moves the window, and it has just re-expanded every
+    // event in the scope to match — so record it. A sync (or a post-write reconcile)
+    // then re-expands whatever it changed over this window, instead of over whatever
+    // horizon its caller happened to hold.
+    if let Err(err) = store.set_expansion_window(&claim.lease, window).await {
+        let _ = store.release_sync_scope(claim.lease).await;
+        return Err(err.into());
+    }
+    store.release_sync_scope(claim.lease).await?;
+    Ok(Some((occurrences, unexpandable)))
 }

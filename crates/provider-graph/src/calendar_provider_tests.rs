@@ -263,3 +263,28 @@ async fn create_refuses_a_draft_targeting_another_calendar() {
     );
     assert!(provider.create_event(&account(), &draft).await.is_err());
 }
+
+/// The window the engine names opens the `calendarView/delta`, not the one the provider was
+/// built with (August to November): the route answers only the December range.
+#[tokio::test]
+async fn sync_events_within_opens_over_the_window_the_engine_names() {
+    let client = fake_client(vec![
+        (
+            "startDateTime=2026-12-01T00:00:00Z&endDateTime=2027-01-01T00:00:00Z",
+            json(DELTA),
+        ),
+        ("$select=start,end,cancelledOccurrences", json(MASTER)),
+    ]);
+    let provider = provider(client);
+    assert!(provider.connection_info().capabilities.windowed_events());
+    let december = engine_core::time::Horizon::new(
+        "2026-12-01T00:00:00Z".parse().unwrap(),
+        "2026-12-31T12:00:00Z".parse().unwrap(),
+    )
+    .unwrap();
+    let events = provider
+        .sync_events_within(&account(), &calendar(), None, december)
+        .await
+        .unwrap();
+    assert!(events.is_snapshot());
+}
