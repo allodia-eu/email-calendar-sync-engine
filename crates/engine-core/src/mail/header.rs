@@ -26,9 +26,10 @@ impl EmailHeader {
     }
 }
 
-/// The parsed envelope: the standard addressing and threading headers, and the
-/// sender's importance, projected into typed form (IMAP `ENVELOPE`, RFC 9051 §7.5.2; JMAP
-/// convenience properties, RFC 8621 §4.1.3).
+/// The parsed envelope: the standard addressing and threading headers projected
+/// into typed form (IMAP `ENVELOPE`, RFC 9051 §7.5.2; JMAP convenience
+/// properties, RFC 8621 §4.1.3), plus the importance the sender stated, which
+/// neither of those carries.
 ///
 /// Address lists are flattened to [`EmailAddress`]; group structure, if any, is
 /// recoverable from the preserved raw message. The `message_id`, `in_reply_to`,

@@ -54,9 +54,9 @@ impl Importance {
     /// `5` are low, which is how the clients that write it read it back. `None` for anything else.
     #[must_use]
     pub fn from_x_priority(value: &str) -> Option<Self> {
-        let digit = value.trim_start().chars().next()?;
-        let rest = value.trim_start()[digit.len_utf8()..].chars().next();
-        if rest.is_some_and(|c| c.is_ascii_digit()) {
+        let mut chars = value.trim_start().chars();
+        let digit = chars.next()?;
+        if chars.next().is_some_and(|c| c.is_ascii_digit()) {
             return None;
         }
         match digit {
