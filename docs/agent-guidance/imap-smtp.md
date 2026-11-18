@@ -316,11 +316,13 @@ is authoritative for the `provider-caldav` calendar client.
   changes no longer needs `Engine::clear_mail_cursors` against a QRESYNC server — a plain
   delta sync reconciles them.
 - **Normalization.** `UID FETCH (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE
-  BODY.PEEK[HEADER.FIELDS (REFERENCES IMPORTANCE X-PRIORITY CONTENT-TYPE
+  BODY.PEEK[HEADER.FIELDS (REFERENCES IMPORTANCE X-MSMAIL-PRIORITY X-PRIORITY CONTENT-TYPE
   CONTENT-DISPOSITION)])` (safe metadata — none sets `\Seen`). The `References` header is not an
   `ENVELOPE` field, so it rides a separate peek-safe body-header item to feed threading
-  (`threading.md`); `Importance` and `X-Priority`, which state the sender's importance
-  (`modeling.md`), ride the same item (live-verified, `tests/live_imap_importance.rs`).
+  (`threading.md`); the headers that state a message's importance, `Importance::HEADERS`
+  (`modeling.md`), ride the same item, every occurrence of each, and `header_section` hands the
+  rule the last (live-verified, `tests/live_imap_importance.rs`; captured,
+  `tests/fixtures/importance_fetch.txt`).
   `BODYSTRUCTURE` is a **second** command, `UID FETCH <set> (UID BODYSTRUCTURE)`, over only the
   rows whose top-level headers do not show one text body (`engine-mime::is_single_text_body`:
   `text/plain` or `text/html`, or no `Content-Type`, and no `attachment` disposition); such a

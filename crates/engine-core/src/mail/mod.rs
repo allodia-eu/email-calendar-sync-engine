@@ -35,7 +35,7 @@ pub use content::{
 };
 pub use flags::MailFlags;
 pub use header::{EmailHeader, Envelope};
-pub use importance::Importance;
+pub use importance::{Importance, ImportanceHeaders};
 pub use keyword::{Keyword, KeywordError, SystemKeyword};
 pub use mailbox::Mailbox;
 pub use message::Message;

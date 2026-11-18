@@ -258,8 +258,9 @@ fn importance_is_read_from_its_header_properties() {
     );
 }
 
-/// Stalwart's own answer for `Importance` with `X-Priority` beside it, `X-Priority` alone, and
-/// neither: `asText` keeps the header's case, and a header the message lacks is `null`.
+/// Stalwart's own answer for `Importance` with `X-Priority` beside it, `X-Priority` alone, neither,
+/// `Importance` twice (`asText` answers the last), and `X-MSMail-Priority` alone. `asText` keeps
+/// the header's case, and a header the message lacks is `null`.
 #[test]
 fn the_servers_own_answer_reads_as_each_message_was_sent() {
     let importances: Vec<(String, Importance)> = list(EMAIL_GET_IMPORTANCE)
@@ -284,14 +285,29 @@ fn the_servers_own_answer_reads_as_each_message_was_sent() {
                 "Fixture: no importance stated".to_owned(),
                 Importance::Normal
             ),
+            (
+                "Fixture: Importance twice, low then high".to_owned(),
+                Importance::High
+            ),
+            (
+                "Fixture: low importance in X-MSMail-Priority alone".to_owned(),
+                Importance::Low
+            ),
         ]
     );
 }
 
 #[test]
-fn both_importance_headers_are_asked_for() {
-    assert!(EMAIL_PROPERTIES.contains(&IMPORTANCE_HEADER));
-    assert!(EMAIL_PROPERTIES.contains(&X_PRIORITY_HEADER));
+fn every_header_the_importance_rule_reads_is_asked_for() {
+    // A header the rule reads but `Email/get` does not name would read as absent, and so normal.
+    let named: Vec<String> = Importance::HEADERS
+        .iter()
+        .map(|header| format!("header:{header}:asText"))
+        .collect();
+    assert_eq!(IMPORTANCE_PROPERTIES, named.as_slice());
+    for property in IMPORTANCE_PROPERTIES {
+        assert!(EMAIL_PROPERTIES.contains(&property), "{property}");
+    }
 }
 
 #[test]

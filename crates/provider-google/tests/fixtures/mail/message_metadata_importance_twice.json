@@ -1,0 +1,48 @@
+{
+  "id": "message-2",
+  "threadId": "message-2",
+  "labelIds": [
+    "DRAFT"
+  ],
+  "snippet": "Importance fixture.",
+  "payload": {
+    "mimeType": "text/plain",
+    "headers": [
+      {
+        "name": "From",
+        "value": "testuser@example.test"
+      },
+      {
+        "name": "To",
+        "value": "testuser@example.test"
+      },
+      {
+        "name": "Subject",
+        "value": "Fixture: Importance twice and X-MSMail-Priority"
+      },
+      {
+        "name": "Date",
+        "value": "Wed, 18 Nov 2026 05:14:07 -0500"
+      },
+      {
+        "name": "Message-Id",
+        "value": "<message-2@mail.gmail.test>"
+      },
+      {
+        "name": "Importance",
+        "value": "low"
+      },
+      {
+        "name": "X-MSMail-Priority",
+        "value": "Low"
+      },
+      {
+        "name": "Importance",
+        "value": "high"
+      }
+    ]
+  },
+  "sizeEstimate": 498,
+  "historyId": "44814",
+  "internalDate": "1794996847000"
+}

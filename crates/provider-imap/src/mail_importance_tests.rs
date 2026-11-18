@@ -11,7 +11,7 @@ fn importance_of(section: &str) -> Importance {
         br#"1 FETCH (UID 1 ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL NIL "<m@h>") "#.to_vec();
     bytes.extend_from_slice(
         format!(
-            "BODY[HEADER.FIELDS (REFERENCES IMPORTANCE X-PRIORITY CONTENT-TYPE \
+            "BODY[HEADER.FIELDS (REFERENCES IMPORTANCE X-MSMAIL-PRIORITY X-PRIORITY CONTENT-TYPE \
              CONTENT-DISPOSITION)] {{{}}}\r\n{section})",
             section.len()
         )
@@ -47,9 +47,9 @@ fn a_section_without_either_is_normal() {
     assert_eq!(importance_of(section), Importance::Normal);
 }
 
-/// The three rows Stalwart answered the metadata fetch with
-/// (`tests/fixtures/importance_fetch.txt`): `Importance` with `X-Priority` beside it, `X-Priority`
-/// alone, and neither.
+/// The rows Stalwart answered the metadata fetch with (`tests/fixtures/importance_fetch.txt`):
+/// `Importance` with `X-Priority` beside it, `X-Priority` alone, neither, `Importance` twice (low,
+/// then high), and `X-MSMail-Priority` alone.
 #[test]
 fn the_servers_own_answer_reads_as_each_message_was_sent() {
     // Stored LF like every text file here; the literals' lengths count the CRLF of the wire. The
@@ -75,6 +75,23 @@ fn the_servers_own_answer_reads_as_each_message_was_sent() {
         .collect();
     assert_eq!(
         importances,
-        [Importance::High, Importance::Low, Importance::Normal]
+        [
+            Importance::High,
+            Importance::Low,
+            Importance::Normal,
+            Importance::High,
+            Importance::Low
+        ]
     );
+}
+
+/// A header the rule reads but the fetch does not ask for would read as absent, and so as normal.
+#[test]
+fn the_metadata_fetch_asks_for_every_header_the_rule_reads() {
+    for name in Importance::HEADERS {
+        assert!(
+            crate::metadata_fetch::FETCH_ITEMS.contains(&name.to_ascii_uppercase()),
+            "{name}"
+        );
+    }
 }

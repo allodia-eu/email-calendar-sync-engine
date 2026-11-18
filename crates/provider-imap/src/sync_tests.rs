@@ -80,7 +80,7 @@ async fn first_sync_snapshots_a_uid_window_newest_first() {
     // headers.
     assert!(written(&recorded).contains(
         "UID FETCH 6:8 (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE \
-         BODY.PEEK[HEADER.FIELDS (REFERENCES IMPORTANCE X-PRIORITY CONTENT-TYPE \
+         BODY.PEEK[HEADER.FIELDS (REFERENCES IMPORTANCE X-MSMAIL-PRIORITY X-PRIORITY CONTENT-TYPE \
          CONTENT-DISPOSITION)])"
     ));
 }

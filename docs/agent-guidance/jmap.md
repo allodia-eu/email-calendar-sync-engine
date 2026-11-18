@@ -315,7 +315,8 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   the submission's call id. The created `Email` is the sender's copy, so it carries
   every recipient header **including `bcc`**, plus `inReplyTo` and `references`, and an
   importance other than normal as `header:Importance:asText` and `header:X-Priority:asText`
-  (JMAP has no importance property; the same two are asked for on `Email/get`,
+  (JMAP has no importance property; `Email/get` asks for every header the importance rule reads
+  in the same singular `asText` form, which answers a header's last occurrence as the rule wants,
   live-verified in `tests/live_importance.rs`): RFC
   8621 §7.5 has the server **remove the Bcc header during delivery**, which is the same
   filed-copy shape `engine-rfc5322` gives the other transports. The envelope is sent

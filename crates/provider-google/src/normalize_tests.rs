@@ -402,8 +402,22 @@ fn importance_is_read_from_the_metadata_headers() {
         Importance::Low
     );
     assert_eq!(importance(serde_json::json!([])), Importance::Normal);
-    assert!(METADATA_HEADERS.contains(&"Importance"));
-    assert!(METADATA_HEADERS.contains(&"X-Priority"));
+    // A header the rule reads but the metadata read does not name is not returned at all.
+    for header in Importance::HEADERS {
+        assert!(METADATA_HEADERS.contains(&header), "{header}");
+    }
+    // A header carried twice reads by its last occurrence, as on every other transport.
+    assert_eq!(
+        importance(serde_json::json!([
+            { "name": "Importance", "value": "low" },
+            { "name": "importance", "value": "high" }
+        ])),
+        Importance::High
+    );
+    assert_eq!(
+        importance(serde_json::json!([{ "name": "X-MSMail-Priority", "value": "Low" }])),
+        Importance::Low
+    );
 }
 
 /// A draft carrying `Importance` and `X-Priority`, read with the metadata fetch's own
@@ -412,6 +426,16 @@ fn importance_is_read_from_the_metadata_headers() {
 fn the_metadata_read_returns_the_importance_headers() {
     let message = message(include_str!(
         "../tests/fixtures/mail/message_metadata_importance.json"
+    ));
+    assert_eq!(message.envelope.importance, Importance::High);
+}
+
+/// `Importance: low`, `X-MSMail-Priority: Low`, `Importance: high`: Gmail returns every occurrence
+/// in the message's order, and the last `Importance` decides, as on every other transport.
+#[test]
+fn the_metadata_read_returns_every_occurrence_and_the_last_importance_decides() {
+    let message = message(include_str!(
+        "../tests/fixtures/mail/message_metadata_importance_twice.json"
     ));
     assert_eq!(message.envelope.importance, Importance::High);
 }

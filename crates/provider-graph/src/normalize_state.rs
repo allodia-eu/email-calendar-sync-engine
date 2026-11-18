@@ -42,6 +42,25 @@ pub(crate) const MESSAGE_STATE_SELECT: &[&str] = &[
     "changeKey",
 ];
 
+/// Whether an etag-less delta entry reports **state alone**: every property it names is one
+/// [`MESSAGE_STATE_SELECT`] reads, or its folder, beside its id and OData annotations.
+///
+/// Graph answers a *lightweight* change with only the properties that changed (observed for
+/// `isRead`, `tests/fixtures/mail/messages_delta_changed.json`). Exchange also lets a message's
+/// content change under its id: a draft's re-save rewrites its subject, body and importance, and
+/// Outlook lets a recipient change a received message's importance. Such an entry must be read
+/// whole, or the change never reaches the store. So any property this does not recognise sends the
+/// entry to a whole read: a property Graph adds later costs one request, never a lost change.
+pub(crate) fn names_only_state(entry: &Value) -> bool {
+    entry.as_object().is_some_and(|properties| {
+        properties.keys().all(|name| {
+            name.starts_with('@')
+                || name == "parentFolderId"
+                || MESSAGE_STATE_SELECT.contains(&name.as_str())
+        })
+    })
+}
+
 /// The keywords a message's state properties imply. Graph models read/draft/flag as its
 /// own booleans, not a keyword set, and keeps no free-form keyword at all: a category the
 /// host registered a name for (`names`) stands in for one ([`KeywordName`]). Any other

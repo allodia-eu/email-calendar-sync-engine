@@ -107,9 +107,17 @@ each over its own `GraphClient` on the same token. The mail layers:
   The exception, **not in the docs** and observed on consumer mailboxes, is a
   *lightweight* property change (notably `isRead`): it returns only the changed
   property + `id`, with **no** `@odata.etag`. So the adapter uses the entry
-  directly when it carries `@odata.etag` (the common case) and resolves the
-  etag-less partials as **state changes** through the narrow `MESSAGE_STATE_SELECT`
-  rather than re-fetching the whole message.
+  directly when it carries `@odata.etag` (the common case) and resolves an
+  etag-less partial as a **state change** through the narrow `MESSAGE_STATE_SELECT`,
+  but only when every property it names is one that select reads, or its folder
+  (`normalize_state::names_only_state`). An etag-less entry naming anything else,
+  `importance` or a draft's `subject` above all, is read whole: Exchange changes
+  content under a stable id (a draft's `PATCH`, Outlook's importance on a received
+  message), and treating that as a state change would lose it. Observed November 2026,
+  an importance-only and a subject-only change to a draft and an importance change to
+  a received message each came back as a full entry, while an `isRead` change came back
+  full in one capture and lightweight in `live_provider.rs` the same day. Nothing
+  promises either form for any change, so both are handled for every one.
 
   That narrow read cannot ask for the etag: `@odata.etag` is an OData *annotation*,
   not a property, so naming it in a `$select` is an error — whether a `$select`ed
@@ -224,11 +232,14 @@ what sending it would have delivered. Graph files it into Drafts and sets `isDra
 itself: nothing in the request names a folder, which is live-verified rather than
 assumed (`tests/live_drafts.rs`). Graph advertises `mail_drafts`.
 
-- **Importance is the message's `importance` property**, in `MESSAGE_SELECT`. Exchange folds
-  a received message's `Importance` and `X-Priority` headers into it, and a draft created from
-  MIME takes it from the `Importance` header the assembler writes; a re-save's `PATCH` sends it
-  every time, normal included, or lowering it would never reach the stored draft
-  (`tests/live_importance.rs`).
+- **Importance is the message's `importance` property**, in `MESSAGE_SELECT`. Exchange reads it
+  from a message's MIME by the rule `Importance::from_headers` copies, observed for thirty header
+  shapes in `tests/fixtures/mail/importance_header_shapes.json` and checked against the engine's
+  rule by `importance_shapes_tests.rs` (MICROSOFT-1 lists where it departs from RFC 5322). A
+  draft created from MIME takes it from the `Importance` header the assembler writes; a re-save's
+  `PATCH` sends it every time, normal included, or lowering it would never reach the stored draft
+  (`tests/live_importance.rs`). A change to it arrives as a changed message, never as state
+  (above).
 - **A re-save rewrites the stored message in place: `PATCH /me/messages/{id}`.** A
   draft's `subject`, `body`, `from` and recipient collections are writable while
   `isDraft` is true (they are read-only once it is not), so a text edit is **one

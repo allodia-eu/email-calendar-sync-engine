@@ -18,8 +18,8 @@ use std::collections::BTreeSet;
 use engine_core::{
     ids::{BlobId, MailboxId, MessageId, MessageIdHeader, ThreadId},
     mail::{
-        EmailAddress, Importance, Keyword, MailState, MailStateChange, Mailbox, MailboxAccess,
-        MailboxRole, Message, ThreadRef,
+        EmailAddress, Importance, ImportanceHeaders, Keyword, MailState, MailStateChange, Mailbox,
+        MailboxAccess, MailboxRole, Message, ThreadRef,
     },
     membership::Memberships,
 };
@@ -34,8 +34,19 @@ use crate::{
 /// property of its own, so the header is named, in its decoded `asText` form (RFC 8621
 /// §4.1.2.3), both when it is read and when a message is created.
 pub(crate) const IMPORTANCE_HEADER: &str = "header:Importance:asText";
-/// The `X-Priority` header, which stands in for a missing `Importance` ([`IMPORTANCE_HEADER`]).
+/// The `X-Priority` header, written beside [`IMPORTANCE_HEADER`] and read as the rule says.
 pub(crate) const X_PRIORITY_HEADER: &str = "header:X-Priority:asText";
+/// Outlook's `X-MSMail-Priority`, read only.
+const X_MSMAIL_PRIORITY_HEADER: &str = "header:X-MSMail-Priority:asText";
+
+/// Every header the importance rule reads (`Importance::HEADERS`), as `Email` properties. The
+/// singular `asText` form answers the **last** occurrence of a header (RFC 8621 §4.1.3), which is
+/// the one the rule reads, and `null` for a header the message lacks.
+pub(crate) const IMPORTANCE_PROPERTIES: [&str; 3] = [
+    IMPORTANCE_HEADER,
+    X_MSMAIL_PRIORITY_HEADER,
+    X_PRIORITY_HEADER,
+];
 
 /// The `Email` properties fetched in `Email/get` — exactly the fields
 /// [`message_from_json`] reads (RFC 8621 §4.1). Tier-1 metadata: the body parts
@@ -61,8 +72,9 @@ pub(crate) const EMAIL_PROPERTIES: &[&str] = &[
     "references",
     "hasAttachment",
     "preview",
-    IMPORTANCE_HEADER,
-    X_PRIORITY_HEADER,
+    IMPORTANCE_PROPERTIES[0],
+    IMPORTANCE_PROPERTIES[1],
+    IMPORTANCE_PROPERTIES[2],
 ];
 
 /// Normalizes one JMAP `Mailbox` object into a [`Mailbox`].
@@ -234,10 +246,9 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, JmapError> {
     envelope.message_id = message_ids(value, "messageId")?;
     envelope.in_reply_to = message_ids(value, "inReplyTo")?;
     envelope.references = message_ids(value, "references")?;
-    envelope.importance = Importance::from_headers(
-        opt_str(value, IMPORTANCE_HEADER),
-        opt_str(value, X_PRIORITY_HEADER),
-    );
+    envelope.importance = Importance::from_headers(ImportanceHeaders::from_lookup(|name| {
+        opt_str(value, &format!("header:{name}:asText"))
+    }));
 
     Ok(message)
 }

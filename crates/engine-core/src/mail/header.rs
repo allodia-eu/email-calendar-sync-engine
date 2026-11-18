@@ -59,7 +59,7 @@ pub struct Envelope {
     pub cc: Vec<EmailAddress>,
     /// The `Bcc` recipients.
     pub bcc: Vec<EmailAddress>,
-    /// The importance the sender stated: `Importance` (RFC 2156 §5.3), else `X-Priority`.
+    /// The importance the message carries, read by [`Importance::from_headers`].
     ///
     /// Defaulted, so a payload stored before the engine read it loads as
     /// [`Normal`](Importance::Normal) until `NORMALIZER_VERSION` 16 re-reads it.

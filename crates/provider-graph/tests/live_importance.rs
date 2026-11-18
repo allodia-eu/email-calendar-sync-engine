@@ -1,9 +1,12 @@
 //! Gated live integration: a draft's importance against a real Microsoft Graph account.
 //!
-//! Two answers only Exchange gives. A draft is created from the assembled MIME, the same bytes
+//! Three answers only Exchange gives. A draft is created from the assembled MIME, the same bytes
 //! `/sendMail` takes, so the first save shows whether Exchange turns the `Importance` header into
 //! the message's `importance` property. A re-save of a draft is a JSON `PATCH`, so the later saves
-//! show that the property written there moves it, down to normal included. Nothing is sent.
+//! show that the property written there moves it, down to normal included. And each re-save is read
+//! back through the folder's **delta** from the cursor before it, as a running sync reads it: a
+//! change of importance alone under a stable id has to arrive as a changed message, never as a
+//! state change, or the store would never learn of it. Nothing is sent.
 //!
 //! Skips unless `GRAPH_ACCESS_TOKEN` is set, so `cargo test --workspace` stays green:
 //!
@@ -16,7 +19,7 @@
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader, ProviderKey},
     mail::{EmailAddress, Importance},
-    sync::SyncUpdate,
+    sync::{SyncState, SyncUpdate},
 };
 use engine_provider::{Draft, Provider};
 use provider_graph::{GraphClient, GraphProvider};
@@ -45,18 +48,53 @@ fn drafts(token: String) -> GraphProvider {
     GraphProvider::new(client, MailboxId::try_from("drafts").unwrap())
 }
 
-/// The importance the account's own sync reads for the stored message `key`.
-async fn stored_importance(provider: &GraphProvider, key: &ProviderKey) -> Importance {
+/// The importance the account's own snapshot reads for the stored message `key`, and the cursor
+/// a delta continues from.
+async fn snapshot_importance(
+    provider: &GraphProvider,
+    key: &ProviderKey,
+) -> (Importance, SyncState) {
     let emails = provider.sync_email(&account(), None).await.expect("sync");
     let SyncUpdate::Snapshot { objects, .. } = emails.update else {
         panic!("a cursorless sync is a snapshot");
     };
-    objects
+    let importance = objects
         .into_iter()
         .find(|m| m.id.key() == key)
         .expect("the saved draft syncs back")
         .envelope
-        .importance
+        .importance;
+    (importance, emails.next_cursor)
+}
+
+/// The importance the folder's delta from `cursor` reports for `key`, and the cursor after it.
+/// The change must come back as a changed message: a state change carries no importance.
+async fn delta_importance(
+    provider: &GraphProvider,
+    key: &ProviderKey,
+    cursor: &SyncState,
+) -> (Importance, SyncState) {
+    let emails = provider
+        .sync_email(&account(), Some(cursor))
+        .await
+        .expect("delta");
+    let SyncUpdate::Delta {
+        changed, patched, ..
+    } = emails.update
+    else {
+        panic!("a sync from a cursor is a delta");
+    };
+    assert!(
+        !patched.iter().any(|change| &change.key == key),
+        "a change of importance is not a state change"
+    );
+    let importance = changed
+        .into_iter()
+        .find(|m| m.id.key() == key)
+        .expect("the re-saved draft comes back as a changed message")
+        .envelope
+        .importance;
+    (importance, emails.next_cursor)
 }
 
 #[tokio::test]
@@ -90,7 +128,8 @@ async fn live_graph_a_drafts_importance_follows_every_save() {
         .put_draft(&account(), &draft(Importance::High), None)
         .await
         .expect("first save");
-    assert_eq!(stored_importance(&provider, &key).await, Importance::High);
+    let (first, mut cursor) = snapshot_importance(&provider, &key).await;
+    assert_eq!(first, Importance::High);
 
     // Rewritten by `PATCH`, which keeps the key; normal is the case a property left out of the
     // patch would not reach.
@@ -100,7 +139,9 @@ async fn live_graph_a_drafts_importance_follows_every_save() {
             .put_draft(&account(), &draft(importance), Some(&current))
             .await
             .expect("re-save");
-        assert_eq!(stored_importance(&provider, &current).await, importance);
+        let (read, next) = delta_importance(&provider, &current, &cursor).await;
+        assert_eq!(read, importance);
+        cursor = next;
     }
 
     provider

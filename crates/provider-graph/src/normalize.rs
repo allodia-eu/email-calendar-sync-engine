@@ -285,3 +285,7 @@ fn message_id_header(value: &Value) -> Result<Option<MessageIdHeader>, GraphErro
 #[cfg(test)]
 #[path = "normalize_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "importance_shapes_tests.rs"]
+mod importance_shapes_tests;

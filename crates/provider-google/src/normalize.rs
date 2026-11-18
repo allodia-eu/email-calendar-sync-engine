@@ -29,7 +29,8 @@ use std::collections::{BTreeSet, HashMap};
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ThreadId},
     mail::{
-        EmailAddress, Importance, Keyword, Mailbox, MailboxRole, Message, SystemKeyword, ThreadRef,
+        EmailAddress, Importance, ImportanceHeaders, Keyword, Mailbox, MailboxRole, Message,
+        SystemKeyword, ThreadRef,
     },
     membership::Memberships,
     time::UtcDateTime,
@@ -90,6 +91,7 @@ pub(crate) const METADATA_HEADERS: &[&str] = &[
     "Date",
     "Message-Id",
     "Importance",
+    "X-MSMail-Priority",
     "X-Priority",
 ];
 
@@ -236,8 +238,9 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, GoogleError> {
     envelope.message_id = message_id_header(header(headers, "Message-Id"))?
         .into_iter()
         .collect();
-    envelope.importance =
-        Importance::from_headers(header(headers, "Importance"), header(headers, "X-Priority"));
+    envelope.importance = Importance::from_headers(ImportanceHeaders::from_lookup(|name| {
+        last_header(headers, name)
+    }));
     message.sent_at = header(headers, "Date").and_then(parse_rfc2822);
 
     Ok(message)
@@ -299,16 +302,31 @@ pub(crate) fn memberships_of(labels: &[String]) -> Result<Memberships<MailboxId>
 /// The first header whose name matches `key` case-insensitively (`Message-Id` vs
 /// `Message-ID`), or `None`.
 fn header<'a>(headers: Option<&'a Value>, key: &str) -> Option<&'a str> {
+    headers_named(headers, key).next()
+}
+
+/// The last header whose name matches `key`: the one the importance rule reads
+/// ([`ImportanceHeaders`]). A metadata read returns every occurrence, in the message's order.
+fn last_header<'a>(headers: Option<&'a Value>, key: &str) -> Option<&'a str> {
+    headers_named(headers, key).last()
+}
+
+/// The value of every header whose name matches `key` case-insensitively, in order.
+fn headers_named<'a>(
+    headers: Option<&'a Value>,
+    key: &str,
+) -> impl Iterator<Item = &'a str> + use<'a> {
+    let key = key.to_owned();
     headers
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .find(|h| {
+        .filter(move |h| {
             h.get("name")
                 .and_then(Value::as_str)
-                .is_some_and(|name| name.eq_ignore_ascii_case(key))
+                .is_some_and(|name| name.eq_ignore_ascii_case(&key))
         })
-        .and_then(|h| h.get("value").and_then(Value::as_str))
+        .filter_map(|h| h.get("value").and_then(Value::as_str))
 }
 
 /// Parses the epoch-millis `internalDate` into a UTC instant (Gmail's message-received
