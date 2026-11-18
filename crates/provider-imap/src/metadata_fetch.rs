@@ -34,12 +34,14 @@ const MIN_SHARE: usize = 20;
 /// The metadata `FETCH` items, all peek-safe (none sets `\Seen`).
 ///
 /// The header section carries `References`, which `ENVELOPE` omits (RFC 9051 §7.5.2) and
-/// local threading needs, and the two headers that decide whether `BODYSTRUCTURE` is needed.
+/// local threading needs, the two that state the sender's importance (`Importance`, RFC 2156
+/// §5.3, and `X-Priority`), and the two that decide whether `BODYSTRUCTURE` is needed.
 /// The peek form is required so the read does not set `\Seen`; the server echoes it back
 /// without `.PEEK`.
 pub(crate) const FETCH_ITEMS: &str = concat!(
     "UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE ",
-    "BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)]"
+    "BODY.PEEK[HEADER.FIELDS (REFERENCES IMPORTANCE X-PRIORITY CONTENT-TYPE ",
+    "CONTENT-DISPOSITION)]"
 );
 
 /// The second command's items, for the rows [`FETCH_ITEMS`] left open.

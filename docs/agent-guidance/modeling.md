@@ -65,6 +65,12 @@ Capture any provider-specific assumption in tests or fixtures. If a provider beh
 - A mail collection says whether it can be opened at all (`Mailbox::selectable`). `false` is a level of the hierarchy that holds no messages: IMAP `\Noselect` / `\NonExistent`, a JMAP mailbox without `myRights.mayReadItems`. Graph folders and Gmail labels always hold messages. It stays in the folder list, because its children hang from it; a host draws it but neither opens nor syncs it. A stored row without the field loads as selectable.
 - User-set tags differ from provider-assigned classifications: user categories/keywords (which may span mail and calendar and reference a per-account registry of name and color) versus classifications the user does not set directly (focused/other, inbox tabs).
 - `Message-ID` is a threading/reconciliation hint, not hard identity.
+- A message carries the importance its sender stated (`Envelope::importance`): content, not
+  state, so it is in the payload, and in the `message` row because a list row draws it. It is
+  RFC 2156's `Importance`, read from that header, else from the `X-Priority` many clients write
+  alone, else normal, which is what no header means; Graph reports it as `importance`. RFC 2156's
+  `Priority` is an MTA's delivery priority and is not read. A `Draft` carries it to every
+  transport, which writes both headers for anything but normal.
 - Raw provider payloads are preserved for lossless re-derivation: MIME, iCalendar, JSCalendar, vCard.
 - Provider-defined extended properties and extensions (Microsoft Graph extended properties and open extensions, Google Calendar `extendedProperties`) are preserved as normalized, namespaced key-value data — distinct from raw payloads and from first-class fields.
 - Provider object keys are stable across moves; where a provider's natural id is not (Graph default ids), the adapter uses its immutable-id form, with a version token (ETag, `changeKey`, MODSEQ) tracking revisions.

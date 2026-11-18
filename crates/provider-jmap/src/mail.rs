@@ -18,8 +18,8 @@ use std::collections::BTreeSet;
 use engine_core::{
     ids::{BlobId, MailboxId, MessageId, MessageIdHeader, ThreadId},
     mail::{
-        EmailAddress, Keyword, MailState, MailStateChange, Mailbox, MailboxAccess, MailboxRole,
-        Message, ThreadRef,
+        EmailAddress, Importance, Keyword, MailState, MailStateChange, Mailbox, MailboxAccess,
+        MailboxRole, Message, ThreadRef,
     },
     membership::Memberships,
 };
@@ -29,6 +29,13 @@ use crate::{
     error::JmapError,
     json::{datetime, opt_str, req_str, sent_at, true_keys, wrap_id},
 };
+
+/// The `Importance` header (RFC 2156 §5.3) as an `Email` property. JMAP has no importance
+/// property of its own, so the header is named, in its decoded `asText` form (RFC 8621
+/// §4.1.2.3), both when it is read and when a message is created.
+pub(crate) const IMPORTANCE_HEADER: &str = "header:Importance:asText";
+/// The `X-Priority` header, which stands in for a missing `Importance` ([`IMPORTANCE_HEADER`]).
+pub(crate) const X_PRIORITY_HEADER: &str = "header:X-Priority:asText";
 
 /// The `Email` properties fetched in `Email/get` — exactly the fields
 /// [`message_from_json`] reads (RFC 8621 §4.1). Tier-1 metadata: the body parts
@@ -54,6 +61,8 @@ pub(crate) const EMAIL_PROPERTIES: &[&str] = &[
     "references",
     "hasAttachment",
     "preview",
+    IMPORTANCE_HEADER,
+    X_PRIORITY_HEADER,
 ];
 
 /// Normalizes one JMAP `Mailbox` object into a [`Mailbox`].
@@ -225,6 +234,10 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, JmapError> {
     envelope.message_id = message_ids(value, "messageId")?;
     envelope.in_reply_to = message_ids(value, "inReplyTo")?;
     envelope.references = message_ids(value, "references")?;
+    envelope.importance = Importance::from_headers(
+        opt_str(value, IMPORTANCE_HEADER),
+        opt_str(value, X_PRIORITY_HEADER),
+    );
 
     Ok(message)
 }

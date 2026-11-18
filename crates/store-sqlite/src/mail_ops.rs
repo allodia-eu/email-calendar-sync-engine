@@ -21,7 +21,7 @@
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader, ProviderKey, ThreadId},
-    mail::{Keyword, MailFlags},
+    mail::{Importance, Keyword, MailFlags},
     search_index::MailRow,
     time::UtcDateTime,
     version::{ChangeKey, ETag, ModSeq, RevisionTokens},
@@ -46,7 +46,7 @@ m.last_modified, m.etag, m.change_key, m.mod_seq, \
    WHERE b.scope_key = m.scope_key AND b.provider_key = m.provider_key AND b.kind = 'mailbox'), \
 (SELECT group_concat(k.value, char(10)) FROM membership k \
    WHERE k.scope_key = m.scope_key AND k.provider_key = m.provider_key AND k.kind = 'keyword'), \
-m.size_octets";
+m.size_octets, m.importance";
 
 /// Newest first, undated last, ties broken on the row's own identity — the key order of
 /// `message_date`, so no sort runs.
@@ -252,6 +252,7 @@ struct RawRow {
     mailboxes: Option<String>,
     keywords: Option<String>,
     size_octets: Option<i64>,
+    importance: String,
 }
 
 fn read_row(row: &Row<'_>) -> rusqlite::Result<RawRow> {
@@ -274,6 +275,7 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<RawRow> {
         mailboxes: row.get(15)?,
         keywords: row.get(16)?,
         size_octets: row.get(17)?,
+        importance: row.get(18)?,
     })
 }
 
@@ -301,6 +303,8 @@ impl TryFrom<RawRow> for MailListRow {
                 date_utc: convert::parse_opt_instant(raw.date_utc)?,
                 flags: MailFlags::from_bits(u32::try_from(raw.flags).unwrap_or_default()),
                 has_attachment: raw.has_attachment != 0,
+                // A token this build does not know reads as the default, like an unknown flag bit.
+                importance: Importance::parse(&raw.importance).unwrap_or_default(),
                 size_octets: raw.size_octets.and_then(|size| u64::try_from(size).ok()),
                 from_name: raw.from_name,
                 from_addr: raw.from_addr,

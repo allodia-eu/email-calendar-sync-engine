@@ -175,3 +175,12 @@ CREATE TABLE source_attachment (
     PRIMARY KEY (account, provider_key)
 ) STRICT, WITHOUT ROWID;
 ";
+
+/// Migration v22: `message.importance`, the importance the sender stated, as its RFC 2156 token
+/// (`low`, `normal`, `high`).
+///
+/// A list row draws it, so it sits in the row rather than only in the payload. No backfill: a row
+/// written before reads `normal` until `NORMALIZER_VERSION` 16's re-snapshot rewrites it.
+pub(crate) const V22: &str = "\
+ALTER TABLE message ADD COLUMN importance TEXT NOT NULL DEFAULT 'normal';
+";

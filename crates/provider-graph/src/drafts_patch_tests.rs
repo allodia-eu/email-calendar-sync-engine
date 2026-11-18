@@ -6,7 +6,7 @@
 
 use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
-    mail::EmailAddress,
+    mail::{EmailAddress, Importance},
 };
 use engine_provider::{Draft, DraftAttachment, Provider};
 use serde_json::json;
@@ -181,4 +181,12 @@ async fn a_rewrite_refused_for_rate_limiting_does_not_become_a_second_draft() {
         .unwrap_err();
 
     assert_eq!(err.class(), engine_core::error::FailureClass::RateLimited);
+}
+
+#[test]
+fn a_rewrite_states_the_importance_even_at_normal() {
+    // `PATCH` leaves out what it is not told about, so a re-save that lowers it says so.
+    assert_eq!(super::body(&draft())["importance"], json!("normal"));
+    let high = draft().with_importance(Importance::High);
+    assert_eq!(super::body(&high)["importance"], json!("high"));
 }

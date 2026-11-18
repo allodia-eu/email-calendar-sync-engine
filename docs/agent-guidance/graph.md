@@ -224,6 +224,11 @@ what sending it would have delivered. Graph files it into Drafts and sets `isDra
 itself: nothing in the request names a folder, which is live-verified rather than
 assumed (`tests/live_drafts.rs`). Graph advertises `mail_drafts`.
 
+- **Importance is the message's `importance` property**, in `MESSAGE_SELECT`. Exchange folds
+  a received message's `Importance` and `X-Priority` headers into it, and a draft created from
+  MIME takes it from the `Importance` header the assembler writes; a re-save's `PATCH` sends it
+  every time, normal included, or lowering it would never reach the stored draft
+  (`tests/live_importance.rs`).
 - **A re-save rewrites the stored message in place: `PATCH /me/messages/{id}`.** A
   draft's `subject`, `body`, `from` and recipient collections are writable while
   `isDraft` is true (they are read-only once it is not), so a text edit is **one

@@ -4,6 +4,7 @@ use super::*;
 
 const MAILBOX_GET: &str = include_str!("../tests/fixtures/mailbox_get.json");
 const EMAIL_GET: &str = include_str!("../tests/fixtures/email_get.json");
+const EMAIL_GET_IMPORTANCE: &str = include_str!("../tests/fixtures/email_get_importance.json");
 
 fn list(fixture: &str) -> Vec<Value> {
     let doc: Value = serde_json::from_str(fixture).unwrap();
@@ -230,6 +231,67 @@ fn sent_at_offset_normalizes_and_bad_values_are_non_fatal() {
     }))
     .unwrap();
     assert!(absent.sent_at.is_none());
+}
+
+#[test]
+fn importance_is_read_from_its_header_properties() {
+    let email = |headers: Value| {
+        let mut value = serde_json::json!({ "id": "e", "mailboxIds": { "a": true } });
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(headers.as_object().unwrap().clone());
+        message_from_json(&value).unwrap().envelope.importance
+    };
+    assert_eq!(
+        email(serde_json::json!({ IMPORTANCE_HEADER: "High", X_PRIORITY_HEADER: null })),
+        Importance::High
+    );
+    // A server answers `null` for a header the message does not have.
+    assert_eq!(
+        email(serde_json::json!({ IMPORTANCE_HEADER: null, X_PRIORITY_HEADER: "5 (Lowest)" })),
+        Importance::Low
+    );
+    assert_eq!(
+        email(serde_json::json!({ IMPORTANCE_HEADER: null, X_PRIORITY_HEADER: null })),
+        Importance::Normal
+    );
+}
+
+/// Stalwart's own answer for `Importance` with `X-Priority` beside it, `X-Priority` alone, and
+/// neither: `asText` keeps the header's case, and a header the message lacks is `null`.
+#[test]
+fn the_servers_own_answer_reads_as_each_message_was_sent() {
+    let importances: Vec<(String, Importance)> = list(EMAIL_GET_IMPORTANCE)
+        .iter()
+        .map(|email| {
+            let message = message_from_json(email).unwrap();
+            (
+                message.envelope.subject.unwrap_or_default(),
+                message.envelope.importance,
+            )
+        })
+        .collect();
+    assert_eq!(
+        importances,
+        [
+            ("Fixture: high importance".to_owned(), Importance::High),
+            (
+                "Fixture: low importance in X-Priority alone".to_owned(),
+                Importance::Low
+            ),
+            (
+                "Fixture: no importance stated".to_owned(),
+                Importance::Normal
+            ),
+        ]
+    );
+}
+
+#[test]
+fn both_importance_headers_are_asked_for() {
+    assert!(EMAIL_PROPERTIES.contains(&IMPORTANCE_HEADER));
+    assert!(EMAIL_PROPERTIES.contains(&X_PRIORITY_HEADER));
 }
 
 #[test]

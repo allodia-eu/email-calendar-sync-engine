@@ -18,6 +18,7 @@ mod body;
 mod content;
 mod flags;
 mod header;
+mod importance;
 mod keyword;
 mod mailbox;
 mod message;
@@ -34,6 +35,7 @@ pub use content::{
 };
 pub use flags::MailFlags;
 pub use header::{EmailHeader, Envelope};
+pub use importance::Importance;
 pub use keyword::{Keyword, KeywordError, SystemKeyword};
 pub use mailbox::Mailbox;
 pub use message::Message;

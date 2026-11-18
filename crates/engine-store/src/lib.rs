@@ -118,4 +118,9 @@ pub use store::Store;
 ///   or in another store bound to — said it could be written, deleted and shared. The JMAP calendar
 ///   list is a delta, so an unchanged calendar would keep the default indefinitely; the re-snapshot
 ///   is what makes each one say what it really allows.
-pub const NORMALIZER_VERSION: u32 = 15;
+/// - `16`: a message carries the importance its sender stated
+///   ([`Importance`](engine_core::mail::Importance)), read from `Importance` and `X-Priority` and
+///   from Graph's `importance`. A stored message reads as normal until the re-snapshot re-reads it;
+///   a Graph delta link carries the `$select` it was minted with, so only a fresh snapshot asks for
+///   the property at all.
+pub const NORMALIZER_VERSION: u32 = 16;

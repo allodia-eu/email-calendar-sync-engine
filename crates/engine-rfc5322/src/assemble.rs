@@ -1,6 +1,6 @@
 //! The RFC 5322 envelope + header assembly, wrapping the MIME body from [`mime`].
 
-use engine_core::mail::EmailAddress;
+use engine_core::mail::{EmailAddress, Importance};
 use engine_provider::{Draft, ProviderError, ProviderResult};
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 
@@ -85,7 +85,9 @@ pub fn assemble_draft_message(draft: &Draft, date: OffsetDateTime) -> ProviderRe
 /// forward the `In-Reply-To` and `References` headers (RFC 5322 §3.6.4) thread the
 /// message with its original; each is omitted when its draft field is empty. A `Cc`
 /// header is emitted when the draft carries Cc recipients (visible to everyone); a
-/// `Bcc` header is emitted only in a filed copy or a draft, never for transmission.
+/// `Bcc` header is emitted only in a filed copy or a draft, never for transmission. An
+/// importance other than normal is written as `Importance` (RFC 2156 §5.3) and `X-Priority`, in
+/// every assembly, since it is the sender's word to the recipients.
 fn assemble(draft: &Draft, date: OffsetDateTime, assembly: Assembly) -> ProviderResult<Vec<u8>> {
     let message_id = reject_control("Message-ID", draft.message_id.as_str())?;
     let from = address_field(&draft.from)?;
@@ -132,13 +134,14 @@ fn assemble(draft: &Draft, date: OffsetDateTime, assembly: Assembly) -> Provider
             .join(" ");
         format!("References: {ids}\r\n")
     };
+    let importance = importance_headers(draft.importance);
     let date = date
         .format(&Rfc2822)
         .map_err(|e| ProviderError::permanent(format!("cannot format the Date header: {e}")))?;
     let headers = format!(
         "Date: {date}\r\nMessage-ID: <{message_id}>\r\nFrom: {from}\r\n{to_header}\
          {cc_header}{bcc_header}{in_reply_to}{references}Subject: {subject}\r\n\
-         MIME-Version: 1.0\r\n",
+         {importance}MIME-Version: 1.0\r\n",
     );
     let body = mime::assemble(draft)?;
     let mut message = headers.into_bytes();
@@ -146,6 +149,19 @@ fn assemble(draft: &Draft, date: OffsetDateTime, assembly: Assembly) -> Provider
     message.extend_from_slice(b"\r\n");
     message.extend_from_slice(&body.body);
     Ok(message)
+}
+
+/// The `Importance` and `X-Priority` lines for `importance`, or nothing for a normal one, which
+/// is what the absence of both says. `X-Priority` is not standard but is what Thunderbird and
+/// Apple Mail read, so it rides beside the standard header as Outlook writes it.
+fn importance_headers(importance: Importance) -> String {
+    match importance.x_priority() {
+        Some(x_priority) => format!(
+            "Importance: {}\r\nX-Priority: {x_priority}\r\n",
+            importance.as_str()
+        ),
+        None => String::new(),
+    }
 }
 
 /// Rejects a header value carrying CR, LF, or NUL — the bytes that would inject extra
@@ -263,3 +279,7 @@ mod mime_tests;
 #[cfg(test)]
 #[path = "imip_tests.rs"]
 mod imip_tests;
+
+#[cfg(test)]
+#[path = "importance_tests.rs"]
+mod importance_tests;

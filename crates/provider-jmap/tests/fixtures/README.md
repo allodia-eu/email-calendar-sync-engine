@@ -23,6 +23,7 @@ tests driven through a fake executor.
 | ------- | ------------- | -------- |
 | `mailbox_get.json` | `Mailbox/get` result | Mailbox normalization: roles (`inbox`/`sent`/`trash`) and the roleless custom `Archive`/`Projects`. |
 | `email_get.json` | `Email/get` result (all 9 seed emails) | Email normalization: the COPY as one multi-membership object, the duplicate-`Message-ID` pair as two distinct objects, missing `Message-ID`, keywords, the move. |
+| `email_get_importance.json` | `Email/get` result (`EMAIL_PROPERTIES`) for three messages appended to a scratch mailbox, re-captured on v1 | The importance headers as `header:…:asText` properties: `Importance: High` with `X-Priority` beside it, `X-Priority` alone, and neither, where a missing header answers `null`. The mailbox was deleted after the capture. |
 | `mailbox_snapshot_response.json` | `[Mailbox/query, Mailbox/get]` response | A one-page queried snapshot. |
 | `email_snapshot_response.json` | `[Email/query, Email/get(#ids)]` response | Member snapshot via result back-reference. |
 | `email_changes_response.json` | `[Email/changes, Email/get(#created), Email/get(#updated)]` response | Empty-delta orchestration (the changes→get back-reference path). |

@@ -1,0 +1,130 @@
+{
+  "accountId": "c",
+  "state": "snu",
+  "list": [
+    {
+      "id": "gaaaaabq",
+      "blobId": "carurmfzkwnzedky2xzxrpmisbdbylmx702v9ir3vcfehknjz1vekaqaga",
+      "threadId": "bq",
+      "mailboxIds": {
+        "u": true
+      },
+      "keywords": {
+        "$hasnoattachment": true,
+        "$seen": true
+      },
+      "size": 318,
+      "receivedAt": "2026-11-18T08:59:35Z",
+      "sentAt": "2026-01-12T09:00:00Z",
+      "subject": "Fixture: high importance",
+      "from": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "importance-high@test.local"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "Importance fixture.\n",
+      "header:Importance:asText": "High",
+      "header:X-Priority:asText": "1 (Highest)"
+    },
+    {
+      "id": "geaaaabr",
+      "blobId": "ccy1y3hk0n12aehvfz0xopgrgrtfrtzlo0evtokdqg2w7raogb2fsaqage",
+      "threadId": "br",
+      "mailboxIds": {
+        "u": true
+      },
+      "keywords": {
+        "$hasnoattachment": true,
+        "$seen": true
+      },
+      "size": 317,
+      "receivedAt": "2026-11-18T08:59:36Z",
+      "sentAt": "2026-01-12T09:00:00Z",
+      "subject": "Fixture: low importance in X-Priority alone",
+      "from": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "importance-low@test.local"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "Importance fixture.\n",
+      "header:Importance:asText": null,
+      "header:X-Priority:asText": "5 (Lowest)"
+    },
+    {
+      "id": "giaaaabs",
+      "blobId": "ccvlqyldy7vxzglhstrycdl9qein1pudjp7csemi2txtypckukvsqaqagi",
+      "threadId": "bs",
+      "mailboxIds": {
+        "u": true
+      },
+      "keywords": {
+        "$hasnoattachment": true,
+        "$seen": true
+      },
+      "size": 282,
+      "receivedAt": "2026-11-18T08:59:36Z",
+      "sentAt": "2026-01-12T09:00:00Z",
+      "subject": "Fixture: no importance stated",
+      "from": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "importance-normal@test.local"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "Importance fixture.\n",
+      "header:Importance:asText": null,
+      "header:X-Priority:asText": null
+    }
+  ],
+  "notFound": []
+}

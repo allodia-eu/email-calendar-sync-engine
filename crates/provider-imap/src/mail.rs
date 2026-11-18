@@ -18,7 +18,9 @@ use std::{
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Envelope, Keyword, Mailbox, MailboxRole, Message, SystemKeyword},
+    mail::{
+        EmailAddress, Envelope, Importance, Keyword, Mailbox, MailboxRole, Message, SystemKeyword,
+    },
     membership::Memberships,
     time::UtcDateTime,
 };
@@ -85,6 +87,12 @@ pub(crate) fn message_from_fetch(
         .and_then(|fields| header_field(fields, "References"))
     {
         message.envelope.references = extract_message_ids(&references);
+    }
+    if let Some(fields) = row.header_fields.as_deref() {
+        message.envelope.importance = Importance::from_headers(
+            header_field(fields, "Importance").as_deref(),
+            header_field(fields, "X-Priority").as_deref(),
+        );
     }
     message
 }
@@ -302,6 +310,8 @@ fn to_envelope(env: &crate::parse::Envelope) -> Envelope {
             .map(extract_message_ids)
             .unwrap_or_default(),
         references: Vec::new(),
+        // Not an ENVELOPE field either; `message_from_fetch` reads it off the header section.
+        importance: Importance::Normal,
         message_id: env
             .message_id
             .as_deref()
@@ -467,3 +477,7 @@ fn split_at(name: &str, delimiter: Option<&str>) -> Option<Range<usize>> {
 #[cfg(test)]
 #[path = "mail_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mail_importance_tests.rs"]
+mod importance_tests;

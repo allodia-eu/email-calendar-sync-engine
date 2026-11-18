@@ -28,7 +28,9 @@ use std::collections::{BTreeSet, HashMap};
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ThreadId},
-    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message, SystemKeyword, ThreadRef},
+    mail::{
+        EmailAddress, Importance, Keyword, Mailbox, MailboxRole, Message, SystemKeyword, ThreadRef,
+    },
     membership::Memberships,
     time::UtcDateTime,
     version::RevisionTokens,
@@ -79,8 +81,17 @@ pub(crate) const ALL_MAIL_ID: &str = "ALL_MAIL";
 
 /// The header set the metadata fetch requests (`metadataHeaders`) — exactly the fields
 /// [`message_from_json`] reads. Keeps the captured payload minimal and deterministic.
-pub(crate) const METADATA_HEADERS: &[&str] =
-    &["From", "To", "Cc", "Bcc", "Subject", "Date", "Message-Id"];
+pub(crate) const METADATA_HEADERS: &[&str] = &[
+    "From",
+    "To",
+    "Cc",
+    "Bcc",
+    "Subject",
+    "Date",
+    "Message-Id",
+    "Importance",
+    "X-Priority",
+];
 
 /// The normalized [`MailboxRole`] for a Gmail system label id, or `None` for a user's label
 /// (a roleless mailbox).
@@ -225,6 +236,8 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, GoogleError> {
     envelope.message_id = message_id_header(header(headers, "Message-Id"))?
         .into_iter()
         .collect();
+    envelope.importance =
+        Importance::from_headers(header(headers, "Importance"), header(headers, "X-Priority"));
     message.sent_at = header(headers, "Date").and_then(parse_rfc2822);
 
     Ok(message)

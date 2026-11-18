@@ -383,3 +383,35 @@ fn a_label_carries_an_unread_count_only_where_the_api_returns_one() {
     .unwrap();
     assert_eq!(listed.unread_count, None);
 }
+
+#[test]
+fn importance_is_read_from_the_metadata_headers() {
+    let importance = |headers: serde_json::Value| {
+        let json = serde_json::json!({
+            "id": "m", "threadId": "t", "labelIds": ["INBOX"],
+            "payload": { "headers": headers }
+        });
+        message_from_json(&json).unwrap().envelope.importance
+    };
+    assert_eq!(
+        importance(serde_json::json!([{ "name": "Importance", "value": "High" }])),
+        Importance::High
+    );
+    assert_eq!(
+        importance(serde_json::json!([{ "name": "X-Priority", "value": "5 (Lowest)" }])),
+        Importance::Low
+    );
+    assert_eq!(importance(serde_json::json!([])), Importance::Normal);
+    assert!(METADATA_HEADERS.contains(&"Importance"));
+    assert!(METADATA_HEADERS.contains(&"X-Priority"));
+}
+
+/// A draft carrying `Importance` and `X-Priority`, read with the metadata fetch's own
+/// `metadataHeaders`: Gmail returns both, in the order the message carries them.
+#[test]
+fn the_metadata_read_returns_the_importance_headers() {
+    let message = message(include_str!(
+        "../tests/fixtures/mail/message_metadata_importance.json"
+    ));
+    assert_eq!(message.envelope.importance, Importance::High);
+}
