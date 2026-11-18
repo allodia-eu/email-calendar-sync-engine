@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use engine_core::{ids::DavCollectionId, time::UtcDateTime};
+use engine_core::{ids::DavCollectionId, time::UtcDateTime, version::CollectionTag};
 
 use super::*;
 use crate::{ScopeReach, reach_calendar, run_scope};
@@ -16,6 +16,8 @@ use crate::{ScopeReach, reach_calendar, run_scope};
 #[derive(Default)]
 struct FakeWindowed {
     windowed: bool,
+    /// The tag the listing shows for the calendar, if it shows one.
+    tag: Option<CollectionTag>,
     /// The calendar's events, by id: each with the instant it starts.
     events: Mutex<BTreeMap<String, Event>>,
     /// Events changed since the last fetch, by id.
@@ -92,11 +94,13 @@ impl Provider for FakeWindowed {
     ) -> ProviderResult<CalendarListing> {
         let listing = vec![Calendar::new(cal(), "home")];
         let present = listing.iter().map(|c| c.id.key().clone()).collect();
-        Ok(ScopeSync::new(
+        let mut listed: CalendarListing = ScopeSync::new(
             SyncUpdate::snapshot(listing, present),
             SyncState::new("list"),
         )
-        .into())
+        .into();
+        listed.tags.extend(self.tag.clone().map(|tag| (cal(), tag)));
+        Ok(listed)
     }
 
     async fn sync_events(
@@ -248,7 +252,7 @@ async fn a_range_inside_the_recorded_window_is_answered_without_a_request() {
     provider.take_requests();
 
     let week = horizon("2026-03-09T00:00:00Z", "2026-03-16T00:00:00Z");
-    assert_eq!(reach(&provider, &store, week).await, ScopeReach::Held);
+    assert_eq!(reach(&provider, &store, week).await, ScopeReach::Covered);
     assert_eq!(provider.take_requests(), []);
 }
 
@@ -278,7 +282,7 @@ async fn a_range_past_the_window_reopens_the_cursor_over_the_union_once() {
     assert_eq!(store.fetch_window(&scope()).await.unwrap(), Some(union));
 
     // Asked again, the range is covered: nothing is fetched twice.
-    assert_eq!(reach(&provider, &store, june).await, ScopeReach::Held);
+    assert_eq!(reach(&provider, &store, june).await, ScopeReach::Covered);
     assert_eq!(provider.take_requests(), []);
 }
 
@@ -326,7 +330,7 @@ async fn a_calendar_fetched_whole_is_held_without_a_request() {
     provider.take_requests();
 
     let june = horizon("2026-06-01T00:00:00Z", "2026-07-01T00:00:00Z");
-    assert_eq!(reach(&provider, &store, june).await, ScopeReach::Held);
+    assert_eq!(reach(&provider, &store, june).await, ScopeReach::Covered);
     assert_eq!(provider.take_requests(), []);
     assert_eq!(store.fetch_window(&scope()).await.unwrap(), None);
     assert_eq!(
@@ -439,3 +443,5 @@ async fn an_expansion_waits_for_a_pass_holding_the_scope() {
         wider
     );
 }
+
+mod race;

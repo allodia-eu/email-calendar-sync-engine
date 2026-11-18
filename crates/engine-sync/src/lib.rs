@@ -161,6 +161,22 @@ pub(crate) trait ScopeSyncer: Sync {
     /// The scope this syncer claims and applies under.
     fn scope(&self, account: &AccountId) -> SyncScope;
 
+    /// Reads from the store what the fetch depends on, once the scope's lease is held and
+    /// before every fetch, a re-claim's included: `cursor` is the one the claim returned.
+    ///
+    /// A read made before the claim can be overtaken by the pass that held the lease, and a
+    /// fetch decided on it then undoes what that pass recorded. Returning a halt releases the
+    /// lease without fetching. Only the event scope has anything to read.
+    async fn prepare(
+        &self,
+        store: &dyn StoreRead,
+        scope: &SyncScope,
+        cursor: Option<&SyncState>,
+    ) -> Result<Option<Self::Halt>, SyncError> {
+        let _ = (store, scope, cursor);
+        Ok(None)
+    }
+
     /// Fetches the scope's changes since `cursor`.
     async fn fetch(
         &self,
@@ -176,7 +192,7 @@ pub(crate) trait ScopeSyncer: Sync {
 
     /// The collection's tag as the listing read it before this pass, recorded with the cursor
     /// ([`ApplyBatch::collection_tag`]). Only a scope that is one listed collection has one.
-    fn collection_tag(&self) -> Option<&engine_core::version::CollectionTag> {
+    fn collection_tag(&self) -> Option<engine_core::version::CollectionTag> {
         None
     }
 
@@ -232,6 +248,17 @@ where
         let claim = store
             .claim_sync_scope(account.clone(), &scope, req.clone())
             .await?;
+        match syncer.prepare(store, &scope, claim.state.as_ref()).await {
+            Ok(None) => {}
+            Ok(Some(halt)) => {
+                store.release_sync_scope(claim.lease).await?;
+                return Ok(ScopeRun::Halted(halt));
+            }
+            Err(err) => {
+                let _ = store.release_sync_scope(claim.lease).await;
+                return Err(err);
+            }
+        }
         // Release the lease if the provider fetch fails (e.g. the account is offline),
         // so a leaked lease does not block the next sync with a spurious `ScopeHeld`.
         let fetched = match syncer.fetch(account, claim.state.as_ref()).await {
@@ -259,9 +286,10 @@ where
                 return Err(err);
             }
         };
+        let tag = syncer.collection_tag();
         let batch = ApplyBatch::new(&sync.update, &derived, &[], &sync.next_cursor)
             .with_recipient_observations(&observations)
-            .with_collection_tag(syncer.collection_tag())
+            .with_collection_tag(tag.as_ref())
             .with_fetch_window(syncer.fetch_window(&sync));
         let batch = read_since(batch, &claim.lease, req);
         match store.apply_sync_update(&claim.lease, batch).await {

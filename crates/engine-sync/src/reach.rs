@@ -58,9 +58,9 @@ use futures_util::{StreamExt, stream};
 use crate::{
     EventSyncReport, SyncError,
     calendar::{
-        MAX_CONCURRENT_EVENT_SCOPES, ScopeGroup, event_scopes, stored_calendars, sync_event_scope,
+        MAX_CONCURRENT_EVENT_SCOPES, ScopeGroup, event_scopes, run_event_scope, stored_calendars,
     },
-    calendar_scopes::{EventFetch, EventScope},
+    calendar_scopes::{EventPlan, EventScope},
     scope_wait::while_held,
 };
 
@@ -104,7 +104,7 @@ pub enum ScopeReach {
     /// The store already held every event of the range, so nothing was asked of the server: the
     /// transport fetches the calendar whole, or the scope's cursor was opened over a window that
     /// contains the range.
-    Held,
+    Covered,
     /// The scope was fetched and applied: its cursor reopened over the union of the window it
     /// had and the range, or its first fetch where it had none.
     Fetched(EventSyncReport),
@@ -161,8 +161,9 @@ where
 
 /// Decides and, where the store lacks the range, fetches one scope.
 ///
-/// Fails [`SyncError::is_busy`] having done nothing when another pass holds the scope; every
-/// read it decides on is made again on the next try.
+/// Fails [`SyncError::is_busy`] having done nothing when another pass holds the scope. Every
+/// read the decision rests on is made under the scope's lease (`EventScope`), so a pass that
+/// widened the window while this one waited is built on, never undone.
 async fn reach_scope<P, S>(
     provider: &P,
     store: &S,
@@ -175,30 +176,14 @@ where
     P: Provider,
     S: Store + StoreRead,
 {
-    let expansion = store
-        .expansion_window(&group.scope)
-        .await?
-        .ok_or(SyncError::NoExpansionWindow)?;
-    let windowed = provider.connection_info().capabilities.windowed_events();
-    let recorded = store.fetch_window(&group.scope).await?;
-    let synced = store
-        .load_sync_state(account.clone(), &group.scope)
-        .await?
-        .is_some();
-    let covered = !windowed || recorded.is_some_and(|window| window.contains(range));
-    if synced && covered {
-        return Ok(ScopeReach::Held);
+    // Refused before the claim, so a calendar no pass has reached is not given a scope row.
+    if store.expansion_window(&group.scope).await?.is_none() {
+        return Err(SyncError::NoExpansionWindow);
     }
-    // A scope with a cursor but no recorded window was opened before windows were recorded,
-    // over one the host chose then. The range the host shows is the best stand-in for it.
-    let window = recorded.unwrap_or(expansion.horizon).union(range);
-    let fetch = EventFetch {
-        window,
-        windowed,
-        reopen: windowed,
-    };
     let calendar = group.calendars[0].id.clone();
-    let scope = EventScope::new(provider, calendar, expansion, None, fetch);
-    let report = sync_event_scope(store, account, req, scope).await?;
-    Ok(ScopeReach::Fetched(report))
+    let scope = EventScope::new(provider, calendar, EventPlan::Reach(range), None);
+    Ok(match run_event_scope(store, account, req, scope).await? {
+        Some(report) => ScopeReach::Fetched(report),
+        None => ScopeReach::Covered,
+    })
 }

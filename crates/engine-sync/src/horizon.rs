@@ -125,22 +125,37 @@ where
 
     // One CalDAV account has one scope per calendar collection; a JMAP one has a single
     // event type. Enumerate rather than hard-code which (`SyncScope::object_kind`).
+    let mut held = Vec::new();
     for scope in scopes
         .into_iter()
         .filter(|scope| scope.object_kind() == Some(ObjectKind::Event))
     {
-        // A scope another pass holds is waited out: that pass expands only what it changes,
-        // over the window it found, so nobody else would widen this one.
-        let expanded = while_held(|| expand_scope(store, account, &scope, &req, &window)).await?;
-        match expanded {
-            Some((occurrences, unexpandable)) => {
-                report.occurrences += occurrences;
-                report.unexpandable.extend(unexpandable);
-            }
-            None => report.skipped += 1,
+        match expand_scope(store, account, &scope, &req, &window).await {
+            Err(err) if err.is_busy() => held.push(scope),
+            expanded => report.add(expanded?),
         }
     }
+    // A scope another pass holds is waited out: that pass expands only what it changes, over
+    // the window it found, so nobody else would widen this one. Only once every free scope is
+    // expanded, so one long pass does not keep the rest of the account's calendars narrow.
+    for scope in held {
+        let expanded = while_held(|| expand_scope(store, account, &scope, &req, &window)).await?;
+        report.add(expanded);
+    }
     Ok(report)
+}
+
+impl HorizonExpansion {
+    /// Adds one scope's [`expand_scope`] outcome.
+    fn add(&mut self, expanded: Option<(usize, Vec<UnexpandableEvent>)>) {
+        match expanded {
+            Some((occurrences, unexpandable)) => {
+                self.occurrences += occurrences;
+                self.unexpandable.extend(unexpandable);
+            }
+            None => self.skipped += 1,
+        }
+    }
 }
 
 /// Re-expands one scope over `window`, returning the occurrences it wrote and the events the
@@ -158,10 +173,10 @@ where
     S: Store + StoreRead,
 {
     // Already expanded over exactly this window? Then re-deriving every event would only
-    // reproduce the stored rows — skip it, and never claim the lease. This is a lease-free
-    // read (the sync/reconcile paths resolve the same window before claiming), so it costs
-    // nothing when the pass does have work to do. Read again on every try, so a scope the
-    // holder of its lease has just expanded the same way is not expanded twice.
+    // reproduce the stored rows — skip it, and never claim the lease. A lease-free read is
+    // enough here: a stale answer can only cost a re-expansion nobody needed, never undo
+    // one, since this is the one call that moves the window. Read again on every try, so a
+    // scope the holder of its lease has just expanded the same way is not expanded twice.
     if store.expansion_window(scope).await?.as_ref() == Some(window) {
         return Ok(None);
     }

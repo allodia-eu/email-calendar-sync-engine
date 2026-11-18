@@ -57,8 +57,8 @@ use engine_store::{LeaseRequest, Store, StoreRead, SyncApplied, WorkerId};
 use futures_util::{StreamExt, stream};
 
 use crate::{
-    SyncError, UnexpandableEvent,
-    calendar_scopes::{CalendarScope, EventFetch, EventScope},
+    ScopeRun, SyncError, UnexpandableEvent,
+    calendar_scopes::{CalendarScope, Covered, EventPlan, EventScope},
     run_scope, vanished,
 };
 
@@ -335,15 +335,11 @@ where
     if tag.is_some() && store.collection_tag(&group.scope).await?.as_ref() == tag {
         return Ok(EventScopePass::Unchanged);
     }
-    let window = if let Some(window) = store.expansion_window(&group.scope).await? {
-        window
-    } else {
+    if store.expansion_window(&group.scope).await?.is_none() {
         seed_window(store, account, &group.scope, req, seed).await?;
-        seed.clone()
-    };
-    let fetch = EventFetch::for_scope(provider, store.fetch_window(&group.scope).await?, &window);
+    }
     let calendar = group.calendars[0].id.clone();
-    let scope = EventScope::new(provider, calendar, window, tag.cloned(), fetch);
+    let scope = EventScope::new(provider, calendar, EventPlan::Follow, tag.cloned());
     let report = sync_event_scope(store, account, req, scope).await?;
     Ok(EventScopePass::Synced(report))
 }
@@ -409,19 +405,42 @@ where
     P: Provider,
     S: Store + StoreRead,
 {
-    let scope = provider.event_scope(account, calendar);
-    let window = store
-        .expansion_window(&scope)
+    // Refused before the claim, so a calendar no pass has reached is not given a scope row.
+    if store
+        .expansion_window(&provider.event_scope(account, calendar))
         .await?
-        .ok_or(SyncError::NoExpansionWindow)?;
-    let fetch = EventFetch::for_scope(provider, store.fetch_window(&scope).await?, &window);
+        .is_none()
+    {
+        return Err(SyncError::NoExpansionWindow);
+    }
     let req = LeaseRequest::new(worker, ttl);
-    let scope = EventScope::new(provider, calendar.clone(), window, None, fetch);
+    let scope = EventScope::new(provider, calendar.clone(), EventPlan::Follow, None);
     sync_event_scope(store, account, &req, scope).await
 }
 
-/// Runs one event scope once, collecting what the expander refused.
-pub(crate) async fn sync_event_scope<P, S>(
+/// Runs one event scope once, collecting what the expander refused: `None` when the pass
+/// found nothing to fetch, which only an [`EventPlan::Reach`] does.
+pub(crate) async fn run_event_scope<P, S>(
+    store: &S,
+    account: &AccountId,
+    req: &LeaseRequest,
+    scope: EventScope<'_, P>,
+) -> Result<Option<EventSyncReport>, SyncError>
+where
+    P: Provider,
+    S: Store + StoreRead,
+{
+    Ok(match run_scope(store, account, &scope, req).await? {
+        ScopeRun::Applied { applied, meta: () } => Some(EventSyncReport {
+            applied,
+            unexpandable: scope.into_unexpandable(),
+        }),
+        ScopeRun::Halted(Covered) => None,
+    })
+}
+
+/// [`run_event_scope`] for an [`EventPlan::Follow`] pass, which always fetches.
+async fn sync_event_scope<P, S>(
     store: &S,
     account: &AccountId,
     req: &LeaseRequest,
@@ -431,9 +450,7 @@ where
     P: Provider,
     S: Store + StoreRead,
 {
-    let (applied, ()) = run_scope(store, account, &scope, req).await?.into_applied();
-    Ok(EventSyncReport {
-        applied,
-        unexpandable: scope.into_unexpandable(),
-    })
+    Ok(run_event_scope(store, account, req, scope)
+        .await?
+        .unwrap_or_default())
 }

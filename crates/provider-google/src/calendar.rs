@@ -147,19 +147,19 @@ impl Provider for GoogleCalendarProvider {
         cursor: Option<&SyncState>,
         window: Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
-        self.events(calendar, cursor, Some(window.into())).await
+        self.events(calendar, cursor, window.into()).await
     }
 }
 impl engine_provider::MailboxWrites for GoogleCalendarProvider {}
 
 impl GoogleCalendarProvider {
     /// One events pass over `calendar`: a delta from `cursor`, or a snapshot opened over
-    /// `window` (the whole calendar when `None`) where there is no cursor or Google expired it.
+    /// `window` where there is no cursor or Google expired it.
     async fn events(
         &self,
         calendar: &CalendarId,
         cursor: Option<&SyncState>,
-        window: Option<CalendarWindow>,
+        window: CalendarWindow,
     ) -> ProviderResult<ScopeSync<Event>> {
         cal_id::listed(calendar)?;
         // Drain every `events.list` page into one update. A snapshot reconciles (its
@@ -177,7 +177,7 @@ impl GoogleCalendarProvider {
                 calendar,
                 cursor,
                 page_token.as_ref(),
-                window,
+                Some(window),
             )
             .await
             {

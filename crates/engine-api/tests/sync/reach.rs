@@ -180,7 +180,7 @@ async fn reaching_a_range_past_the_first_window_fetches_its_events_once() {
         .reach_calendar(&provider, &account(), september)
         .await
         .unwrap();
-    assert!(matches!(again.scopes[0].result, Ok(ScopeReach::Held)));
+    assert!(matches!(again.scopes[0].result, Ok(ScopeReach::Covered)));
     assert_eq!(*provider.requests.lock().unwrap(), []);
 }
 

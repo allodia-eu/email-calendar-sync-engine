@@ -573,6 +573,8 @@ guessing when to ask again. So `expand_calendar_horizon` (and `reach_calendar`, 
 claim with a backoff capped at a second until the holder releases the lease or its lease
 lapses (`engine-sync/src/scope_wait.rs`). It is polled rather than woken because the holder
 can be another process on the same store. A caller that wants to stop waiting drops the future.
+An expansion widens every scope nobody holds before it waits on the held ones, so one long pass
+does not keep the account's other calendars narrow.
 
 ## The fetch window is the store's too
 
@@ -606,6 +608,16 @@ event the store claims to hold, on every transport.
 - **Not fetched twice.** The recorded window only grows. A range inside it is answered without a
   request, and a second caller asking for the same range waits for the first one's lease, then
   finds it covered.
+- **Decided under the lease.** Every read a pass of an event scope decides on (the recorded
+  fetch window, the expansion window, the tag a reopen keeps) is made after its claim, in
+  `ScopeSyncer::prepare`, never before it. A read made before the claim goes stale while the
+  holder of the lease finishes: a reach planned on it reopens over a smaller union, deleting the
+  events the other reach fetched and shrinking the window, and events fetched after an
+  expansion are expanded over the old horizon, leaving the new days empty
+  (`engine-sync/src/tests/calendar_reach/race.rs`).
+- **The tag survives.** A reopen records the collection tag the scope already had: the calendar
+  it lists is at least as new as the state that tag names, so a later pass whose listing shows
+  the same tag still skips the calendar without a request.
 - **While it runs**, it holds the scope's lease; reads answer from the store as it was, and the
   fetched events land in one commit per calendar. A sync of the calendar meanwhile reports it
   held; an expansion waits.
