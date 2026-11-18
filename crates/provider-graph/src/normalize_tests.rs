@@ -301,3 +301,38 @@ fn the_select_keeps_the_recipients_that_make_sender_an_address() {
     assert!(MESSAGE_SELECT.contains(&"sender"));
     assert!(MESSAGE_SELECT.contains(&"toRecipients"));
 }
+
+#[test]
+fn importance_is_read_from_its_property() {
+    let importance = |id: &str| {
+        messages()
+            .into_iter()
+            .find(|m| m.id.as_str() == id)
+            .unwrap()
+            .envelope
+            .importance
+    };
+    assert_eq!(importance("message-1"), engine_core::mail::Importance::Low);
+    assert_eq!(importance("message-2"), engine_core::mail::Importance::High);
+    assert_eq!(
+        importance("message-3"),
+        engine_core::mail::Importance::Normal
+    );
+    assert!(MESSAGE_SELECT.contains(&"importance"));
+}
+
+/// A draft created from MIME carrying `Importance: high`, read back with the sync's own `$select`:
+/// Exchange turns the header into the property, lowercased.
+#[test]
+fn a_header_set_on_the_mime_reads_back_as_the_property() {
+    let doc: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/mail/message_importance.json"
+    ))
+    .unwrap();
+    assert_eq!(doc["importance"], "high");
+    let message = message_from_json(&doc, &[]).unwrap();
+    assert_eq!(
+        message.envelope.importance,
+        engine_core::mail::Importance::High
+    );
+}

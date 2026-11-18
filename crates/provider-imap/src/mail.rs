@@ -18,13 +18,18 @@ use std::{
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Envelope, Keyword, Mailbox, MailboxRole, Message, SystemKeyword},
+    mail::{
+        EmailAddress, Envelope, Importance, Keyword, Mailbox, MailboxRole, Message, SystemKeyword,
+    },
     membership::Memberships,
     time::UtcDateTime,
 };
 use time::{Date, Month, PrimitiveDateTime, Time, UtcOffset};
 
-use crate::parse::{Address, FetchRow, ListRow};
+use crate::{
+    header_section::{self, header_field},
+    parse::{Address, FetchRow, ListRow},
+};
 
 /// Synthesizes the stable [`MessageId`] key for an IMAP message from its identity
 /// triple `(mailbox, UIDVALIDITY, UID)` (RFC 9051 §2.3.1.1).
@@ -85,6 +90,9 @@ pub(crate) fn message_from_fetch(
         .and_then(|fields| header_field(fields, "References"))
     {
         message.envelope.references = extract_message_ids(&references);
+    }
+    if let Some(fields) = row.header_fields.as_deref() {
+        message.envelope.importance = header_section::importance(fields);
     }
     message
 }
@@ -302,6 +310,8 @@ fn to_envelope(env: &crate::parse::Envelope) -> Envelope {
             .map(extract_message_ids)
             .unwrap_or_default(),
         references: Vec::new(),
+        // Not an ENVELOPE field either; `message_from_fetch` reads it off the header section.
+        importance: Importance::Normal,
         message_id: env
             .message_id
             .as_deref()
@@ -349,32 +359,6 @@ fn extract_message_ids(raw: &str) -> Vec<MessageIdHeader> {
         ids.extend(MessageIdHeader::new(raw.trim()).ok());
     }
     ids
-}
-
-/// The unfolded value of the field `name` in a raw header section, or `None` when the
-/// section has no such field. A line that starts with whitespace continues the field
-/// before it (RFC 5322 §2.2.3).
-fn header_field(section: &str, name: &str) -> Option<String> {
-    let mut value: Option<String> = None;
-    for line in section.lines() {
-        if line.starts_with([' ', '\t']) {
-            if let Some(value) = value.as_mut() {
-                value.push(' ');
-                value.push_str(line.trim());
-            }
-            continue;
-        }
-        if value.is_some() {
-            break;
-        }
-        let Some((field, rest)) = line.split_once(':') else {
-            continue;
-        };
-        if field.trim().eq_ignore_ascii_case(name) {
-            value = Some(rest.trim().to_owned());
-        }
-    }
-    value
 }
 
 /// Whether the attribute list carries `\<attr>` (case-insensitively).
@@ -467,3 +451,7 @@ fn split_at(name: &str, delimiter: Option<&str>) -> Option<Range<usize>> {
 #[cfg(test)]
 #[path = "mail_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mail_importance_tests.rs"]
+mod importance_tests;

@@ -283,6 +283,7 @@ fn the_message_table_carries_a_messages_whole_mutable_state() {
             "from_addr",
             "from_name",
             "has_attachment",
+            "importance",
             "last_modified",
             "message_id",
             "mod_seq",

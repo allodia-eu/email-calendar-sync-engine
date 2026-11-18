@@ -63,6 +63,15 @@ AOL's CalDAV endpoint. Last observed October 2026.
 |---|---|---|---|---|
 | AOL-1 | Answers a request without credentials with `401` and no `WWW-Authenticate` header. | RFC 9110 §15.5.2, as YAHOO-1. | As YAHOO-1. | Not yet |
 
+## Microsoft
+
+Exchange Online, through Microsoft Graph, on a personal Outlook.com account. Last observed
+November 2026.
+
+| Id | What the server does | What the RFC requires | How the engine copes | Reported |
+|---|---|---|---|---|
+| MICROSOFT-1 | Reads a message's importance header as unreadable, and so the message as normal importance, when the token has whitespace after it (`Importance: low␠␠`) or a comment beside it (`Importance: High (urgent)`). Whitespace before the token, a fold before it, or none at all reads as expected. Observed by creating drafts from MIME and reading `importance` back (`provider-graph/tests/fixtures/mail/importance_header_shapes.json`). | RFC 2156 §5.3 defines `Importance` as a structured field whose value is a token, and RFC 5322 §3.2.2 lets CFWS, folding whitespace and comments, appear around the tokens of a structured field. | The engine's rule follows the RFC (`Importance::parse`), so such a message reads its stated importance on every other transport. On a Graph account Exchange's reading stands, since the engine reads the property Exchange derived; `importance_shapes_tests.rs` pins exactly these shapes as the difference. | Not yet |
+
 ## Stalwart
 
 Stalwart's JMAP server, as the engine's harness runs it (`docker/stalwart`). Last observed on

@@ -1,7 +1,7 @@
 //! Offline tests for the JMAP send request: the draft create, the submission, and the
 //! receipt parse.
 
-use engine_core::error::FailureClass;
+use engine_core::{error::FailureClass, mail::Importance};
 
 use super::*;
 
@@ -162,9 +162,25 @@ fn build_draft_omits_the_headers_a_draft_does_not_have() {
         "Body",
     );
     let create = build_draft("d", &draft, &[]);
-    for absent in ["cc", "bcc", "inReplyTo", "references"] {
+    for absent in [
+        "cc",
+        "bcc",
+        "inReplyTo",
+        "references",
+        IMPORTANCE_HEADER,
+        X_PRIORITY_HEADER,
+    ] {
         assert!(create.get(absent).is_none(), "{absent}: {create}");
     }
+}
+
+/// JMAP has no importance property, so the created Email names the headers themselves.
+#[test]
+fn build_draft_writes_an_importance_other_than_normal_as_headers() {
+    let draft = addressed_draft().with_importance(Importance::High);
+    let create = build_draft("d", &draft, &[]);
+    assert_eq!(create[IMPORTANCE_HEADER], json!("high"));
+    assert_eq!(create[X_PRIORITY_HEADER], json!("1 (Highest)"));
 }
 
 /// Every recipient is in the envelope, To + Cc + Bcc, deduplicated case-insensitively

@@ -45,11 +45,11 @@ pub(crate) fn upsert_message(
         tx,
         "INSERT INTO message (scope_key, provider_key, account, thread_id, message_id, date_utc,
                               flags, has_attachment, size_octets, from_name, from_addr, subject,
-                              preview, last_modified, etag, change_key, mod_seq)
+                              preview, last_modified, etag, change_key, mod_seq, importance)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
                  COALESCE((SELECT has_attachment FROM source_attachment
                             WHERE account = ?3 AND provider_key = ?2), ?8),
-                 ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                 ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
          ON CONFLICT(scope_key, provider_key) DO UPDATE SET
              account = excluded.account,
              thread_id = COALESCE(excluded.thread_id, message.thread_id),
@@ -65,7 +65,8 @@ pub(crate) fn upsert_message(
              last_modified = excluded.last_modified,
              etag = excluded.etag,
              change_key = excluded.change_key,
-             mod_seq = excluded.mod_seq",
+             mod_seq = excluded.mod_seq,
+             importance = excluded.importance",
         rusqlite::params![
             scope_key,
             row.key.as_str(),
@@ -87,6 +88,7 @@ pub(crate) fn upsert_message(
                 .mod_seq
                 .as_ref()
                 .and_then(|m| i64::try_from(m.get()).ok()),
+            row.importance.as_str(),
         ],
     )?;
     Ok(())

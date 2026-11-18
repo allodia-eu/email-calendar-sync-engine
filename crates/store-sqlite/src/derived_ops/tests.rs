@@ -307,6 +307,7 @@ fn sized_row(key: &str, size: Option<u64>) -> engine_core::search_index::MailRow
         date_utc: None,
         flags: engine_core::mail::MailFlags::default(),
         has_attachment: false,
+        importance: engine_core::mail::Importance::Normal,
         size_octets: size,
         from_name: None,
         from_addr: None,

@@ -43,6 +43,7 @@ mod capability_window;
 mod connect_observer;
 mod connection;
 mod contact;
+mod content_id;
 mod deadline;
 mod error;
 mod hand_over;

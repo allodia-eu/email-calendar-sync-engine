@@ -26,6 +26,7 @@ fn row(key: &str, date: Option<&str>, thread: Option<&ThreadId>) -> MailRow {
         date_utc: date.map(|d| d.parse::<UtcDateTime>().unwrap()),
         flags: MailFlags::default(),
         has_attachment: false,
+        importance: engine_core::mail::Importance::Normal,
         size_octets: None,
         from_name: None,
         from_addr: None,

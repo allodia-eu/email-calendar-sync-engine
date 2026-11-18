@@ -81,7 +81,8 @@ unanalysed, and the failure mode is a correct answer arrived at by sorting every
 
 `message` holds one row per stored mail object carrying exactly what a list row, a sort,
 a conversation group and a date filter need — `(account, scope_key, provider_key)`,
-`thread_id`, `message_id`, `date_utc`, the `flags` bitfield, `has_attachment`, and the
+`thread_id`, `message_id`, `date_utc`, the `flags` bitfield, `has_attachment`, the sender's
+`importance` (its RFC 2156 token), and the
 row's visible text (`from_name`, `from_addr`, `subject`, `preview`). `object.payload`
 stays the canonical normalized record and is off the list path entirely: opening a
 message reads it, showing a message in a list does not.
@@ -591,7 +592,7 @@ fetched with the window as an argument of `Provider::sync_events`, which opens a
 open (none yet, or one the server expired) over it; a transport that fetches whole ignores it, and
 an adapter takes no window at construction. That window is recorded **with the
 cursor**, in the same commit (`ApplyBatch::fetch_window`, `StoreRead::fetch_window`, schema
-v22), so the two cannot disagree: a snapshot records the window it was opened over, and a delta
+v23), so the two cannot disagree: a snapshot records the window it was opened over, and a delta
 records nothing and keeps it. The first sync opens over the expansion window (the host's horizon
 then); a scope opened before windows were recorded has a cursor and no window, and is treated
 as covering nothing beyond what the host shows.

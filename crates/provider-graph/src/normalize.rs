@@ -18,7 +18,7 @@
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ThreadId},
-    mail::{EmailAddress, Mailbox, MailboxRole, Message, ThreadRef},
+    mail::{EmailAddress, Importance, Mailbox, MailboxRole, Message, ThreadRef},
     membership::Memberships,
 };
 use engine_provider::KeywordName;
@@ -113,6 +113,7 @@ pub(crate) const MESSAGE_SELECT: &[&str] = &[
     "categories",
     "bodyPreview",
     "changeKey",
+    "importance",
 ];
 
 /// The well-known mail-folder aliases that map to a normalized [`MailboxRole`].
@@ -224,6 +225,10 @@ pub(crate) fn message_from_json(
     envelope.to = recipients(value, "toRecipients");
     envelope.cc = recipients(value, "ccRecipients");
     envelope.bcc = recipients(value, "bccRecipients");
+    // Exchange folds a received message's `Importance` and `X-Priority` into this one property.
+    envelope.importance = opt_str(value, "importance")
+        .and_then(Importance::parse)
+        .unwrap_or_default();
     if let Some(header) = message_id_header(value)? {
         envelope.message_id = vec![header];
     }
@@ -280,3 +285,7 @@ fn message_id_header(value: &Value) -> Result<Option<MessageIdHeader>, GraphErro
 #[cfg(test)]
 #[path = "normalize_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "importance_shapes_tests.rs"]
+mod importance_shapes_tests;

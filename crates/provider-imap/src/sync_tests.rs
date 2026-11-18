@@ -76,10 +76,12 @@ async fn first_sync_snapshots_a_uid_window_newest_first() {
     assert_eq!(page.next_cursor.as_str(), "v1000;n9;g1;r");
     // The next window ends just below this one.
     assert_eq!(page_high(page.next_page.as_ref().unwrap()), Some(5));
-    // The client fetched exactly the newest window, including the References header.
+    // The client fetched exactly the newest window, including the References and importance
+    // headers.
     assert!(written(&recorded).contains(
         "UID FETCH 6:8 (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE \
-         BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)])"
+         BODY.PEEK[HEADER.FIELDS (REFERENCES IMPORTANCE X-MSMAIL-PRIORITY X-PRIORITY CONTENT-TYPE \
+         CONTENT-DISPOSITION)])"
     ));
 }
 

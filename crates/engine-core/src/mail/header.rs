@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::EmailAddress;
+use super::{EmailAddress, Importance};
 use crate::ids::MessageIdHeader;
 
 /// A single header in its raw form, preserving original capitalization and
@@ -28,7 +28,8 @@ impl EmailHeader {
 
 /// The parsed envelope: the standard addressing and threading headers projected
 /// into typed form (IMAP `ENVELOPE`, RFC 9051 §7.5.2; JMAP convenience
-/// properties, RFC 8621 §4.1.3).
+/// properties, RFC 8621 §4.1.3), plus the importance the sender stated, which
+/// neither of those carries.
 ///
 /// Address lists are flattened to [`EmailAddress`]; group structure, if any, is
 /// recoverable from the preserved raw message. The `message_id`, `in_reply_to`,
@@ -58,6 +59,12 @@ pub struct Envelope {
     pub cc: Vec<EmailAddress>,
     /// The `Bcc` recipients.
     pub bcc: Vec<EmailAddress>,
+    /// The importance the message carries, read by [`Importance::from_headers`].
+    ///
+    /// Defaulted, so a payload stored before the engine read it loads as
+    /// [`Normal`](Importance::Normal) until `NORMALIZER_VERSION` 16 re-reads it.
+    #[serde(default)]
+    pub importance: Importance,
 }
 
 #[cfg(test)]

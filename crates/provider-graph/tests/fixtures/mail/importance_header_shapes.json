@@ -1,0 +1,227 @@
+{
+  "about": "What Exchange Online stores as a message's `importance` for each importance header shape in the MIME a draft is created from (POST /me/messages, then GET ?$select=importance). Observed November 2026.",
+  "shapes": [
+    {
+      "name": "importance_high",
+      "headers": [
+        "Importance: high"
+      ],
+      "importance": "high"
+    },
+    {
+      "name": "x_priority_alone_5",
+      "headers": [
+        "X-Priority: 5 (Lowest)"
+      ],
+      "importance": "low"
+    },
+    {
+      "name": "x_priority_alone_2",
+      "headers": [
+        "X-Priority: 2"
+      ],
+      "importance": "high"
+    },
+    {
+      "name": "x_msmail_alone_high",
+      "headers": [
+        "X-MSMail-Priority: High"
+      ],
+      "importance": "high"
+    },
+    {
+      "name": "importance_twice_low_then_high",
+      "headers": [
+        "Importance: low",
+        "Importance: high"
+      ],
+      "importance": "high"
+    },
+    {
+      "name": "importance_low_x_priority_1",
+      "headers": [
+        "Importance: low",
+        "X-Priority: 1"
+      ],
+      "importance": "low"
+    },
+    {
+      "name": "importance_comment",
+      "headers": [
+        "Importance: High (urgent)"
+      ],
+      "importance": "normal"
+    },
+    {
+      "name": "importance_unreadable_x_priority_1",
+      "headers": [
+        "Importance: very",
+        "X-Priority: 1"
+      ],
+      "importance": "normal"
+    },
+    {
+      "name": "none",
+      "headers": [],
+      "importance": "normal"
+    },
+    {
+      "name": "importance_upper",
+      "headers": [
+        "Importance: HIGH"
+      ],
+      "importance": "high"
+    },
+    {
+      "name": "importance_normal_x_priority_1",
+      "headers": [
+        "Importance: normal",
+        "X-Priority: 1"
+      ],
+      "importance": "normal"
+    },
+    {
+      "name": "x_priority_5_x_msmail_high",
+      "headers": [
+        "X-Priority: 5",
+        "X-MSMail-Priority: High"
+      ],
+      "importance": "high"
+    },
+    {
+      "name": "x_msmail_high_x_priority_5",
+      "headers": [
+        "X-MSMail-Priority: High",
+        "X-Priority: 5"
+      ],
+      "importance": "high"
+    },
+    {
+      "name": "x_priority_twice_5_then_1",
+      "headers": [
+        "X-Priority: 5",
+        "X-Priority: 1"
+      ],
+      "importance": "high"
+    },
+    {
+      "name": "x_priority_unreadable_x_msmail_high",
+      "headers": [
+        "X-Priority: urgent",
+        "X-MSMail-Priority: High"
+      ],
+      "importance": "high"
+    },
+    {
+      "name": "x_priority_word_high",
+      "headers": [
+        "X-Priority: High"
+      ],
+      "importance": "normal"
+    },
+    {
+      "name": "x_priority_3",
+      "headers": [
+        "X-Priority: 3"
+      ],
+      "importance": "normal"
+    },
+    {
+      "name": "x_msmail_low",
+      "headers": [
+        "X-MSMail-Priority: Low"
+      ],
+      "importance": "low"
+    },
+    {
+      "name": "importance_twice_high_then_low",
+      "headers": [
+        "Importance: high",
+        "Importance: low"
+      ],
+      "importance": "low"
+    },
+    {
+      "name": "importance_spaces",
+      "headers": [
+        "Importance:   low"
+      ],
+      "importance": "normal"
+    },
+    {
+      "name": "x_priority_1_x_msmail_low",
+      "headers": [
+        "X-Priority: 1",
+        "X-MSMail-Priority: Low"
+      ],
+      "importance": "low"
+    },
+    {
+      "name": "x_msmail_low_x_priority_1",
+      "headers": [
+        "X-MSMail-Priority: Low",
+        "X-Priority: 1"
+      ],
+      "importance": "low"
+    },
+    {
+      "name": "x_msmail_unreadable_x_priority_1",
+      "headers": [
+        "X-MSMail-Priority: urgent",
+        "X-Priority: 1"
+      ],
+      "importance": "normal"
+    },
+    {
+      "name": "x_msmail_twice_low_then_high",
+      "headers": [
+        "X-MSMail-Priority: Low",
+        "X-MSMail-Priority: High"
+      ],
+      "importance": "high"
+    },
+    {
+      "name": "importance_tab",
+      "headers": [
+        "Importance:\tlow"
+      ],
+      "importance": "low"
+    },
+    {
+      "name": "importance_one_space",
+      "headers": [
+        "Importance: low"
+      ],
+      "importance": "low"
+    },
+    {
+      "name": "importance_trailing_spaces",
+      "headers": [
+        "Importance: low"
+      ],
+      "importance": "normal"
+    },
+    {
+      "name": "importance_leading_spaces",
+      "headers": [
+        "Importance:   low"
+      ],
+      "importance": "low"
+    },
+    {
+      "name": "importance_no_space",
+      "headers": [
+        "Importance:low"
+      ],
+      "importance": "low"
+    },
+    {
+      "name": "importance_folded",
+      "headers": [
+        "Importance:",
+        " low"
+      ],
+      "importance": "low"
+    }
+  ]
+}
