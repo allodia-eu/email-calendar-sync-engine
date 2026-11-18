@@ -56,6 +56,15 @@ const SELF_ADDRESS: &str = "allodia.e2e@gmail.com";
 /// `sendUpdates=all` would reach nobody.
 const ORGANIZER: &str = "boss@example.test";
 
+/// A window wide enough to be the whole calendar.
+fn whole_calendar() -> engine_core::time::Horizon {
+    engine_core::time::Horizon::new(
+        "2000-01-01T00:00:00Z".parse().unwrap(),
+        "2100-01-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap()
+}
+
 fn account() -> engine_core::ids::AccountId {
     engine_core::ids::AccountId::try_from("live").unwrap()
 }
@@ -163,7 +172,7 @@ fn in_primary(id: &str) -> EventId {
 /// Re-reads `id` through the adapter's own sync — the projection a host would see.
 async fn read_event(provider: &GoogleCalendarProvider, id: &EventId) -> Event {
     let sync = provider
-        .sync_events(&account(), &calendar(), None)
+        .sync_events(&account(), &calendar(), None, whole_calendar())
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &sync.update else {

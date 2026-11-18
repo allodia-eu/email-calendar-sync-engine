@@ -30,7 +30,7 @@ use engine_core::{
         MembershipRow,
     },
     sync::{SyncObject, SyncScope, SyncState},
-    time::{ExpansionWindow, UtcDateTime},
+    time::{ExpansionWindow, Horizon, UtcDateTime},
     version::CollectionTag,
     write::{IdempotencyKey, PendingOp, PendingOpId},
 };
@@ -87,6 +87,8 @@ pub(super) struct ScopeCell {
     window: Option<ExpansionWindow>,
     /// The collection tag recorded with `state`.
     collection_tag: Option<CollectionTag>,
+    /// The fetch window recorded with `state` (windowed event scopes only).
+    fetch_window: Option<Horizon>,
     objects: HashMap<ProviderKey, Value>,
     fts: HashMap<ProviderKey, Vec<FtsField>>,
     occurrences: HashMap<ProviderKey, Vec<OccurrenceRow>>,
@@ -108,6 +110,7 @@ impl ScopeCell {
             state: None,
             window: None,
             collection_tag: None,
+            fetch_window: None,
             objects: HashMap::new(),
             fts: HashMap::new(),
             occurrences: HashMap::new(),

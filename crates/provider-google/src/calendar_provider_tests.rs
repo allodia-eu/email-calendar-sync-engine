@@ -1,7 +1,7 @@
 //! Offline calendar-provider tests: `sync_calendars` and the snapshot/delta/410-restart
 //! `sync_events` drain.
 
-use engine_core::sync::SyncUpdate;
+use engine_core::{sync::SyncUpdate, time::Horizon};
 
 use super::*;
 use crate::test_support::{fake_client, fake_client_fallible, json};
@@ -17,6 +17,15 @@ fn account() -> AccountId {
 
 fn calendar() -> CalendarId {
     CalendarId::try_from("me@example.com").unwrap()
+}
+
+/// A window wide enough to be the whole calendar.
+fn whole() -> Horizon {
+    Horizon::new(
+        "2000-01-01T00:00:00Z".parse().unwrap(),
+        "2100-01-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap()
 }
 
 fn provider(routes: Vec<(&'static str, serde_json::Value)>) -> GoogleCalendarProvider {
@@ -74,7 +83,7 @@ async fn the_default_calendar_syncs_under_its_address_not_the_alias() {
     let aliased = CalendarId::try_from("primary").unwrap();
     assert!(
         provider(vec![("/events?singleEvents=false", json(EVENTS))])
-            .sync_events(&account(), &aliased, None)
+            .sync_events(&account(), &aliased, None, whole())
             .await
             .is_err()
     );
@@ -83,7 +92,7 @@ async fn the_default_calendar_syncs_under_its_address_not_the_alias() {
 #[tokio::test]
 async fn sync_events_snapshot_reconciles_with_a_sync_token() {
     let sync = provider(vec![("/events?singleEvents=false", json(EVENTS))])
-        .sync_events(&account(), &calendar(), None)
+        .sync_events(&account(), &calendar(), None, whole())
         .await
         .unwrap();
     assert!(sync.is_snapshot());
@@ -101,6 +110,7 @@ async fn sync_events_delta_is_additive_with_a_tombstone() {
             &account(),
             &calendar(),
             Some(&SyncState::new("v1;events-sync-token-1")),
+            whole(),
         )
         .await
         .unwrap();
@@ -117,13 +127,8 @@ async fn sync_events_delta_is_additive_with_a_tombstone() {
 }
 
 #[test]
-fn with_window_and_write_capabilities_and_debug() {
-    use engine_core::time::CalendarDate;
-    let window = crate::CalendarWindow::new(
-        CalendarDate::new(2026, 8, 1).unwrap(),
-        CalendarDate::new(2026, 9, 1).unwrap(),
-    );
-    let p = provider(vec![]).with_window(window);
+fn write_capabilities_and_debug() {
+    let p = provider(vec![]);
     // Google enforces the If-Match guard → writes advertised.
     assert!(p.connection_info().capabilities.calendar_writes());
     assert!(p.connection_info().capabilities.conference_writes());
@@ -244,10 +249,49 @@ async fn sync_events_restarts_as_a_snapshot_when_the_sync_token_expired() {
         vec![("syncToken=", Err((410, json(SYNC_GONE))))];
     routes.push(("/events?singleEvents=false", Ok(json(EVENTS))));
     let sync = GoogleCalendarProvider::new(fake_client_fallible(routes))
-        .sync_events(&account(), &calendar(), Some(&SyncState::new("v1;old")))
+        .sync_events(
+            &account(),
+            &calendar(),
+            Some(&SyncState::new("v1;old")),
+            whole(),
+        )
         .await
         .unwrap();
     // Recovery yields a fresh snapshot, not an error.
     assert!(sync.is_snapshot());
     assert_eq!(sync.next_cursor.as_str(), "v1;events-sync-token-1");
+}
+
+/// The window the engine names bounds the snapshot: the route answers only the December range.
+/// A delta carries no window at all.
+#[tokio::test]
+async fn sync_events_opens_over_the_window_the_engine_names() {
+    let p = provider(vec![
+        (
+            "&timeMin=2026-12-01T00:00:00Z&timeMax=2027-01-01T00:00:00Z",
+            json(EVENTS),
+        ),
+        ("syncToken=", json(DELTA)),
+    ]);
+    assert!(p.connection_info().capabilities.windowed_events());
+    let december = Horizon::new(
+        "2026-12-01T00:00:00Z".parse().unwrap(),
+        "2026-12-31T12:00:00Z".parse().unwrap(),
+    )
+    .unwrap();
+    let snapshot = p
+        .sync_events(&account(), &calendar(), None, december)
+        .await
+        .unwrap();
+    assert!(snapshot.is_snapshot());
+    let delta = p
+        .sync_events(
+            &account(),
+            &calendar(),
+            Some(&snapshot.next_cursor),
+            december,
+        )
+        .await
+        .unwrap();
+    assert!(!delta.is_snapshot());
 }

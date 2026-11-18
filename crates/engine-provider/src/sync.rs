@@ -4,10 +4,19 @@ use std::collections::BTreeMap;
 
 use engine_core::{
     calendar::Calendar,
-    ids::CalendarId,
-    sync::{SyncObject, SyncState, SyncUpdate},
+    ids::{AccountId, CalendarId},
+    sync::{JmapDataType, SyncObject, SyncScope, SyncState, SyncUpdate},
     version::CollectionTag,
 };
+
+/// The JMAP `(account, data_type)` scope, which the [`Provider`](crate::Provider) scope accessors
+/// default to.
+pub(crate) fn jmap_scope(account: &AccountId, data_type: JmapDataType) -> SyncScope {
+    SyncScope::JmapType {
+        account: account.clone(),
+        data_type,
+    }
+}
 
 /// One scope's worth of fetched changes plus the cursor to persist after applying
 /// them.

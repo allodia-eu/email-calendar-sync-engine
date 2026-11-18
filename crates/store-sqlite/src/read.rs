@@ -46,6 +46,12 @@ impl<C: Clock> StoreRead for SqliteStore<C> {
             .await
     }
 
+    async fn fetch_window(&self, scope: &SyncScope) -> Result<Option<Horizon>> {
+        let key = scope_key(scope);
+        self.read(move |conn| crate::window_ops::fetch_window(conn, &key))
+            .await
+    }
+
     async fn object_keys(&self, scope: &SyncScope) -> Result<Vec<ProviderKey>> {
         let key = scope_key(scope);
         self.read(move |conn| scope_ops::object_keys(conn, &key))

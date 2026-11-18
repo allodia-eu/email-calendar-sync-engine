@@ -15,7 +15,7 @@ use engine_core::{
     error::FailureClass,
     ids::{AccountId, CalendarId},
     sync::{SyncScope, SyncState, SyncUpdate},
-    time::TimeZoneId,
+    time::{Horizon, TimeZoneId},
 };
 use engine_provider::{
     CalendarListing, CalendarUserAddresses, CalendarWrites, Capabilities, ConnectionInfo,
@@ -62,13 +62,11 @@ const GRAPH_OVERRIDE_SURVIVAL: OverrideSurvival = OverrideSurvival {
 /// A Microsoft Graph calendar read/sync/write provider for every calendar of one mailbox.
 ///
 /// Construct one with [`GraphCalendarProvider::new`] from a connected
-/// [`GraphClient`](crate::GraphClient) and the date [`window`] each calendar's
-/// `calendarView` covers (Graph calendar sync is inherently time-windowed).
-///
-/// [`window`]: CalendarWindow
+/// [`GraphClient`](crate::GraphClient). Graph calendar sync is inherently time-windowed: each
+/// calendar's `calendarView` covers the window the engine names in
+/// [`Provider::sync_events`].
 pub struct GraphCalendarProvider {
     client: GraphClient,
-    window: CalendarWindow,
     display_zone: TimeZoneId,
     capabilities: Capabilities,
 }
@@ -76,17 +74,15 @@ pub struct GraphCalendarProvider {
 impl core::fmt::Debug for GraphCalendarProvider {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GraphCalendarProvider")
-            .field("window", &self.window)
             .field("display_zone", &self.display_zone.as_str())
             .finish_non_exhaustive()
     }
 }
 
 impl GraphCalendarProvider {
-    /// Serves a connected client's calendars, covering the date `window` and reading event
-    /// times in `display_zone` (the host's IANA display/home zone —
-    /// Graph returns UTC otherwise, which would expand a recurring series
-    /// DST-incorrectly; `calendar-semantics.md`).
+    /// Serves a connected client's calendars, reading event times in `display_zone` (the host's
+    /// IANA display/home zone — Graph returns UTC otherwise, which would expand a recurring
+    /// series DST-incorrectly; `calendar-semantics.md`).
     ///
     /// Graph *enforces* the lost-update guard — a stale `If-Match` ETag is a `412` on a
     /// write — so unlike JMAP it advertises [`WriteGuard::Enforced`].
@@ -97,10 +93,9 @@ impl GraphCalendarProvider {
     /// *organizer* is told, not whether the server is the one telling them. Unlike CalDAV
     /// there is nothing to discover: it is a property of the service, not of the tenant.
     #[must_use]
-    pub fn new(client: GraphClient, window: CalendarWindow, display_zone: TimeZoneId) -> Self {
+    pub fn new(client: GraphClient, display_zone: TimeZoneId) -> Self {
         Self {
             client,
-            window,
             display_zone,
             capabilities: Capabilities::none()
                 .with_calendars()
@@ -108,6 +103,8 @@ impl GraphCalendarProvider {
                 .with_calendar_rsvp(GRAPH_RSVP)
                 .with_calendar_scheduling()
                 .with_conference_writes()
+                // `calendarView/delta` takes a mandatory range, and its `deltaLink` keeps it.
+                .with_windowed_events()
                 // `/users/{address}/calendar` answers or it does not (`crate::shared`).
                 .with_shared_accounts(SharedAccounts::ByAddress),
         }
@@ -163,6 +160,28 @@ impl Provider for GraphCalendarProvider {
         _account: &AccountId,
         calendar: &CalendarId,
         cursor: Option<&SyncState>,
+        window: Horizon,
+    ) -> ProviderResult<ScopeSync<Event>> {
+        self.events(calendar, cursor, window.into()).await
+    }
+
+    /// Checks that this credential can open the calendar of the mailbox at `address`, and that
+    /// it is not the credential's own (`crate::shared`). As for mail, no route lists the
+    /// stores shared with a credential, so enumeration stays at its rejecting default.
+    async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
+        crate::shared::resolve_calendar(&self.client, address).await
+    }
+}
+impl engine_provider::MailboxWrites for GraphCalendarProvider {}
+
+impl GraphCalendarProvider {
+    /// One events pass over `calendar`: a delta from `cursor`, or a snapshot opened over
+    /// `window` where there is no cursor or Graph expired it.
+    async fn events(
+        &self,
+        calendar: &CalendarId,
+        cursor: Option<&SyncState>,
+        window: CalendarWindow,
     ) -> ProviderResult<ScopeSync<Event>> {
         // Drain every `calendarView/delta` page into one update. A snapshot reconciles
         // (its `present` set tombstones absent rows); a delta carries explicit removals.
@@ -179,7 +198,7 @@ impl Provider for GraphCalendarProvider {
                 calendar,
                 cursor,
                 page_token.as_ref(),
-                self.window,
+                window,
                 self.display_zone.as_str(),
             )
             .await
@@ -221,15 +240,7 @@ impl Provider for GraphCalendarProvider {
         };
         Ok(ScopeSync::new(update, next_cursor))
     }
-
-    /// Checks that this credential can open the calendar of the mailbox at `address`, and that
-    /// it is not the credential's own (`crate::shared`). As for mail, no route lists the
-    /// stores shared with a credential, so enumeration stays at its rejecting default.
-    async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
-        crate::shared::resolve_calendar(&self.client, address).await
-    }
 }
-impl engine_provider::MailboxWrites for GraphCalendarProvider {}
 
 #[async_trait]
 impl CalendarWrites for GraphCalendarProvider {

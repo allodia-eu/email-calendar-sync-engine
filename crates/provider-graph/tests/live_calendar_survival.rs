@@ -25,7 +25,6 @@ use engine_provider::{
     CalendarWrites, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence,
     PatchTarget, Provider,
 };
-use provider_graph::GraphCalendarProvider;
 
 /// The series starts here and repeats weekly; the second Monday is the one overridden.
 const SERIES_START: &str = "2026-09-07T09:30:00";
@@ -115,12 +114,7 @@ struct Outcome {
 
 /// Runs one experiment end to end: build a series, override its second occurrence, apply
 /// `edit` to the master, and read the occurrence back.
-async fn measure<F>(
-    provider: &GraphCalendarProvider,
-    calendar_id: &CalendarId,
-    label: &str,
-    edit: F,
-) -> Outcome
+async fn measure<F>(provider: &Windowed, calendar_id: &CalendarId, label: &str, edit: F) -> Outcome
 where
     F: FnOnce(&Event) -> EventPatch,
 {
@@ -162,7 +156,7 @@ where
 /// A fresh weekly series whose second occurrence has been given its own title, at its own
 /// time. Returns the base to guard the next write with, and the series' id.
 async fn series_with_an_override(
-    provider: &GraphCalendarProvider,
+    provider: &Windowed,
     calendar_id: &CalendarId,
     label: &str,
 ) -> (Event, engine_core::ids::EventId) {
@@ -234,7 +228,7 @@ async fn series_with_an_override(
 
 /// The override map of one series, read back through the adapter's own sync path.
 async fn overrides_of(
-    provider: &GraphCalendarProvider,
+    provider: &Windowed,
     calendar_id: &CalendarId,
     id: &engine_core::ids::EventId,
 ) -> std::collections::BTreeMap<engine_core::time::LocalDateTime, RecurrenceOverride> {

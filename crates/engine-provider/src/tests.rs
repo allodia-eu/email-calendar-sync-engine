@@ -82,7 +82,7 @@ pub(crate) fn account() -> AccountId {
     AccountId::try_from("acct-1").unwrap()
 }
 
-fn calendar() -> CalendarId {
+pub(crate) fn calendar() -> CalendarId {
     CalendarId::new(ProviderKey::new("/cal/").unwrap())
 }
 
@@ -262,9 +262,14 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
         stream_first,
         bare.sync_email(&account(), None).await.unwrap_err(),
         bare.sync_calendars(&account(), None).await.unwrap_err(),
-        bare.sync_events(&account(), &calendar(), None)
-            .await
-            .unwrap_err(),
+        bare.sync_events(
+            &account(),
+            &calendar(),
+            None,
+            crate::calendar_default_tests::whole(),
+        )
+        .await
+        .unwrap_err(),
     ];
     for err in &rejected {
         assert_eq!(err.class(), FailureClass::InvalidState);
@@ -434,34 +439,6 @@ async fn calendar_writes_default_to_unsupported() {
     {
         assert_eq!(class, FailureClass::InvalidState);
     }
-}
-
-#[tokio::test]
-async fn calendar_methods_default_to_unsupported_with_jmap_scopes() {
-    let provider = FakeJmap {
-        info: ConnectionInfo::new(Capabilities::none().with_mail()),
-    };
-    assert_eq!(
-        provider.calendar_scope(&account()),
-        SyncScope::JmapType {
-            account: account(),
-            data_type: JmapDataType::Calendar,
-        }
-    );
-    assert_eq!(
-        provider.event_scope(&account(), &calendar()),
-        SyncScope::JmapType {
-            account: account(),
-            data_type: JmapDataType::CalendarEvent,
-        }
-    );
-    assert!(provider.sync_calendars(&account(), None).await.is_err());
-    assert!(
-        provider
-            .sync_events(&account(), &calendar(), None)
-            .await
-            .is_err()
-    );
 }
 
 #[test]

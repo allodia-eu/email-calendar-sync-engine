@@ -2,7 +2,7 @@
 //! calendar/event syncs (fake transport + a real-HTTP replay server), and the
 //! calendar-binding guard on create.
 
-use engine_core::{ids::AccountId, sync::SyncUpdate, time::CalendarDate};
+use engine_core::{ids::AccountId, sync::SyncUpdate, time::Horizon};
 use engine_provider::{EventDraft, Provider, WriteGuard};
 
 use super::*;
@@ -20,11 +20,13 @@ fn calendar() -> CalendarId {
     CalendarId::try_from("cal-1").unwrap()
 }
 
-fn window() -> CalendarWindow {
-    CalendarWindow::new(
-        CalendarDate::new(2026, 8, 1).unwrap(),
-        CalendarDate::new(2026, 11, 1).unwrap(),
+/// The window the engine names: August to November 2026.
+fn window() -> Horizon {
+    Horizon::new(
+        "2026-08-01T00:00:00Z".parse().unwrap(),
+        "2026-11-01T00:00:00Z".parse().unwrap(),
     )
+    .unwrap()
 }
 
 fn routes() -> Vec<(&'static str, serde_json::Value)> {
@@ -39,7 +41,6 @@ fn routes() -> Vec<(&'static str, serde_json::Value)> {
 fn provider(client: GraphClient) -> GraphCalendarProvider {
     GraphCalendarProvider::new(
         client,
-        window(),
         engine_core::time::TimeZoneId::iana("Europe/Amsterdam").unwrap(),
     )
 }
@@ -61,7 +62,6 @@ async fn the_calendar_schedules_as_the_mailbox_address() {
 fn debug_names_the_zone_without_leaking_the_token() {
     let provider = GraphCalendarProvider::new(
         GraphClient::connect("super-secret", tls(), &retry(), &user_agent()).unwrap(),
-        window(),
         engine_core::time::TimeZoneId::iana("Europe/Amsterdam").unwrap(),
     );
     let debug = format!("{provider:?}");
@@ -108,7 +108,7 @@ async fn syncs_the_calendar_list_and_an_event_snapshot() {
     assert_eq!(objects[1].name, "Extra calendar test");
 
     let events = provider
-        .sync_events(&account(), &calendar(), None)
+        .sync_events(&account(), &calendar(), None, window())
         .await
         .unwrap();
     assert!(events.is_snapshot());
@@ -133,7 +133,7 @@ async fn end_to_end_against_a_fixture_replay_server() {
     let client = GraphClient::with_base("t", base, tls(), &retry(), &user_agent()).unwrap();
     let provider = provider(client);
     let events = provider
-        .sync_events(&account(), &calendar(), None)
+        .sync_events(&account(), &calendar(), None, window())
         .await
         .unwrap();
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {
@@ -151,7 +151,7 @@ async fn sync_events_from_a_cursor_is_a_delta() {
         ("$select=start,end,cancelledOccurrences", Ok(json(MASTER))),
     ]);
     let events = provider(client)
-        .sync_events(&account(), &calendar(), Some(&cursor))
+        .sync_events(&account(), &calendar(), Some(&cursor), window())
         .await
         .unwrap();
     assert!(!events.is_snapshot());
@@ -173,7 +173,7 @@ async fn sync_events_restarts_as_a_snapshot_when_the_deltalink_expired() {
         ("$select=start,end,cancelledOccurrences", Ok(json(MASTER))),
     ]);
     let events = provider(client)
-        .sync_events(&account(), &calendar(), Some(&cursor))
+        .sync_events(&account(), &calendar(), Some(&cursor), window())
         .await
         .unwrap();
     assert!(
@@ -262,4 +262,29 @@ async fn create_refuses_a_draft_targeting_another_calendar() {
         "2026-07-18T10:00:00Z".parse().unwrap(),
     );
     assert!(provider.create_event(&account(), &draft).await.is_err());
+}
+
+/// The window the engine names opens the `calendarView/delta`: the route answers only the
+/// December range.
+#[tokio::test]
+async fn sync_events_opens_over_the_window_the_engine_names() {
+    let client = fake_client(vec![
+        (
+            "startDateTime=2026-12-01T00:00:00Z&endDateTime=2027-01-01T00:00:00Z",
+            json(DELTA),
+        ),
+        ("$select=start,end,cancelledOccurrences", json(MASTER)),
+    ]);
+    let provider = provider(client);
+    assert!(provider.connection_info().capabilities.windowed_events());
+    let december = Horizon::new(
+        "2026-12-01T00:00:00Z".parse().unwrap(),
+        "2026-12-31T12:00:00Z".parse().unwrap(),
+    )
+    .unwrap();
+    let events = provider
+        .sync_events(&account(), &calendar(), None, december)
+        .await
+        .unwrap();
+    assert!(events.is_snapshot());
 }

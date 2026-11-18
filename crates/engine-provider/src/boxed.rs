@@ -12,6 +12,7 @@ use engine_core::{
     mail::{Mailbox, Message},
     raw::RawMime,
     sync::{SyncScope, SyncState, SyncWindow},
+    time::Horizon,
 };
 
 use crate::{
@@ -185,8 +186,11 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         account: &AccountId,
         calendar: &CalendarId,
         cursor: Option<&SyncState>,
+        window: Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
-        (**self).sync_events(account, calendar, cursor).await
+        (**self)
+            .sync_events(account, calendar, cursor, window)
+            .await
     }
 }
 

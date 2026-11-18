@@ -39,6 +39,7 @@ mod capability_calendar;
 mod capability_contacts;
 mod capability_mailbox;
 mod capability_submission;
+mod capability_window;
 mod connect_observer;
 mod connection;
 mod contact;
@@ -116,5 +117,10 @@ pub use watch::{Watch, WatchEvent};
 /// for a more responsive UI (see `engine-sync`).
 pub(crate) const DEFAULT_DRAIN_PAGE: usize = 500;
 
+#[cfg(test)]
+mod calendar_default_tests;
+#[cfg(test)]
+#[path = "draft_tests.rs"]
+mod draft_tests;
 #[cfg(test)]
 mod tests;

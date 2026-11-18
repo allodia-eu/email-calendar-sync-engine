@@ -10,7 +10,6 @@ use engine_provider::{Provider, SharedAccounts, StoreDomains};
 use super::*;
 use crate::{
     GraphCalendarProvider,
-    cal_fetch::CalendarWindow,
     test_support::{FakeRoute, fake_client_fallible, json},
 };
 
@@ -86,10 +85,6 @@ async fn an_address_that_cannot_go_in_a_url_never_reaches_the_tenant() {
 async fn the_calendar_provider_resolves_by_address_and_cannot_list() {
     let provider = GraphCalendarProvider::new(
         client(Ok(json(PROBE_OK)), Ok(json(OWN))),
-        CalendarWindow::new(
-            engine_core::time::CalendarDate::new(2026, 1, 1).unwrap(),
-            engine_core::time::CalendarDate::new(2027, 1, 1).unwrap(),
-        ),
         engine_core::time::TimeZoneId::iana("Europe/Amsterdam").unwrap(),
     );
     assert_eq!(
@@ -131,10 +126,6 @@ mod bound_calendar_user {
             fake_client_fallible(routes).with_principal(MailboxPrincipal::user(SHARED).unwrap());
         let provider = GraphCalendarProvider::new(
             client,
-            CalendarWindow::new(
-                engine_core::time::CalendarDate::new(2026, 1, 1).unwrap(),
-                engine_core::time::CalendarDate::new(2027, 1, 1).unwrap(),
-            ),
             engine_core::time::TimeZoneId::iana("Europe/Amsterdam").unwrap(),
         );
         let account = engine_core::ids::AccountId::try_from("bound").unwrap();

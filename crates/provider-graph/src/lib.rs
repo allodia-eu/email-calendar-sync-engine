@@ -78,7 +78,6 @@ mod test_support;
 #[cfg(test)]
 mod write_outcome_tests;
 
-pub use cal_fetch::CalendarWindow;
 pub use calendar::GraphCalendarProvider;
 pub use contact::{GraphContactProvider, GraphContactSource};
 pub use error::GraphError;

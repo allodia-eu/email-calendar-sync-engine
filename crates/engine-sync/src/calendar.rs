@@ -57,8 +57,8 @@ use engine_store::{LeaseRequest, Store, StoreRead, SyncApplied, WorkerId};
 use futures_util::{StreamExt, stream};
 
 use crate::{
-    SyncError, UnexpandableEvent,
-    calendar_scopes::{CalendarScope, EventScope},
+    ScopeRun, SyncError, UnexpandableEvent,
+    calendar_scopes::{CalendarScope, Covered, EventPlan, EventScope},
     run_scope, vanished,
 };
 
@@ -67,7 +67,7 @@ use crate::{
 /// A store figure, like [`sync_mail`](crate::sync_mail)'s folder bound: what it limits is how
 /// many scopes contend for the store's single write connection. The requests themselves share
 /// one HTTP client per provider, so they reuse its connections whatever this is.
-const MAX_CONCURRENT_EVENT_SCOPES: usize = 4;
+pub(crate) const MAX_CONCURRENT_EVENT_SCOPES: usize = 4;
 
 /// What one [`sync_calendar`] run did: the calendar list, then each event scope.
 #[derive(Debug)]
@@ -246,16 +246,16 @@ where
 }
 
 /// The calendars one event scope holds, and the tag the scope is gated on.
-struct ScopeGroup {
-    scope: SyncScope,
-    calendars: Vec<Calendar>,
+pub(crate) struct ScopeGroup {
+    pub(crate) scope: SyncScope,
+    pub(crate) calendars: Vec<Calendar>,
     /// The listing's tag for the scope's calendar, when it holds exactly one. A scope several
     /// calendars share has no single listing tag to compare.
     tag: Option<CollectionTag>,
 }
 
 /// The account's calendars as the list scope now stores them, the default one first.
-async fn stored_calendars<P, S>(
+pub(crate) async fn stored_calendars<P, S>(
     provider: &P,
     store: &S,
     account: &AccountId,
@@ -279,7 +279,7 @@ where
 
 /// Groups `calendars` by the event scope each answers, in the order the first of each appears,
 /// gating each group of one calendar on the tag `tags` holds for it.
-fn event_scopes<P: Provider>(
+pub(crate) fn event_scopes<P: Provider>(
     provider: &P,
     account: &AccountId,
     calendars: &[Calendar],
@@ -335,23 +335,12 @@ where
     if tag.is_some() && store.collection_tag(&group.scope).await?.as_ref() == tag {
         return Ok(EventScopePass::Unchanged);
     }
-    let window = if let Some(window) = store.expansion_window(&group.scope).await? {
-        window
-    } else {
+    if store.expansion_window(&group.scope).await?.is_none() {
         seed_window(store, account, &group.scope, req, seed).await?;
-        seed.clone()
-    };
+    }
     let calendar = group.calendars[0].id.clone();
-    let report = sync_event_scope(
-        provider,
-        store,
-        account,
-        req,
-        calendar,
-        window,
-        tag.cloned(),
-    )
-    .await?;
+    let scope = EventScope::new(provider, calendar, EventPlan::Follow, tag.cloned());
+    let report = sync_event_scope(store, account, req, scope).await?;
     Ok(EventScopePass::Synced(report))
 }
 
@@ -416,42 +405,52 @@ where
     P: Provider,
     S: Store + StoreRead,
 {
-    let scope = provider.event_scope(account, calendar);
-    let window = store
-        .expansion_window(&scope)
+    // Refused before the claim, so a calendar no pass has reached is not given a scope row.
+    if store
+        .expansion_window(&provider.event_scope(account, calendar))
         .await?
-        .ok_or(SyncError::NoExpansionWindow)?;
+        .is_none()
+    {
+        return Err(SyncError::NoExpansionWindow);
+    }
     let req = LeaseRequest::new(worker, ttl);
-    sync_event_scope(
-        provider,
-        store,
-        account,
-        &req,
-        calendar.clone(),
-        window,
-        None,
-    )
-    .await
+    let scope = EventScope::new(provider, calendar.clone(), EventPlan::Follow, None);
+    sync_event_scope(store, account, &req, scope).await
 }
 
-/// Runs one event scope once, collecting what the expander refused.
-async fn sync_event_scope<P, S>(
-    provider: &P,
+/// Runs one event scope once, collecting what the expander refused: `None` when the pass
+/// found nothing to fetch, which only an [`EventPlan::Reach`] does.
+pub(crate) async fn run_event_scope<P, S>(
     store: &S,
     account: &AccountId,
     req: &LeaseRequest,
-    calendar: CalendarId,
-    window: ExpansionWindow,
-    tag: Option<CollectionTag>,
+    scope: EventScope<'_, P>,
+) -> Result<Option<EventSyncReport>, SyncError>
+where
+    P: Provider,
+    S: Store + StoreRead,
+{
+    Ok(match run_scope(store, account, &scope, req).await? {
+        ScopeRun::Applied { applied, meta: () } => Some(EventSyncReport {
+            applied,
+            unexpandable: scope.into_unexpandable(),
+        }),
+        ScopeRun::Halted(Covered) => None,
+    })
+}
+
+/// [`run_event_scope`] for an [`EventPlan::Follow`] pass, which always fetches.
+async fn sync_event_scope<P, S>(
+    store: &S,
+    account: &AccountId,
+    req: &LeaseRequest,
+    scope: EventScope<'_, P>,
 ) -> Result<EventSyncReport, SyncError>
 where
     P: Provider,
     S: Store + StoreRead,
 {
-    let scope = EventScope::new(provider, calendar, window, tag);
-    let (applied, ()) = run_scope(store, account, &scope, req).await?.into_applied();
-    Ok(EventSyncReport {
-        applied,
-        unexpandable: scope.into_unexpandable(),
-    })
+    Ok(run_event_scope(store, account, req, scope)
+        .await?
+        .unwrap_or_default())
 }

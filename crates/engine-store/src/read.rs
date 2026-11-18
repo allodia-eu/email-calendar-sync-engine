@@ -212,6 +212,17 @@ pub trait StoreRead: Send + Sync {
     /// Returns `StoreError::Backend` on a backend failure.
     async fn collection_tag(&self, scope: &SyncScope) -> Result<Option<CollectionTag>>;
 
+    /// The date window a windowed event scope's cursor was opened over, or `None` if no pass
+    /// has recorded one ([`ApplyBatch::fetch_window`](crate::ApplyBatch::fetch_window)).
+    ///
+    /// A lease-free read: the engine compares it with the range a host wants before claiming
+    /// the scope, so a range already inside it is never fetched again.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` on a backend failure.
+    async fn fetch_window(&self, scope: &SyncScope) -> Result<Option<Horizon>>;
+
     /// The provider keys of live (non-tombstoned) objects in a scope.
     ///
     /// # Errors

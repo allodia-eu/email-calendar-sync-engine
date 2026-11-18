@@ -24,7 +24,6 @@ use engine_provider::{
     CalendarWrites, ConferenceEdit, EventDeletion, EventEdit, EventPatch, NewConference,
     PatchTarget, Provider,
 };
-use provider_graph::GraphCalendarProvider;
 
 const JITSI: &str = "https://meet.example.org/pim-live-room-4321";
 
@@ -117,11 +116,7 @@ async fn live_a_meeting_goes_on_and_comes_off_both_ways() {
 }
 
 /// Removes Teams, attaches a link made elsewhere, removes that, checking each read-back.
-async fn steps(
-    provider: &GraphCalendarProvider,
-    calendar: &CalendarId,
-    title: &str,
-) -> Result<(), String> {
+async fn steps(provider: &Windowed, calendar: &CalendarId, title: &str) -> Result<(), String> {
     let event = read(provider, calendar, title)
         .await
         .ok_or("the created event syncs")?;
@@ -204,7 +199,7 @@ async fn steps(
 /// it sets up a Teams meeting, so a revision read a moment earlier can be refused as stale
 /// (`412`); like the outbox, the edit is then rebuilt on a fresh read.
 async fn edit(
-    provider: &GraphCalendarProvider,
+    provider: &Windowed,
     calendar: &CalendarId,
     title: &str,
     conference: ConferenceEdit,
@@ -229,11 +224,7 @@ async fn edit(
     Err("the edit kept conflicting".to_owned())
 }
 
-async fn read(
-    provider: &GraphCalendarProvider,
-    calendar: &CalendarId,
-    title: &str,
-) -> Option<Event> {
+async fn read(provider: &Windowed, calendar: &CalendarId, title: &str) -> Option<Event> {
     let events = provider
         .sync_events(&account(), calendar, None)
         .await

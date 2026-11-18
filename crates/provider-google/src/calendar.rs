@@ -16,6 +16,7 @@ use engine_core::{
     error::FailureClass,
     ids::{AccountId, CalendarId},
     sync::{SyncScope, SyncState, SyncUpdate},
+    time::Horizon,
 };
 use engine_provider::{
     CalendarListing, CalendarUserAddresses, CalendarWrites, Capabilities, ConnectionInfo,
@@ -59,19 +60,17 @@ const CALENDAR_LIST_CURSOR: &str = "google-calendars";
 
 /// A Google Calendar read/sync/write provider for every calendar of one account.
 ///
-/// Construct one with [`GoogleCalendarProvider::new`] from a connected [`GoogleClient`];
-/// optionally set a snapshot date [`window`](CalendarWindow)
-/// with [`with_window`](Self::with_window) (Google's window is optional, unlike Graph's).
+/// Construct one with [`GoogleCalendarProvider::new`] from a connected [`GoogleClient`]. A
+/// snapshot covers the window the engine names in [`Provider::sync_events`] (Google's
+/// `timeMin`/`timeMax`, optional to Google and always set here).
 pub struct GoogleCalendarProvider {
     client: GoogleClient,
-    window: Option<CalendarWindow>,
     capabilities: Capabilities,
 }
 
 impl core::fmt::Debug for GoogleCalendarProvider {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GoogleCalendarProvider")
-            .field("window", &self.window)
             .finish_non_exhaustive()
     }
 }
@@ -91,22 +90,15 @@ impl GoogleCalendarProvider {
     pub fn new(client: GoogleClient) -> Self {
         Self {
             client,
-            window: None,
             capabilities: Capabilities::none()
                 .with_calendars()
                 .with_calendar_writes(WriteGuard::Enforced, GOOGLE_OVERRIDE_SURVIVAL)
                 .with_calendar_rsvp(GOOGLE_RSVP)
                 .with_calendar_scheduling()
-                .with_conference_writes(),
+                .with_conference_writes()
+                // `timeMin`/`timeMax` bound the snapshot the `syncToken` continues.
+                .with_windowed_events(),
         }
-    }
-
-    /// Windows the initial (snapshot) event enumeration to `[start, end)` via
-    /// `timeMin`/`timeMax`. A delta ignores it (the `syncToken` encodes the scope).
-    #[must_use]
-    pub fn with_window(mut self, window: CalendarWindow) -> Self {
-        self.window = Some(window);
-        self
     }
 }
 
@@ -153,6 +145,21 @@ impl Provider for GoogleCalendarProvider {
         _account: &AccountId,
         calendar: &CalendarId,
         cursor: Option<&SyncState>,
+        window: Horizon,
+    ) -> ProviderResult<ScopeSync<Event>> {
+        self.events(calendar, cursor, window.into()).await
+    }
+}
+impl engine_provider::MailboxWrites for GoogleCalendarProvider {}
+
+impl GoogleCalendarProvider {
+    /// One events pass over `calendar`: a delta from `cursor`, or a snapshot opened over
+    /// `window` where there is no cursor or Google expired it.
+    async fn events(
+        &self,
+        calendar: &CalendarId,
+        cursor: Option<&SyncState>,
+        window: CalendarWindow,
     ) -> ProviderResult<ScopeSync<Event>> {
         cal_id::listed(calendar)?;
         // Drain every `events.list` page into one update. A snapshot reconciles (its
@@ -170,7 +177,7 @@ impl Provider for GoogleCalendarProvider {
                 calendar,
                 cursor,
                 page_token.as_ref(),
-                self.window,
+                Some(window),
             )
             .await
             {
@@ -212,7 +219,6 @@ impl Provider for GoogleCalendarProvider {
         Ok(ScopeSync::new(update, next_cursor))
     }
 }
-impl engine_provider::MailboxWrites for GoogleCalendarProvider {}
 
 #[async_trait]
 impl CalendarWrites for GoogleCalendarProvider {

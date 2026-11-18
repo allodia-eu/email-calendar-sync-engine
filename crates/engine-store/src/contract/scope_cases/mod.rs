@@ -3,6 +3,7 @@
 
 mod apply;
 mod collection_tag;
+mod fetch_window;
 mod forget;
 mod lease;
 mod mail;
@@ -18,6 +19,7 @@ pub(super) use self::{
         streaming_page_keeps_cursor,
     },
     collection_tag::collection_tag_travels_with_the_cursor,
+    fetch_window::fetch_window_travels_with_the_cursor,
     forget::{
         forget_scope_drops_objects_rows_and_cursor, forget_scope_under_a_stale_lease_is_rejected,
     },

@@ -26,7 +26,7 @@ use engine_core::{
     calendar::{Calendar, Event},
     ids::{CalendarId, ProviderKey},
     sync::SyncState,
-    time::CalendarDate,
+    time::{CalendarDate, Horizon},
 };
 use engine_provider::{PageToken, SyncKind, SyncPage};
 use futures_util::{StreamExt, TryStreamExt, stream};
@@ -50,11 +50,11 @@ const MAX_CONCURRENT_MASTER_READS: usize = 8;
 const PENDING_CURSOR: &str = "graph-cal-pending";
 
 /// The date window a calendar sync covers: `calendarView` requires an explicit range,
-/// and the returned `deltaLink` encodes it, so it is applied only to the initial
-/// request. A host sizes it from its recurrence-expansion horizon (`providers.md`:
-/// calendar coverage "may be inherently time-windowed").
+/// and the returned `deltaLink` encodes it, so it is applied only to the request that opens a
+/// cursor. The engine names it per fetch
+/// ([`Provider::sync_events`](engine_provider::Provider::sync_events)).
 #[derive(Debug, Clone, Copy)]
-pub struct CalendarWindow {
+pub(crate) struct CalendarWindow {
     /// The inclusive lower bound (00:00:00 UTC of this date).
     pub start: CalendarDate,
     /// The exclusive upper bound (00:00:00 UTC of this date).
@@ -64,8 +64,18 @@ pub struct CalendarWindow {
 impl CalendarWindow {
     /// A window spanning `[start, end)` — the date range `calendarView` covers.
     #[must_use]
-    pub fn new(start: CalendarDate, end: CalendarDate) -> Self {
+    pub(crate) fn new(start: CalendarDate, end: CalendarDate) -> Self {
         Self { start, end }
+    }
+}
+
+impl From<Horizon> for CalendarWindow {
+    /// The whole UTC days covering `horizon` ([`Horizon::covering_dates`]): the window the
+    /// engine names in
+    /// [`Provider::sync_events`](engine_provider::Provider::sync_events).
+    fn from(horizon: Horizon) -> Self {
+        let (start, end) = horizon.covering_dates();
+        Self::new(start, end)
     }
 }
 

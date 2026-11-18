@@ -10,7 +10,7 @@ use common::*;
 use engine_core::{
     calendar::Event, ids::Uid, membership::Memberships, sync::SyncUpdate, time::UtcDateTime,
 };
-use engine_provider::{CalendarWrites, EventDeletion, EventDraft, Provider};
+use engine_provider::{CalendarWrites, EventDeletion, EventDraft};
 
 /// Removing **one occurrence** of a series, at the id Google derives from its original
 /// start in UTC.

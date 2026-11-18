@@ -38,7 +38,7 @@ use engine_provider::{
 use provider_graph::{MailboxPrincipal, TeamsMeetings};
 use shared_calendar::{
     account, at, await_event, calendars_of, client, default_calendar, delete_titled, far_day, find,
-    gated, own_address, shared_calendars, status_of, unique,
+    gated, own_address, shared_calendars, status_of, unique, window,
 };
 
 #[tokio::test]
@@ -48,7 +48,7 @@ async fn live_the_shared_mailboxs_calendar_resolves_and_the_own_one_never_does()
     else {
         return;
     };
-    let own = calendars_of(&token, MailboxPrincipal::Me, far_day());
+    let own = calendars_of(&token, MailboxPrincipal::Me);
     assert_eq!(
         own.connection_info().capabilities.shared_accounts(),
         SharedAccounts::ByAddress
@@ -88,10 +88,9 @@ async fn live_a_bound_provider_reads_the_shared_mailboxs_calendar_as_its_owner()
     else {
         return;
     };
-    let day = far_day();
-    let bound = shared_calendars(&token, &shared, day).await;
+    let bound = shared_calendars(&token, &shared).await;
     let theirs = default_calendar(&bound).await;
-    let mine = default_calendar(&calendars_of(&token, MailboxPrincipal::Me, day)).await;
+    let mine = default_calendar(&calendars_of(&token, MailboxPrincipal::Me)).await;
     assert_ne!(theirs.id, mine.id);
     assert!(
         theirs
@@ -109,7 +108,7 @@ async fn live_a_bound_provider_reads_the_shared_mailboxs_calendar_as_its_owner()
 
     // `calendarView/delta` under the shared principal ends in a cursor.
     let sync = bound
-        .sync_events(&account(), &theirs.id, None)
+        .sync_events(&account(), &theirs.id, None, window())
         .await
         .expect("delta sync under /users/{shared}");
     assert_ne!(sync.next_cursor.as_str(), "", "a delta cursor");
@@ -123,7 +122,7 @@ async fn live_writes_in_the_shared_calendar_are_guarded() {
         return;
     };
     let day = far_day();
-    let bound = shared_calendars(&token, &shared, day).await;
+    let bound = shared_calendars(&token, &shared).await;
     let calendar = default_calendar(&bound).await;
     let (uid, title) = unique("write");
     let draft = EventDraft::new(
@@ -197,8 +196,8 @@ async fn live_a_meeting_from_the_shared_calendar_is_organised_by_the_shared_mail
     };
     let day = far_day();
     let me = own_address(&token).await;
-    let bound = shared_calendars(&token, &shared, day).await;
-    let mine = calendars_of(&token, MailboxPrincipal::Me, day);
+    let bound = shared_calendars(&token, &shared).await;
+    let mine = calendars_of(&token, MailboxPrincipal::Me);
     let theirs = default_calendar(&bound).await;
     let my_calendar = default_calendar(&mine).await;
     let (uid, title) = unique("meeting");
@@ -272,8 +271,8 @@ async fn live_the_shared_mailbox_accepts_an_invitation_on_its_own_behalf() {
     };
     let day = far_day();
     let me = own_address(&token).await;
-    let bound = shared_calendars(&token, &shared, day).await;
-    let mine = calendars_of(&token, MailboxPrincipal::Me, day);
+    let bound = shared_calendars(&token, &shared).await;
+    let mine = calendars_of(&token, MailboxPrincipal::Me);
     let theirs = default_calendar(&bound).await;
     let my_calendar = default_calendar(&mine).await;
     let (uid, title) = unique("accept");

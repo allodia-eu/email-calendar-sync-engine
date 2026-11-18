@@ -134,6 +134,7 @@ impl Provider for FakeDav {
         _account: &AccountId,
         calendar: &CalendarId,
         _cursor: Option<&SyncState>,
+        _window: engine_core::time::Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
         self.fetched.lock().unwrap().push(calendar.clone());
         let held = self.calendars.lock().unwrap().get(calendar).cloned();

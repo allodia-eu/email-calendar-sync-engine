@@ -249,6 +249,7 @@ impl Provider for CalendarServer {
         _account: &AccountId,
         _calendar: &CalendarId,
         cursor: Option<&SyncState>,
+        _window: engine_core::time::Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
         let state = self.0.lock().unwrap();
         let next = SyncState::new(state.version.to_string());

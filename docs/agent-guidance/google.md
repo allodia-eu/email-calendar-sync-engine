@@ -402,8 +402,16 @@ read/sync **and** writes guarded by `If-Match` (`WriteGuard::Enforced`).
   data-loss). A per-instance override (`recurringEventId` set) is dropped (deferred —
   `calendar-semantics.md`); a `status:"cancelled"` entry is a tombstone.
 - **Sync** (`cal_fetch`): `events.list` with a per-calendar `nextSyncToken`. The window
-  (`timeMin`/`timeMax`) is **optional** and applies only to the initial snapshot (a
-  `syncToken` request cannot also carry a window). A `410` on a stale `syncToken`
+  (`timeMin`/`timeMax`) applies only to the initial snapshot (a `syncToken` request cannot
+  also carry a window). Google takes it as optional, but the provider advertises
+  `windowed_events` and the engine always names one (the `window` of `sync_events`): the
+  host's horizon at the first sync, or the union a `reach_calendar` reopens over. The provider
+  takes no window of its own. **A `syncToken` taken after a bounded list reports changes past
+  its bounds**: undocumented (`events.list` only forbids `timeMin`/`timeMax` beside a
+  `syncToken`), and measured in `tests/live_calendar_window.rs`, with an event created inside
+  the bounds as the control. Unlike a Graph `deltaLink`, which does not. It still never lists an
+  event that existed past the bounds and did not change, so the engine reopens the cursor over
+  the union rather than relying on the feed. A `410` on a stale `syncToken`
   classifies as `NeedsResync` → snapshot restart (the same mechanism as Gmail's
   history-expiry; here the error classifier maps `410` directly, no special case).
   **A subscribed holiday calendar never syncs incrementally.** Its snapshot carries a

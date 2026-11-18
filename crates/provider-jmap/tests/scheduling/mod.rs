@@ -156,7 +156,7 @@ fn invitation_time(hour: u8) -> CalendarDateTime {
 /// Every event an account currently holds, over whichever protocol it speaks.
 pub(crate) async fn jmap_events(provider: &JmapProvider, account: &AccountId) -> Vec<Event> {
     let SyncUpdate::Snapshot { objects, .. } = provider
-        .sync_events(account, &any_calendar(), None)
+        .sync_events(account, &any_calendar(), None, whole())
         .await
         .expect("sync events")
         .update
@@ -191,7 +191,7 @@ pub(crate) async fn dav_events(provider: &CalDavProvider, account: &AccountId) -
         .expect("the organiser lists a default calendar")
         .id;
     let SyncUpdate::Snapshot { objects, .. } = provider
-        .sync_events(account, &default, None)
+        .sync_events(account, &default, None, whole())
         .await
         .expect("sync events")
         .update
@@ -440,6 +440,15 @@ pub(crate) async fn clean_up(parties: &Parties) {
 }
 
 /// JMAP's event state is account-wide, so which calendar asks for it does not matter.
+/// The window an event fetch names: JMAP reads the account whole and ignores it.
+fn whole() -> engine_core::time::Horizon {
+    engine_core::time::Horizon::new(
+        "2000-01-01T00:00:00Z".parse().unwrap(),
+        "2100-01-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap()
+}
+
 fn any_calendar() -> engine_core::ids::CalendarId {
     engine_core::ids::CalendarId::try_from("any").unwrap()
 }

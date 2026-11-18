@@ -567,6 +567,69 @@ occurrence-only clear so a pure horizon advance need not re-project unchanged te
 Today `expand_calendar_horizon` re-expands every event in the scope on every call, so a
 host widens in coarse chunks against its own watermark rather than calling it per page.
 
+**A held scope is waited for, not reported busy.** A sync that finds its scope held gives up,
+because the holder brings the same changes. An expansion cannot: the holder expands only what
+it changed, over the window it found, so giving up leaves the widening undone and the host
+guessing when to ask again. So `expand_calendar_horizon` (and `reach_calendar`, below) poll the
+claim with a backoff capped at a second until the holder releases the lease or its lease
+lapses (`engine-sync/src/scope_wait.rs`). It is polled rather than woken because the holder
+can be another process on the same store. A caller that wants to stop waiting drops the future.
+An expansion widens every scope nobody holds before it waits on the held ones, so one long pass
+does not keep the account's other calendars narrow.
+
+## The fetch window is the store's too
+
+Some transports fetch a calendar only inside a date window (`Capabilities::windowed_events`):
+Graph's `calendarView/delta` takes a mandatory range and its `deltaLink` keeps it; Google's
+`events.list` bounds the snapshot its `syncToken` continues with `timeMin`/`timeMax`. CalDAV and
+JMAP fetch a calendar whole. On a windowed transport the store holds every event inside the
+window the scope's cursor was opened over and, outside it, only what happened to arrive — so
+`expand_calendar_horizon` over a wider horizon draws the repeating series there and none of the
+one-off events.
+
+So the engine, not the host's adapter construction, names the window: a windowed scope is
+fetched with the window as an argument of `Provider::sync_events`, which opens any cursor it must
+open (none yet, or one the server expired) over it; a transport that fetches whole ignores it, and
+an adapter takes no window at construction. That window is recorded **with the
+cursor**, in the same commit (`ApplyBatch::fetch_window`, `StoreRead::fetch_window`, schema
+v23), so the two cannot disagree: a snapshot records the window it was opened over, and a delta
+records nothing and keeps it. The first sync opens over the expansion window (the host's horizon
+then); a scope opened before windows were recorded has a cursor and no window, and is treated
+as covering nothing beyond what the host shows.
+
+`engine_sync::reach_calendar` (`Engine::reach_calendar`) fetches a further range. It does not
+list the range beside the cursor, because the cursor would not keep those events current: a
+Graph `deltaLink` reports changes only inside the window it was opened over, and although a Google
+`syncToken` does report changes past a bounded list (both measured, in each adapter's
+`tests/live_calendar_window.rs`), neither ever lists an event that was already there and did not
+change. It **reopens** the scope's cursor over the union of the recorded
+window and the range, as a fresh snapshot, and records the union. One cursor then covers every
+event the store claims to hold, on every transport.
+
+- **Not fetched twice.** The recorded window only grows. A range inside it is answered without a
+  request, and a second caller asking for the same range waits for the first one's lease, then
+  finds it covered.
+- **Decided under the lease.** Every read a pass of an event scope decides on (the recorded
+  fetch window, the expansion window, the tag a reopen keeps) is made after its claim, in
+  `ScopeSyncer::prepare`, never before it. A read made before the claim goes stale while the
+  holder of the lease finishes: a reach planned on it reopens over a smaller union, deleting the
+  events the other reach fetched and shrinking the window, and events fetched after an
+  expansion are expanded over the old horizon, leaving the new days empty
+  (`engine-sync/src/tests/calendar_reach/race.rs`).
+- **The tag survives.** A reopen records the collection tag the scope already had: the calendar
+  it lists is at least as new as the state that tag names, so a later pass whose listing shows
+  the same tag still skips the calendar without a request.
+- **While it runs**, it holds the scope's lease; reads answer from the store as it was, and the
+  fetched events land in one commit per calendar. A sync of the calendar meanwhile reports it
+  held; an expansion waits.
+- **On failure**, nothing is recorded: the old cursor and window stand, the scope reports its
+  error (`CalendarReach::failures`), and asking again fetches the range again.
+- **Cost.** A reopen re-reads the whole union, and its snapshot tombstones any stored event
+  outside it (one a Google feed brought from past the bounds, say). Hosts reach in coarse steps.
+- **Independent of the expansion window.** Reaching fetches; expanding materializes what is
+  shown. A fetched event is expanded over the stored expansion window as any synced event is, so
+  a host paging past its horizon calls both, in either order.
+
 On-demand fetched bodies **are** searchable (resolving the "does opening old mail
 make it searchable?" question: yes), via a separate lease-free body index — **not**
 the scope-derived FTS — so opening a message indexes its body immediately and a

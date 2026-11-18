@@ -9,10 +9,10 @@ use engine_core::{
     calendar::{Calendar, Event, ParticipationStatus},
     ids::AccountId,
     sync::SyncUpdate,
-    time::{CalendarDateTime, LocalDateTime, TimeZoneId},
+    time::{CalendarDateTime, Horizon, LocalDateTime, TimeZoneId},
 };
 use engine_provider::{CalendarWrites, EventDeletion, Provider};
-use provider_graph::{CalendarWindow, GraphCalendarProvider, GraphClient, MailboxPrincipal};
+use provider_graph::{GraphCalendarProvider, GraphClient, MailboxPrincipal};
 
 pub(crate) fn account() -> AccountId {
     AccountId::try_from("live-shared-calendar").unwrap()
@@ -65,30 +65,27 @@ pub(crate) fn client(token: &str, principal: MailboxPrincipal) -> GraphClient {
     .expect("client")
 }
 
-pub(crate) fn calendars_of(
-    token: &str,
-    principal: MailboxPrincipal,
-    day: time::Date,
-) -> GraphCalendarProvider {
-    let window = CalendarWindow::new(
-        (day - time::Duration::days(1)).to_string().parse().unwrap(),
-        (day + time::Duration::days(1)).to_string().parse().unwrap(),
-    );
-    GraphCalendarProvider::new(client(token, principal), window, zone())
+/// The window the suite reads either calendar over: every day [`far_day`] can pick.
+pub(crate) fn window() -> Horizon {
+    Horizon::new(
+        "2027-02-28T00:00:00Z".parse().unwrap(),
+        "2027-09-20T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap()
+}
+
+pub(crate) fn calendars_of(token: &str, principal: MailboxPrincipal) -> GraphCalendarProvider {
+    GraphCalendarProvider::new(client(token, principal), zone())
 }
 
 /// The calendar provider of the shared mailbox, bound the way a host binds it: through the
 /// handle the calendar provider's own resolve handed out.
-pub(crate) async fn shared_calendars(
-    token: &str,
-    shared: &str,
-    day: time::Date,
-) -> GraphCalendarProvider {
-    let store = calendars_of(token, MailboxPrincipal::Me, day)
+pub(crate) async fn shared_calendars(token: &str, shared: &str) -> GraphCalendarProvider {
+    let store = calendars_of(token, MailboxPrincipal::Me)
         .resolve_shared_account(shared)
         .await
         .expect("the shared mailbox's calendar resolves");
-    calendars_of(token, MailboxPrincipal::shared(&store.handle).unwrap(), day)
+    calendars_of(token, MailboxPrincipal::shared(&store.handle).unwrap())
 }
 
 pub(crate) async fn default_calendar(provider: &GraphCalendarProvider) -> Calendar {
@@ -115,7 +112,7 @@ pub(crate) async fn find(
     title: &str,
 ) -> Option<Event> {
     let SyncUpdate::Snapshot { objects, .. } = provider
-        .sync_events(&account(), &calendar.id, None)
+        .sync_events(&account(), &calendar.id, None, window())
         .await
         .expect("sync events")
         .update
@@ -141,7 +138,7 @@ pub(crate) async fn await_event(
 }
 
 pub(crate) async fn own_address(token: &str) -> String {
-    let addresses = calendars_of(token, MailboxPrincipal::Me, far_day())
+    let addresses = calendars_of(token, MailboxPrincipal::Me)
         .calendar_user_addresses(&account())
         .await
         .expect("the delegate's own calendar user");

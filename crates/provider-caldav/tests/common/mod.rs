@@ -91,7 +91,7 @@ impl OnCalendar {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         self.provider
-            .sync_events(account, &self.calendar, cursor)
+            .sync_events(account, &self.calendar, cursor, whole())
             .await
     }
 }
@@ -214,4 +214,14 @@ pub(crate) fn lines_without(ical: &str, struck: &[&str]) -> Vec<String> {
             .any(|target| name.eq_ignore_ascii_case(target))
     });
     logical
+}
+
+/// The window an event fetch names. This transport reads a calendar whole and ignores it; it is
+/// wide so that it would not narrow one that did not.
+pub(crate) fn whole() -> engine_core::time::Horizon {
+    engine_core::time::Horizon::new(
+        "2000-01-01T00:00:00Z".parse().unwrap(),
+        "2100-01-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap()
 }

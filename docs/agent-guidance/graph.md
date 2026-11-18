@@ -683,9 +683,15 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   overrides off the display-zone reading would miss by a day for any series near midnight.
   Also measured: the header accepts the name Graph itself reported, IANA or Windows
   (`W. Europe Standard Time`), and an all-day series' date does not move under any zone.
-- **Time-windowed, per calendar.** The mandatory date range comes from a host-supplied
-  `CalendarWindow` (its recurrence-expansion horizon; `providers.md`); the `deltaLink`
-  encodes it, so it is applied only to the initial request.
+- **Time-windowed, per calendar.** The mandatory date range is the `window` the engine names in
+  `sync_events` (the provider advertises `windowed_events`): the host's horizon at the first
+  sync, or the union a `reach_calendar` reopens over. The provider takes no window of its own.
+  The `deltaLink` encodes the
+  range, so it applies only to the request that opens the cursor, and **a delta reports
+  changes only inside it**: an event created past the window never arrives through it
+  (measured, with an event created inside it at the same moment as the control,
+  `tests/live_calendar_window.rs`). That is why the engine reopens rather than lists a further
+  range beside the cursor; a reopened cursor reports changes across the whole union.
 - **Authoring-zone times via `Prefer: outlook.timezone`.** A plain read returns UTC,
   which expands a recurring master DST-incorrectly. The provider sends `Prefer:
   outlook.timezone="<display_zone IANA>"` (the host's home/display zone) on every
@@ -775,9 +781,11 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   another zone is correct to the instant but carries the display zone's name. A
   `seriesMaster` is re-read in its own `originalStartTimeZone` (above), so a recurring event
   expands in the zone it was written in and its DST transitions are its own.
-- **Windowed coverage.** Sync covers the `CalendarWindow` only; events outside it are not
-  synced (the `providers.md` "possibly-incomplete coverage" model). Coverage reporting is
-  a follow-up.
+- **Windowed coverage.** Sync covers the window the cursor was opened over; events outside
+  it are not synced until a host reaches them (`Engine::reach_calendar`, which reopens the
+  cursor over the union and records it). The window does not roll forward by itself: a host
+  whose horizon moves on reaches the new range, or the cursor keeps the window it opened
+  with.
 - **No alerts / `SEQUENCE`.** Graph reminders → engine `Alert`s, and iTIP `SEQUENCE`, are
   not yet mapped (the reminder rides the preserved raw). `create_event` rejects a
   floating-time start (Graph has no floating events).

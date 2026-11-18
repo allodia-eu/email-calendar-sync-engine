@@ -41,6 +41,8 @@ mod expansion;
 mod folder_scopes;
 #[path = "sync/interrupted.rs"]
 mod interrupted;
+#[path = "sync/reach.rs"]
+mod reach;
 #[path = "sync/reads.rs"]
 mod reads;
 #[path = "sync/store_lifecycle.rs"]
@@ -233,6 +235,7 @@ impl Provider for FakeProvider {
         _account: &AccountId,
         _calendar: &CalendarId,
         cursor: Option<&SyncState>,
+        _window: engine_core::time::Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
         if cursor.is_some() {
             return Ok(ScopeSync::new(

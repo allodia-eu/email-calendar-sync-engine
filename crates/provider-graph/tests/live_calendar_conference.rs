@@ -275,7 +275,7 @@ async fn live_a_notes_edit_keeps_the_teams_meeting_and_the_whole_notes() {
 /// the edit is then rebuilt on a fresh read. Nothing here panics, so the caller's clean-up
 /// always runs.
 async fn edit_notes(
-    provider: &provider_graph::GraphCalendarProvider,
+    provider: &Windowed,
     token: &str,
     title: &str,
     id: &str,
@@ -373,7 +373,7 @@ async fn live_each_calendar_says_whether_its_server_makes_teams_meetings() {
 }
 
 /// The event titled `title`, once the adapter's sync finds it.
-async fn read_back(provider: &provider_graph::GraphCalendarProvider, title: &str) -> Option<Event> {
+async fn read_back(provider: &Windowed, title: &str) -> Option<Event> {
     let calendars = provider
         .sync_calendars(&account(), None)
         .await

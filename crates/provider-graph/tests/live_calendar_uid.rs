@@ -41,10 +41,10 @@ use engine_core::{
     calendar::{Event, ParticipationStatus},
     ids::AccountId,
     sync::SyncUpdate,
-    time::CalendarDate,
+    time::Horizon,
 };
 use engine_provider::{CalendarWrites, EventRsvp, Provider, RsvpResponse};
-use provider_graph::{CalendarWindow, GraphCalendarProvider, GraphClient};
+use provider_graph::{GraphCalendarProvider, GraphClient};
 
 const GRAPH: &str = "https://graph.microsoft.com/v1.0";
 
@@ -68,11 +68,12 @@ fn http() -> reqwest::Client {
         .expect("an HTTP client on the engine's TLS policy")
 }
 
-fn calendar_window() -> CalendarWindow {
-    CalendarWindow::new(
-        CalendarDate::new(2026, 8, 1).unwrap(),
-        CalendarDate::new(2026, 11, 1).unwrap(),
+fn calendar_window() -> Horizon {
+    Horizon::new(
+        "2026-08-01T00:00:00Z".parse().unwrap(),
+        "2026-11-01T00:00:00Z".parse().unwrap(),
     )
+    .unwrap()
 }
 
 /// The address behind a token, so neither account is hardcoded.
@@ -104,7 +105,6 @@ async fn calendar_provider(token: &str) -> (GraphCalendarProvider, engine_core::
     .expect("client");
     let placeholder = GraphCalendarProvider::new(
         client,
-        calendar_window(),
         engine_core::time::TimeZoneId::iana("Europe/Amsterdam").unwrap(),
     );
     let calendars = placeholder
@@ -131,7 +131,6 @@ async fn calendar_provider(token: &str) -> (GraphCalendarProvider, engine_core::
     (
         GraphCalendarProvider::new(
             client,
-            calendar_window(),
             engine_core::time::TimeZoneId::iana("Europe/Amsterdam").unwrap(),
         ),
         default,
@@ -210,7 +209,7 @@ async fn await_filed(
 ) -> Event {
     for _ in 0..20 {
         let sync = provider
-            .sync_events(&account(), calendar, None)
+            .sync_events(&account(), calendar, None, calendar_window())
             .await
             .expect("sync events");
         let SyncUpdate::Snapshot { objects, .. } = &sync.update else {
