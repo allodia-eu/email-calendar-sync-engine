@@ -81,7 +81,8 @@ unanalysed, and the failure mode is a correct answer arrived at by sorting every
 
 `message` holds one row per stored mail object carrying exactly what a list row, a sort,
 a conversation group and a date filter need — `(account, scope_key, provider_key)`,
-`thread_id`, `message_id`, `date_utc`, the `flags` bitfield, `has_attachment`, and the
+`thread_id`, `message_id`, `date_utc`, the `flags` bitfield, `has_attachment`, the sender's
+`importance` (its RFC 2156 token), and the
 row's visible text (`from_name`, `from_addr`, `subject`, `preview`). `object.payload`
 stays the canonical normalized record and is off the list path entirely: opening a
 message reads it, showing a message in a list does not.

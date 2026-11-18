@@ -24,7 +24,7 @@ use serde_json::{Map, Value, json};
 use crate::{
     error::JmapError,
     executor::Executor,
-    mail::mailbox_from_json,
+    mail::{IMPORTANCE_HEADER, X_PRIORITY_HEADER, mailbox_from_json},
     mutate::keyword_pointer,
     request::{Request, capability},
     submit_body::body,
@@ -238,6 +238,11 @@ pub(crate) fn build_draft(drafts_mailbox: &str, draft: &Draft, blob_ids: &[Strin
             .iter()
             .map(MessageIdHeader::as_str)
             .collect();
+    }
+    // Normal is stated by carrying neither header, as on every other transport.
+    if let Some(x_priority) = draft.importance.x_priority() {
+        create[IMPORTANCE_HEADER] = json!(draft.importance.as_str());
+        create[X_PRIORITY_HEADER] = json!(x_priority);
     }
     create
 }

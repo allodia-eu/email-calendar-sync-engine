@@ -93,9 +93,9 @@ pub use engine_core::{
         OrganizationId, PersonId, ProviderKey, SharedAccountId, ThreadId, Uid,
     },
     mail::{
-        AttachmentPartId, EmailAddress, InlinePart, Keyword, Mailbox, MailboxAccess, MailboxRole,
-        Message, MessageAttachment, MessageAttachmentContent, MessageBody, SystemKeyword,
-        ThreadProvenance, ThreadRef,
+        AttachmentPartId, EmailAddress, Importance, InlinePart, Keyword, Mailbox, MailboxAccess,
+        MailboxRole, Message, MessageAttachment, MessageAttachmentContent, MessageBody,
+        SystemKeyword, ThreadProvenance, ThreadRef,
     },
     // The set-of-containers type an `Event`'s `calendars` and a `Message`'s mailbox memberships
     // are expressed in.

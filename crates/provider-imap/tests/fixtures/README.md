@@ -17,3 +17,13 @@ one its table expects. A new shape needs both files, captured the same way, and 
 that table; the test fails on a file without one.
 
 **Secrets:** none. The messages are synthetic and the server holds no real data.
+
+## `importance_fetch.txt`
+
+The five rows the **Stalwart harness** (v1.0.2) answered the metadata `UID FETCH` with
+(`FETCH_ITEMS`, one UID per command) for messages carrying `Importance: High` with `X-Priority`
+beside it, `X-Priority: 5 (Lowest)` alone, neither, `Importance` twice (low, then high, both
+returned in order), and `X-MSMail-Priority: Low` alone, `APPEND`ed to a scratch mailbox that was
+deleted afterwards. The capture's client dropped each row's closing parenthesis, which is put
+back. Stored LF like every text file here: `src/mail_importance_tests.rs` restores the CRLF the
+literals' lengths count, and strips the untagged `* ` as the transport does.

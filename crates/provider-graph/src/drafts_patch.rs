@@ -70,7 +70,8 @@ pub(crate) async fn patch_in_place(
     Ok(Some(existing.clone()))
 }
 
-/// The message-resource properties a saved draft rewrites.
+/// The message-resource properties a saved draft rewrites. `importance` is sent at normal too,
+/// for the reason the Bcc list is: a re-save that lowers it must take the old value off.
 fn body(draft: &Draft) -> Value {
     let (content_type, content) = draft.html_body.as_ref().map_or_else(
         || ("Text", draft.text_body.clone()),
@@ -85,6 +86,7 @@ fn body(draft: &Draft) -> Value {
         // Sent empty rather than omitted: a recipient the user removed has to come off
         // the stored draft, and `PATCH` leaves out what it is not told about.
         "bccRecipients": recipients(&draft.bcc),
+        "importance": draft.importance.as_str(),
     })
 }
 

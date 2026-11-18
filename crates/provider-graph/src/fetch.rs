@@ -29,7 +29,7 @@ use crate::{
         MESSAGE_EXPAND, MESSAGE_SELECT, WELL_KNOWN_ROLES, apply_roles, folder_from_json,
         message_from_json, well_known_folder_id,
     },
-    normalize_state::{MESSAGE_STATE_SELECT, state_from_json},
+    normalize_state::{MESSAGE_STATE_SELECT, names_only_state, state_from_json},
     transport::GraphClient,
 };
 
@@ -200,11 +200,14 @@ pub(crate) async fn messages_page(
         // exception is a *lightweight* property change (notably `isRead` on consumer
         // mailboxes), which returns only the changed property + id and no etag.
         //
-        // In a delta that is a state change, and resolving it costs the narrow
-        // `$select` rather than the whole message. A **snapshot** never takes this
-        // branch: its entries are always full, and a state change carries no key into
-        // `present`, so one here would be tombstoned at the end of the pass.
-        if kind == SyncKind::Delta && entry.get("@odata.etag").is_none() {
+        // One that names nothing but state is a state change, and resolving it costs the
+        // narrow `$select` rather than the whole message. One that names anything else
+        // (importance, a draft's subject) changed content, and is read whole below
+        // (`names_only_state`). A **snapshot** never takes this branch: its entries are
+        // always full, and a state change carries no key into `present`, so one here would
+        // be tombstoned at the end of the pass.
+        if kind == SyncKind::Delta && entry.get("@odata.etag").is_none() && names_only_state(entry)
+        {
             let key = entry_key(entry)?;
             match message_state(client, &key, names).await {
                 Ok(state) => patched.push(MailStateChange::new(key, state)),
@@ -307,3 +310,7 @@ fn odata_link(doc: &Value, key: &str) -> Option<String> {
 #[cfg(test)]
 #[path = "fetch_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "fetch_content_tests.rs"]
+mod content_tests;

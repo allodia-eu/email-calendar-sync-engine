@@ -88,6 +88,7 @@ pub(crate) mod filing;
 mod folders;
 mod gmail;
 mod gmail_read;
+mod header_section;
 mod idle;
 mod listing;
 mod mail;

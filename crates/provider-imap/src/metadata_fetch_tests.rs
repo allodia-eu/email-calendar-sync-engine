@@ -27,7 +27,7 @@ const TEXT_ONLY: &str = r#"(("TEXT" "PLAIN" NIL NIL NIL "7BIT" 2 1)("TEXT" "HTML
 fn metadata_row(uid: u32, headers: &str) -> String {
     format!(
         "* {uid} FETCH (UID {uid} FLAGS () ENVELOPE (NIL \"s\" NIL NIL NIL NIL NIL NIL NIL \"<m{uid}@h>\") \
-         BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] {{{}}}\r\n{headers})\r\n",
+         BODY[HEADER.FIELDS (REFERENCES IMPORTANCE X-MSMAIL-PRIORITY X-PRIORITY CONTENT-TYPE CONTENT-DISPOSITION)] {{{}}}\r\n{headers})\r\n",
         headers.len()
     )
 }
