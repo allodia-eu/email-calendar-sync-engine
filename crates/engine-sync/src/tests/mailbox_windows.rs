@@ -230,6 +230,35 @@ async fn without_the_override_the_same_pass_keeps_the_account_window() {
 }
 
 #[tokio::test]
+async fn deepening_a_folder_starts_it_over_and_resumes_the_others() {
+    // A folder's cursor records the floor it was fetched under, and the deepened folder asks
+    // for an earlier one, so its next pass starts over without the host clearing anything.
+    let (folders, _asked) = two_folders();
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    for window in [MailboxWindows::new(since(2025, 6, 1)), deepened()] {
+        let report = sync_mail(
+            &folders,
+            &store,
+            &account(),
+            worker(),
+            Duration::from_mins(1),
+            StreamTuning::new(0, 0).within(window),
+            &IgnoreCommits,
+        )
+        .await;
+        assert!(report.is_ok(), "{report:?}");
+    }
+
+    // The fake answers a resumed cursor with nothing, so `sent-old` is there only because Sent
+    // started over, and the Inbox resumed.
+    assert_eq!(
+        stored(&store, &folders[1]).await,
+        vec!["sent-new", "sent-old"]
+    );
+    assert_eq!(stored(&store, &folders[0]).await, vec!["in-new"]);
+}
+
+#[tokio::test]
 async fn coverage_records_the_account_window_not_a_deepened_mailboxs() {
     // Coverage says how far back every mailbox's recipients were observed, so a deeper Sent
     // must not claim that depth for the account.

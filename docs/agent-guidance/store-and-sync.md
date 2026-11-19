@@ -446,15 +446,16 @@ few round trips *and* row-as-it-arrives commits (`StreamTuning::responsive` is t
 interactive default, `bulk` the throughput one). `window` is the per-sync **depth**
 (`SyncWindow { since }`, `engine-core`) — a provider-neutral date floor, passed per sync so
 a host changes depth without reconnecting providers. It is carried as `MailboxWindows`: the
-account's `SyncWindow`, plus any mailbox held further back (below). It bounds the pass twice, and the two
-are different jobs:
+account's `SyncWindow`, plus any mailbox held further back (below). It bounds the pass twice,
+and the two are different jobs:
 
 - **What is fetched.** Each adapter maps the floor to its protocol's date filter on the
   snapshot/backfill: IMAP `UID SEARCH SINCE`, JMAP an `Email/query` `after`, Graph a
   `receivedDateTime ge` `$filter`, Gmail `q: after:`. **No delta can carry one** — a
   `deltaLink`, a `startHistoryId` and `Email/changes` all take a cursor, not a query.
 - **Where a pass resumes.** The orchestrator stores each email cursor with the floor it was
-  fetched under (`engine_sync::window_cursor`), and a pass asking for an earlier floor starts
+  fetched under (`engine_sync::window_cursor`), the floor of the window that scope fetches
+  under (a deepened folder's own, below), and a pass asking for an earlier floor starts
   the folder over, since the cursor knows nothing of the mail between the two. A later floor
   resumes: a host computes the floor from today, so it moves on every day.
 - **What a `PassMode::Additive` delta stores.** The orchestrator drops any incoming message
@@ -495,9 +496,11 @@ inside when the window of any mailbox it is filed in admits it** (`MailboxWindow
   so a depth-reduction prune never deletes what a deeper pass fetched.
 - **Recipient coverage** records the **account** window: it claims how far back every
   mailbox's recipients were observed, which a deeper Sent does not make true.
-- **The deeper pass runs on a re-snapshot.** A delta brings new arrivals only, so a host that
-  deepens a mailbox clears the mail cursors (`Engine::clear_mail_cursors`) and syncs, the same
-  as widening the account window.
+- **The deeper pass starts on its own.** A folder-bound scope stamps its cursor with the floor
+  of its own folder's window (`window_cursor`, above), so the next pass after a mailbox is
+  deepened asks for an earlier floor and starts that folder over, while every other folder
+  resumes. A host does not clear the mail cursors to deepen a mailbox; an account-wide scope
+  fetches under the account window either way (below).
 
 ⚠️ **Known gap: an account-wide mail scope (JMAP, Gmail) fetches under the account window.**
 One enumeration serves every mailbox and `Provider::stream_email` takes a single `SyncWindow`,
