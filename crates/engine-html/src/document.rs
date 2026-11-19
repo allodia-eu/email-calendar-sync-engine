@@ -110,6 +110,10 @@ pub(super) const BODY_PADDING: u32 = 14;
 /// image; it only overrides an explicit height that the width constraint would otherwise
 /// fight.
 ///
+/// `pre[wrap]` is laid out as Gecko lays it out, wrapped: Thunderbird quotes a plain-text message
+/// as `<pre wrap>`, and without it the quote's long lines run off the pane's right edge. A plain
+/// `<pre>` keeps its lines.
+///
 /// Built once per scheme rather than per render: it interpolates constants, so every message
 /// would otherwise pay for the same string.
 fn base_css(scheme: MessageScheme) -> &'static str {
@@ -131,7 +135,8 @@ fn base_css(scheme: MessageScheme) -> &'static str {
              font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;\
              font-size:15px;line-height:1.5;overflow-wrap:break-word;\
              -webkit-text-size-adjust:100%}}\
-             img{{max-width:100%;height:auto!important}}a[href]{{color:{link}}}"
+             img{{max-width:100%;height:auto!important}}a[href]{{color:{link}}}\
+             pre[wrap]{{white-space:pre-wrap}}"
         )
     })
 }
