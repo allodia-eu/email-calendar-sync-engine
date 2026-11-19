@@ -249,6 +249,15 @@ per user per minute, about 270 messages a minute, and IMAP bills nothing per mes
   hands them to `memberships_of` and `keywords_from_labels`, so a label means one thing in both
   modes. IMAP does not show the inbox categories as labels, and need not: they are unfiled
   labels, which the API pass drops as well.
+- **A label standing for a keyword** arrives in `X-GM-LABELS` by its name like any user label,
+  and the same `NamedLabels` moves it off the memberships onto the keywords. That the adapter
+  creates it with `labelListVisibility: labelHide` does not reach IMAP: Google's labels resource
+  scopes both visibility fields to the Gmail web interface. Gmail's Settings → Labels has a
+  separate per-label "Show in IMAP" box, which no field of the labels resource sets; it decides
+  whether a label is a folder over IMAP, and the pass opens no label's folder. Google documents
+  neither that box's default for a label the API creates nor whether it reaches `X-GM-LABELS`,
+  so `tests/live_sent_copy_labels.rs` reads the hidden label back over IMAP, with the names
+  registered and without them.
 - **Cursor and delta.** The cursor is `imap;a=…;s=…;t=…`, each folder's validity, `UIDNEXT`,
   mod-sequence and count. A cursor of the other mode starts this one afresh. A delta reads
   what arrived (UID at or above the last `UIDNEXT`) and what changed (`CHANGEDSINCE`, CONDSTORE).
