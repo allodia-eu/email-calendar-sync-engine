@@ -15,6 +15,16 @@
  *   2. A `/.well-known/caldav` redirect, since the PHP built-in server has no
  *      rewrite rules of its own.
  *
+ * The same data is served three ways, one per way a real server asks for the
+ * credential (`crates/provider-caldav/tests/live_challenges.rs` drives them):
+ *   - `/`       answers an anonymous request `401` with a Basic challenge, as
+ *               Stalwart, iCloud and Fastmail do;
+ *   - `/open/`  lets anonymous requests read, so it answers one `207` naming the
+ *               requester `<DAV:unauthenticated/>` (RFC 5397 §3), the shape a
+ *               SabreDAV deployment that allows anonymous access has;
+ *   - `/bare/`  answers `401` with no `WWW-Authenticate` at all, against RFC 9110
+ *               §15.5.2, as Yahoo, Google and AOL do.
+ *
  * Credentials come from the environment (HARNESS_USER / HARNESS_PASS) and are
  * throwaway test values — this server never holds real data.
  */
@@ -44,6 +54,24 @@ class HarnessBasicAuth extends Sabre\DAV\Auth\Backend\AbstractBasic
     }
 }
 
+/** Sends a `401` without its challenge, the way the `/bare/` mode's servers do. */
+class BareChallengeSapi extends Sabre\HTTP\Sapi
+{
+    public static function sendResponse(Sabre\HTTP\ResponseInterface $response)
+    {
+        if (401 === $response->getStatus()) {
+            $response->removeHeader('WWW-Authenticate');
+        }
+        parent::sendResponse($response);
+    }
+}
+
+$mode = match (true) {
+    str_starts_with($path, '/open/') => 'open',
+    str_starts_with($path, '/bare/') => 'bare',
+    default => 'challenge',
+};
+
 $authBackend = new HarnessBasicAuth();
 $authBackend->setRealm('SabreDAV harness');
 $calendarBackend = new Sabre\CalDAV\Backend\PDO($pdo);
@@ -55,10 +83,23 @@ $tree = [
 ];
 
 $server = new Sabre\DAV\Server($tree);
-$server->setBaseUri('/');
+$server->setBaseUri('challenge' === $mode ? '/' : "/{$mode}/");
+if ('bare' === $mode) {
+    $server->sapi = new BareChallengeSapi();
+}
+
+$aclPlugin = new Sabre\DAVACL\Plugin();
+if ('open' === $mode) {
+    // Nodes without an ACL of their own (the root) may be read by anyone; everything else
+    // still needs the account. SabreDAV's default grants nothing to an anonymous request.
+    $aclPlugin->setDefaultAcl([
+        ['principal' => '{DAV:}all', 'privilege' => '{DAV:}read', 'protected' => true],
+        ['principal' => '{DAV:}authenticated', 'privilege' => '{DAV:}all', 'protected' => true],
+    ]);
+}
 
 $server->addPlugin(new Sabre\DAV\Auth\Plugin($authBackend));
-$server->addPlugin(new Sabre\DAVACL\Plugin());
+$server->addPlugin($aclPlugin);
 $server->addPlugin(new Sabre\CalDAV\Plugin());
 // WebDAV-Sync (RFC 6578): the sync-token the engine syncs incrementally against.
 $server->addPlugin(new Sabre\DAV\Sync\Plugin());

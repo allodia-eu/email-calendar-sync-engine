@@ -33,7 +33,7 @@ pub(crate) async fn put_draft(
 ) -> ProviderResult<ProviderKey> {
     // The stored draft keeps its `Bcc` header, so resuming it restores every recipient;
     // it is stored in the mailbox and never delivered from here.
-    let mime = engine_rfc5322::assemble_filed_message(draft, OffsetDateTime::now_utc())?;
+    let mime = engine_rfc5322::assemble_draft_message(draft, OffsetDateTime::now_utc())?;
     // Gmail's `raw` is URL-safe base64, unlike Graph's standard-base64 `sendMail`.
     let body = json!({ "message": { "raw": base64url::encode(&mime) } })
         .to_string()

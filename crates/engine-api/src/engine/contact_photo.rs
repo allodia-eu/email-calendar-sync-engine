@@ -8,11 +8,11 @@ use core::time::Duration;
 
 use engine_core::{
     contact::{ContactCard, ContactResource},
-    ids::AccountId,
+    ids::{AccountId, ContactId},
 };
 use engine_provider::ContactsProvider;
 use engine_store::{
-    CachedContactPhoto, ContactPhotoCache, ContactPhotoFile, ContactStore, PhotoCacheTtl,
+    CachedContactPhoto, ContactPhotoCache, ContactPhotoFile, ContactStore, PhotoCacheTtl, StoreRead,
 };
 
 use crate::{ApiError, Engine};
@@ -73,6 +73,37 @@ impl PhotoKey {
 }
 
 impl Engine {
+    /// The one of `providers` whose source holds `contact`: the adapter to ask about that card,
+    /// a photo included.
+    ///
+    /// An account connects one adapter per contact source (each Microsoft contact folder, the
+    /// organisation's contacts, the directory; Google's own and other contacts), and each knows
+    /// only its own ids, so a card asked of another is refused as malformed. `None` when no
+    /// synced source among `providers` holds the card, which includes a source not connected.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] when the store cannot be read.
+    pub async fn contact_source<'p, P: ContactsProvider>(
+        &self,
+        providers: &'p [P],
+        account: &AccountId,
+        contact: &ContactId,
+    ) -> Result<Option<&'p P>, ApiError> {
+        for provider in providers {
+            let scope = provider.contact_scope(account);
+            if self
+                .store
+                .object_payload(&scope, contact.key())
+                .await?
+                .is_some()
+            {
+                return Ok(Some(provider));
+            }
+        }
+        Ok(None)
+    }
+
     /// Returns the cached file for one card's media resource, fetching it once if
     /// the cache has no answer.
     ///
@@ -87,7 +118,8 @@ impl Engine {
     /// # Errors
     ///
     /// Returns [`ApiError::Store`] for cache failures or [`ApiError::Sync`] when
-    /// the provider fetch fails.
+    /// the provider fetch fails. Ask the adapter [`Engine::contact_source`] names: another
+    /// source's adapter fails on the card's id.
     pub async fn contact_photo<P: ContactsProvider>(
         &self,
         provider: &P,

@@ -2,7 +2,7 @@
 //! and structured mail/calendar search, malformed-query rejection, and the mailbox/
 //! message and calendar/event lists.
 
-use engine_api::{ApiError, Engine, TimeZoneId};
+use engine_api::{ApiError, Engine, SearchDomain, TimeZoneId};
 
 use super::*;
 
@@ -167,7 +167,7 @@ async fn search_on_an_unsynced_account_is_empty() {
     let engine = Engine::open_in_memory().unwrap();
     // No sync has run, so the account has no scopes: an empty, vacuously complete answer.
     let results = engine.search_mail(&account(), "report", 10).await.unwrap();
-    assert!(results.hits.is_empty());
+    assert_eq!(results.hits, []);
     assert!(results.coverage.is_complete());
 }
 
@@ -200,8 +200,8 @@ async fn lists_synced_mailboxes_and_messages() {
 
     // An account that never synced has neither.
     let other = AccountId::try_from("nobody").unwrap();
-    assert!(engine.mailboxes(&other).await.unwrap().is_empty());
-    assert!(engine.messages(&other).await.unwrap().is_empty());
+    assert_eq!(engine.mailboxes(&other).await.unwrap(), []);
+    assert_eq!(engine.messages(&other).await.unwrap(), []);
 }
 
 #[tokio::test]
@@ -225,8 +225,44 @@ async fn lists_synced_calendars_and_events() {
 
     // An account that never synced has neither.
     let other = AccountId::try_from("nobody").unwrap();
-    assert!(engine.calendars(&other).await.unwrap().is_empty());
-    assert!(engine.events(&other).await.unwrap().is_empty());
+    assert_eq!(engine.calendars(&other).await.unwrap(), []);
+    assert_eq!(engine.events(&other).await.unwrap(), []);
+}
+
+/// A store opened through another principal is just another account (`providers.md` → "A
+/// shared store is just another account"), and the same meeting lives in both: the organiser's
+/// copy in the group calendar, the attendee's in the user's own. Both carry one UID, and on
+/// JMAP even the same server-assigned id, since ids are per account. Each account must keep
+/// its copy, and dropping one must never take the other's away.
+#[tokio::test]
+async fn two_accounts_under_one_credential_each_keep_an_event_with_the_same_uid() {
+    let engine = Engine::open_in_memory().unwrap();
+    let zone = TimeZoneId::iana("Europe/Amsterdam").unwrap();
+    let own = account();
+    let shared = AccountId::try_from("support-shared").unwrap();
+    let both = FakeProvider {
+        events: vec![event("evt-1", "meeting@h", "work")],
+        ..FakeProvider::new()
+    };
+    for store in [&own, &shared] {
+        engine
+            .sync_calendar(&both, store, horizon(), &zone)
+            .await
+            .unwrap();
+    }
+    for store in [&own, &shared] {
+        let events = engine.events(store).await.unwrap();
+        assert_eq!(events.len(), 1, "{store:?}");
+        assert_eq!(events[0].uid, Uid::new("meeting@h").unwrap());
+    }
+
+    // The host lets go of the shared store's calendars; the user's own copy stays.
+    engine
+        .forget_account_domain(&shared, SearchDomain::Calendar)
+        .await
+        .unwrap();
+    assert_eq!(engine.events(&shared).await.unwrap(), []);
+    assert_eq!(engine.events(&own).await.unwrap().len(), 1);
 }
 
 /// `events_by_keys` resolves a *named handful* of events without reading the rest — the
@@ -280,22 +316,16 @@ async fn events_by_keys_resolves_only_the_named_events() {
         .unwrap();
     assert_eq!(mixed.len(), 1);
     assert_eq!(mixed[0].id.key().as_str(), "evt-b");
-    assert!(
-        engine
-            .events_by_keys(&account(), &[])
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(engine.events_by_keys(&account(), &[]).await.unwrap(), []);
 
     // An account that never synced resolves nothing rather than erroring.
     let other = AccountId::try_from("nobody").unwrap();
-    assert!(
+    assert_eq!(
         engine
             .events_by_keys(&other, &[ProviderKey::new("evt-a").unwrap()])
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        []
     );
 }
 

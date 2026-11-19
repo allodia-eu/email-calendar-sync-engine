@@ -133,6 +133,6 @@ async fn a_mailbox_span_returns_its_messages_newest_first_and_how_far_back_it_re
         )
         .await
         .unwrap();
-    assert!(nothing.messages.is_empty());
+    assert_eq!(nothing.messages, []);
     assert_eq!(nothing.oldest, None);
 }

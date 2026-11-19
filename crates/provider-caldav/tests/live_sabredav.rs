@@ -28,6 +28,8 @@ use serde::de::DeserializeOwned;
 use store_sqlite::SqliteStore;
 
 mod common;
+#[path = "common/invitation.rs"]
+mod invitation;
 
 /// Reads the SabreDAV harness coordinates, or `None` to skip (offline gate).
 fn harness() -> Option<(String, String, String)> {
@@ -45,6 +47,7 @@ async fn connect(addr: &str, user: &str, pass: &str) -> CalDavProvider {
             username: user.to_owned(),
             password: pass.to_owned(),
         },
+        engine_http::test_server::user_agent(),
     );
     let mut last_err = None;
     for _ in 0..15 {
@@ -57,6 +60,30 @@ async fn connect(addr: &str, user: &str, pass: &str) -> CalDavProvider {
         }
     }
     panic!("could not connect to SabreDAV harness: {last_err:?}");
+}
+
+/// SabreDAV reaches its home in two steps, so the principal's address set is read at connect.
+/// It lists the principal's own path beside the `mailto:`, which is not an email address and
+/// is left out.
+#[tokio::test]
+async fn sabredav_recognises_the_accounts_own_address() {
+    let Some((addr, user, pass)) = harness() else {
+        eprintln!(
+            "skipping sabredav_recognises_the_accounts_own_address: SABREDAV_HTTP_ADDR unset"
+        );
+        return;
+    };
+    let provider = connect(&addr, &user, &pass).await;
+    let addresses = engine_provider::CalendarWrites::calendar_user_addresses(
+        &provider,
+        &AccountId::try_from("sabredav-calendar-user-live").unwrap(),
+    )
+    .await
+    .expect("address set");
+    assert_eq!(
+        addresses,
+        engine_provider::CalendarUserAddresses::Known(vec![user])
+    );
 }
 
 async fn load<T: DeserializeOwned>(
@@ -109,7 +136,12 @@ async fn sabredav_calendar_sync_loop() {
         "the default calendar synced"
     );
 
-    let event_scope = provider.event_scope(&account);
+    common::many_calendars::the_second_calendar_syncs_under_its_own_scope(
+        &provider, &store, &account, &report,
+    )
+    .await;
+    let default = common::OnCalendar::named(provider, &account, "default").await;
+    let event_scope = default.event_scope(&account);
     let event_keys = store.object_keys(&event_scope).await.unwrap();
     assert_eq!(event_keys.len(), 6, "six seed calendar resources stored");
 
@@ -119,7 +151,7 @@ async fn sabredav_calendar_sync_loop() {
     }
     let by_uid = |uid: &str| events.iter().find(|e| e.uid.as_str() == uid).unwrap();
     assert_eq!(by_uid("meeting-2003@test.local").participants.len(), 3);
-    assert_eq!(by_uid("virtual-2004@test.local").virtual_locations.len(), 1);
+    common::conferences::the_seeds_meetings_read_as_one_conference_each(&events);
     assert!(by_uid("allday-2005@test.local").is_all_day());
     assert!(by_uid("floating-2006@test.local").start.is_floating());
 
@@ -145,9 +177,9 @@ async fn sabredav_calendar_sync_loop() {
     );
     assert_eq!(total, 12);
 
-    // A second sync reuses the SabreDAV sync-token: an idempotent empty delta.
+    // A second sync with nothing changed: every calendar's listing tag is as recorded.
     let second = sync_calendar(
-        &provider,
+        &default.provider,
         &store,
         &account,
         WorkerId::new("live"),
@@ -157,26 +189,20 @@ async fn sabredav_calendar_sync_loop() {
     )
     .await
     .expect("second sync_calendar");
-    assert_eq!(
-        second.events.applied.upserted, 0,
-        "no event changes on a re-sync"
-    );
-    assert_eq!(
-        second.events.applied.tombstoned, 0,
-        "nothing tombstoned on a re-sync"
-    );
+    common::many_calendars::a_quiet_resync_asks_no_calendar(&second);
 }
 
 /// Connects to the SabreDAV harness, or `None` to skip (offline gate).
-async fn write_provider(test: &str) -> Option<(CalDavProvider, AccountId)> {
+async fn write_provider(test: &str) -> Option<(common::OnCalendar, AccountId)> {
     let Some((addr, user, pass)) = harness() else {
         eprintln!("skipping {test}: SABREDAV_HTTP_ADDR unset");
         return None;
     };
+    let account = AccountId::try_from("sabredav-write-live").unwrap();
     let provider = connect(&addr, &user, &pass).await;
     Some((
-        provider,
-        AccountId::try_from("sabredav-write-live").unwrap(),
+        common::OnCalendar::named(provider, &account, "default").await,
+        account,
     ))
 }
 
@@ -293,6 +319,18 @@ async fn sabredav_storing_an_invitation_is_a_guarded_create() {
     common::imip::storing_an_invitation_is_a_guarded_create(&provider, &account).await;
 }
 
+/// SabreDAV accepts meetings created and edited through the neutral API, but this
+/// calendar-access-only deployment does not deliver their iTIP messages.
+#[tokio::test]
+async fn sabredav_meeting_storage_round_trip() {
+    let Some((provider, account)) = write_provider("sabredav_meeting_storage_round_trip").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    invitation::storage_round_trip(&provider, &account).await;
+}
+
 /// The read-only half of the privilege pair (#61), which **only SabreDAV can prove**:
 /// its seed gives Alice a calendar Bob owns and shares with her read-only, so one
 /// `PROPFIND` of one calendar home returns two collections with two different answers to
@@ -313,7 +351,8 @@ async fn sabredav_reports_a_read_only_share_as_unwritable() {
     let synced = provider
         .sync_calendars(&account, None)
         .await
-        .expect("sync_calendars");
+        .expect("sync_calendars")
+        .sync;
     let calendars = match synced.update {
         SyncUpdate::Snapshot { objects, .. } => objects,
         SyncUpdate::Delta { changed, .. } => changed,
@@ -386,4 +425,16 @@ async fn sabredav_override_survival_is_what_the_adapter_advertises() {
     };
     let _serial = common::serial_guard().await;
     common::survival::survival_is_what_the_adapter_advertises(&provider, &account).await;
+}
+
+/// A meeting goes on and comes off through the adapter (`common::conference_write`).
+#[tokio::test]
+async fn sabredav_a_meeting_goes_on_and_comes_off() {
+    let Some((provider, account)) =
+        write_provider("sabredav_a_meeting_goes_on_and_comes_off").await
+    else {
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    common::conference_write::a_meeting_goes_on_and_comes_off(&provider, &account).await;
 }

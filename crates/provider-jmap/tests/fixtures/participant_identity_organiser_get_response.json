@@ -1,0 +1,20 @@
+{
+  "methodResponses": [
+    [
+      "ParticipantIdentity/get",
+      {
+        "accountId": "d",
+        "list": [
+          {
+            "id": "a",
+            "calendarAddress": "mailto:bob@test.local",
+            "isDefault": true
+          }
+        ],
+        "notFound": []
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "a36b0f72"
+}

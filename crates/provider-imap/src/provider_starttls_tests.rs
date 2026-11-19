@@ -1,5 +1,5 @@
 //! Offline coverage of the IMAP `STARTTLS` connect path
-//! ([`connect_session`](crate::provider::connect_session)) against an in-process TLS
+//! ([`connect_session`](crate::dial::connect_session)) against an in-process TLS
 //! server, mirroring `tls_info`'s implicit-TLS harness.
 //!
 //! `MockStream` bypasses TLS, so the STARTTLS arm's real sequence — plaintext preamble
@@ -22,7 +22,7 @@ use tokio_rustls::{
     rustls::{ServerConfig, pki_types::PrivatePkcs8KeyDer},
 };
 
-use crate::{ImapConfig, ImapProvider};
+use crate::{ImapAccount, ImapConfig, ImapProvider};
 
 /// Serves one IMAP `STARTTLS` connect: the plaintext greeting and `CAPABILITY` (both
 /// advertising `STARTTLS`) plus the `STARTTLS` command, then upgrades the raw socket and
@@ -97,15 +97,17 @@ async fn starttls_connect_upgrades_and_reports_the_negotiated_version() {
     let (cert, port) = imap_starttls_server().await;
     let tls = engine_tls::client_config(&engine_tls::TlsPolicy::pinned(vec![cert]))
         .expect("client config");
-    let config =
-        ImapConfig::new(format!("127.0.0.1:{port}"), "127.0.0.1", "alice", "pw").with_starttls();
-    let provider: ImapProvider<TlsStream<TcpStream>> = ImapProvider::connect(
-        &config,
-        tls.connector(),
-        MailboxId::try_from("INBOX").expect("mailbox"),
+    let config = ImapConfig::new(
+        format!("127.0.0.1:{port}"),
+        "127.0.0.1",
+        crate::credentials::Credentials::password("alice", "pw"),
     )
-    .await
-    .expect("STARTTLS connect");
+    .with_starttls();
+    let provider: ImapProvider<TlsStream<TcpStream>> =
+        ImapAccount::connect(&config, tls.connector())
+            .await
+            .map(|account| account.provider(MailboxId::try_from("INBOX").expect("mailbox")))
+            .expect("STARTTLS connect");
 
     let info = provider.connection_info();
     // The version is read off the *post-upgrade* handshake, proving the socket really

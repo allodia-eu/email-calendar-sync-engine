@@ -51,7 +51,7 @@ async fn a_queued_archive_reaches_the_server_on_the_next_drain() {
     assert_eq!(report.attempted.len(), 1);
     assert_eq!(report.attempted[0].kind, PendingOpKind::MailEdit);
     assert_eq!(report.attempted[0].outcome, DrainOutcome::Succeeded);
-    assert!(store.list_pending_ops(acct).await.unwrap().is_empty());
+    assert_eq!(store.list_pending_ops(acct).await.unwrap(), []);
 }
 /// A queued edit that fails during the pass parks like any other retryable failure: the
 /// archive is still coming.
@@ -150,7 +150,7 @@ async fn a_queued_report_reaches_the_provider_on_the_next_drain() {
     .unwrap();
     assert_eq!(done.attempted[0].kind, PendingOpKind::MailReport);
     assert_eq!(done.attempted[0].outcome, DrainOutcome::Succeeded);
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    assert_eq!(store.list_pending_ops(account()).await.unwrap(), []);
 }
 /// A drain must not lease an op it cannot dispatch. Leasing one and walking away holds its
 /// resource for the whole lease, which is the failure #202 removed from the inline path.
@@ -241,7 +241,10 @@ async fn an_unreadable_payload_settles_without_blocking_the_queue() {
     // The one behind it still went out, which is the whole point.
     assert_eq!(report.attempted[1].outcome, DrainOutcome::Succeeded);
     assert_eq!(report.delivered(), 1);
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    // The unreadable send is settled, and listed as failed so a host can show it.
+    let rows = store.list_pending_ops(account()).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state, PendingOpState::Failed);
 }
 /// Whether a pass dispatches `kind` as a mail write, which is what decides whether an
 /// unreadable payload of it has to settle rather than be left alone.
@@ -255,7 +258,8 @@ const fn is_a_mail_write(kind: PendingOpKind) -> bool {
         | PendingOpKind::MailEdit
         | PendingOpKind::MailReport
         | PendingOpKind::MailDraftPut
-        | PendingOpKind::MailDraftDelete => true,
+        | PendingOpKind::MailDraftDelete
+        | PendingOpKind::MailboxEdit => true,
         PendingOpKind::CalendarCreate
         | PendingOpKind::CalendarPatch
         | PendingOpKind::CalendarDocument
@@ -312,6 +316,13 @@ async fn an_unreadable_payload_of_any_mail_kind_settles() {
             attempted.outcome
         );
     }
-    // All settled: none is left to be retried for ever.
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    // All settled: none is left to be retried for ever. A send that settles stays listed,
+    // as `Failed`, so a host can show the message that has not gone.
+    let rows = store.list_pending_ops(account()).await.unwrap();
+    assert!(
+        rows.iter()
+            .all(|row| row.kind == Some(PendingOpKind::MailSubmit)
+                && row.state == PendingOpState::Failed),
+        "{rows:?}"
+    );
 }

@@ -32,7 +32,7 @@ use futures_util::StreamExt;
 
 use crate::{
     MAX_STALE_RECLAIMS, SyncCommit, SyncError, SyncObserver, derive_messages,
-    mail_report::SyncTiming, recipients,
+    keep_alive::KeepAlive, mail_report::SyncTiming, recipients, sent_copies, window_cursor,
 };
 
 /// How a streaming sync runs: the depth window, plus how it separates network
@@ -156,15 +156,38 @@ where
         tuning.window.window_for(mailbox)
     });
     let mut reclaims = 0u32;
+    // Set when a commit was refused as stale: the cursor this pass had left, and what it applied.
+    let mut fenced: Option<(Option<SyncState>, RunningApplied)> = None;
     'restart: loop {
-        let claim = store
+        let claimed = store
             .claim_sync_scope(account.clone(), &scope, req.clone())
-            .await?;
+            .await;
+        // A cursor that moved while this pass was fenced off was cleared, or advanced by the
+        // pass that took the scope. A host clears one to change what a pass fetches, so starting
+        // over under this pass's own window would undo the clear; the next pass takes it up.
+        // A scope already held is that next pass, and this one ends rather than report busy.
+        if let Some((left, applied)) = fenced.take() {
+            match claimed {
+                Err(StoreError::ScopeHeld) => return Ok(applied.into_applied()),
+                Ok(claim) if claim.state != left => {
+                    store.release_sync_scope(claim.lease).await?;
+                    return Ok(applied.into_applied());
+                }
+                _ => {}
+            }
+        }
+        let claim = claimed?;
         let lease = claim.lease;
+        let mut keep_alive = KeepAlive::new(store, &lease, req.ttl);
         // The cursor each pass resumes the *provider* fetch from; the store advances
         // it per additive checkpoint, or only on the final reconcile chunk.
-        let pass_cursor = claim.state;
+        let mut left = claim.state.clone();
+        // The floor is the one this folder fetches under, so deepening a mailbox starts it over.
+        let pass_cursor = window_cursor::resume(claim.state, window);
         let mut present: BTreeSet<ProviderKey> = BTreeSet::new();
+        // A message a chunk sends again (an IMAP backfill's settled attachment flag) is written,
+        // but counted once, so progress never runs past its total.
+        let mut counted: BTreeSet<ProviderKey> = BTreeSet::new();
         let mut totals = RunningApplied::default();
         let mut fetched = 0usize;
         let mut stream = provider.stream_email(
@@ -176,7 +199,7 @@ where
         );
         loop {
             let awaited = Instant::now();
-            let next = stream.next().await;
+            let next = keep_alive.around(stream.next()).await;
             timing.add_fetching(awaited);
             let Some(item) = next else {
                 // The stream ended cleanly: an additive pass has committed and
@@ -191,11 +214,17 @@ where
                     return Err(other.into());
                 }
             };
-            let count = chunk.changed.len();
+            let count = chunk
+                .changed
+                .iter()
+                .filter(|message| counted.insert(message.id.key().clone()))
+                .count();
+            let repeats = chunk.changed.len() - count;
             let total = chunk.total;
             let is_reconcile_final = chunk.is_reconcile_final();
             let projected = Instant::now();
             let (update, advance_to) = build_update(chunk, &tuning.window, &mut present);
+            let advance_to = advance_to.map(|cursor| window_cursor::stamp(cursor, window));
             let mut derived = derive_messages(changed_of(&update));
             for change in update.patched() {
                 derived.push_state_change(project_state_change(change));
@@ -210,12 +239,25 @@ where
                         return Err(err);
                     }
                 };
-            let batch = ApplyBatch::with_cursor(&update, &derived, &[], advance_to.as_ref())
+            let confirmed =
+                match sent_copies::reconciliations(store, account, &scope, &update, sent).await {
+                    Ok(confirmed) => confirmed,
+                    Err(err) => {
+                        let _ = store.release_sync_scope(lease).await;
+                        return Err(err);
+                    }
+                };
+            let batch = ApplyBatch::with_cursor(&update, &derived, &confirmed, advance_to.as_ref())
                 .with_recipient_observations(&observations);
+            let batch = crate::read_since(batch, &lease, req);
             let applied_result = store.apply_sync_update(&lease, batch).await;
             timing.add_storing(stored);
             match applied_result {
-                Ok(applied) => {
+                Ok(mut applied) => {
+                    if advance_to.is_some() {
+                        left.clone_from(&advance_to);
+                    }
+                    applied.upserted = applied.upserted.saturating_sub(repeats);
                     totals.add(applied);
                     fetched += count;
                     observer.committed(&SyncCommit {
@@ -239,6 +281,7 @@ where
                     // transport on the next fetch.
                     reclaims += 1;
                     drop(stream);
+                    fenced = Some((left, totals));
                     continue 'restart;
                 }
                 Err(other) => {

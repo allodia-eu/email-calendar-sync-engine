@@ -4,17 +4,30 @@ use engine_core::{
     mail::{AttachmentPartId, MessageAttachment, MessageAttachmentContent},
     raw::RawMime,
 };
-use mail_parser::{ContentType, MessageParser, MessagePart, MimeHeaders, PartType};
+use mail_parser::{ContentType, Message, MessageParser, MessagePart, PartKind, PartRole};
+
+use crate::body::is_alternative_version;
 
 /// Extracts downloadable attachment metadata from a raw RFC 5322 message.
 ///
-/// The returned ids are message-scoped parser attachment indexes. A binary part carrying a
-/// `Content-ID` (an embedded `cid:` image or similar body resource) is deliberately omitted
-/// because the reading view resolves it through `extract_inline_parts`; listing it again would
-/// make an embedded body image look like a downloadable file attachment. The one exception is
-/// a part the sender explicitly marked `Content-Disposition: attachment`, which stays
-/// downloadable even when it also carries a `Content-ID`. Parts without a `Content-ID`, such as
-/// a provider-displayed inline PDF, remain downloadable.
+/// The returned ids are the parts' MIME part numbers: every part of the message, nested
+/// messages included, numbered in document order from the root's `0`. They depend on the
+/// structure alone, not on how a parser classifies the parts, so a listed id can only ever
+/// name the part it was listed for.
+///
+/// The list is the message's own leaf parts (not those of a message it forwards) that are
+/// either an attachment in the RFC 8621 sense or an image, audio or video part shown inside
+/// the body, such as a photo an iPhone places between two paragraphs. The engine renders no
+/// such part inline, so without it a photo with no `Content-ID` would be reachable nowhere.
+///
+/// A binary part carrying a `Content-ID` (an embedded `cid:` image or similar body resource)
+/// is deliberately omitted because the reading view resolves it through
+/// `extract_inline_parts`; listing it again would make an embedded body image look like a
+/// downloadable file attachment. The one exception is a part the sender explicitly marked
+/// `Content-Disposition: attachment`, which stays downloadable even when it also carries a
+/// `Content-ID`. Parts without a `Content-ID`, such as a provider-displayed inline PDF, remain
+/// downloadable. A `text/plain` or `text/html` version of a `multipart/alternative` is the
+/// body, never a file, even when it carries a name.
 ///
 /// An **iMIP `text/calendar` body part** — a meeting invitation's payload, which the reading
 /// view renders as an invitation card — is likewise omitted. The rule is the absence of any
@@ -27,55 +40,76 @@ pub fn extract_attachments(raw: &RawMime) -> Vec<MessageAttachment> {
         return Vec::new();
     };
 
-    message
-        .attachments()
+    downloadable_parts(&message)
         .enumerate()
-        .filter_map(|(index, part)| {
-            let id = AttachmentPartId::new(u32::try_from(index).ok()?);
-            attachment_meta(id, part)
-        })
+        .map(|(ordinal, part)| attachment_meta(ordinal, part))
         .collect()
 }
 
 /// Extracts one downloadable attachment and its decoded bytes from a raw RFC 5322 message.
 ///
-/// Returns `None` when `id` does not exist or points to a `Content-ID` body part that is
-/// handled by `extract_inline_parts` instead (see [`extract_attachments`] for the exact rule).
+/// Returns `None` when `id` names no part, or a part that [`extract_attachments`] does not
+/// list (see there for the exact rule).
 #[must_use]
 pub fn extract_attachment(raw: &RawMime, id: AttachmentPartId) -> Option<MessageAttachmentContent> {
     let message = MessageParser::default().parse(raw.as_bytes())?;
-    let part = message.attachment(id.as_u32())?;
-    let meta = attachment_meta(id, part)?;
+    let (ordinal, part) = downloadable_parts(&message)
+        .enumerate()
+        .find(|(_, part)| part.id() == id.as_u32())?;
     Some(MessageAttachmentContent::new(
-        meta,
-        part.contents().to_vec(),
+        attachment_meta(ordinal, part),
+        part.decoded().into_owned(),
     ))
 }
 
-fn attachment_meta(id: AttachmentPartId, part: &MessagePart<'_>) -> Option<MessageAttachment> {
-    if is_cid_inline(part) || is_imip_body_part(part) || matches!(part.body, PartType::Multipart(_))
-    {
-        return None;
-    }
+/// Whether the message carries a download: [`extract_attachments`] would list at least one part.
+///
+/// The answer a list row's paperclip should give once the bytes are at hand, without building
+/// any part's metadata. `None` for bytes that do not parse as a message: they say nothing about
+/// it, so a caller keeps whatever it knew rather than recording "none" (an empty or truncated
+/// source a provider returned must not clear a paperclip the server set correctly).
+#[must_use]
+pub fn has_downloadable_attachment(raw: &RawMime) -> Option<bool> {
+    MessageParser::default()
+        .parse(raw.as_bytes())
+        .map(|message| downloadable_parts(&message).next().is_some())
+}
+
+/// The parts [`extract_attachments`] lists, in document order. Listing and fetching by id
+/// both read this one sequence, so they cannot disagree about which parts are downloads.
+fn downloadable_parts<'m>(message: &'m Message<'_>) -> impl Iterator<Item = MessagePart<'m>> {
+    message.root().parts().filter(|part| {
+        (part.is_attachment() || part.role() == PartRole::MediaBody)
+            && !part.is_multipart()
+            && !is_cid_inline(part)
+            && !is_imip_body_part(part)
+            && !is_alternative_version(part)
+    })
+}
+
+/// The metadata of the `ordinal`-th downloadable `part`; the ordinal only numbers the
+/// fallback file name, so the first unnamed attachment is `attachment-1`.
+fn attachment_meta(ordinal: usize, part: MessagePart<'_>) -> MessageAttachment {
+    let id = AttachmentPartId::new(part.id());
     let media_type = part
         .content_type()
         .map_or_else(|| "application/octet-stream".to_owned(), media_type_of);
     let file_name = part
         .attachment_name()
         .filter(|name| !name.trim().is_empty())
-        .map_or_else(|| default_file_name(id, &media_type), safe_file_name);
+        .map_or_else(|| default_file_name(ordinal, &media_type), safe_file_name);
     let inline = part
         .content_disposition()
-        .is_some_and(ContentType::is_inline);
+        .is_some_and(|disposition| disposition.is_inline());
     let content_id = part.content_id().map(content_id_token);
-    Some(MessageAttachment::new(
+    MessageAttachment::new(
         id,
         file_name,
         media_type,
-        part.contents().len() as u64,
+        part.decoded_len() as u64,
         inline,
         content_id,
-    ))
+    )
 }
 
 /// Whether `part` is a `Content-ID` body resource the reading view resolves through
@@ -83,16 +117,16 @@ fn attachment_meta(id: AttachmentPartId, part: &MessagePart<'_>) -> Option<Messa
 ///
 /// It matches exactly what `extract_inline_parts` returns — a binary leaf with a `Content-ID`
 /// — with one carve-out: a part explicitly marked `Content-Disposition: attachment` stays
-/// downloadable even when it carries a `Content-ID`. Keying on `PartType::Binary` **and**
-/// `InlineBinary` matters because mail-parser types a non-first `multipart/related` child image
-/// as `Binary`, not `InlineBinary`, so an embedded `cid:` image with no explicit disposition
-/// would otherwise be listed as a file attachment (and double-listed with the inline parts).
+/// downloadable even when it carries a `Content-ID`. Keying on `PartKind::Binary` **and**
+/// `InlineBinary` matters because the kind follows the disposition: an embedded image of a
+/// `multipart/mixed` with no disposition is `Binary`, and would otherwise be listed as a file
+/// attachment (and double-listed with the inline parts).
 fn is_cid_inline(part: &MessagePart<'_>) -> bool {
     part.content_id().is_some()
-        && matches!(part.body, PartType::Binary(_) | PartType::InlineBinary(_))
+        && matches!(part.kind(), PartKind::Binary | PartKind::InlineBinary)
         && !part
             .content_disposition()
-            .is_some_and(ContentType::is_attachment)
+            .is_some_and(|disposition| disposition.is_attachment())
 }
 
 /// Whether `part` is an **iMIP scheduling body part** — the `text/calendar` payload of a
@@ -100,10 +134,10 @@ fn is_cid_inline(part: &MessagePart<'_>) -> bool {
 ///
 /// An iMIP message carries its iTIP object as an alternative **body** part, a sibling of
 /// `text/plain` and `text/html` (RFC 6047 §2.4). It is a representation *of the message*, so
-/// no paperclip belongs on it — Outlook and Gmail both hide it. mail-parser nonetheless
-/// classifies it as an attachment (`text/calendar` is `MimeType::TextOther`, and inside a
-/// `multipart/alternative` it is added to neither the text nor the HTML body index), so
-/// without this check every invitation grew a junk `attachment-3.ics` row.
+/// no paperclip belongs on it — Outlook and Gmail both hide it. RFC 8621 nonetheless
+/// classifies it as an attachment (inside a `multipart/alternative` only `text/plain`,
+/// `text/html` and inline media are body parts), so without this check every invitation
+/// grew a junk `attachment-3.ics` row.
 ///
 /// The discriminator is the **absence of any `Content-Disposition`**, which is exactly what
 /// separates a body part from a file the sender meant to send:
@@ -117,13 +151,10 @@ fn is_cid_inline(part: &MessagePart<'_>) -> bool {
 /// So a sender who explicitly attached a calendar file always keeps it; only the part we
 /// consume into the card disappears.
 fn is_imip_body_part(part: &MessagePart<'_>) -> bool {
-    let is_calendar = part
-        .content_type()
-        .is_some_and(|ct| media_type_of(ct).eq_ignore_ascii_case("text/calendar"));
-    is_calendar && part.content_disposition().is_none()
+    part.is_content_type("text", "calendar") && part.content_disposition().is_none()
 }
 
-fn media_type_of(content_type: &ContentType<'_>) -> String {
+fn media_type_of(content_type: ContentType<'_>) -> String {
     match content_type.subtype() {
         Some(subtype) => format!("{}/{}", content_type.ctype(), subtype),
         None => content_type.ctype().to_owned(),
@@ -138,7 +169,7 @@ fn content_id_token(raw: &str) -> String {
         .to_owned()
 }
 
-fn default_file_name(id: AttachmentPartId, media_type: &str) -> String {
+fn default_file_name(ordinal: usize, media_type: &str) -> String {
     let ext = match media_type {
         "message/rfc822" => "eml",
         "text/calendar" => "ics",
@@ -148,7 +179,7 @@ fn default_file_name(id: AttachmentPartId, media_type: &str) -> String {
         media if media.starts_with("image/") => media.rsplit('/').next().unwrap_or("img"),
         _ => "bin",
     };
-    format!("attachment-{}.{}", id.as_u32() + 1, safe_extension(ext))
+    format!("attachment-{}.{}", ordinal + 1, safe_extension(ext))
 }
 
 fn safe_file_name(value: &str) -> String {
@@ -201,242 +232,5 @@ fn safe_extension(value: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn raw(bytes: &[u8]) -> RawMime {
-        RawMime::new(bytes)
-    }
-
-    const MIXED_WITH_ATTACHMENTS: &[u8] = b"Content-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
-        --m\r\nContent-Type: text/plain\r\n\r\nbody\r\n\
-        --m\r\nContent-Type: application/pdf; name=\"report.pdf\"\r\n\
-        Content-Disposition: attachment; filename=\"report.pdf\"\r\n\
-        Content-Transfer-Encoding: base64\r\n\r\nUERG\r\n\
-        --m\r\nContent-Type: text/calendar\r\n\
-        Content-Disposition: attachment; filename=\"invite.ics\"\r\n\r\nBEGIN:VCALENDAR\r\n\
-        --m--\r\n";
-
-    // --- G6: an iMIP body part is a card, not a file -----------------------------
-
-    /// Outlook / Sabre-CalDAV: the calendar payload is an alternative **body** part —
-    /// no disposition, no filename.
-    const IMIP_INLINE_ONLY: &[u8] = b"Content-Type: multipart/alternative; boundary=\"a\"\r\n\r\n\
-        --a\r\nContent-Type: text/plain\r\n\r\nWhen: today\r\n\
-        --a\r\nContent-Type: text/calendar; charset=\"iso-8859-1\"; method=REQUEST\r\n\r\n\
-        BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n\
-        --a--\r\n";
-
-    /// Gmail: the body part **and** a deliberately attached duplicate.
-    const IMIP_INLINE_PLUS_ATTACHED: &[u8] =
-        b"Content-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
-        --m\r\nContent-Type: multipart/alternative; boundary=\"a\"\r\n\r\n\
-        --a\r\nContent-Type: text/plain\r\n\r\nnote\r\n\
-        --a\r\nContent-Type: text/calendar; charset=UTF-8; method=REQUEST\r\n\r\n\
-        BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n\
-        --a--\r\n\
-        --m\r\nContent-Type: application/ics; name=\"invite.ics\"\r\n\
-        Content-Disposition: attachment; filename=\"invite.ics\"\r\n\r\n\
-        BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n\
-        --m--\r\n";
-
-    #[test]
-    fn an_imip_body_part_does_not_become_a_junk_attachment_row() {
-        // Regression (G6). `text/calendar` is a text type that belongs to neither the text
-        // nor the HTML body index, so mail-parser hands it back as an attachment and
-        // `default_file_name` invented `attachment-2.ics`. Every invitation therefore showed
-        // a paperclip nobody sent. Outlook and Gmail both hide this part.
-        let attachments = extract_attachments(&raw(IMIP_INLINE_ONLY));
-        assert!(
-            attachments.is_empty(),
-            "the invitation body part is a card, not a file: {attachments:?}"
-        );
-    }
-
-    #[test]
-    fn a_deliberately_attached_ics_still_shows_beside_the_hidden_body_part() {
-        // Gmail's belt-and-braces copy is a real file the sender chose to attach — Outlook
-        // shows it too. Hiding the body part must not hide this.
-        let attachments = extract_attachments(&raw(IMIP_INLINE_PLUS_ATTACHED));
-        assert_eq!(attachments.len(), 1, "{attachments:?}");
-        assert_eq!(attachments[0].file_name(), "invite.ics");
-    }
-
-    #[test]
-    fn a_published_ics_attachment_is_untouched() {
-        // A `METHOD:PUBLISH` calendar file (a newsletter-style .ics) is dispositioned as an
-        // attachment and produces no card, so its chip must survive.
-        let published = b"Content-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
-            --m\r\nContent-Type: text/plain\r\n\r\nsee attached\r\n\
-            --m\r\nContent-Type: text/calendar; charset=UTF-8\r\n\
-            Content-Disposition: attachment; filename=\"agenda.ics\"\r\n\r\n\
-            BEGIN:VCALENDAR\r\nMETHOD:PUBLISH\r\nEND:VCALENDAR\r\n\
-            --m--\r\n";
-        let attachments = extract_attachments(&raw(published));
-        assert_eq!(attachments.len(), 1, "{attachments:?}");
-        assert_eq!(attachments[0].file_name(), "agenda.ics");
-    }
-
-    #[test]
-    fn a_suppressed_imip_body_part_cannot_be_downloaded_by_id_either() {
-        // The listing and the by-id fetch must agree: a part hidden from the list must not
-        // be reachable through `extract_attachment`, or a host could still surface it.
-        for id in 0..4 {
-            assert!(
-                extract_attachment(&raw(IMIP_INLINE_ONLY), AttachmentPartId::new(id)).is_none(),
-                "id {id} should not resolve to a downloadable part"
-            );
-        }
-    }
-
-    #[test]
-    fn extracts_attachment_metadata_without_bytes() {
-        let attachments = extract_attachments(&raw(MIXED_WITH_ATTACHMENTS));
-        assert_eq!(attachments.len(), 2, "{attachments:?}");
-        assert_eq!(attachments[0].id().as_u32(), 0);
-        assert_eq!(attachments[0].file_name(), "report.pdf");
-        assert_eq!(attachments[0].media_type(), "application/pdf");
-        assert_eq!(attachments[0].size(), 3);
-        assert!(!attachments[0].is_inline());
-        assert_eq!(attachments[1].file_name(), "invite.ics");
-        assert_eq!(attachments[1].media_type(), "text/calendar");
-    }
-
-    #[test]
-    fn extracts_selected_attachment_content() {
-        let content = extract_attachment(&raw(MIXED_WITH_ATTACHMENTS), AttachmentPartId::new(0))
-            .expect("attachment");
-        assert_eq!(content.attachment().file_name(), "report.pdf");
-        assert_eq!(content.bytes(), b"PDF");
-        assert!(
-            extract_attachment(&raw(MIXED_WITH_ATTACHMENTS), AttachmentPartId::new(9)).is_none()
-        );
-    }
-
-    #[test]
-    fn skips_cid_inline_images_but_keeps_inline_files_without_cid() {
-        let raw = raw(b"Content-Type: multipart/related; boundary=\"b\"\r\n\r\n\
-              --b\r\nContent-Type: text/html\r\n\r\n<img src=\"cid:logo@x\">\r\n\
-              --b\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\n\
-              Content-Disposition: inline; filename=\"logo.png\"\r\n\
-              Content-Transfer-Encoding: base64\r\n\r\naGVsbG8=\r\n\
-              --b\r\nContent-Type: application/pdf\r\n\
-              Content-Disposition: inline; filename=\"preview.pdf\"\r\n\r\nPDF\r\n\
-              --b--\r\n");
-        let attachments = extract_attachments(&raw);
-        assert_eq!(attachments.len(), 1, "{attachments:?}");
-        assert_eq!(attachments[0].file_name(), "preview.pdf");
-        assert!(attachments[0].is_inline());
-    }
-
-    // A `multipart/related` embedded image referenced by `cid:` but carrying **no**
-    // `Content-Disposition`. mail-parser types a non-first related child as `Binary` (not
-    // `InlineBinary`), so this is the exact shape that used to leak into the attachment list.
-    const RELATED_UNDISPOSED_CID: &[u8] =
-        b"Content-Type: multipart/related; boundary=\"b\"\r\n\r\n\
-        --b\r\nContent-Type: text/html\r\n\r\n<img src=\"cid:logo@x\">\r\n\
-        --b\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\n\
-        Content-Transfer-Encoding: base64\r\n\r\naGVsbG8=\r\n\
-        --b--\r\n";
-
-    #[test]
-    fn undisposed_related_cid_image_is_inline_not_a_downloadable_attachment() {
-        // Regression: an embedded body image (cid:, no disposition) must not appear as a
-        // downloadable file — and must not be double-listed with the inline parts.
-        let attachments = extract_attachments(&raw(RELATED_UNDISPOSED_CID));
-        assert!(attachments.is_empty(), "{attachments:?}");
-        // It is still resolvable as an inline part for the HTML body.
-        let inline = crate::extract_inline_parts(&raw(RELATED_UNDISPOSED_CID));
-        assert_eq!(inline.len(), 1);
-        assert_eq!(inline[0].content_id(), "logo@x");
-    }
-
-    #[test]
-    fn attachment_disposition_stays_downloadable_even_with_a_content_id() {
-        // The sender explicitly marked this image `attachment`; a `Content-ID` on it must not
-        // hide it from the download list.
-        let raw = raw(b"Content-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
-              --m\r\nContent-Type: text/plain\r\n\r\nbody\r\n\
-              --m\r\nContent-Type: image/png\r\nContent-ID: <pic@x>\r\n\
-              Content-Disposition: attachment; filename=\"pic.png\"\r\n\
-              Content-Transfer-Encoding: base64\r\n\r\naGVsbG8=\r\n--m--\r\n");
-        let attachments = extract_attachments(&raw);
-        assert_eq!(attachments.len(), 1, "{attachments:?}");
-        assert_eq!(attachments[0].file_name(), "pic.png");
-        assert_eq!(attachments[0].content_id(), Some("pic@x"));
-    }
-
-    #[test]
-    fn safe_file_name_replaces_bidi_and_zero_width_controls() {
-        // U+202E RIGHT-TO-LEFT OVERRIDE is the classic extension-spoof; it must be neutralized,
-        // along with the other bidi overrides, isolates, and zero-width/format controls.
-        let safe = safe_file_name("invoice\u{202E}cod.exe");
-        assert!(!safe.contains('\u{202E}'), "{safe:?}");
-        assert_eq!(safe, "invoice_cod.exe");
-        assert_eq!(safe_file_name("a\u{200B}b\u{FEFF}c"), "a_b_c");
-        // A bidi isolate (U+2066) and the Arabic letter mark (U+061C) are equally spoofable.
-        assert_eq!(safe_file_name("x\u{2066}y\u{061C}z"), "x_y_z");
-    }
-
-    #[test]
-    fn safe_extension_falls_back_when_nothing_alphanumeric_remains() {
-        assert_eq!(safe_extension("###"), "bin");
-        assert_eq!(safe_extension("PdF"), "PdF");
-    }
-
-    #[test]
-    fn safe_file_name_falls_back_on_dot_only_and_empty_names() {
-        assert_eq!(safe_file_name(".."), "attachment.bin");
-        assert_eq!(safe_file_name("."), "attachment.bin");
-        assert_eq!(safe_file_name("   "), "attachment.bin");
-        // A legitimate dotfile keeps its name.
-        assert_eq!(safe_file_name(".gitignore"), ".gitignore");
-    }
-
-    #[test]
-    fn unnamed_attachments_get_default_names_by_media_type() {
-        // Parts with no filename anywhere fall back to a synthesized `attachment-N.ext` derived
-        // from the media type (covers the pdf and image arms and the extension sanitizer).
-        let raw = raw(b"Content-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
-              --m\r\nContent-Type: text/plain\r\n\r\nbody\r\n\
-              --m\r\nContent-Type: application/pdf\r\n\
-              Content-Disposition: attachment\r\nContent-Transfer-Encoding: base64\r\n\r\nUERG\r\n\
-              --m\r\nContent-Type: image/png\r\n\
-              Content-Disposition: attachment\r\nContent-Transfer-Encoding: base64\r\n\r\naGVsbG8=\r\n\
-              --m--\r\n");
-        let attachments = extract_attachments(&raw);
-        assert_eq!(attachments.len(), 2, "{attachments:?}");
-        assert_eq!(attachments[0].file_name(), "attachment-1.pdf");
-        assert_eq!(attachments[1].file_name(), "attachment-2.png");
-    }
-
-    #[test]
-    fn attachment_with_a_bare_media_type_falls_back_to_octet_defaults() {
-        // A Content-Type with a type but no subtype, and no filename: media type keeps the bare
-        // type and the default name uses the `.bin` fallback extension.
-        let raw = raw(b"Content-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
-              --m\r\nContent-Type: text/plain\r\n\r\nbody\r\n\
-              --m\r\nContent-Type: application\r\nContent-Disposition: attachment\r\n\r\nX\r\n\
-              --m--\r\n");
-        let attachments = extract_attachments(&raw);
-        assert_eq!(attachments.len(), 1, "{attachments:?}");
-        assert_eq!(attachments[0].media_type(), "application");
-        assert_eq!(attachments[0].file_name(), "attachment-1.bin");
-    }
-
-    #[test]
-    fn sanitizes_suggested_file_names() {
-        let raw = raw(b"Content-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
-              --m\r\nContent-Type: application/octet-stream\r\n\
-              Content-Disposition: attachment; filename=\"..\\secret/report?.bin\"\r\n\r\nbytes\r\n\
-              --m--\r\n");
-        let attachments = extract_attachments(&raw);
-        assert_eq!(attachments[0].file_name(), "..secret_report_.bin");
-    }
-
-    #[test]
-    fn hostile_input_never_panics() {
-        assert!(extract_attachments(&raw(b"")).is_empty());
-        assert!(extract_attachment(&raw(b"\xff\x00not mime"), AttachmentPartId::new(0)).is_none());
-    }
-}
+#[path = "attachment_tests.rs"]
+mod tests;

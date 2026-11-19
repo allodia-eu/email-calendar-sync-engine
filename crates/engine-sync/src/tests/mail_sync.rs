@@ -225,6 +225,7 @@ impl Provider for LeaseStealer {
     }
 }
 
+impl engine_provider::MailboxWrites for LeaseStealer {}
 impl CalendarWrites for LeaseStealer {}
 
 #[tokio::test]

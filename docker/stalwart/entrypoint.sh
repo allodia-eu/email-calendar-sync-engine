@@ -1,8 +1,8 @@
 #!/bin/sh
 # Self-bootstrapping entrypoint for the deterministic Stalwart test harness.
 #
-# Stalwart v0.16 has no declarative config file: a fresh server boots into
-# "bootstrap mode" and is configured through its JMAP management API, after
+# Stalwart (v0.16 onward, v1 included) has no declarative config file: a fresh
+# server boots into "bootstrap mode" and is configured through its JMAP management API, after
 # which it must restart to come up as a full server. This wrapper drives that
 # sequence non-interactively and deterministically, then seeds the shared
 # dataset, so `docker compose up` yields an identical, ready server every time:
@@ -10,8 +10,10 @@
 #   1. start the server (bootstrap mode if the store is empty),
 #   2. complete setup via `x:Bootstrap/set` (no ACME/auto-TLS), restart to full,
 #   3. create the test accounts via `x:Account/set` (idempotent),
-#   4. seed mail (IMAP over TLS), calendars (CalDAV), and contacts (CardDAV),
-#   5. write a readiness marker and run the server in the foreground.
+#   4. create the `support` **group** mailbox and put alice in it, so alice's
+#      credential reaches a store it does not own (the shared-mailbox fixture),
+#   5. seed mail (IMAP over TLS), calendars (CalDAV), and contacts (CardDAV),
+#   6. write a readiness marker and run the server in the foreground.
 #
 # It is idempotent: on a re-run against an already-bootstrapped data volume it
 # skips bootstrap and skips existing accounts, and the content seeder clears
@@ -55,9 +57,21 @@ wait_http() {
   done
 }
 
-# Bootstrap mode exposes the singleton Bootstrap object; normal mode 404s it.
+# Bootstrap mode lists the singleton Bootstrap object; normal mode answers it under
+# `notFound`. Ask for it by id (v1 answers other singletons' `ids: null` with an empty
+# list) and match the id, never one of its fields: v1 renamed `serverHostname` to
+# `defaultHostname`, and a check keyed on the old name read every fresh v1 server as
+# already bootstrapped, skipped setup, and died on a missing domain. Anything else — an
+# error, a non-JSON body — fails loudly rather than being read as either mode.
 in_bootstrap_mode() {
-  jmap '["x:Bootstrap/get",{"ids":null},"c0"]' | grep -q '"serverHostname"'
+  resp=$(jmap '["x:Bootstrap/get",{"ids":["singleton"]},"c0"]')
+  if printf '%s' "$resp" | grep -q '"id":"singleton"'; then
+    return 0
+  elif printf '%s' "$resp" | grep -q '"notFound":\["singleton"\]'; then
+    return 1
+  fi
+  log "unexpected x:Bootstrap/get answer: $resp"
+  exit 1
 }
 
 # Id of the auto-created default domain (the only domain), parsed from the
@@ -85,12 +99,59 @@ ensure_account() { # local-name  description  password
   log "created account $1"
 }
 
+# Server-assigned id of a principal, by local name. Asking for `name` alone keeps each
+# entry flat (`{"name":"alice","id":"c"}`), so one grep per entry is safe without jq. Ids
+# follow creation order and are not stable across a fresh bootstrap, which is why callers
+# look them up rather than hard-coding one.
+account_id() { # local-name
+  jmap '["x:Account/get",{"ids":null,"properties":["name"]},"c0"]' \
+    | grep -oE "\{\"name\":\"$1\",\"id\":\"[^\"]+\"\}" \
+    | grep -oE '"id":"[^"]+"' | cut -d'"' -f4
+}
+
+# A **group** principal: a mailbox with no credentials of its own. Each member's JMAP
+# session then lists it as an account with `isPersonal: false` (RFC 8620 §1.6.2), and each
+# member's IMAP session shows it under the `Shared Folders` namespace (RFC 2342) — the
+# vendor-neutral analogue of a Microsoft 365 shared mailbox, and what the engine's
+# shared-mailbox discovery is tested against (docs/agent-guidance/stalwart-harness.md).
+ensure_group() { # local-name  description
+  if account_exists "$1"; then
+    log "group $1 already present"
+    return 0
+  fi
+  resp=$(jmap "[\"x:Account/set\",{\"create\":{\"g\":{\"@type\":\"Group\",\"name\":\"$1\",\"domainId\":\"$DOMAIN_ID\",\"description\":\"$2\"}}},\"c0\"]")
+  if ! printf '%s' "$resp" | grep -q '"created"'; then
+    log "FAILED to create group $1: $resp"
+    return 1
+  fi
+  log "created group $1"
+}
+
+# Membership is recorded on the **member**: `memberGroupIds` is a set on the user
+# principal, not a list on the group. Re-setting the same set is a no-op update, so this
+# is idempotent across a warm start.
+ensure_group_member() { # member-local-name  group-local-name
+  member_id="$(account_id "$1")"
+  group_id="$(account_id "$2")"
+  [ -n "$member_id" ] && [ -n "$group_id" ] || {
+    log "FAILED to resolve ids for member $1 / group $2"
+    return 1
+  }
+  resp=$(jmap "[\"x:Account/set\",{\"update\":{\"$member_id\":{\"memberGroupIds\":{\"$group_id\":true}}}},\"c0\"]")
+  if ! printf '%s' "$resp" | grep -q '"updated"'; then
+    log "FAILED to add $1 to group $2: $resp"
+    return 1
+  fi
+  log "$1 is a member of group $2"
+}
+
 listener_exists() { # name
   jmap '["x:NetworkListener/get",{"ids":null,"properties":["name"]},"c0"]' \
     | grep -q "\"name\":\"$1\""
 }
 
-# Add a STARTTLS listener (`useTls` with `tlsImplicit:false`) if absent. Stalwart
+# Add a STARTTLS listener (`useTls` with `implicitTls:false`; v0.16 spelled it
+# `tlsImplicit`, which v1 refuses with `invalidPatch`) if absent. Stalwart
 # supports STARTTLS on 143/587 but recommends implicit TLS (993/465), so a fresh
 # bootstrap comes up with 993/465 only; we add 143/587 to exercise the engine's STARTTLS
 # transports (which real, older servers require). Sets CREATED_LISTENER=1 when it creates
@@ -101,7 +162,7 @@ ensure_starttls_listener() { # create-key  name  bind  protocol
     log "listener $2 already present"
     return 0
   fi
-  resp=$(jmap "[\"x:NetworkListener/set\",{\"create\":{\"$1\":{\"name\":\"$2\",\"bind\":{\"$3\":true},\"protocol\":\"$4\",\"useTls\":true,\"tlsImplicit\":false}}},\"c0\"]")
+  resp=$(jmap "[\"x:NetworkListener/set\",{\"create\":{\"$1\":{\"name\":\"$2\",\"bind\":{\"$3\":true},\"protocol\":\"$4\",\"useTls\":true,\"implicitTls\":false}}},\"c0\"]")
   if ! printf '%s' "$resp" | grep -q '"created"'; then
     log "FAILED to create listener $2: $resp"
     return 1
@@ -111,7 +172,7 @@ ensure_starttls_listener() { # create-key  name  bind  protocol
 }
 
 # Raise every inbound rate limiter out of the way (`x:MtaInboundThrottle`, one of the
-# store-backed settings objects — v0.16 has no config file for these).
+# store-backed settings objects — Stalwart has had no config file for these since v0.16).
 #
 # Stalwart ships two enabled by default: 5/second per sender IP, and **25/hour per (sender
 # domain, recipient)**. Both make a test's outcome depend on how many times the suite has
@@ -139,6 +200,31 @@ relax_inbound_throttles() {
     fi
   done
   log "relaxed inbound rate limiters: $(printf '%s' "$ids" | wc -w | tr -d ' ') throttle(s)"
+}
+
+# Raise the HTTP limit on **unauthenticated** requests (`x:Http`'s `rateLimitAnonymous`,
+# 100/minute per client IP by default) for the same reason as the throttles above: it makes a
+# test's outcome depend on how recently the suites last ran.
+#
+# Two things every live run spends it on, measured: the readiness poll, `GET /healthz/live`
+# once per test (`Harness::wait_until_ready`), and the first request of every DAV connection,
+# which goes without the credential until the server asks for it (`provider-caldav`'s
+# `CredentialScope`) and is answered `401` — 60 of those left 40 of the 100. One `live_caldav`
+# run fits; back-to-back runs exhausted it, and every poll after that drew `429` until the
+# readiness wait timed out (#333). Polling once per test binary would only have moved the
+# problem to the DAV connects.
+#
+# The **authenticated** limit (`rateLimitAuthenticated`, 1000/minute) is left as shipped, so
+# the rate refusals `provider-caldav/tests/live_concurrency.rs` measures are the server's own.
+#
+# Idempotent, and takes effect without a restart.
+relax_anonymous_http_limit() {
+  resp=$(jmap '["x:Http/set",{"update":{"singleton":{"rateLimitAnonymous":{"count":1000000,"period":60000}}}},"c0"]')
+  if ! printf '%s' "$resp" | grep -q '"updated"'; then
+    log "FAILED to relax the anonymous HTTP rate limit: $resp"
+    return 1
+  fi
+  log "relaxed the anonymous HTTP rate limit"
 }
 
 trap 'stop_server; exit 0' TERM INT
@@ -174,8 +260,19 @@ ensure_account alice "Alice Tester" "${HARNESS_ALICE_PW:-harness-alice-pw}"
 # the scheduling scenarios run entirely between these two scratch accounts.
 ensure_account bob "Bob Tester" "${HARNESS_BOB_PW:-harness-bob-pw}"
 ensure_account carol "Carol Tester" "${HARNESS_CAROL_PW:-harness-carol-pw}"
+# Dave shares one calendar with Alice, read-only, and nothing else: the calendar-only half of
+# the shared-store fixture (Bob's INBOX is the mail-only half). seed.sh makes the share.
+ensure_account dave "Dave Tester" "${HARNESS_DAVE_PW:-harness-dave-pw}"
 
 relax_inbound_throttles
+relax_anonymous_http_limit
+
+# The shared-mailbox fixture's first half: a credential-less group mailbox alice belongs
+# to, so she holds every right on it. The second half — bob granting alice read-only
+# access to *his* INBOX, which is what proves rights belong to the folder rather than the
+# account — is an IMAP `SETACL`, so it lives in seed.sh with the rest of the IMAP seeding.
+ensure_group support "Support Shared Mailbox"
+ensure_group_member alice support
 
 # STARTTLS listeners for the IMAP (143) and SMTP submission (587) transports the
 # provider speaks in addition to implicit TLS. A newly created listener needs a server

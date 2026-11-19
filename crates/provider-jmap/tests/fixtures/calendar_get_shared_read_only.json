@@ -1,0 +1,42 @@
+{
+  "methodResponses": [
+    [
+      "Calendar/get",
+      {
+        "accountId": "f",
+        "state": "sau",
+        "list": [
+          {
+            "id": "c",
+            "name": "Dave Shared",
+            "description": null,
+            "color": null,
+            "sortOrder": 0,
+            "isSubscribed": false,
+            "isVisible": true,
+            "isDefault": false,
+            "includeInAvailability": "none",
+            "defaultAlertsWithTime": {},
+            "defaultAlertsWithoutTime": {},
+            "timeZone": null,
+            "shareWith": null,
+            "myRights": {
+              "mayReadFreeBusy": true,
+              "mayReadItems": true,
+              "mayWriteAll": false,
+              "mayWriteOwn": false,
+              "mayUpdatePrivate": false,
+              "mayRSVP": false,
+              "mayShare": false,
+              "mayDelete": false,
+              "maySetMetadata": false
+            }
+          }
+        ],
+        "notFound": []
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "2605a75d"
+}

@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     ids::{MessageIdHeader, ProviderKey, ThreadId},
-    mail::{EmailAddress, MailFlags, Message},
+    mail::{EmailAddress, Importance, MailFlags, Message},
     time::UtcDateTime,
     version::RevisionTokens,
 };
@@ -64,6 +64,9 @@ pub struct MailRow {
     pub flags: MailFlags,
     /// Whether the message has a non-inline attachment.
     pub has_attachment: bool,
+    /// The importance the sender stated ([`Envelope::importance`](crate::mail::Envelope)).
+    #[serde(default)]
+    pub importance: Importance,
     /// How large the provider says the message is, in octets, when it says at all.
     ///
     /// `None` means *no opinion* — an adapter that reports no size — never "small". Stored so a
@@ -165,6 +168,7 @@ pub fn project_message(message: &Message) -> MailProjection {
             date_utc: message.received_at.or(message.sent_at),
             flags: MailFlags::from_keywords(&message.keywords),
             has_attachment: message.has_attachment,
+            importance: message.envelope.importance,
             size_octets: message.size,
             from_name: sender.and_then(|address| address.name.clone()),
             from_addr: sender.map(|address| address.email.as_str().to_owned()),
@@ -362,7 +366,7 @@ mod tests {
     #[test]
     fn empty_subject_and_body_produce_no_fts_fields() {
         let p = project_message(&message());
-        assert!(p.fts.fields.is_empty());
+        assert_eq!(p.fts.fields, []);
         assert_eq!(p.row.date_utc, None);
         assert!(!p.row.has_attachment);
     }

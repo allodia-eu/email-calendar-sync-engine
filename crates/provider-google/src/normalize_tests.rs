@@ -45,13 +45,42 @@ fn labels_map_system_ids_to_roles_and_keep_custom_labels_roleless() {
     assert_eq!(role("TRASH"), Some(MailboxRole::Trash));
     assert_eq!(role("SPAM"), Some(MailboxRole::Junk));
     assert_eq!(role("IMPORTANT"), Some(MailboxRole::Important));
-    // Custom label + category labels are roleless mailboxes.
+    // A user's label is a roleless mailbox.
     let custom = all.iter().find(|m| m.name == "Fixture Label").unwrap();
     assert_eq!(custom.role, None);
+}
+
+#[test]
+fn the_inbox_categories_and_chat_are_not_mailboxes() {
+    // The captured labels.list carries `CHAT` and all five `CATEGORY_*`: none is a place a user
+    // files mail in, so none reaches the folder list.
+    let all = labels();
     assert!(
-        all.iter()
-            .any(|m| m.id.as_str() == "CATEGORY_UPDATES" && m.role.is_none())
+        !all.iter()
+            .any(|m| m.id.as_str() == "CHAT" || m.id.as_str().starts_with("CATEGORY_")),
+        "{:?}",
+        all.iter().map(|m| m.id.as_str()).collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn a_category_chat_or_superstar_label_is_no_membership() {
+    let filed = message_from_json(&serde_json::json!({
+        "id": "m", "threadId": "t",
+        "labelIds": ["INBOX", "CATEGORY_PROMOTIONS", "YELLOW_STAR", "STARRED", "Label_1"]
+    }))
+    .unwrap();
+    let places: Vec<&str> = filed.mailboxes.iter().map(MailboxId::as_str).collect();
+    assert_eq!(places, ["INBOX", "Label_1"]);
+    assert!(filed.has_system_keyword(SystemKeyword::Flagged));
+
+    // Archived from a tab, it keeps its category and is in All Mail, as Gmail shows it.
+    let archived = message_from_json(&serde_json::json!({
+        "id": "m", "threadId": "t", "labelIds": ["CATEGORY_SOCIAL", "CHAT", "RED_BANG"]
+    }))
+    .unwrap();
+    let places: Vec<&str> = archived.mailboxes.iter().map(MailboxId::as_str).collect();
+    assert_eq!(places, [ALL_MAIL_ID]);
 }
 
 #[test]
@@ -319,6 +348,18 @@ fn the_nearest_existing_ancestor_is_the_parent() {
 }
 
 #[test]
+fn only_a_user_label_accepts_a_label_inside_it() {
+    // Gmail holds a nested label as a user label whose name carries its parent's, and a system
+    // label's name is not one a user label can start with: `INBOX/Receipts` is refused.
+    let mut all = labels();
+    all.push(all_mail_mailbox());
+    for label in &all {
+        let user = label.id.as_str().starts_with("Label_");
+        assert_eq!(label.accepts_children, user, "{}", label.id.as_str());
+    }
+}
+
+#[test]
 fn label_without_an_id_is_a_protocol_error() {
     assert!(label_from_json(&serde_json::json!({ "name": "x" })).is_err());
 }
@@ -341,4 +382,60 @@ fn a_label_carries_an_unread_count_only_where_the_api_returns_one() {
     .unwrap()
     .unwrap();
     assert_eq!(listed.unread_count, None);
+}
+
+#[test]
+fn importance_is_read_from_the_metadata_headers() {
+    let importance = |headers: serde_json::Value| {
+        let json = serde_json::json!({
+            "id": "m", "threadId": "t", "labelIds": ["INBOX"],
+            "payload": { "headers": headers }
+        });
+        message_from_json(&json).unwrap().envelope.importance
+    };
+    assert_eq!(
+        importance(serde_json::json!([{ "name": "Importance", "value": "High" }])),
+        Importance::High
+    );
+    assert_eq!(
+        importance(serde_json::json!([{ "name": "X-Priority", "value": "5 (Lowest)" }])),
+        Importance::Low
+    );
+    assert_eq!(importance(serde_json::json!([])), Importance::Normal);
+    // A header the rule reads but the metadata read does not name is not returned at all.
+    for header in Importance::HEADERS {
+        assert!(METADATA_HEADERS.contains(&header), "{header}");
+    }
+    // A header carried twice reads by its last occurrence, as on every other transport.
+    assert_eq!(
+        importance(serde_json::json!([
+            { "name": "Importance", "value": "low" },
+            { "name": "importance", "value": "high" }
+        ])),
+        Importance::High
+    );
+    assert_eq!(
+        importance(serde_json::json!([{ "name": "X-MSMail-Priority", "value": "Low" }])),
+        Importance::Low
+    );
+}
+
+/// A draft carrying `Importance` and `X-Priority`, read with the metadata fetch's own
+/// `metadataHeaders`: Gmail returns both, in the order the message carries them.
+#[test]
+fn the_metadata_read_returns_the_importance_headers() {
+    let message = message(include_str!(
+        "../tests/fixtures/mail/message_metadata_importance.json"
+    ));
+    assert_eq!(message.envelope.importance, Importance::High);
+}
+
+/// `Importance: low`, `X-MSMail-Priority: Low`, `Importance: high`: Gmail returns every occurrence
+/// in the message's order, and the last `Importance` decides, as on every other transport.
+#[test]
+fn the_metadata_read_returns_every_occurrence_and_the_last_importance_decides() {
+    let message = message(include_str!(
+        "../tests/fixtures/mail/message_metadata_importance_twice.json"
+    ));
+    assert_eq!(message.envelope.importance, Importance::High);
 }

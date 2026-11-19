@@ -6,7 +6,7 @@
 
 use engine_core::{
     calendar::{Frequency, RecurrenceRule},
-    ids::{CalendarId, EventId, Uid},
+    ids::{CalendarId, Uid},
     membership::Memberships,
     time::{LocalDateTime, TimeZoneId},
 };
@@ -30,7 +30,7 @@ fn zoned(local: &str) -> CalendarDateTime {
 /// A weekly series, as the normalizer hands it over.
 fn series() -> Event {
     let mut event = Event::new(
-        EventId::try_from(MASTER).unwrap(),
+        crate::cal_id::event_id(calendar().key().as_str(), MASTER).unwrap(),
         Uid::new("evt-1@google.com").unwrap(),
         Memberships::of_one(calendar()),
         zoned("2026-09-07T09:30:00"),
@@ -81,7 +81,10 @@ fn a_moved_occurrence_keeps_its_original_start_as_its_key() {
     // and never the time it was moved to — keying by the new start would override an
     // instance the rule does not produce, and leave the one the user moved still drawn.
     let mut events = vec![series()];
-    fold_into(&mut events, vec![pending_override(&moved(), None).unwrap()]);
+    fold_into(
+        &mut events,
+        vec![pending_override(&moved(), &calendar(), None).unwrap()],
+    );
 
     let overrides = overrides_of(&events[0]);
     let RecurrenceOverride::Patch(patch) = overrides
@@ -106,7 +109,10 @@ fn a_changed_occurrence_carries_its_own_notes_and_room() {
     entry["location"] = json!("Room 2");
 
     let mut events = vec![series()];
-    fold_into(&mut events, vec![pending_override(&entry, None).unwrap()]);
+    fold_into(
+        &mut events,
+        vec![pending_override(&entry, &calendar(), None).unwrap()],
+    );
 
     let overrides = overrides_of(&events[0]);
     let RecurrenceOverride::Patch(patch) = overrides
@@ -132,7 +138,7 @@ fn a_cancelled_occurrence_is_an_exclusion_and_carries_nothing_else() {
     let mut events = vec![series()];
     fold_into(
         &mut events,
-        vec![pending_override(&cancelled(), None).unwrap()],
+        vec![pending_override(&cancelled(), &calendar(), None).unwrap()],
     );
 
     assert_eq!(
@@ -146,15 +152,15 @@ fn every_entry_lands_on_the_series_that_names_it() {
     // The correlation is by `recurringEventId`, not by position: the entries arrive in no
     // order, and a page can carry several series at once.
     let mut other = series();
-    other.id = EventId::try_from("evt-2").unwrap();
+    other.id = crate::cal_id::event_id(calendar().key().as_str(), "evt-2").unwrap();
     other.recurrence = Some(Recurrence::from_rule(RecurrenceRule::new(Frequency::Daily)));
     let mut events = vec![other, series()];
 
     fold_into(
         &mut events,
         vec![
-            pending_override(&cancelled(), None).unwrap(),
-            pending_override(&moved(), None).unwrap(),
+            pending_override(&cancelled(), &calendar(), None).unwrap(),
+            pending_override(&moved(), &calendar(), None).unwrap(),
         ],
     );
 
@@ -176,7 +182,7 @@ fn an_entry_whose_series_is_not_in_the_pass_is_dropped() {
     // objects. Measured not to arise — a delta that changes an occurrence carries its master
     // — so this is the shape of the drop, not a path to build on.
     let mut events = vec![series()];
-    let mut orphan = pending_override(&moved(), None).unwrap();
+    let mut orphan = pending_override(&moved(), &calendar(), None).unwrap();
     orphan.master = ProviderKey::new("evt-elsewhere").unwrap();
 
     fold_into(&mut events, vec![orphan]);
@@ -189,5 +195,5 @@ fn an_entry_naming_no_occurrence_is_a_protocol_error() {
     // instance's *current* start, say — would override an instance the rule never produced.
     let mut without = moved();
     without.as_object_mut().unwrap().remove("originalStartTime");
-    assert!(pending_override(&without, None).is_err());
+    assert!(pending_override(&without, &calendar(), None).is_err());
 }

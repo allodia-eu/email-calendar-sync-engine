@@ -38,6 +38,7 @@ fn structured_index_fixture() -> DerivedWrite {
         date_utc: Some("2026-01-01T00:00:00Z".parse().unwrap()),
         flags: MailFlags::default(),
         has_attachment: true,
+        importance: engine_core::mail::Importance::Normal,
         size_octets: None,
         from_name: Some("Alice".into()),
         from_addr: Some("alice@example.com".into()),
@@ -206,12 +207,9 @@ pub(in crate::contract) async fn account_scopes_enumerates_an_accounts_scopes<
         vec![email_scope(&acct("acct-enum-b"))]
     );
     // An account the store has never seen has no scopes.
-    assert!(
-        store
-            .account_scopes(acct("acct-enum-none"))
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        store.account_scopes(acct("acct-enum-none")).await.unwrap(),
+        []
     );
 }
 
@@ -274,12 +272,12 @@ pub(in crate::contract) async fn scope_objects_batch_reads_live_objects<S: Store
             .as_ref()
     );
     // A scope the store has never seen reads back empty.
-    assert!(
+    assert_eq!(
         store
             .scope_objects(&email_scope(&acct("acct-objects-none")))
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        []
     );
 }
 

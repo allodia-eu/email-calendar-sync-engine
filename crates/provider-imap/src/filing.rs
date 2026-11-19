@@ -8,11 +8,11 @@
 //!
 //! **Delivering and filing are two operations, and the second one can fail on its own.**
 //! SMTP dials a fresh connection per send, so a delivery succeeds over a session that has
-//! been idle for an hour; the `APPEND` rides the provider's standing IMAP session, which by
-//! then may be dead. That asymmetry is not hypothetical: it delivers the mail and loses the
-//! sender's copy, with nothing to reconcile against later. The response is `file_sent_copy`:
-//! retry once on a
-//! freshly dialed session, and when even that cannot file it, say so in the receipt
+//! been idle for an hour; the `APPEND` rides a connection from the account's pool, which may
+//! have died since it was last proved alive. That asymmetry is not hypothetical: it delivers the
+//! mail and loses the sender's copy, with nothing to reconcile against later. The response is
+//! `file_sent_copy`: retry once on another connection, proved alive first, and when even that
+//! cannot file it, say so in the receipt
 //! ([`engine_provider::SentCopy::Unfiled`]) — this crate emits no logs of its own, so the
 //! outcome travelling up *is* the diagnostic. What it must never do is fail the send: the
 //! mail is already gone, and a caller that treated filing as delivery would re-send it.
@@ -20,7 +20,9 @@
 use std::collections::HashSet;
 
 use engine_core::ids::ProviderKey;
-use engine_provider::{Draft, ProviderError, ProviderResult, SubmissionReceipt};
+use engine_provider::{
+    Draft, HandOver, HandedOver, ProviderError, ProviderResult, SubmissionReceipt,
+};
 use engine_rfc5322::{assemble_filed_message, assemble_message};
 use time::OffsetDateTime;
 use tokio::{
@@ -29,65 +31,17 @@ use tokio::{
 };
 use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
 
+pub(crate) use crate::smtp_sender::{SmtpSender, resolve_smtp};
 use crate::{
-    config::{ImapConfig, SmtpSecurity, SmtpSettings},
-    connect::connect_session,
-    error::ImapError,
-    place::{Filing, append_to_role_folder, place_if_absent, placed_key},
+    credentials::with_renewal,
+    deadline,
+    error::{ImapError, ImapResult},
+    place::{Filing, Placed, append_to_role_folder, place_if_absent, placed_key},
     provider::ImapProvider,
     smtp::{self, Disposition, SmtpResult},
+    smtp_auth::SmtpAuth,
+    transport::Connection,
 };
-
-/// The resolved SMTP transport a provider holds after `connect`: plaintext, implicit
-/// TLS, or STARTTLS — the two TLS variants carrying the connector + credentials each
-/// fresh send re-dials with (submission opens a new connection per send).
-pub(crate) enum SmtpSender {
-    Plaintext {
-        addr: String,
-    },
-    ImplicitTls {
-        addr: String,
-        server_name: String,
-        connector: TlsConnector,
-        username: String,
-        password: String,
-    },
-    StartTls {
-        addr: String,
-        server_name: String,
-        connector: TlsConnector,
-        username: String,
-        password: String,
-    },
-}
-
-/// Resolves configured [`SmtpSettings`] into the [`SmtpSender`] the provider holds,
-/// capturing the TLS connector and credentials each future send re-dials with.
-pub(crate) fn resolve_smtp(
-    settings: &SmtpSettings,
-    connector: &TlsConnector,
-    config: &ImapConfig,
-) -> SmtpSender {
-    match &settings.security {
-        SmtpSecurity::Plaintext => SmtpSender::Plaintext {
-            addr: settings.addr.clone(),
-        },
-        SmtpSecurity::ImplicitTls { server_name } => SmtpSender::ImplicitTls {
-            addr: settings.addr.clone(),
-            server_name: server_name.clone(),
-            connector: connector.clone(),
-            username: config.username.clone(),
-            password: config.password.clone(),
-        },
-        SmtpSecurity::StartTls { server_name } => SmtpSender::StartTls {
-            addr: settings.addr.clone(),
-            server_name: server_name.clone(),
-            connector: connector.clone(),
-            username: config.username.clone(),
-            password: config.password.clone(),
-        },
-    }
-}
 
 /// Everything derived from a draft once, shared by the wire send and the filed copy —
 /// so a STARTTLS send (which negotiates before transmitting) and a plaintext/implicit
@@ -105,32 +59,7 @@ struct Submission {
     ehlo: String,
 }
 
-/// What a fresh IMAP session needs, so a failed placement can be retried on a new
-/// connection instead of lost on a dead one.
-///
-/// Held only by a provider built by [`ImapProvider::connect`] — one built over a mock
-/// stream has no server to re-dial, and says so by carrying `None`.
-pub(crate) struct Redial {
-    config: ImapConfig,
-    connector: TlsConnector,
-}
-
-impl Redial {
-    /// Captures what [`connect_session`] needs to open another session like this one.
-    pub(crate) fn new(config: &ImapConfig, connector: &TlsConnector) -> Self {
-        let mut config = config.clone();
-        // A retry dial is not an account connecting: reporting `TlsEstablished` /
-        // `Authenticated` through the host's observer would put a second "connected" pair
-        // in its log for what is really one send finishing its filing.
-        config.connect_observer = None;
-        Self {
-            config,
-            connector: connector.clone(),
-        }
-    }
-}
-
-impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
+impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> {
     /// Submits `draft` over the provider's configured SMTP transport, opening a fresh
     /// connection per send. Plaintext and implicit TLS transmit directly; STARTTLS
     /// negotiates the cleartext upgrade, TLS-wraps the socket, then transmits over TLS.
@@ -140,51 +69,61 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     ///
     /// [`ProviderError::invalid_state`] when no SMTP transport is configured, or a
     /// classified failure on a rejected/ambiguous send or a transport error.
-    pub(crate) async fn submit(&self, draft: &Draft) -> ProviderResult<SubmissionReceipt> {
+    pub(crate) async fn submit(
+        &self,
+        draft: &Draft,
+        hand_over: &HandOver<'_>,
+    ) -> ProviderResult<SubmissionReceipt> {
         let sender = self
             .smtp
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| ProviderError::invalid_state("no SMTP transport configured"))?;
         match sender {
             SmtpSender::Plaintext { addr } => {
-                let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
-                self.submit_over(tcp, draft, None).await
+                let tcp = deadline::connect(addr).await?;
+                self.submit_over(tcp, draft, None, hand_over).await
             }
+            // An `AUTH` refusal comes before `MAIL FROM`, so nothing was sent when the
+            // renewal re-dials: a send is never repeated (`with_renewal`).
             SmtpSender::ImplicitTls {
                 addr,
                 server_name,
                 connector,
-                username,
-                password,
+                credentials,
             } => {
-                let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
-                let tls = tls_connect(connector, server_name, tcp).await?;
-                self.submit_over(tls, draft, Some((username, password)))
-                    .await
+                let sub = Self::prepare(draft)?;
+                let prepared = &sub;
+                let result = with_renewal(credentials.as_ref(), |credentials| async move {
+                    let tcp = deadline::connect(addr).await?;
+                    let tls = tls_connect(connector, server_name, tcp).await?;
+                    let (ehlo, from, to) = (&prepared.ehlo, &prepared.from, &prepared.to);
+                    let auth = sender.auth(&credentials);
+                    smtp::send(tls, ehlo, from, to, &prepared.message, auth, hand_over).await
+                })
+                .await?;
+                self.file_result(result, &sub, draft, hand_over).await
             }
             SmtpSender::StartTls {
                 addr,
                 server_name,
                 connector,
-                username,
-                password,
+                credentials,
             } => {
                 let sub = Self::prepare(draft)?;
-                let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;
-                // Cleartext STARTTLS handshake, then upgrade the socket and transmit
-                // (with `AUTH PLAIN`) over the now-established TLS.
-                let tcp = smtp::negotiate_starttls(tcp, &sub.ehlo).await?;
-                let tls = tls_connect(connector, server_name, tcp).await?;
-                let result = smtp::send_after_starttls(
-                    tls,
-                    &sub.ehlo,
-                    &sub.from,
-                    &sub.to,
-                    &sub.message,
-                    Some((username, password)),
-                )
+                let prepared = &sub;
+                let result = with_renewal(credentials.as_ref(), |credentials| async move {
+                    let tcp = deadline::connect(addr).await?;
+                    // Cleartext STARTTLS handshake, then upgrade the socket and transmit
+                    // (authenticating) over the now-established TLS.
+                    let tcp = smtp::negotiate_starttls(tcp, &prepared.ehlo).await?;
+                    let tls = tls_connect(connector, server_name, tcp).await?;
+                    let (ehlo, from, to) = (&prepared.ehlo, &prepared.from, &prepared.to);
+                    let auth = sender.auth(&credentials);
+                    let message = &prepared.message;
+                    smtp::send_after_starttls(tls, ehlo, from, to, message, auth, hand_over).await
+                })
                 .await?;
-                self.file_result(result, &sub, draft).await
+                self.file_result(result, &sub, draft, hand_over).await
             }
         }
     }
@@ -201,14 +140,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         &self,
         smtp: W,
         draft: &Draft,
-        auth: Option<(&str, &str)>,
+        auth: Option<SmtpAuth<'_>>,
+        hand_over: &HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt>
     where
         W: AsyncRead + AsyncWrite + Unpin + Send,
     {
         let sub = Self::prepare(draft)?;
-        let result = smtp::send(smtp, &sub.ehlo, &sub.from, &sub.to, &sub.message, auth).await?;
-        self.file_result(result, &sub, draft).await
+        let (ehlo, from, to) = (&sub.ehlo, &sub.from, &sub.to);
+        let result = smtp::send(smtp, ehlo, from, to, &sub.message, auth, hand_over).await?;
+        self.file_result(result, &sub, draft, hand_over).await
     }
 
     /// Derives the [`Submission`] (wire message, envelope, EHLO identity) from `draft`.
@@ -253,9 +194,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         result: SmtpResult,
         sub: &Submission,
         draft: &Draft,
+        hand_over: &HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
         match result.disposition {
             Disposition::Delivered => {}
+            Disposition::Withheld(detail) => return Err(ProviderError::retryable(detail)),
             Disposition::RejectedPermanent(text) => {
                 return Err(ProviderError::permanent(format!("SMTP rejected: {text}")));
             }
@@ -268,6 +211,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
                 )));
             }
         }
+
+        // Delivered, so the hand-over was recorded before the terminator; this only fetches
+        // the proof.
+        let handed_over: HandedOver = hand_over.commit().await?;
 
         // The filed Sent copy INCLUDES the Bcc header (it is APPENDed locally, never
         // transmitted), so the sender's Sent folder records whom they Bcc'd — Outlook/
@@ -282,15 +229,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         // the conventional "Sent"), so the copy lands in the account's real Sent
         // folder — not a stray one on servers that name it differently.
         match self.file_sent_copy(&filed, draft).await {
-            Ok((folder, append_uid)) => Ok(SubmissionReceipt::filed(
+            Ok(placed) => Ok(SubmissionReceipt::filed(
                 placed_key(
-                    &folder,
+                    &placed.folder,
                     Filing::Sent.key_prefix(),
-                    append_uid,
+                    placed.append_uid,
                     &draft.message_id,
                 ),
                 draft.message_id.clone(),
-            )),
+                &handed_over,
+            )
+            .with_sent_copy_keywords(placed.keywords)),
             // Delivered, but the copy is not in Sent and no later sync can find it — there
             // is nothing on the server to reconcile against. Never an `Err`: the message
             // has reached its recipients, and a caller that saw a failure here would
@@ -304,60 +253,95 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
                 ),
                 draft.message_id.clone(),
                 detail,
+                &handed_over,
             )),
         }
     }
 
-    /// Files the delivered message's Sent copy: on the provider's standing session, else
-    /// on a freshly dialed one.
+    /// Files the delivered message's Sent copy: on a pooled connection, else on another one
+    /// proved alive first.
     ///
-    /// The standing session is the one that goes stale — it may have sat unused since the
-    /// last sync while SMTP dialed fresh — so its failure is the *expected* path, not an
-    /// exceptional one. The retry re-dials and, before appending, asks whether the copy is
-    /// already there: the first attempt may have committed server-side and lost only its
-    /// response, and two copies in Sent is its own bug.
+    /// A pooled connection can be stale — handed out unchecked because it rested only briefly,
+    /// while SMTP dialed fresh — so its failure is an *expected* path, not an exceptional one.
+    /// The retry does not trust a young connection a second time and, before appending, asks
+    /// whether the copy is already there: the first attempt may have committed server-side and
+    /// lost only its response, and two copies in Sent is its own bug.
     ///
     /// # Errors
     ///
     /// The detail to record on the receipt when neither attempt filed it.
-    async fn file_sent_copy(
-        &self,
-        filed: &[u8],
-        draft: &Draft,
-    ) -> Result<(String, Option<(u32, u32)>), String> {
-        let first = {
-            let mut connection = self.connection.lock().await;
-            append_to_role_folder(&mut connection, Filing::Sent, filed).await
+    async fn file_sent_copy(&self, filed: &[u8], draft: &Draft) -> Result<Placed, String> {
+        let first = match self.session().await {
+            Ok(mut connection) => {
+                let result = async {
+                    let store = self.store_on(&mut connection).await?;
+                    append_to_role_folder(
+                        &mut connection,
+                        &store,
+                        Filing::Sent,
+                        filed,
+                        &draft.sent_copy_keywords,
+                    )
+                    .await
+                }
+                .await;
+                connection.settle(result)
+            }
+            Err(err) => Err(err),
         };
         let first = match first {
             Ok(placed) => return Ok(placed),
             Err(err) => err,
         };
-        let Some(redial) = self.redial.as_ref() else {
-            return Err(format!("{first}"));
-        };
-        self.refile_on_a_fresh_session(redial, filed, draft)
+        self.refile_on_a_checked_session(filed, draft)
             .await
             .map_err(|retry| format!("{first}; retry on a fresh session: {retry}"))
     }
 
-    /// The retry: dial a new session, and file the copy there unless it is already filed.
+    /// The retry: file the copy on a connection proved alive — a parked one that answers
+    /// `NOOP`, else a new dial — unless it is already filed.
     ///
     /// # Errors
     ///
     /// A classified [`ProviderError`] on a dial, `SEARCH` or `APPEND` failure.
-    async fn refile_on_a_fresh_session(
+    async fn refile_on_a_checked_session(
         &self,
-        redial: &Redial,
         filed: &[u8],
         draft: &Draft,
-    ) -> ProviderResult<(String, Option<(u32, u32)>)> {
-        let (mut connection, _) = connect_session(&redial.config, &redial.connector)
-            .await
-            .map_err(ProviderError::from)?;
-        // `APPEND` is not idempotent, so the probe inside asks before placing: a first
-        // attempt that committed and lost its response must not become two copies.
-        place_if_absent(&mut connection, Filing::Sent, &draft.message_id, filed).await
+    ) -> ProviderResult<Placed> {
+        let mut connection = self.pool.acquire_checked().await?;
+        let result = self
+            .place_sent_if_absent(&mut connection, filed, draft)
+            .await;
+        connection.settle(result)
+    }
+
+    /// Places the Sent copy over `connection` unless it is already there. The store is the
+    /// provider's, not the session's: whichever connection places the copy, it goes in the Sent
+    /// folder of the mail this provider covers. `APPEND` is not idempotent, so the probe inside
+    /// asks before placing: a first attempt that committed and lost its response must not
+    /// become two copies.
+    ///
+    /// # Errors
+    ///
+    /// A classified [`ProviderError`] on a `LIST`, `SEARCH` or `APPEND` failure.
+    async fn place_sent_if_absent(
+        &self,
+        connection: &mut Connection<S>,
+        filed: &[u8],
+        draft: &Draft,
+    ) -> ProviderResult<Placed> {
+        let store = self.store_on(connection).await?;
+        let keywords = &draft.sent_copy_keywords;
+        place_if_absent(
+            connection,
+            &store,
+            Filing::Sent,
+            &draft.message_id,
+            filed,
+            keywords,
+        )
+        .await
     }
 
     /// Files the Sent copy of a message that **has already been delivered** — the repair a
@@ -372,29 +356,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     ///
     /// # Errors
     ///
-    /// A classified [`ProviderError`] if neither the standing session nor a freshly dialed
-    /// one could file it. The caller may offer the retry again.
+    /// A classified [`ProviderError`] if neither a pooled connection nor one proved alive for
+    /// the retry could file it. The caller may offer the retry again.
     pub(crate) async fn refile(&self, draft: &Draft) -> ProviderResult<ProviderKey> {
         // The filed copy keeps the Bcc header, exactly as the original filing would have.
         let filed = assemble_filed_message(draft, OffsetDateTime::now_utc())?;
-        let first = {
-            let mut connection = self.connection.lock().await;
-            place_if_absent(&mut connection, Filing::Sent, &draft.message_id, &filed).await
+        let first = match self.session().await {
+            Ok(mut connection) => {
+                let result = self
+                    .place_sent_if_absent(&mut connection, &filed, draft)
+                    .await;
+                connection.settle(result)
+            }
+            Err(err) => Err(err),
         };
-        let (folder, append_uid) = match first {
+        let placed = match first {
             Ok(placed) => placed,
-            Err(standing) => match self.redial.as_ref() {
-                Some(redial) => {
-                    self.refile_on_a_fresh_session(redial, &filed, draft)
-                        .await?
-                }
-                None => return Err(standing),
-            },
+            Err(_pooled) => self.refile_on_a_checked_session(&filed, draft).await?,
         };
         Ok(placed_key(
-            &folder,
+            &placed.folder,
             Filing::Sent.key_prefix(),
-            append_uid,
+            placed.append_uid,
             &draft.message_id,
         ))
     }
@@ -410,8 +393,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     /// Returns a classified [`ProviderError`] on a transport or `APPEND` failure. Unlike
     /// a Sent copy this fails loudly: saving the draft is the whole operation.
     pub async fn save_draft(&self, draft: &Draft) -> ProviderResult<ProviderKey> {
-        let mut connection = self.connection.lock().await;
-        crate::drafts::put_draft(&mut connection, draft, None).await
+        let mut connection = self.session().await?;
+        let result = async {
+            let store = self.store_on(&mut connection).await?;
+            crate::drafts::put_draft(&mut connection, &store, draft, None).await
+        }
+        .await;
+        connection.settle(result)
     }
 }
 
@@ -422,14 +410,10 @@ async fn tls_connect(
     connector: &TlsConnector,
     server_name: &str,
     tcp: TcpStream,
-) -> ProviderResult<TlsStream<TcpStream>> {
+) -> ImapResult<TlsStream<TcpStream>> {
     let name = ServerName::try_from(server_name.to_owned())
         .map_err(|e| ImapError::bad(format!("invalid SMTP TLS server name: {e}")))?;
-    let tls = connector
-        .connect(name, tcp)
-        .await
-        .map_err(ImapError::from)?;
-    Ok(tls)
+    deadline::handshake(connector, name, tcp).await
 }
 
 #[cfg(test)]
@@ -440,10 +424,16 @@ mod tests;
 // TLS harness), so they live in a sibling file to keep `filing_tests.rs` small.
 #[cfg(test)]
 #[path = "filing_smtp_server_tests.rs"]
-mod smtp_server_tests;
+pub(crate) mod smtp_server_tests;
 
 // The Sent-copy retry needs a real dial (a mock stream cannot express "this session is dead,
 // open another"), so its in-process IMAP + SMTP servers live in their own file.
 #[cfg(test)]
 #[path = "filing_retry_tests.rs"]
 mod retry_tests;
+
+// A send interrupted at each point of the SMTP conversation, through the outbox: the
+// recipient gets it exactly once, or it awaits confirmation.
+#[cfg(test)]
+#[path = "durable_submit_tests.rs"]
+mod durable_tests;

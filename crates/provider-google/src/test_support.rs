@@ -35,13 +35,20 @@ pub(crate) fn retry() -> engine_http::RetryConfig {
     engine_http::RetryConfig::default()
 }
 
+/// The product tests name in every request.
+pub(crate) fn user_agent() -> engine_http::UserAgent {
+    engine_http::test_server::user_agent()
+}
+
 /// What a fake route answers with: a fixture body, or an HTTP status plus the Google
 /// error envelope to fail with. The failing form exists so a recovery path can be
 /// driven offline — notably Google Calendar answering `410 fullSyncRequired` or Gmail
 /// answering `404` once a stored cursor has aged out.
 pub(crate) type FakeRoute = Result<Value, (u16, Value)>;
 
-/// Returns the first routed answer whose key is a substring of the requested URL.
+/// Returns the first routed answer whose key is a substring of the requested URL. A key may
+/// start with a method (`"POST /labels"`) to answer that method alone, for an endpoint whose
+/// read and write share a URL.
 ///
 /// `unauthenticated` records the URLs fetched without the OAuth token, so a test can
 /// assert that an off-origin photo URL never carries the account's credentials.
@@ -51,15 +58,55 @@ struct Fake {
     /// Set only by [`probe_client`]: records how concurrently the caller fetched. `None` for
     /// every other fake, which is also what keeps the yield below out of their way.
     probe: Option<std::sync::Arc<ProbeState>>,
+    /// Set only by [`recording_client`]: every request, in order, with its body.
+    log: Option<std::sync::Arc<Mutex<Vec<Request>>>>,
+}
+
+/// The methods a route key may start with.
+const METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
+
+/// One request a [`recording_client`] saw: method, URL and the JSON body, if any.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Request {
+    pub(crate) method: &'static str,
+    pub(crate) url: String,
+    pub(crate) body: Option<Value>,
 }
 
 impl Fake {
     fn route(&self, url: &str) -> Result<&FakeRoute, GoogleError> {
+        self.route_for("GET", url)
+    }
+
+    fn route_for(&self, method: &str, url: &str) -> Result<&FakeRoute, GoogleError> {
         self.routes
             .iter()
-            .find(|(key, _)| url.contains(key.as_str()))
+            .find(|(key, _)| match key.split_once(' ') {
+                Some((wanted, path)) if METHODS.contains(&wanted) => {
+                    wanted == method && url.contains(path)
+                }
+                _ => url.contains(key.as_str()),
+            })
             .map(|(_, answer)| answer)
-            .ok_or_else(|| GoogleError::protocol(format!("no fake route for {url}")))
+            .ok_or_else(|| GoogleError::protocol(format!("no fake route for {method} {url}")))
+    }
+
+    fn record(&self, method: &'static str, url: &str, body: Option<&[u8]>) {
+        if let Some(log) = &self.log {
+            log.lock().expect("request log").push(Request {
+                method,
+                url: url.to_owned(),
+                body: body.and_then(|b| serde_json::from_slice(b).ok()),
+            });
+        }
+    }
+
+    fn answer(&self, method: &'static str, url: &str) -> Result<Option<Value>, GoogleError> {
+        match self.route_for(method, url)? {
+            Ok(Value::Null) => Ok(None),
+            Ok(doc) => Ok(Some(doc.clone())),
+            Err((status, body)) => Err(GoogleError::status(*status, body.to_string())),
+        }
     }
 }
 
@@ -77,6 +124,7 @@ impl GoogleTransport for Fake {
             }
             None => None,
         };
+        self.record("GET", url, None);
         match self.route(url)? {
             Ok(doc) => Ok(doc.clone()),
             Err((status, body)) => Err(GoogleError::status(*status, body.to_string())),
@@ -103,32 +151,23 @@ impl GoogleTransport for Fake {
         &self,
         url: &str,
         _content_type: &str,
-        _body: Vec<u8>,
+        body: Vec<u8>,
     ) -> Result<Option<Value>, GoogleError> {
-        // Like every offline fake, the request body is ignored — a matched route's
-        // canned answer is served regardless of what was sent (`AGENTS.md`); the
-        // *request shape* is asserted by the capturing-server tests and the live tests.
-        // A route to `Value::Null` models a no-body (204) action.
-        match self.route(url)? {
-            Ok(Value::Null) => Ok(None),
-            Ok(doc) => Ok(Some(doc.clone())),
-            Err((status, body)) => Err(GoogleError::status(*status, body.to_string())),
-        }
+        // The answer is canned whatever was sent (`AGENTS.md`); a request shape is asserted
+        // through a [`recording_client`]'s log, the capturing server, or a live test. A route
+        // to `Value::Null` models a no-body (204) action.
+        self.record("POST", url, Some(&body));
+        self.answer("POST", url)
     }
 
     async fn put(
         &self,
         url: &str,
         _content_type: &str,
-        _body: Vec<u8>,
+        body: Vec<u8>,
     ) -> Result<Option<Value>, GoogleError> {
-        // Body ignored (canned answer, `AGENTS.md`); that the PUT carries the replacing
-        // draft's id in its path is asserted by the route match itself.
-        match self.route(url)? {
-            Ok(Value::Null) => Ok(None),
-            Ok(doc) => Ok(Some(doc.clone())),
-            Err((status, body)) => Err(GoogleError::status(*status, body.to_string())),
-        }
+        self.record("PUT", url, Some(&body));
+        self.answer("PUT", url)
     }
 
     async fn patch(
@@ -136,22 +175,15 @@ impl GoogleTransport for Fake {
         url: &str,
         _content_type: &str,
         _if_match: Option<&str>,
-        _body: Vec<u8>,
+        body: Vec<u8>,
     ) -> Result<Option<Value>, GoogleError> {
-        // Body/If-Match ignored (canned answer, `AGENTS.md`); the request shape is
-        // asserted by the capturing-server tests and the live tests.
-        match self.route(url)? {
-            Ok(Value::Null) => Ok(None),
-            Ok(doc) => Ok(Some(doc.clone())),
-            Err((status, body)) => Err(GoogleError::status(*status, body.to_string())),
-        }
+        self.record("PATCH", url, Some(&body));
+        self.answer("PATCH", url)
     }
 
     async fn delete(&self, url: &str, _if_match: Option<&str>) -> Result<(), GoogleError> {
-        match self.route(url)? {
-            Ok(_) => Ok(()),
-            Err((status, body)) => Err(GoogleError::status(*status, body.to_string())),
-        }
+        self.record("DELETE", url, None);
+        self.answer("DELETE", url).map(|_| ())
     }
 
     fn http_version(&self) -> Option<HttpVersion> {
@@ -183,9 +215,31 @@ pub(crate) fn fake_client_fallible(routes: Vec<(&str, FakeRoute)>) -> GoogleClie
             routes,
             unauthenticated: Mutex::new(Vec::new()),
             probe: None,
+            log: None,
         }),
         "https://google.test".to_owned(),
     )
+}
+
+/// Builds a [`GoogleClient`] over `routes` that also logs every request it is sent, so a
+/// write test can assert the method, path and body of each call, in order.
+pub(crate) fn recording_client(
+    routes: Vec<(&str, FakeRoute)>,
+) -> (GoogleClient, std::sync::Arc<Mutex<Vec<Request>>>) {
+    let log = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let client = GoogleClient::with_transport(
+        Box::new(Fake {
+            routes: routes
+                .into_iter()
+                .map(|(key, answer)| (key.to_owned(), answer))
+                .collect(),
+            unauthenticated: Mutex::new(Vec::new()),
+            probe: None,
+            log: Some(std::sync::Arc::clone(&log)),
+        }),
+        "https://google.test".to_owned(),
+    );
+    (client, log)
 }
 
 /// Parses a fixture string into JSON.
@@ -248,6 +302,7 @@ pub(crate) fn probe_client(
                 .collect(),
             unauthenticated: Mutex::new(Vec::new()),
             probe: Some(std::sync::Arc::clone(&state)),
+            log: None,
         }),
         "https://google.test".to_owned(),
     );
@@ -262,7 +317,7 @@ pub(crate) fn probe_client(
 /// Routes are matched in order, so list the most specific first. The background thread
 /// serves connections for the test's lifetime.
 pub(crate) fn replay_server(routes: Vec<(&'static str, Value)>) -> String {
-    use std::io::{Read, Write};
+    use std::io::Write;
     let routes: Vec<(String, String)> = routes
         .into_iter()
         .map(|(key, doc)| (key.to_owned(), doc.to_string()))
@@ -272,9 +327,8 @@ pub(crate) fn replay_server(routes: Vec<(&'static str, Value)>) -> String {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let mut buf = [0u8; 8192];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            let request = String::from_utf8_lossy(&buf[..n]);
+            let request = engine_http::test_server::read_request_blocking(&mut stream);
+            let request = String::from_utf8_lossy(&request);
             let path = request
                 .lines()
                 .next()
@@ -316,7 +370,8 @@ pub(crate) fn capturing_server(
     );
     std::thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
-            let request = read_full_request(&mut stream);
+            let request = engine_http::test_server::read_request_blocking(&mut stream);
+            let request = String::from_utf8_lossy_owned(request);
             let _ = tx.send(request);
             let _ = stream.write_all(response.as_bytes());
         }
@@ -350,7 +405,8 @@ pub(crate) fn capturing_replay_server(
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let request = read_full_request(&mut stream);
+            let request = engine_http::test_server::read_request_blocking(&mut stream);
+            let request = String::from_utf8_lossy_owned(request);
             let path = request
                 .lines()
                 .next()
@@ -372,43 +428,4 @@ pub(crate) fn capturing_replay_server(
         }
     });
     (format!("http://{addr}"), rx)
-}
-
-/// Reads a full HTTP request (headers + `Content-Length` body) off `stream`.
-fn read_full_request(stream: &mut std::net::TcpStream) -> String {
-    use std::io::Read;
-    let mut data = Vec::new();
-    let mut buf = [0u8; 4096];
-    while let Ok(n) = stream.read(&mut buf) {
-        if n == 0 {
-            break;
-        }
-        data.extend_from_slice(&buf[..n]);
-        if request_complete(&data) {
-            break;
-        }
-    }
-    String::from_utf8_lossy(&data).into_owned()
-}
-
-/// Whether `data` holds a complete HTTP request: the header terminator plus at least
-/// the `Content-Length` body bytes that follow it.
-fn request_complete(data: &[u8]) -> bool {
-    let Some(header_end) = data
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|p| p + 4)
-    else {
-        return false;
-    };
-    let headers = String::from_utf8_lossy(&data[..header_end]);
-    let len = headers
-        .lines()
-        .find_map(|line| {
-            line.to_ascii_lowercase()
-                .strip_prefix("content-length:")
-                .and_then(|v| v.trim().parse::<usize>().ok())
-        })
-        .unwrap_or(0);
-    data.len() >= header_end + len
 }

@@ -5,7 +5,6 @@
 use engine_core::{ids::MailboxId, sync::SyncWindow};
 use engine_provider::{EmailChunk, PassMode};
 use futures_util::StreamExt;
-use tokio::sync::Mutex;
 
 use super::stream_email;
 use crate::{
@@ -34,8 +33,7 @@ fn fetch_resp(tag: &str, uids: &[u32]) -> String {
             "* {seq} FETCH (UID {uid} FLAGS (\\Seen) \
              INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" RFC822.SIZE 10 \
              ENVELOPE (NIL \"s{uid}\" NIL NIL NIL NIL NIL NIL NIL \"<m{uid}@h>\") \
-             BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"7BIT\" 2 1) \
-             BODY[HEADER.FIELDS (REFERENCES)] \"\")\r\n"
+             BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\n"
         )
         .unwrap();
     }
@@ -58,16 +56,16 @@ fn inbox() -> MailboxId {
     MailboxId::try_from("INBOX").unwrap()
 }
 
-async fn logged_in(server: Vec<u8>) -> (Mutex<Connection<MockStream>>, crate::mock::Recorded) {
+async fn logged_in(server: Vec<u8>) -> (Connection<MockStream>, crate::mock::Recorded) {
     let (stream, recorded) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    (Mutex::new(conn), recorded)
+    (conn, recorded)
 }
 
 /// Drains a streamed pass into its chunks.
 async fn drain(
-    conn: &Mutex<Connection<MockStream>>,
+    conn: &mut Connection<MockStream>,
     cursor: Option<&str>,
     batch: usize,
     chunk: usize,
@@ -76,6 +74,7 @@ async fn drain(
     let mailbox = inbox();
     let mut stream = Box::pin(stream_email(
         conn,
+        None,
         &mailbox,
         state.as_ref(),
         SyncWindow::full(),
@@ -105,11 +104,11 @@ async fn cold_backfill_streams_newest_group_first_and_checkpoints_each_group() {
         &fetch_resp("a4", &[3, 4, 5]),
         &fetch_resp("a5", &[1, 2]),
     ]);
-    let (conn, recorded) = logged_in(server).await;
+    let (mut conn, recorded) = logged_in(server).await;
 
     // chunk_size 0 → one chunk per group (3 groups); the last carries the completed
     // cursor, so no extra marker.
-    let chunks = drain(&conn, None, 3, 0).await;
+    let chunks = drain(&mut conn, None, 3, 0).await;
 
     assert_eq!(chunks.len(), 3);
     // The intermediate groups are additive checkpoints; the last reconciles.
@@ -121,11 +120,11 @@ async fn cold_backfill_streams_newest_group_first_and_checkpoints_each_group() {
     // Each intermediate group checkpoints its lowest UID, so a kill resumes below it.
     assert_eq!(
         chunks[0].advance_to.as_ref().unwrap().as_str(),
-        "v1000;n9;b6"
+        "v1000;n9;g1;b6"
     );
     assert_eq!(
         chunks[1].advance_to.as_ref().unwrap().as_str(),
-        "v1000;n9;b3"
+        "v1000;n9;g1;b3"
     );
     // The last group reconciles against the full present set and clears the watermark.
     assert!(chunks[2].is_reconcile_final());
@@ -134,7 +133,10 @@ async fn cold_backfill_streams_newest_group_first_and_checkpoints_each_group() {
         8,
         "all eight UIDs drive tombstoning"
     );
-    assert_eq!(chunks[2].advance_to.as_ref().unwrap().as_str(), "v1000;n9");
+    assert_eq!(
+        chunks[2].advance_to.as_ref().unwrap().as_str(),
+        "v1000;n9;g1;r"
+    );
     // The newest window was fetched first, with the item list parenthesized (an
     // unparenthesized list makes a lenient server return only the first att).
     let sent = written(&recorded);
@@ -151,9 +153,9 @@ async fn a_small_chunk_size_commits_within_a_group() {
     // the group's terminal checkpointed chunk — row-as-it-arrives within one FETCH.
     let select = select_resp("a2", 1000, 9, 8);
     let server = script(&[GREETING, LOGIN_OK, &select, &fetch_resp("a3", &[6, 7, 8])]);
-    let (conn, _) = logged_in(server).await;
+    let (mut conn, _) = logged_in(server).await;
 
-    let chunks = drain(&conn, None, 8, 2).await;
+    let chunks = drain(&mut conn, None, 8, 2).await;
     // Held pair (no checkpoint), then the group's terminal chunk. It is the last (and
     // only) group of a fresh pass, so it reconciles and advances to the completed cursor.
     assert_eq!(chunks.len(), 2);
@@ -169,7 +171,10 @@ async fn a_small_chunk_size_commits_within_a_group() {
         3,
         "the whole group's UIDs drive tombstoning"
     );
-    assert_eq!(chunks[1].advance_to.as_ref().unwrap().as_str(), "v1000;n9");
+    assert_eq!(
+        chunks[1].advance_to.as_ref().unwrap().as_str(),
+        "v1000;n9;g1;r"
+    );
 }
 
 #[tokio::test]
@@ -184,17 +189,21 @@ async fn a_backfill_resumes_below_its_watermark() {
         &fetch_resp("a3", &[3, 4, 5]),
         &fetch_resp("a4", &[1, 2]),
     ]);
-    let (conn, recorded) = logged_in(server).await;
+    let (mut conn, recorded) = logged_in(server).await;
 
-    let chunks = drain(&conn, Some("v1000;n9;b6"), 3, 0).await;
+    let chunks = drain(&mut conn, Some("v1000;n9;g1;b6"), 3, 0).await;
     // Two group chunks (last completes); the already-synced group (6:8) is NOT refetched.
     assert_eq!(chunks.len(), 2);
     assert_eq!(key_of(&chunks[0], 0), "imap:v1000:u3@INBOX");
     assert_eq!(
         chunks[0].advance_to.as_ref().unwrap().as_str(),
-        "v1000;n9;b3"
+        "v1000;n9;g1;b3"
     );
-    assert_eq!(chunks[1].advance_to.as_ref().unwrap().as_str(), "v1000;n9");
+    // No `;r`: a resumed backfill did not reconcile, so the next pass may not skip the folder.
+    assert_eq!(
+        chunks[1].advance_to.as_ref().unwrap().as_str(),
+        "v1000;n9;g1"
+    );
     // A resume saw only part of the set this session, so it completes additively (no
     // tombstone) rather than reconciling against a partial present set.
     assert!(chunks.iter().all(|c| !c.is_reconcile_final()));
@@ -222,11 +231,10 @@ async fn a_windowed_backfill_fetches_only_the_in_window_uids() {
     let (stream, recorded) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
-    let conn = Mutex::new(conn);
 
     let window = SyncWindow::since(engine_core::time::CalendarDate::new(2026, 1, 1).unwrap());
     let mailbox = inbox();
-    let mut stream = Box::pin(stream_email(&conn, &mailbox, None, window, 2, 0));
+    let mut stream = Box::pin(stream_email(&mut conn, None, &mailbox, None, window, 2, 0));
     let mut chunks = Vec::new();
     while let Some(item) = stream.next().await {
         chunks.push(item.unwrap());
@@ -242,22 +250,88 @@ async fn a_windowed_backfill_fetches_only_the_in_window_uids() {
 }
 
 #[tokio::test]
-async fn a_delta_delegates_to_the_page_path_and_is_additive() {
-    // A prior complete cursor (no watermark) matching validity → a new-arrivals delta:
-    // UIDNEXT advanced 9 → 11, so UIDs 9,10 are fetched as an additive pass.
+async fn a_delta_without_qresync_reconciles_through_the_page_path() {
+    // A prior complete cursor (no watermark) matching validity, on a session without
+    // QRESYNC: the eight held messages come back as their flags, UIDs 9 and 10 whole, and
+    // the pass reconciles against all ten.
+    use core::fmt::Write as _;
     let select = select_resp("a2", 1000, 11, 10);
-    let server = script(&[GREETING, LOGIN_OK, &select, &fetch_resp("a3", &[9, 10])]);
-    let (conn, _) = logged_in(server).await;
+    let mut flags = String::new();
+    for uid in 1..=8 {
+        write!(flags, "* {uid} FETCH (FLAGS (\\Seen) UID {uid})\r\n").unwrap();
+    }
+    flags.push_str("a3 OK FETCH completed\r\n");
+    let server = script(&[
+        GREETING,
+        LOGIN_OK,
+        &select,
+        &flags,
+        &fetch_resp("a4", &[9, 10]),
+    ]);
+    let (mut conn, _) = logged_in(server).await;
 
-    let chunks = drain(&conn, Some("v1000;n9"), 50, 0).await;
+    let chunks = drain(&mut conn, Some("v1000;n9;g1"), 50, 0).await;
     let upserted: usize = chunks.iter().map(|c| c.changed.len()).sum();
     assert_eq!(upserted, 2, "the two new arrivals");
-    assert!(chunks.iter().all(|c| c.mode == PassMode::Additive));
-    assert!(!chunks.last().unwrap().is_reconcile_final());
+    let patched: usize = chunks.iter().map(|c| c.patched.len()).sum();
+    assert_eq!(patched, 8, "the flags of the eight held");
+    let present: usize = chunks.iter().map(|c| c.present.len()).sum();
+    assert_eq!(present, 10);
+    assert!(chunks.iter().all(|c| c.mode == PassMode::Reconcile));
+    assert!(chunks.last().unwrap().is_reconcile_final());
+    // The final chunk commits as a snapshot, which carries no partials, so the flags must
+    // ride an earlier one.
+    assert_eq!(chunks.last().unwrap().patched, []);
     // Advances to the fresh complete cursor.
     assert_eq!(
         chunks.last().unwrap().advance_to.as_ref().unwrap().as_str(),
-        "v1000;n11"
+        "v1000;n11;g1;r"
+    );
+}
+
+#[tokio::test]
+async fn an_unchanged_folder_streams_one_empty_chunk_that_keeps_the_cursor() {
+    let select = "* 10 EXISTS\r\n* OK [UIDVALIDITY 1000] v\r\n* OK [UIDNEXT 11] n\r\n\
+                  * OK [HIGHESTMODSEQ 7]\r\na2 OK [READ-WRITE] done\r\n";
+    let (mut conn, recorded) = logged_in(script(&[GREETING, LOGIN_OK, select])).await;
+    conn.negotiated =
+        crate::capability::Negotiated::from_capabilities(&["XYMHIGHESTMODSEQ".to_owned()]);
+
+    let chunks = drain(&mut conn, Some("v1000;n11;g1;m7;r"), 50, 0).await;
+
+    assert!(
+        chunks
+            .iter()
+            .all(|c| c.changed.is_empty() && c.patched.is_empty())
+    );
+    assert!(
+        !chunks.iter().any(EmailChunk::is_reconcile_final),
+        "nothing is tombstoned"
+    );
+    assert_eq!(
+        chunks.last().unwrap().advance_to.as_ref().unwrap().as_str(),
+        "v1000;n11;g1;m7;r"
+    );
+    assert!(!crate::mock::written(&recorded).contains("FETCH"));
+}
+
+#[tokio::test]
+async fn a_cursor_from_an_older_sync_syncs_the_folder_afresh() {
+    // Written before the cursor version, as an engine that read new arrivals only and cut a
+    // window at the message limit left it: a delta from it would leave missing mail missing,
+    // so the folder is fetched whole and the pass reconciles.
+    let select = select_resp("a2", 1000, 4, 3);
+    let server = script(&[GREETING, LOGIN_OK, &select, &fetch_resp("a3", &[1, 2, 3])]);
+    let (mut conn, _) = logged_in(server).await;
+
+    let chunks = drain(&mut conn, Some("v1000;n4;m7;r"), 50, 0).await;
+
+    let fetched: usize = chunks.iter().map(|c| c.changed.len()).sum();
+    assert_eq!(fetched, 3, "every message whole, not their flags");
+    assert!(chunks.last().unwrap().is_reconcile_final());
+    assert_eq!(
+        chunks.last().unwrap().advance_to.as_ref().unwrap().as_str(),
+        "v1000;n4;g1;r"
     );
 }
 
@@ -267,9 +341,9 @@ async fn a_uidvalidity_reset_reconciles_via_the_page_path() {
     // is rediscovered as a reconciling snapshot that tombstones the renumbered rows.
     let select = select_resp("a2", 1000, 4, 3);
     let server = script(&[GREETING, LOGIN_OK, &select, &fetch_resp("a3", &[1, 2, 3])]);
-    let (conn, _) = logged_in(server).await;
+    let (mut conn, _) = logged_in(server).await;
 
-    let chunks = drain(&conn, Some("v999;n50"), 50, 0).await;
+    let chunks = drain(&mut conn, Some("v999;n50;g1"), 50, 0).await;
     assert!(chunks.iter().any(|c| c.mode == PassMode::Reconcile));
     assert!(chunks.last().unwrap().is_reconcile_final());
     let present: usize = chunks.iter().map(|c| c.present.len()).sum();
@@ -279,7 +353,8 @@ async fn a_uidvalidity_reset_reconciles_via_the_page_path() {
 #[test]
 fn resume_cursor_roundtrip_is_stable() {
     // The watermark a chunk emits decodes back to the same resume point.
-    let cursor = MailboxCursor::decode(&engine_core::sync::SyncState::new("v1000;n9;b6")).unwrap();
+    let cursor =
+        MailboxCursor::decode(&engine_core::sync::SyncState::new("v1000;n9;g1;b6")).unwrap();
     assert_eq!(cursor.backfill_low, Some(6));
     assert_eq!(cursor.uid_next, 9);
 }
@@ -290,22 +365,25 @@ async fn an_empty_mailbox_backfill_yields_only_a_completing_marker() {
     // emits a single empty completing chunk that advances straight to steady state.
     let select = select_resp("a2", 1000, 1, 0);
     let server = script(&[GREETING, LOGIN_OK, &select]);
-    let (conn, recorded) = logged_in(server).await;
+    let (mut conn, recorded) = logged_in(server).await;
 
-    let chunks = drain(&conn, None, 50, 0).await;
+    let chunks = drain(&mut conn, None, 50, 0).await;
     assert_eq!(chunks.len(), 1);
-    assert!(chunks[0].changed.is_empty());
+    assert_eq!(chunks[0].changed, []);
     // A fresh pass reconciles even when empty, so an emptied mailbox tombstones every
     // stale local row against the empty present set.
     assert!(chunks[0].is_reconcile_final());
-    assert_eq!(chunks[0].advance_to.as_ref().unwrap().as_str(), "v1000;n1");
+    assert_eq!(
+        chunks[0].advance_to.as_ref().unwrap().as_str(),
+        "v1000;n1;g1;r"
+    );
     assert!(
         !written(&recorded).contains("UID FETCH"),
         "nothing to fetch"
     );
 }
 
-/// Opens a bare (un-`Mutex`ed) connection for the transport-level streamed-fetch tests.
+/// Opens a bare connection for the transport-level streamed-fetch tests.
 async fn open_conn(server: Vec<u8>) -> Connection<MockStream> {
     let (stream, _) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
@@ -328,7 +406,7 @@ async fn an_abandoned_streamed_fetch_self_heals_on_the_next_command() {
     assert_eq!(first.uid, 5);
 
     // A fresh command drains the abandoned fetch (rows 6,7 + its tag) then runs.
-    let folders = conn.list().await.unwrap();
+    let folders = conn.list("*").await.unwrap();
     assert_eq!(
         folders.len(),
         1,
@@ -341,8 +419,7 @@ async fn a_streamed_fetch_surfaces_a_no_completion_as_an_error() {
     // The command completes `NO`: the second pull returns a classified error.
     let fetch = "* 1 FETCH (UID 5 FLAGS (\\Seen) INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" \
                  RFC822.SIZE 10 ENVELOPE (NIL \"s\" NIL NIL NIL NIL NIL NIL NIL \"<m@h>\") \
-                 BODYSTRUCTURE (\"TEXT\" \"PLAIN\" NIL NIL NIL \"7BIT\" 2 1) \
-                 BODY[HEADER.FIELDS (REFERENCES)] \"\")\r\na2 NO fetch failed\r\n";
+                 BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\na2 NO fetch failed\r\n";
     let server = script(&[GREETING, LOGIN_OK, fetch]);
     let mut conn = open_conn(server).await;
 
@@ -363,8 +440,7 @@ async fn a_streamed_fetch_skips_non_fetch_untagged_responses() {
     let fetch = "* 9 EXISTS\r\n\
                  * 1 FETCH (UID 5 FLAGS (\\Seen) INTERNALDATE \"18-Mar-2026 10:00:00 +0000\" \
                  RFC822.SIZE 10 ENVELOPE (NIL \"s\" NIL NIL NIL NIL NIL NIL NIL \"<m@h>\") \
-                 BODYSTRUCTURE (\"TEXT\" \"PLAIN\" NIL NIL NIL \"7BIT\" 2 1) \
-                 BODY[HEADER.FIELDS (REFERENCES)] \"\")\r\na2 OK done\r\n";
+                 BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\na2 OK done\r\n";
     let server = script(&[GREETING, LOGIN_OK, fetch]);
     let mut conn = open_conn(server).await;
 

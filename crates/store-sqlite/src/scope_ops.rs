@@ -24,7 +24,7 @@ use rusqlite::{Connection, Transaction};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{contact_ops, convert, derived_ops, source_ops, sql};
+use crate::{contact_ops, convert, derived_ops, source_ops, sql, window_ops::CursorRecord};
 
 /// An owned, type-erased projection of a [`SyncUpdate`], built before the work is
 /// offloaded to the blocking thread (where the generic object type `T` is gone).
@@ -188,7 +188,9 @@ pub(crate) fn apply(
     reconcile: &[PendingReconciliation],
     observations: &[RecipientObservation],
     contact_scope: bool,
-    next_state: Option<&str>,
+    next_state: Option<&CursorRecord>,
+    observed_from: Option<UtcDateTime>,
+    now: UtcDateTime,
 ) -> Result<SyncApplied> {
     let tx = conn.transaction().map_err(convert::backend)?;
     check_token(&tx, scope_key, token)?;
@@ -222,9 +224,17 @@ pub(crate) fn apply(
     }
 
     derived_ops::apply_derived(&tx, scope_key, derived)?;
+    // The server's word on these messages' keywords is in; a change still queued goes back on
+    // top of it.
+    let written = derived
+        .messages
+        .iter()
+        .map(|row| row.key.as_str())
+        .chain(derived.state_changes.iter().map(|row| row.key.as_str()));
+    crate::keyword_edits::synced(&tx, scope_key, written, observed_from)?;
 
     for rec in reconcile {
-        if reconcile_op(&tx, rec)? {
+        if reconcile_op(&tx, rec, now)? {
             applied.reconciled += 1;
         }
     }
@@ -236,12 +246,8 @@ pub(crate) fn apply(
 
     // A streaming page (`next_state == None`) leaves the cursor unchanged so a
     // crash mid-stream re-syncs from the prior cursor rather than skipping pages.
-    if let Some(next_state) = next_state {
-        sql::execute(
-            &tx,
-            "UPDATE sync_scope SET cursor = ?1 WHERE scope_key = ?2",
-            (next_state, scope_key),
-        )?;
+    if let Some(record) = next_state {
+        crate::window_ops::record_cursor(&tx, scope_key, record)?;
     }
     tx.commit().map_err(convert::backend)?;
     Ok(applied)
@@ -451,8 +457,24 @@ fn existing_keys(tx: &Transaction<'_>, scope_key: &str) -> Result<Vec<String>> {
 /// Re-validates a planned reconciliation inside the transaction: if the op is
 /// still in its expected state, resolve it to `Succeeded`; otherwise skip it (the
 /// incoming object is stored normally regardless). Returns whether it applied.
-fn reconcile_op(tx: &Transaction<'_>, rec: &PendingReconciliation) -> Result<bool> {
+///
+/// A dead attempt is recovered first: the planner read the op as a read shows it, as its
+/// recovery will leave it, so comparing against the stored `InFlight` would skip it.
+fn reconcile_op(
+    tx: &Transaction<'_>,
+    rec: &PendingReconciliation,
+    now: UtcDateTime,
+) -> Result<bool> {
     let id = convert::op_id_to_i64(rec.op)?;
+    let account: Option<String> = sql::query_opt(
+        tx,
+        "SELECT account FROM pending_op WHERE id = ?1 AND state = 'InFlight'",
+        [id],
+        |r| r.get(0),
+    )?;
+    if let Some(account) = account {
+        crate::outbox_ops::recover_dead(tx, &account, now)?;
+    }
     let current: Option<String> = sql::query_opt(
         tx,
         "SELECT state FROM pending_op WHERE id = ?1",

@@ -23,7 +23,7 @@ use engine_core::{
 use engine_provider::{Draft, Provider};
 use engine_store::{MailSelector, ManualClock, StoreRead, WorkerId};
 use engine_sync::{IgnoreCommits, StreamTuning, SyncCommit, submit_mail, sync_mail};
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{Credentials, ImapAccount, ImapConfig, ImapProvider};
 use serde::de::DeserializeOwned;
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
@@ -49,16 +49,12 @@ async fn connect(
     let config = ImapConfig::new(
         harness.imap_addr.as_str(),
         host,
-        harness.account.as_str(),
-        harness.password.as_str(),
+        Credentials::password(harness.account.as_str(), harness.password.as_str()),
     );
-    ImapProvider::connect(
-        &config,
-        no_verify_connector(),
-        MailboxId::try_from(mailbox).unwrap(),
-    )
-    .await
-    .expect("connect IMAP")
+    ImapAccount::connect(&config, no_verify_connector())
+        .await
+        .map(|account| account.provider(MailboxId::try_from(mailbox).unwrap()))
+        .expect("connect IMAP")
 }
 
 /// Connects an `ImapProvider` bound to `mailbox` with SMTP submission enabled.
@@ -73,17 +69,13 @@ async fn connect_submitter(
     let config = ImapConfig::new(
         harness.imap_addr.as_str(),
         host,
-        harness.account.as_str(),
-        harness.password.as_str(),
+        Credentials::password(harness.account.as_str(), harness.password.as_str()),
     )
     .with_smtp(harness.smtp_addr.as_str());
-    ImapProvider::connect(
-        &config,
-        no_verify_connector(),
-        MailboxId::try_from(mailbox).unwrap(),
-    )
-    .await
-    .expect("connect IMAP+SMTP")
+    ImapAccount::connect(&config, no_verify_connector())
+        .await
+        .map(|account| account.provider(MailboxId::try_from(mailbox).unwrap()))
+        .expect("connect IMAP+SMTP")
 }
 
 async fn load<T: DeserializeOwned>(store: &Store, scope: &SyncScope, key: &ProviderKey) -> T {
@@ -445,6 +437,16 @@ async fn live_imap_saves_a_draft() {
 
     // Save it via IMAP APPEND into the resolved Drafts folder (flagged \Draft).
     provider.save_draft(&draft).await.expect("save_draft");
+    // And one saved before anyone was addressed, which carries no `To` header at all.
+    let unaddressed_id = "step5-imap-draft-unaddressed@test.local";
+    let unaddressed = Draft::new(
+        MessageIdHeader::new(unaddressed_id).unwrap(),
+        EmailAddress::new(harness.account.as_str()),
+        Vec::new(),
+        "Step 5 IMAP draft, no recipients",
+        "Saved as a draft by the live test (no SMTP).",
+    );
+    provider.save_draft(&unaddressed).await.expect("save_draft");
 
     // Re-sync Drafts; the saved draft is there, found by Message-ID and flagged.
     sync_mail(
@@ -475,6 +477,21 @@ async fn live_imap_saves_a_draft() {
             .iter()
             .any(|k| k.as_system() == Some(SystemKeyword::Draft)),
         "the saved message is flagged \\Draft"
+    );
+    let unaddressed = messages_in(&store, &scope)
+        .await
+        .into_iter()
+        .find(|m| {
+            m.envelope
+                .message_id
+                .iter()
+                .any(|id| id.as_str() == unaddressed_id)
+        })
+        .expect("the draft with no recipients is in Drafts");
+    assert!(
+        unaddressed.envelope.to.is_empty(),
+        "{:?}",
+        unaddressed.envelope.to
     );
 }
 

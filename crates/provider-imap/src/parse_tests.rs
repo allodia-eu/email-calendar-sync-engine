@@ -124,16 +124,31 @@ fn search_with_no_matches_is_empty() {
 
 #[test]
 fn search_reads_the_extended_esearch_all_set() {
-    // A server may answer the extended ESEARCH form instead; the `ALL` sequence-set's
-    // numbers are collected (range endpoints suffice for the lowest UID the caller needs).
+    // An IMAP4rev2 server always answers the extended ESEARCH form, and compacts the `ALL`
+    // set into ranges. Every UID in a range matched: a backfill fetches this list, so a
+    // parser that kept only the endpoints synced two messages of a window that matched a
+    // whole folder.
     assert_eq!(
         parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID ALL 5:8"#])),
-        vec![5, 8]
+        vec![5, 6, 7, 8]
     );
     assert_eq!(
         parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID ALL 1:3,7"#])),
-        vec![1, 3, 7]
+        vec![1, 2, 3, 7]
     );
+    // A range may name its ends in either order (RFC 9051 `seq-range`).
+    assert_eq!(
+        parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID ALL 9:7"#])),
+        vec![7, 8, 9]
+    );
+}
+
+#[test]
+fn a_hostile_esearch_range_is_bounded() {
+    // A server announcing every UID there could be must not make the client allocate
+    // for them.
+    let uids = parse_search(&lines(&[r#"ESEARCH (TAG "a3") UID ALL 1:4294967295"#]));
+    assert_eq!(uids.len(), super::MAX_SEARCH_UIDS);
 }
 
 #[test]
@@ -190,7 +205,7 @@ fn fetch_parses_uid_flags_internaldate_size_and_envelope() {
     assert_eq!(env.from[0].mailbox.as_deref(), Some("alice"));
     assert_eq!(env.from[0].host.as_deref(), Some("test.local"));
     assert_eq!(env.to[0].mailbox.as_deref(), Some("bob"));
-    assert!(env.cc.is_empty());
+    assert_eq!(env.cc, []);
     assert_eq!(
         env.message_id.as_deref(),
         Some("<baseline-0001@test.local>")
@@ -208,7 +223,7 @@ fn fetch_bodystructure_marks_regular_attachments() {
         r#" "MIXED" ("BOUNDARY" "b")))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(true));
 }
 
 #[test]
@@ -218,7 +233,7 @@ fn fetch_bodystructure_keeps_cid_inline_images_out_of_the_attachment_flag() {
         r#""<logo@cid>" NIL "BASE64" 12 NIL ("INLINE" ("FILENAME" "logo.png")) NIL))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(!rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(false));
 }
 
 #[test]
@@ -228,7 +243,7 @@ fn fetch_bodystructure_keeps_undisposed_cid_images_out_of_the_attachment_flag() 
         r#""<logo@cid>" NIL "BASE64" 12 NIL NIL NIL))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(!rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(false));
 }
 
 #[test]
@@ -238,7 +253,7 @@ fn fetch_bodystructure_marks_inline_named_files_without_content_id() {
         r#"NIL NIL "BASE64" 12 NIL ("INLINE" ("FILENAME" "preview.pdf")) NIL))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(true));
 }
 
 #[test]
@@ -253,7 +268,7 @@ fn fetch_bodystructure_ignores_a_name_param_on_a_text_body_part() {
         r#" "ALTERNATIVE" ("BOUNDARY" "a")))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(!rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(false));
 }
 
 #[test]
@@ -265,7 +280,7 @@ fn fetch_bodystructure_marks_inline_files_named_via_rfc2231() {
         r#"NIL ("INLINE" ("FILENAME*0*" "utf-8''%E2%82%AC" "FILENAME*1*" "rate.bin")) NIL))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(true));
 }
 
 #[test]
@@ -279,7 +294,7 @@ fn fetch_bodystructure_reads_message_global_disposition_like_rfc822() {
         r#"("ATTACHMENT" ("FILENAME" "forward.eml")) NIL))"#,
     );
     let rows = parse_fetch(&lines(&[line])).unwrap();
-    assert!(rows[0].has_attachment);
+    assert_eq!(rows[0].has_attachment, Some(true));
 }
 
 #[test]
@@ -295,7 +310,7 @@ fn fetch_reads_a_references_header_as_a_quoted_string() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].uid, 1);
     assert_eq!(
-        rows[0].references.as_deref(),
+        rows[0].header_fields.as_deref(),
         Some("References: <a@x> <b@y>")
     );
     // The envelope alongside it is still parsed (the spec drain stops at `]`).
@@ -314,7 +329,7 @@ fn fetch_reads_a_references_header_as_a_literal() {
     let rows = parse_fetch(&[line]).unwrap();
     assert_eq!(rows[0].uid, 7);
     assert_eq!(
-        rows[0].references.as_deref(),
+        rows[0].header_fields.as_deref(),
         Some("References: <a@x> <b@y>\r\n\r\n")
     );
 }
@@ -328,18 +343,18 @@ fn fetch_handles_a_missing_or_empty_references_header() {
         r#"BODY[HEADER.FIELDS (REFERENCES)] "")"#,
     );
     let rows = parse_fetch(&lines(&[with_empty])).unwrap();
-    assert_eq!(rows[0].references.as_deref(), Some(""));
+    assert_eq!(rows[0].header_fields.as_deref(), Some(""));
 
     let without = "2 FETCH (UID 2 RFC822.SIZE 10)";
     let rows = parse_fetch(&lines(&[without])).unwrap();
-    assert_eq!(rows[0].references, None);
+    assert_eq!(rows[0].header_fields, None);
 }
 
 #[test]
 fn fetch_skips_unsolicited_flag_only_rows() {
     // A flag update with no UID is not a usable mail object; skip it, don't error.
     let rows = parse_fetch(&lines(&[r"2 FETCH (FLAGS (\Seen))"])).unwrap();
-    assert!(rows.is_empty());
+    assert_eq!(rows, []);
 }
 
 #[test]

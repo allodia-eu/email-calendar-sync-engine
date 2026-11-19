@@ -24,7 +24,7 @@ use engine_provider::{MailEdit, MailEditReceipt};
 use serde_json::{Map, Value, json};
 
 use crate::{
-    error::JmapError,
+    error::{JmapError, set_refusal},
     executor::Executor,
     request::{Request, capability},
 };
@@ -114,13 +114,8 @@ pub(crate) fn check_set_result_for(
 ) -> Result<(), JmapError> {
     let destroy = applied == "destroyed";
 
-    if let Some(error_type) = result
-        .get(failed)
-        .and_then(|f| f.get(target))
-        .and_then(|e| e.get("type"))
-        .and_then(Value::as_str)
-    {
-        return Err(JmapError::set(target, error_type));
+    if let Some(refusal) = set_refusal(result, failed, target) {
+        return Err(JmapError::refused(target, refusal));
     }
 
     // `destroyed` is an array of ids; `updated` is an object keyed by id (its value may

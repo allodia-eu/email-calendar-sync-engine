@@ -10,7 +10,7 @@ use engine_core::{
     calendar::Event,
     ids::{AccountId, EventId, Uid},
     version::RevisionTokens,
-    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, PendingOutcome, ResourceKey},
+    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, ResourceKey},
 };
 use engine_provider::{
     EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt,
@@ -18,7 +18,7 @@ use engine_provider::{
 };
 use engine_store::{LeasedPendingOp, Store, WorkerId};
 
-use super::{enqueue_and_claim, record_failure};
+use super::{enqueue_and_claim, write_applied, write_failed};
 use crate::SyncError;
 
 /// The result of a successful calendar write through the outbox.
@@ -291,20 +291,10 @@ where
 
     match provider.delete_event(account, base, deletion).await {
         Ok(()) => {
-            store
-                .mark_pending_op(
-                    &leased.lease,
-                    PendingOutcome::Succeeded {
-                        provider_key: deletion.event.key().clone(),
-                    },
-                )
-                .await?;
+            write_applied(store, &leased, deletion.event.key().clone()).await?;
             Ok(leased.id)
         }
-        Err(err) => {
-            record_failure(store, &leased, &err).await?;
-            Err(SyncError::Provider(err))
-        }
+        Err(err) => Err(write_failed(store, &leased, err).await),
     }
 }
 
@@ -316,14 +306,7 @@ async fn resolve<S: Store>(
 ) -> Result<CalendarWriteOutcome, SyncError> {
     match result {
         Ok(receipt) => {
-            store
-                .mark_pending_op(
-                    &leased.lease,
-                    PendingOutcome::Succeeded {
-                        provider_key: receipt.event.key().clone(),
-                    },
-                )
-                .await?;
+            write_applied(store, &leased, receipt.event.key().clone()).await?;
             Ok(CalendarWriteOutcome {
                 op: leased.id,
                 event: receipt.event,
@@ -332,10 +315,7 @@ async fn resolve<S: Store>(
                 reply_delivery: receipt.reply_delivery,
             })
         }
-        Err(err) => {
-            record_failure(store, &leased, &err).await?;
-            Err(SyncError::Provider(err))
-        }
+        Err(err) => Err(write_failed(store, &leased, err).await),
     }
 }
 

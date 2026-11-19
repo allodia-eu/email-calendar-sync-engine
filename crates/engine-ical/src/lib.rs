@@ -29,6 +29,7 @@
 
 mod build;
 mod component;
+mod conference_write;
 mod error;
 mod event;
 mod format;
@@ -37,6 +38,7 @@ mod party;
 mod patch;
 mod recur;
 mod recurrence;
+mod scheduling_write;
 mod unfold;
 mod value;
 

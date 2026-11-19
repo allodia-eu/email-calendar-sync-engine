@@ -1,8 +1,13 @@
-//! The account-wide ceiling on requests in flight.
+//! The account-wide ceiling on requests in flight, and the budget they spend.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
-use tokio::sync::Notify;
+use tokio::{sync::Notify, time::Instant};
+
+use crate::pace::Pace;
 
 /// How many requests **one account** may have in flight at once, shared by every provider
 /// that account connects.
@@ -60,6 +65,17 @@ use tokio::sync::Notify;
 /// gate.narrow_to(20); // a looser claim never raises a ceiling already lowered
 /// assert_eq!(gate.limit(), Some(4));
 /// ```
+///
+/// # A budget as well as a ceiling
+///
+/// Some servers bound a **rate** rather than a width: Gmail bills every call in units of its
+/// own (5 to list, 20 to fetch a message, 60 for its source) against a budget per user per
+/// minute, and refuses the call that would go over. A width does not control a rate, and the
+/// same argument as above puts the budget here: the snapshot, the body warm and a second core
+/// all spend one user's units, so a budget that sees only one of them cannot hold the total.
+///
+/// The adapter states the budget with [`pace_to`](Self::pace_to) and charges each call with
+/// [`spend`](Self::spend) before sending it. A gate nobody paced charges nothing.
 #[derive(Clone, Default)]
 pub struct RequestGate(Arc<Inner>);
 
@@ -68,6 +84,8 @@ struct Inner {
     state: Mutex<State>,
     /// Woken as each permit comes back, so a waiter re-checks rather than polls.
     returned: Notify,
+    /// `None` until an adapter states a budget.
+    pace: Mutex<Option<Pace>>,
 }
 
 #[derive(Default)]
@@ -83,6 +101,7 @@ impl core::fmt::Debug for RequestGate {
         f.debug_struct("RequestGate")
             .field("limit", &state.limit)
             .field("in_flight", &state.in_flight)
+            .field("pace", &self.pace())
             .finish()
     }
 }
@@ -120,6 +139,60 @@ impl RequestGate {
             .lock()
             .expect("request gate mutex poisoned")
             .limit
+    }
+
+    /// Holds the account to `units` of the server's own cost per `per`, if that is slower than
+    /// any budget already stated.
+    ///
+    /// Called by an adapter as it connects, with what its server bills: Gmail's query-cost
+    /// units per user per minute. Like [`narrow_to`](Self::narrow_to) it only ever tightens,
+    /// and what is already reserved stays reserved.
+    pub fn pace_to(&self, units: u32, per: Duration) {
+        let mut pace = self.0.pace.lock().expect("request gate pace poisoned");
+        match pace.as_mut() {
+            Some(current) if current.is_slower(units, per) => {
+                current.restate(units, per);
+            }
+            Some(_) => {}
+            None => *pace = Some(Pace::new(units, per)),
+        }
+    }
+
+    /// The budget in force as `(units, per)`, or `None` while no adapter has stated one.
+    #[must_use]
+    pub fn pace(&self) -> Option<(u32, Duration)> {
+        self.0
+            .pace
+            .lock()
+            .expect("request gate pace poisoned")
+            .as_ref()
+            .map(Pace::stated)
+    }
+
+    /// Charges `units` against the account's budget, waiting until they fit.
+    ///
+    /// Calls are served in the order they ask, whatever each costs. A rested account spends a
+    /// tenth of its budget at once without waiting; past that, calls go out at the rate that
+    /// keeps every span of the stated length within the budget. On a gate nobody paced this
+    /// returns at once, and so does a call that costs nothing, however far behind the budget
+    /// is: a server's other APIs are billed under quotas of their own.
+    pub async fn spend(&self, units: u32) {
+        if units == 0 {
+            return;
+        }
+        let wait = match self
+            .0
+            .pace
+            .lock()
+            .expect("request gate pace poisoned")
+            .as_mut()
+        {
+            Some(pace) => pace.reserve(units, Instant::now()),
+            None => return,
+        };
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
     }
 
     /// Waits for a lane, and holds it until the returned permit is dropped.

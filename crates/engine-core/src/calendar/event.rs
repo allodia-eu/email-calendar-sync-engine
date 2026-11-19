@@ -1,10 +1,10 @@
 //! The normalized calendar event.
 
-use std::collections::BTreeSet;
+use std::{borrow::Cow, collections::BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::{Alert, EventKind, Location, Participant, Recurrence, VirtualLocation};
+use super::{Alert, Conference, ConferenceKey, EventKind, Location, Participant, Recurrence};
 use crate::{
     extended::ExtendedProperties,
     ids::{CalendarId, EventId, Uid},
@@ -101,8 +101,10 @@ pub struct Event {
     pub participants: Vec<Participant>,
     /// Physical locations.
     pub locations: Vec<Location>,
-    /// Virtual locations (conference links).
-    pub virtual_locations: Vec<VirtualLocation>,
+    /// The meetings the event can be joined at. A stored event from before the field existed
+    /// reads with none until the next sync re-projects it (`NORMALIZER_VERSION` 7).
+    #[serde(default)]
+    pub conferences: Vec<Conference>,
     /// Alerts/reminders.
     pub alerts: Vec<Alert>,
     /// Whether the calendar's default alerts apply instead of `alerts`.
@@ -155,7 +157,7 @@ impl Event {
             recurrence_id: None,
             participants: Vec::new(),
             locations: Vec::new(),
-            virtual_locations: Vec::new(),
+            conferences: Vec::new(),
             alerts: Vec::new(),
             use_default_alerts: false,
             keywords: BTreeSet::new(),
@@ -196,13 +198,42 @@ impl Event {
     pub fn is_cancelled(&self) -> bool {
         self.status == EventStatus::Cancelled
     }
+
+    /// The conference `key` names, if the event holds it.
+    #[must_use]
+    pub fn conference(&self, key: &ConferenceKey) -> Option<&Conference> {
+        self.conferences
+            .iter()
+            .find(|conference| &conference.key == key)
+    }
+
+    /// The person's own notes: the description without each meeting block an invitation
+    /// writes into it (Microsoft Teams', Google Calendar's) that repeats a conference `shown`
+    /// admits. A block repeats one when a link in it joins it ([`Conference::joined_at`]), and
+    /// a block holding no link at all is left out too, since it is no way in. Any other block
+    /// is kept: its meeting is shown nowhere else. `None` when nothing else is left.
+    /// [`Self::description`] stays the server's text, because an edit is computed against it.
+    #[must_use]
+    pub fn notes(&self, shown: impl Fn(&Conference) -> bool) -> Option<Cow<'_, str>> {
+        let shown: Vec<&Conference> = self.conferences.iter().filter(|c| shown(c)).collect();
+        let repeats = |block: &str| {
+            let mut links = super::conference_detect::links(block).peekable();
+            links.peek().is_none()
+                || links.any(|uri| shown.iter().any(|conference| conference.joined_at(&uri)))
+        };
+        let notes = super::conference_block::without_blocks(self.description.as_deref()?, repeats);
+        (!notes.is_empty()).then_some(notes)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        calendar::{Frequency, RecurrenceRule},
+        calendar::{
+            ConferenceKey, ConferenceOrigin, ConferenceService, ConferenceUri, DetectedIn,
+            EntryPoint, Frequency, RecurrenceRule,
+        },
         time::LocalDateTime,
     };
 
@@ -256,5 +287,49 @@ mod tests {
         ev.raw_ical = Some(RawIcal::new("BEGIN:VEVENT\r\nUID:uid-1\r\nEND:VEVENT"));
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), ev);
+    }
+
+    #[test]
+    fn the_notes_leave_out_a_block_only_when_its_meeting_is_shown() {
+        let mut ev = event();
+        assert_eq!(ev.notes(|_| true), None);
+        let rule = "_".repeat(80);
+        let block = format!(
+            "{rule}\nMicrosoft Teams meeting\n\
+             Join: https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0\n{rule}\n"
+        );
+        ev.description = Some(format!("Bring the figures.\n\n{block}"));
+        let held = format!("Bring the figures.\n\n{}", block.trim_end());
+        assert_eq!(
+            ev.notes(|_| true).as_deref(),
+            Some(held.as_str()),
+            "no conference is the block's meeting"
+        );
+        ev.conferences = vec![Conference {
+            key: ConferenceKey::new("teams"),
+            service: Some(ConferenceService::Teams),
+            origin: ConferenceOrigin::Detected {
+                place: DetectedIn::Description,
+            },
+            entry_points: vec![EntryPoint::at(
+                ConferenceUri::parse("https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0")
+                    .unwrap(),
+            )],
+            label: None,
+            meeting_id: None,
+            notes: None,
+        }];
+        assert_eq!(ev.notes(|_| true).as_deref(), Some("Bring the figures."));
+        assert_eq!(
+            ev.notes(|_| false).as_deref(),
+            Some(held.as_str()),
+            "the block is the only place an unshown meeting appears"
+        );
+        ev.description = Some(format!("{rule}\nMicrosoft Teams meeting\nJoin\n{rule}\n"));
+        assert_eq!(
+            ev.notes(|_| false),
+            None,
+            "a block with no link is no way in"
+        );
     }
 }

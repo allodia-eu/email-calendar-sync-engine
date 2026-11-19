@@ -47,7 +47,7 @@ pub(crate) async fn send(
     let mut request = client
         .request(verb, &url)
         .basic_auth(&profile.user, Some(&profile.pass))
-        .header("User-Agent", "allodia-dav-cli")
+        .header("User-Agent", crate::commands::user_agent().as_str())
         .header("Depth", depth);
     if !body.is_empty() {
         request = request

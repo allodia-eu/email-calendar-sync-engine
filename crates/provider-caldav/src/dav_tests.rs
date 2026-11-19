@@ -196,7 +196,7 @@ fn parses_sync_collection_with_etags_and_cdata_calendar_data() {
 fn parses_noop_delta_token_with_no_responses() {
     let xml = include_str!("../tests/fixtures/sync-noop.xml");
     let parsed = parse_multistatus(xml).unwrap();
-    assert!(parsed.responses.is_empty());
+    assert_eq!(parsed.responses, []);
     assert_eq!(
         parsed.sync_token.as_deref(),
         Some("urn:stalwart:davsync:16")
@@ -239,4 +239,65 @@ fn keeps_every_href_in_a_multi_href_response() {
 #[test]
 fn malformed_xml_is_an_error_not_a_panic() {
     assert!(parse_multistatus("<D:multistatus><unclosed>").is_err());
+}
+
+#[test]
+fn a_property_holding_several_hrefs_keeps_all_of_them_in_order() {
+    let xml = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response><D:href>/principals/alice/</D:href><D:propstat><D:prop><C:calendar-home-set><D:href>/calendars/alice/</D:href></C:calendar-home-set><C:calendar-user-address-set><D:href>mailto:alice@example.org</D:href><D:href>urn:uuid:0f0e</D:href><D:href>mailto:a.smith@example.org</D:href></C:calendar-user-address-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
+    let parsed = parse_multistatus(xml).unwrap();
+    let props = &parsed.responses[0].props;
+    assert_eq!(
+        props.hrefs("calendar-user-address-set"),
+        Some(
+            &[
+                "mailto:alice@example.org".to_owned(),
+                "urn:uuid:0f0e".to_owned(),
+                "mailto:a.smith@example.org".to_owned(),
+            ][..]
+        )
+    );
+    assert_eq!(
+        props.hrefs("calendar-home-set"),
+        Some(&["/calendars/alice/".to_owned()][..])
+    );
+}
+
+#[test]
+fn a_property_reported_empty_is_present_and_a_404_one_is_absent() {
+    let xml = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response><D:href>/p/</D:href><D:propstat><D:prop><C:calendar-user-address-set/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat><D:propstat><D:prop><C:schedule-inbox-URL/></D:prop><D:status>HTTP/1.1 404 Not Found</D:status></D:propstat></D:response></D:multistatus>"#;
+    let props = &parse_multistatus(xml).unwrap().responses[0].props;
+    assert_eq!(props.hrefs("calendar-user-address-set"), Some(&[][..]));
+    assert_eq!(props.hrefs("schedule-inbox-url"), None);
+    assert_eq!(props.hrefs("never-asked"), None);
+}
+
+/// What SabreDAV answers an anonymous `PROPFIND` with when anonymous reads are allowed, verbatim
+/// in shape: the pseudo-principal of RFC 5397 §3 in place of an `<href>`.
+const UNAUTHENTICATED: &str = r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns"><d:response><d:href>/</d:href><d:propstat><d:prop><d:current-user-principal><d:unauthenticated/></d:current-user-principal></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+
+#[test]
+fn the_unauthenticated_pseudo_principal_is_read_and_is_not_a_principal() {
+    let parsed = parse_multistatus(UNAUTHENTICATED).unwrap();
+    assert!(parsed.names_unauthenticated());
+    assert_eq!(
+        parsed.responses[0].props.get("current-user-principal"),
+        None
+    );
+}
+
+#[test]
+fn a_named_principal_is_not_unauthenticated() {
+    let named = UNAUTHENTICATED.replace("<d:unauthenticated/>", "<d:href>/p/</d:href>");
+    let parsed = parse_multistatus(&named).unwrap();
+    assert!(!parsed.names_unauthenticated());
+    assert_eq!(
+        parsed.responses[0].props.get("current-user-principal"),
+        Some("/p/")
+    );
+}
+
+#[test]
+fn an_unauthenticated_property_in_a_failed_propstat_says_nothing() {
+    let failed = UNAUTHENTICATED.replace("HTTP/1.1 200 OK", "HTTP/1.1 404 Not Found");
+    assert!(!parse_multistatus(&failed).unwrap().names_unauthenticated());
 }

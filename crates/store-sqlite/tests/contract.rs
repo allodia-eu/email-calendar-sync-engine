@@ -11,6 +11,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use engine_core::time::UtcDateTime;
 use engine_store::{ManualClock, contract};
 use store_sqlite::SqliteStore;
 
@@ -51,4 +52,63 @@ async fn sqlite_store_satisfies_contract_on_disk() {
     };
     contract::run_all(&make).await;
     contract::run_contacts(&make).await;
+    every_stored_instant_is_fixed_width(dir.path());
+}
+
+/// Every value the suite left that reads as an instant is in the one form that sorts as text
+/// ([`UtcDateTime::to_sortable_string`]): SQL orders and filters these columns as text, so a writer
+/// that formats an instant its own way breaks that silently, and only within a second.
+fn every_stored_instant_is_fixed_width(dir: &std::path::Path) {
+    let mut checked = 0;
+    for entry in std::fs::read_dir(dir).expect("the case files") {
+        let path = entry.expect("a case file").path();
+        if path.extension().is_none_or(|ext| ext != "sqlite") {
+            continue;
+        }
+        let conn = rusqlite::Connection::open(&path).expect("open a case file");
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        for table in tables {
+            let columns: Vec<(String, String)> = conn
+                .prepare(&format!(
+                    "SELECT name, type FROM pragma_table_info('{table}')"
+                ))
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            for (column, kind) in columns.iter().filter(|(_, kind)| kind == "TEXT") {
+                let _ = kind;
+                let values: Vec<String> = conn
+                    .prepare(&format!(
+                        "SELECT {column} FROM \"{table}\" WHERE typeof({column}) = 'text'"
+                    ))
+                    .unwrap()
+                    .query_map([], |row| row.get(0))
+                    .unwrap()
+                    .collect::<rusqlite::Result<_>>()
+                    .unwrap();
+                for value in values {
+                    if value.parse::<UtcDateTime>().is_ok() {
+                        assert_eq!(
+                            value,
+                            value.parse::<UtcDateTime>().unwrap().to_sortable_string(),
+                            "{table}.{column} holds an instant in a form that does not sort as text"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "the suite stored no instant, so this proves nothing"
+    );
 }

@@ -1,4 +1,6 @@
-use engine_core::calendar::RecurrenceSkip;
+use engine_core::calendar::{
+    CalendarAccess, ConferenceOrigin, ConferenceUri, DetectedIn, RecurrenceSkip,
+};
 use serde_json::json;
 
 use super::*;
@@ -31,6 +33,50 @@ fn calendar_container_normalizes() {
     let calendar = calendar_from_json(&doc["list"][0]).unwrap();
     assert!(calendar.is_default);
     assert!(calendar.name.contains("Stalwart Calendar"));
+}
+
+/// A calendar shared read-only (captured: dave's, as alice) carries the rights it was shared
+/// with; the user's own calendar keeps every right.
+#[test]
+fn a_calendar_carries_the_callers_rights() {
+    let own: Value = serde_json::from_str(CALENDAR_GET).unwrap();
+    assert_eq!(
+        calendar_from_json(&own["list"][0]).unwrap().access,
+        CalendarAccess::owner()
+    );
+    let shared: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/calendar_get_shared_read_only.json"
+    ))
+    .unwrap();
+    let calendar = calendar_from_json(&shared["methodResponses"][0][1]["list"][0]).unwrap();
+    assert_eq!(
+        calendar.access,
+        CalendarAccess {
+            may_read: true,
+            may_write: false,
+            may_share: false,
+            may_delete: false,
+            may_rsvp: false,
+            may_read_free_busy: true,
+        }
+    );
+}
+
+#[test]
+fn a_right_missing_from_the_object_is_withheld_and_no_object_is_the_owners() {
+    let partial = json!({ "id": "c", "myRights": { "mayReadItems": true, "mayWriteAll": true } });
+    let access = calendar_from_json(&partial).unwrap().access;
+    assert!(access.may_read && access.may_write);
+    assert!(!access.may_rsvp && !access.may_share && !access.may_delete);
+    assert!(!access.may_read_free_busy);
+    // `mayWriteOwn` alone is not `may_write`: it covers the user's own events, and a host
+    // offering to edit someone else's would be refused.
+    let own_only = json!({ "id": "c", "myRights": { "mayReadItems": true, "mayWriteOwn": true } });
+    assert!(!calendar_from_json(&own_only).unwrap().access.may_write);
+    assert_eq!(
+        calendar_from_json(&json!({ "id": "c" })).unwrap().access,
+        CalendarAccess::owner()
+    );
 }
 
 #[test]
@@ -78,7 +124,7 @@ fn recurring_event_maps_rule_and_overrides() {
 #[test]
 fn meeting_maps_participants() {
     let meeting = by_uid("meeting-2003@test.local");
-    assert!(!meeting.participants.is_empty());
+    assert_ne!(meeting.participants, []);
     let alice = meeting
         .participants
         .iter()
@@ -86,6 +132,56 @@ fn meeting_maps_participants() {
         .expect("alice is a participant");
     assert_eq!(alice.participation_status, ParticipationStatus::Accepted);
     assert!(alice.has_role(&ParticipantRole::Chair));
+}
+
+#[test]
+fn duplicate_calendar_addresses_merge_into_one_participant() {
+    let event = event_from_json(&json!({
+        "@type": "Event",
+        "id": "duplicate-owner",
+        "calendarIds": { "b": true },
+        "uid": "duplicate-owner@test.local",
+        "title": "Meeting",
+        "start": "2026-08-01T09:00:00",
+        "duration": "PT30M",
+        "participants": {
+            "server": {
+                "@type": "Participant",
+                "calendarAddress": "mailto:owner@example.com",
+                "name": "Owner",
+            },
+            "client": {
+                "@type": "Participant",
+                "calendarAddress": "MAILTO:Owner@Example.com",
+                "roles": { "owner": true, "chair": true },
+                "participationStatus": "accepted",
+            },
+            "guest": {
+                "@type": "Participant",
+                "calendarAddress": "mailto:guest@example.com",
+                "roles": { "required": true },
+                "participationStatus": "needs-action",
+            },
+        },
+    }))
+    .unwrap();
+
+    assert_eq!(event.participants.len(), 2);
+    let owner = event
+        .participants
+        .iter()
+        .find(|participant| participant.email.as_deref() == Some("owner@example.com"))
+        .unwrap();
+    assert_eq!(owner.name.as_deref(), Some("Owner"));
+    assert_eq!(owner.participation_status, ParticipationStatus::Accepted);
+    assert!(owner.has_role(&ParticipantRole::Owner));
+    assert!(owner.has_role(&ParticipantRole::Chair));
+    let guest = event
+        .participants
+        .iter()
+        .find(|participant| participant.email.as_deref() == Some("guest@example.com"))
+        .unwrap();
+    assert!(guest.has_role(&ParticipantRole::Attendee));
 }
 
 #[test]
@@ -130,11 +226,44 @@ fn a_jscalendar_1_0_participant_still_has_an_address() {
 }
 
 #[test]
-fn virtual_location_maps_conference_uri() {
+fn a_meeting_link_in_a_location_or_the_description_is_detected() {
+    let event = event_from_json(&json!({
+        "id": "e1", "uid": "e1@test.local", "calendarIds": { "c1": true },
+        "start": "2026-06-01T09:00:00", "timeZone": "Europe/Amsterdam", "duration": "PT1H",
+        "locations": { "l": { "@type": "Location", "name": "Zoom: https://zoom.us/j/987" } },
+        "description": "Or by phone. https://zoom.us/j/987?pwd=x and https://meet.google.com/abc-defg-hij"
+    }))
+    .unwrap();
+    let found: Vec<_> = event
+        .conferences
+        .iter()
+        .map(|c| (c.join().map(ConferenceUri::as_str), c.origin))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (
+                Some("https://zoom.us/j/987?pwd=x"),
+                ConferenceOrigin::Detected {
+                    place: DetectedIn::Location
+                }
+            ),
+            (
+                Some("https://meet.google.com/abc-defg-hij"),
+                ConferenceOrigin::Detected {
+                    place: DetectedIn::Description
+                }
+            ),
+        ]
+    );
+}
+
+#[test]
+fn virtual_location_maps_to_a_conference() {
     let virt = by_uid("virtual-2004@test.local");
     assert_eq!(
-        virt.virtual_locations[0].uri,
-        "https://meet.example.com/harness-room"
+        virt.conferences[0].join().map(ConferenceUri::as_str),
+        Some("https://meet.example.com/harness-room")
     );
 }
 
@@ -199,7 +328,7 @@ fn nth_weekday_locations_and_keywords() {
     assert_eq!(rule.by_day[0].nth_of_period.unwrap().get(), -1);
     // A nameless location still normalizes; a virtual location without a uri is dropped.
     assert_eq!(event.locations.len(), 1);
-    assert!(event.virtual_locations.is_empty());
+    assert_eq!(event.conferences, []);
     assert!(event.keywords.contains("kw") && event.categories.contains("cat"));
     assert!(event.is_cancelled());
     assert_eq!(event.color.as_deref(), Some("#abc"));

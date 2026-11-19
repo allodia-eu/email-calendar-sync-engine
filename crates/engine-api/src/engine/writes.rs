@@ -8,10 +8,11 @@ use engine_core::{
     write::{PendingOpId, PendingOpKind},
 };
 use engine_provider::{Draft, MailEdit, MessageReport, Provider};
-use engine_store::{OpRejection, PendingOpRow, PendingOpState, Store, StoreRead};
+use engine_store::{Confirmation, OpRejection, PendingOpRow, PendingOpState, Store, StoreRead};
 use engine_sync::{
-    DrainReport, MailEditOutcome, PutDraftOutcome, ReportOutcome, SubmitOutcome, SyncError,
-    delete_draft_mail, drain_outbox, edit_mail, put_draft_mail, report_message, submit_mail,
+    DrainReport, MailEditSent, PutDraftOutcome, ReportOutcome, SubmitOutcome, SyncError,
+    delete_draft_mail, drain_outbox, edit_mail, put_draft_mail, queue_mail_edit, report_message,
+    send_mail_edit, submit_mail,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
@@ -24,12 +25,20 @@ impl Engine {
     /// it (`north-star.md` Write Contract). Returns the sent message's key, its
     /// `Message-ID`, and the op id — pollable via [`Engine::pending_op_state`].
     ///
+    /// Whatever ends the process during the call, the send is not lost and not delivered
+    /// twice: the attempt records its hand-over to the server before the first byte that
+    /// could deliver it, so the next process ([`recover_interrupted_ops`], or any drain once
+    /// the lease has lapsed) retries a send that never left and asks about one that may have.
+    ///
+    /// [`recover_interrupted_ops`]: Self::recover_interrupted_ops
+    ///
     /// # Errors
     ///
     /// Returns [`ApiError::Sync`] if the send fails: the op is first recorded
-    /// `Failed` (with the failure class), or `NeedsConfirmation` for an ambiguous
-    /// post-`DATA` SMTP loss — the outbox never blind-retries — and the error then
-    /// returns. A store failure also surfaces as [`ApiError::Sync`].
+    /// `Failed` (with the failure class), or `NeedsConfirmation` when the message may have
+    /// been delivered — the outbox never blind-retries — and the error then returns. A failed
+    /// send stays in [`outbox`](Self::outbox). A store failure also surfaces as
+    /// [`ApiError::Sync`].
     pub async fn submit_mail<P: Provider>(
         &self,
         provider: &P,
@@ -124,33 +133,24 @@ impl Engine {
             .map_err(|err| map_sync_error(SyncError::Provider(err)))
     }
 
-    /// Applies a [`MailEdit`] to one of the account's messages through the durable
-    /// outbox — mark-read/flag (`SetKeywords`), move to another folder
-    /// (`MoveTo` — also the mechanism behind a Trash "delete", the host resolving the
-    /// Trash mailbox), or permanent delete (`Delete`). The edit is recorded as a
-    /// pending op (idempotent by `idempotency`) **before** the provider side effect,
-    /// so a crash never loses it (`north-star.md` Write Contract). `idempotency` must
-    /// be **unique per edit intent** — deriving it only from the target message would
-    /// wrongly collapse mark-read then mark-unread into one op. Returns the resolved
-    /// message key and the op id (pollable via [`Engine::pending_op_state`]).
+    /// Applies a [`MailEdit`] to one of the account's messages through the durable outbox, in
+    /// one call: [`Engine::queue_mail_edit`], then [`Engine::send_mail_edit`].
     ///
-    /// The next [`Engine::sync_mail`] reconciles the local rows to the new server
-    /// state (a periodic snapshot, since IMAP deltas do not carry flag/expunge
-    /// changes — `imap-smtp.md`).
+    /// A mark-read/flag (`SetKeywords`), a move to another folder (`MoveTo`, also the mechanism
+    /// behind a Trash "delete", the host resolving the Trash mailbox), or a permanent delete
+    /// (`Delete`). A host that shows the edit before the server answers queues and sends in two
+    /// calls instead, and redraws between them.
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError::Sync`] if the edit fails: the op is first recorded
-    /// `Failed` (a stale-target `Conflict` — e.g. an IMAP UID under a changed
-    /// `UIDVALIDITY` — means re-sync then retry), and the error then returns. A store
-    /// failure also surfaces as [`ApiError::Sync`].
+    /// As [`Engine::queue_mail_edit`] and [`Engine::send_mail_edit`].
     pub async fn edit_mail<P: Provider>(
         &self,
         provider: &P,
         account: &AccountId,
         idempotency: &str,
         edit: &MailEdit,
-    ) -> Result<MailEditOutcome, ApiError> {
+    ) -> Result<MailEditSent, ApiError> {
         edit_mail(
             provider,
             &self.store,
@@ -158,6 +158,67 @@ impl Engine {
             worker(),
             LEASE_TTL,
             idempotency,
+            edit,
+        )
+        .await
+        .map_err(map_sync_error)
+    }
+
+    /// Queues `edit` durably and returns its op, without reaching the server.
+    ///
+    /// The op is recorded **before** any provider side effect, so a crash never loses it
+    /// (`north-star.md` Write Contract), and needs no connection: an edit made offline queues the
+    /// same way and goes out with the next [`Engine::drain_outbox`]. `idempotency` must be
+    /// **unique per edit intent**: deriving it only from the target message would collapse
+    /// mark-read then mark-unread into one op.
+    ///
+    /// **A keyword change is shown from now on.** Every read of the message carries it until the
+    /// server accepts it, when the next sync confirms it, or refuses it for good, when it is
+    /// taken back. A sync in between does not undo it (`store-and-sync.md`). A move or a delete
+    /// is not shown: the store learns of it from the next sync.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the edit cannot be encoded or the store fails.
+    pub async fn queue_mail_edit(
+        &self,
+        account: &AccountId,
+        idempotency: &str,
+        edit: &MailEdit,
+    ) -> Result<PendingOpId, ApiError> {
+        queue_mail_edit(&self.store, account, idempotency, edit)
+            .await
+            .map_err(map_sync_error)
+    }
+
+    /// Sends the queued edit `op` now. `edit` is the edit it was queued with.
+    ///
+    /// [`MailEditSent::Applied`] carries the resolved message key; the next
+    /// [`Engine::sync_mail`] reconciles the rest of the stored message. A refusal the outbox will
+    /// retry (offline, rate limited, a timeout, another write to the message still in flight) is
+    /// not an error but [`MailEditSent::Queued`]: the op waits for [`Engine::drain_outbox`], and a
+    /// keyword change stays shown meanwhile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] when the server refused the edit for good, after the store has
+    /// taken back a keyword change it showed (a stale-target `Conflict`, such as an IMAP UID
+    /// under a changed `UIDVALIDITY`, means re-sync then retry); when the op is unknown or already
+    /// settled; or when the store fails.
+    pub async fn send_mail_edit<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        op: PendingOpId,
+        edit: &MailEdit,
+    ) -> Result<MailEditSent, ApiError> {
+        send_mail_edit(
+            provider,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            op,
             edit,
         )
         .await
@@ -256,7 +317,14 @@ impl Engine {
     /// A lease-free read, and the only way a host learns what it left behind: after a
     /// restart it holds none of the op ids
     /// [`pending_op_state`](Self::pending_op_state) answers about. Settled ops are
-    /// excluded; they are kept as the idempotency record, not as outstanding work.
+    /// excluded; they are kept as the idempotency record, not as outstanding work. **A send
+    /// that settled `Failed` is the exception**: it is a message that has not gone, so it is
+    /// listed, payload and all ([`queued_draft`]), until the host sends it again
+    /// ([`retry_pending_op_now`](Self::retry_pending_op_now)) or withdraws it
+    /// ([`cancel_pending_op`](Self::cancel_pending_op)).
+    ///
+    /// An op whose attempt died with its process is shown as its recovery will leave it, so
+    /// nothing is listed as in flight under a worker that is gone.
     ///
     /// # Errors
     ///
@@ -265,12 +333,34 @@ impl Engine {
         Ok(self.store.list_pending_ops(account.clone()).await?)
     }
 
+    /// Recovers the outbox ops the previous process left in flight, returning how many.
+    ///
+    /// Call it at start-up beside [`abandon_sync_leases`](Self::abandon_sync_leases), before
+    /// any write or drain runs, when the previous process has ended. A send cut off before it
+    /// handed its message over is retried at once; one cut off after may already have been
+    /// delivered, so it awaits confirmation, where [`outbox`](Self::outbox) lists it, nothing
+    /// runs it again, and [`confirm_pending_op`](Self::confirm_pending_op) or its copy
+    /// appearing in a Sent mailbox resolves it. Every other write retries as a retryable
+    /// failure does.
+    ///
+    /// Without it nothing is lost: every write path recovers an attempt once its lease has
+    /// lapsed. It only saves waiting out that lease. Wrong about a worker that is still alive
+    /// (a background task of the same app), it still delivers nothing twice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn recover_interrupted_ops(&self) -> Result<usize, ApiError> {
+        Ok(self.store.recover_interrupted_ops().await?)
+    }
+
     /// Withdraws a queued op so it is never attempted, returning `None` when it was
     /// withdrawn and the reason when it could not be.
     ///
     /// Refusal is not failure: an op under a live lease may be mid-round-trip, and one
-    /// awaiting confirmation may already have been delivered. Neither can be called
-    /// back, so neither is withdrawn.
+    /// awaiting confirmation may already have been delivered. Neither can be called back,
+    /// so neither is withdrawn. A send that settled `Failed` is withdrawn here, which is how
+    /// a host dismisses it.
     ///
     /// # Errors
     ///
@@ -288,7 +378,9 @@ impl Engine {
     ///
     /// What a host wires to "Send now". The attempt count is not reset: one more attempt
     /// now is not a fresh bound. An op with no backoff to clear is already due, which is
-    /// what the caller wanted, so that is `None` too.
+    /// what the caller wanted, so that is `None` too. A send that settled `Failed` goes back
+    /// in the queue ("Send again"). A send whose process died before it handed the message
+    /// over is due at once; one that died after is refused as awaiting confirmation.
     ///
     /// # Errors
     ///
@@ -299,6 +391,30 @@ impl Engine {
         op: PendingOpId,
     ) -> Result<Option<OpRejection>, ApiError> {
         Ok(self.store.retry_pending_op_now(account.clone(), op).await?)
+    }
+
+    /// Resolves a send awaiting confirmation with what the user knows, returning `None` when
+    /// it took effect.
+    ///
+    /// The answer to the question a [`NeedsConfirmation`](PendingOpState::NeedsConfirmation)
+    /// row asks: [`Delivered`](Confirmation::Delivered) settles it, and
+    /// [`NotDelivered`](Confirmation::NotDelivered) puts it back in the queue, due at once, for
+    /// the next [`drain_outbox`](Self::drain_outbox) to send. A send whose copy syncs into a
+    /// Sent mailbox is confirmed without asking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn confirm_pending_op(
+        &self,
+        account: &AccountId,
+        op: PendingOpId,
+        confirmation: Confirmation,
+    ) -> Result<Option<OpRejection>, ApiError> {
+        Ok(self
+            .store
+            .confirm_pending_op(account.clone(), op, confirmation)
+            .await?)
     }
 }
 

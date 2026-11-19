@@ -36,7 +36,9 @@ impl Provider for BlockingSync {
     async fn sync_events(
         &self,
         account: &AccountId,
+        calendar: &CalendarId,
         cursor: Option<&SyncState>,
+        window: engine_core::time::Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
         if let Some(started) = self.started.lock().unwrap().take() {
             started.send(()).unwrap();
@@ -47,10 +49,13 @@ impl Provider for BlockingSync {
             // sync leaves open.
             let _ = release.await;
         }
-        self.inner.sync_events(account, cursor).await
+        self.inner
+            .sync_events(account, calendar, cursor, window)
+            .await
     }
 }
 
+impl engine_provider::MailboxWrites for BlockingSync {}
 impl CalendarWrites for BlockingSync {}
 
 /// A provider whose writes land but whose event fetch is broken, so the post-write
@@ -74,11 +79,14 @@ impl Provider for UnreadableEvents {
     async fn sync_events(
         &self,
         _account: &AccountId,
+        _calendar: &CalendarId,
         _cursor: Option<&SyncState>,
+        _window: engine_core::time::Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
         Err(ProviderError::retryable("the event fetch is down"))
     }
 }
+impl engine_provider::MailboxWrites for UnreadableEvents {}
 
 #[async_trait::async_trait]
 impl CalendarWrites for UnreadableEvents {

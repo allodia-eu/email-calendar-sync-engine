@@ -5,9 +5,10 @@
 //! Split out of `transport.rs` to keep each file within the size limit; the methods
 //! live in their own `impl` block on the same [`Connection`].
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
+    deadline::BOUNDS,
     error::{ImapError, ImapResult},
     parse::{self, FetchRow},
     transport::{Connection, strip_ascii_prefix},
@@ -51,8 +52,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         // The item list must be parenthesized (RFC 9051 `fetch`); an unparenthesized
         // multi-item list makes a lenient server (Stalwart) parse only the first att.
         let request = format!("{tag} UID FETCH {set} ({items})\r\n");
-        self.inner.write_all(request.as_bytes()).await?;
-        self.inner.flush().await?;
+        self.send_raw(request.as_bytes()).await?;
         self.pending_tag = Some(tag);
         Ok(())
     }
@@ -82,22 +82,56 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             }
             // The tagged completion ends the stream.
             self.pending_tag = None;
-            let text = String::from_utf8_lossy(&line);
-            let Some(rest) = text.strip_prefix(&prefix) else {
-                return Err(ImapError::protocol(format!(
-                    "unexpected line during streamed fetch: {}",
-                    text.trim()
-                )));
-            };
-            let mut parts = rest.trim_end().splitn(2, ' ');
-            let status = parts.next().unwrap_or_default();
-            let detail = parts.next().unwrap_or_default().to_owned();
-            return match status.to_ascii_uppercase().as_str() {
-                "OK" => Ok(None),
-                "NO" => Err(ImapError::no(detail)),
-                "BAD" => Err(ImapError::bad(detail)),
-                other => Err(ImapError::protocol(format!("unknown completion {other}"))),
-            };
+            return stream_completion(&line, &prefix).map(|()| None);
         }
+    }
+
+    /// Reads the next `BODY[]` of a streamed `UID FETCH <set> (BODY.PEEK[])` started by
+    /// [`Self::uid_fetch_stream_start`], as `(uid, bytes)`, or `None` at its tagged
+    /// completion. Lines carrying no body (a piggybacked flag update, `* n EXISTS`) are
+    /// skipped, and every read is bounded by
+    /// [`Deadlines::stall`](engine_provider::Deadlines::stall), as a single body's is.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::next_fetch_row`], and [`ImapError::Io`] of kind `TimedOut` when the server
+    /// goes silent.
+    pub(crate) async fn next_fetch_body(&mut self) -> ImapResult<Option<(u32, Vec<u8>)>> {
+        let Some(tag) = self.pending_tag.clone() else {
+            return Ok(None);
+        };
+        let prefix = format!("{tag} ");
+        loop {
+            let line = self.read_line_within(Some(BOUNDS.stall())).await?;
+            if let Some(body) = strip_ascii_prefix(&line, b"* ") {
+                if let Some(row) = crate::parse_body::parse_any_fetch_body(body) {
+                    return Ok(Some(row));
+                }
+                continue;
+            }
+            self.pending_tag = None;
+            return stream_completion(&line, &prefix).map(|()| None);
+        }
+    }
+}
+
+/// Reads the tagged completion that ends a streamed fetch: `OK` is the end, `NO`/`BAD` a
+/// failure of the command, anything else a line that does not belong.
+fn stream_completion(line: &[u8], prefix: &str) -> ImapResult<()> {
+    let text = String::from_utf8_lossy(line);
+    let Some(rest) = text.strip_prefix(prefix) else {
+        return Err(ImapError::protocol(format!(
+            "unexpected line during streamed fetch: {}",
+            text.trim()
+        )));
+    };
+    let mut parts = rest.trim_end().splitn(2, ' ');
+    let status = parts.next().unwrap_or_default();
+    let detail = parts.next().unwrap_or_default().to_owned();
+    match status.to_ascii_uppercase().as_str() {
+        "OK" => Ok(()),
+        "NO" => Err(ImapError::no(detail)),
+        "BAD" => Err(ImapError::bad(detail)),
+        other => Err(ImapError::protocol(format!("unknown completion {other}"))),
     }
 }

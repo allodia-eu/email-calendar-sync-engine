@@ -30,9 +30,17 @@ pub(crate) fn scope_key(scope: &SyncScope) -> String {
     serde_json::to_string(scope).expect("SyncScope serialization is infallible")
 }
 
-/// Renders an instant to its canonical `…Z` text form for storage.
+/// Renders an instant for storage, in the one form every time column holds:
+/// `YYYY-MM-DDThh:mm:ss.nnnnnnnnnZ` ([`UtcDateTime::to_sortable_string`]).
+///
+/// SQLite has no date-time type: a `TEXT` column compares byte by byte, which is time order only
+/// when every value has the same width. Exact to the nanosecond, because SQLite keeps the text as
+/// written. Its own date functions (`datetime()`, `julianday()`, `unixepoch()`) would read only
+/// the first three fraction digits, which is one reason no query here uses them. A query
+/// parameter compared with one of these columns goes through this function too, or a hand-built
+/// `…T00:00:00Z` sorts after a stored midnight.
 pub(crate) fn instant_to_text(instant: UtcDateTime) -> String {
-    instant.to_string()
+    instant.to_sortable_string()
 }
 
 /// The stored text for a mail address junction's `field` column.
@@ -132,6 +140,7 @@ pub(crate) fn kind_to_text(kind: PendingOpKind) -> &'static str {
         PendingOpKind::MailReport => "MailReport",
         PendingOpKind::MailDraftPut => "MailDraftPut",
         PendingOpKind::MailDraftDelete => "MailDraftDelete",
+        PendingOpKind::MailboxEdit => "MailboxEdit",
         PendingOpKind::CalendarCreate => "CalendarCreate",
         PendingOpKind::CalendarPatch => "CalendarPatch",
         PendingOpKind::CalendarDocument => "CalendarDocument",
@@ -159,6 +168,7 @@ pub(crate) fn parse_kind(text: Option<&str>) -> Result<Option<PendingOpKind>> {
         "MailReport" => PendingOpKind::MailReport,
         "MailDraftPut" => PendingOpKind::MailDraftPut,
         "MailDraftDelete" => PendingOpKind::MailDraftDelete,
+        "MailboxEdit" => PendingOpKind::MailboxEdit,
         "CalendarCreate" => PendingOpKind::CalendarCreate,
         "CalendarPatch" => PendingOpKind::CalendarPatch,
         "CalendarDocument" => PendingOpKind::CalendarDocument,

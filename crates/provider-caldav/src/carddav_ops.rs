@@ -8,41 +8,70 @@ use engine_core::{
     sync::SyncUpdate,
     version::{ETag, RevisionTokens},
 };
-use engine_provider::ProviderResult;
+use engine_provider::{ConnectObserver, ConnectStep, ProviderResult};
 
 use crate::{
+    ctag_sync::{CtagSync, ctag_sync},
     dav::{DavResponse, MultiStatus},
+    discovery::{authenticate_before_reading, follow, trusted_start},
     error::CalDavError,
     href::redirect_href,
+    multiget::{Multigets, same_path},
     request::{
-        ADDRESS_BOOK_CTAG_PROPFIND, ADDRESS_BOOK_LIST_PROPFIND, ADDRESS_BOOK_PRINCIPAL_PROPFIND,
-        ADDRESS_BOOK_QUERY_REPORT, address_book_sync_report,
+        ADDRESS_BOOK_LIST_PROPFIND, ADDRESS_BOOK_PRINCIPAL_PROPFIND, address_book_sync_report,
+        addressbook_multiget_as_stored,
     },
     transport::{DavExecutor, DavMethod},
     vcard,
 };
 
+/// What the CardDAV walk settled on: the address-book home, and the principal the server named
+/// on the way, which a host stores to start the next connect from (RFC 6764 §6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AddressBookHome {
+    /// The address-book home, absolute when the transport has an origin.
+    pub(crate) href: String,
+    /// The `current-user-principal`, when the server named one.
+    pub(crate) principal: Option<String>,
+}
+
 pub(crate) async fn discover_home(
     executor: &dyn DavExecutor,
     start: &str,
-) -> Result<String, CalDavError> {
-    let first = principal_props(executor, start).await?;
+    observer: &dyn ConnectObserver,
+) -> Result<AddressBookHome, CalDavError> {
+    // The same walk as CalDAV's (`discovery::discover_home`): the start is trusted like any
+    // other origin, every href resolves against the request that returned it, and each origin
+    // it leads to is trusted on the way.
+    let start = trusted_start(executor, start)?;
+    let (first, at) = principal_props(executor, &start, observer).await?;
+    let named = property(&first, "current-user-principal");
     if let Some(home) = property(&first, "addressbook-home-set") {
-        return Ok(home);
+        // As in the CalDAV walk, a principal the credential may not go to is dropped once the
+        // home is known.
+        return Ok(AddressBookHome {
+            href: follow(executor, &at, &home)?,
+            principal: named.and_then(|principal| follow(executor, &at, &principal).ok()),
+        });
     }
-    let principal = property(&first, "current-user-principal")
+    let principal = named
+        .map(|principal| follow(executor, &at, &principal))
+        .transpose()?
         .ok_or_else(|| CalDavError::protocol("CardDAV principal missing"))?;
-    property(
-        &principal_props(executor, &principal).await?,
-        "addressbook-home-set",
-    )
-    .ok_or_else(|| CalDavError::protocol("CardDAV address-book home missing"))
+    let (from_principal, at) = principal_props(executor, &principal, observer).await?;
+    let home = property(&from_principal, "addressbook-home-set")
+        .ok_or_else(|| CalDavError::protocol("CardDAV address-book home missing"))?;
+    Ok(AddressBookHome {
+        href: follow(executor, &at, &home)?,
+        principal: Some(principal),
+    })
 }
 
 async fn principal_props(
     executor: &dyn DavExecutor,
     href: &str,
-) -> Result<MultiStatus, CalDavError> {
+    observer: &dyn ConnectObserver,
+) -> Result<(MultiStatus, String), CalDavError> {
     let mut href = href.to_owned();
     for _ in 0..4 {
         let response = executor
@@ -59,21 +88,59 @@ async fn principal_props(
             // Same rule as the CalDAV walk (`href::redirect_href`): a bare path after
             // an origin change belongs to the new origin, not to the connection base.
             let next = redirect_href(&href, &location).ok_or_else(|| {
-                CalDavError::protocol(format!("unresolvable redirect to {location:?}"))
+                CalDavError::protocol(engine_provider::redirect_refused(&location))
             })?;
-            if !executor.adopt_origin(&next) {
+            observer.step(&ConnectStep::redirected(&href, &next));
+            if !executor.trust_origin(&next) {
                 return Err(CalDavError::protocol(
-                    "a discovery redirect left TLS; refusing to send the credential in the clear",
+                    "a discovery redirect left TLS or named a host the credential may not go to",
                 ));
             }
             href = next;
             continue;
         }
-        return response.into_multistatus();
+        let multistatus = response.into_multistatus()?;
+        // As in the CalDAV walk: an anonymous request let through is asked again once, with the
+        // credential (RFC 5397 §3).
+        if multistatus.names_unauthenticated() && executor.authenticate_unasked(&href) {
+            continue;
+        }
+        return Ok((multistatus, href));
     }
     Err(CalDavError::protocol(
         "too many CardDAV discovery redirects",
     ))
+}
+
+/// The RFC 6352 §6.1 compliance class a server advertises when it supports CardDAV.
+pub(crate) const ADDRESSBOOK: &str = "addressbook";
+
+/// The compliance classes the address-book home lists in the `DAV:` header of an `OPTIONS`
+/// response, sorted so two traces compare.
+///
+/// Asked of the home rather than the connection's root, because the header belongs to a DAV
+/// resource and a site root need not be one. A response without the header, whatever its
+/// status, lists nothing: a server may answer `OPTIONS` with a `405`, and failing the connect
+/// over it would turn "no address books here" into an error. A transport failure still
+/// propagates, like every other discovery step.
+///
+/// # Errors
+///
+/// Returns [`CalDavError`] on a transport failure.
+pub(crate) async fn advertised_classes(
+    executor: &dyn DavExecutor,
+    home: &str,
+) -> Result<Vec<String>, CalDavError> {
+    authenticate_before_reading(executor, home).await;
+    let response = executor.send_options(home).await?;
+    let mut classes: Vec<String> = response
+        .dav_classes()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    classes.sort();
+    classes.dedup();
+    Ok(classes)
 }
 
 fn property(status: &MultiStatus, name: &str) -> Option<String> {
@@ -141,42 +208,29 @@ pub(crate) async fn contact_report(
 
 pub(crate) async fn fallback_contact_sync(
     executor: &dyn DavExecutor,
+    multigets: &Multigets,
     collection: &str,
     book: &AddressBookId,
     writable: bool,
     cursor: Option<&engine_core::sync::SyncState>,
 ) -> Result<engine_provider::ScopeSync<ContactCard>, CalDavError> {
-    let properties = executor
-        .send(
-            DavMethod::Propfind,
-            collection,
-            "0",
-            ADDRESS_BOOK_CTAG_PROPFIND.into(),
-        )
-        .await?
-        .into_multistatus()?;
-    let ctag = property(&properties, "getctag")
-        .ok_or_else(|| CalDavError::protocol("CardDAV fallback response had no CTag"))?;
-    let next = engine_core::sync::SyncState::new(format!("ctag:{ctag}"));
-    if cursor.is_some_and(|cursor| cursor.as_str() == next.as_str()) {
-        return Ok(engine_provider::ScopeSync::new(
-            SyncUpdate::delta(Vec::new(), Vec::new()),
-            next,
-        ));
-    }
-    let report = executor
-        .send(
-            DavMethod::Report,
-            collection,
-            "1",
-            ADDRESS_BOOK_QUERY_REPORT.into(),
-        )
-        .await?
-        .into_multistatus()?;
-    Ok(engine_provider::ScopeSync::new(
-        contact_update(&report, book, writable, true),
-        next,
-    ))
+    let sync = ctag_sync(
+        executor,
+        multigets,
+        collection,
+        cursor,
+        "address-data",
+        addressbook_multiget_as_stored,
+    )
+    .await?;
+    Ok(match sync {
+        CtagSync::Unchanged(next) => {
+            engine_provider::ScopeSync::new(SyncUpdate::delta(Vec::new(), Vec::new()), next)
+        }
+        CtagSync::Changed { members, next } => {
+            engine_provider::ScopeSync::new(contact_update(&members, book, writable, true), next)
+        }
+    })
 }
 
 pub(crate) fn contact_update(
@@ -196,6 +250,10 @@ pub(crate) fn contact_update(
                     .iter()
                     .filter_map(|href| ProviderKey::new(href).ok()),
             );
+            continue;
+        }
+        // The address book's own entry is not a card.
+        if same_path(response.href(), book.as_str()) {
             continue;
         }
         // The `present` set is derived from what the server *listed*, not from what
@@ -232,18 +290,6 @@ pub(crate) fn normalize_response(
         card.revisions = RevisionTokens::from_etag(ETag::new(etag));
     }
     Some(card)
-}
-
-pub(crate) fn multiget_report(href: &str) -> String {
-    format!(
-        concat!(
-            r#"<?xml version="1.0" encoding="utf-8"?>"#,
-            r#"<a:addressbook-multiget xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
-            r#"<d:prop><d:getetag/><a:address-data/></d:prop><d:href>{}</d:href>"#,
-            r#"</a:addressbook-multiget>"#
-        ),
-        xml_escape(href)
-    )
 }
 
 pub(crate) fn bind_collection(home: &str, value: &str) -> Result<AddressBookId, CalDavError> {
@@ -339,13 +385,4 @@ pub(crate) fn require_writable(writable: bool) -> ProviderResult<()> {
 
 pub(crate) fn contact_id(value: &str) -> Result<ContactId, CalDavError> {
     ContactId::try_from(value).map_err(|error| CalDavError::protocol(error.to_string()))
-}
-
-fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
 }

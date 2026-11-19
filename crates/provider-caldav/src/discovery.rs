@@ -9,23 +9,50 @@
 //! Either `PROPFIND` follows redirects itself (the transport does not auto-follow,
 //! mirroring the JMAP session flow). Discovery then lists the home's collections at
 //! `Depth: 1`, keeping those whose `resourcetype` marks them a calendar.
+//!
+//! Every href a step reads is resolved against the URL of the request that returned it
+//! (RFC 4918 §8.3), so the principal and the home each keep the host that named them, and
+//! each origin discovery is led to is trusted to receive the credential once it asks
+//! ([`follow`]). `README.md` beside this crate draws the whole walk.
+//!
+//! The same `PROPFIND` asks for the principal's `calendar-user-address-set` (RFC 6638
+//! §2.4.1), the addresses the server schedules as for this user. Only the principal carries
+//! it, so the short-circuit leaves it unread and [`principal_addresses`] asks for it when a
+//! host does.
 
-use engine_core::calendar::Calendar;
-use engine_provider::{ConnectObserver, ConnectStep};
+use engine_core::{calendar::Calendar, version::CollectionTag};
+use engine_provider::{CalendarUserAddresses, ConnectObserver, ConnectStep, IgnoreConnectSteps};
 
 use crate::{
-    calendar::calendar_from_response,
+    calendar::{calendar_from_response, collection_tag},
     dav::MultiStatus,
     error::CalDavError,
-    href::redirect_href,
-    request::{CALENDAR_LIST_PROPFIND, PRINCIPAL_PROPFIND},
+    href::{redirect_href, resolve_reference},
+    request::{CALENDAR_LIST_PROPFIND, CURRENT_USER_PRINCIPAL_PROPFIND, PRINCIPAL_PROPFIND},
     transport::{DavExecutor, DavMethod},
 };
 
 /// How many redirects discovery follows before giving up.
 const MAX_REDIRECTS: usize = 4;
 
-/// Resolves the calendar-home href, starting at `start_href`.
+/// What discovery settled on: the calendar home, and what it learned about the user on the
+/// way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CalendarHome {
+    /// The calendar-home href, absolute when the transport has an origin.
+    pub(crate) href: String,
+    /// The `current-user-principal`, when the server named one.
+    pub(crate) principal: Option<String>,
+    /// The principal's address set, when discovery read the principal itself; `None` when
+    /// the home was found without asking it.
+    pub(crate) addresses: Option<CalendarUserAddresses>,
+    /// The principal the **credential** signs in as. The same as `principal` for the user's
+    /// own home; for a shared one ([`discover_shared_home`]) it is still the user's, which is
+    /// what shared-store discovery starts from whichever store is bound.
+    pub(crate) user: Option<String>,
+}
+
+/// Resolves the calendar home, starting at `start_href`.
 ///
 /// `PROPFIND`s the start URL; if it returns the `calendar-home-set` directly
 /// (lenient servers), uses it, otherwise follows the RFC 6764 §6 second step and
@@ -44,30 +71,149 @@ pub(crate) async fn discover_home(
     exec: &dyn DavExecutor,
     start_href: &str,
     observer: &dyn ConnectObserver,
-) -> Result<String, CalDavError> {
-    let bootstrap = propfind_principal(exec, start_href, observer).await?;
-    if let Some(home) = home_set(&bootstrap) {
-        return Ok(home);
+) -> Result<CalendarHome, CalDavError> {
+    let start = trusted_start(exec, start_href)?;
+    let (bootstrap, at) = propfind_principal(exec, &start, observer).await?;
+    let named = current_user_principal(&bootstrap);
+    if let Some(href) = home_set(&bootstrap) {
+        // The home is already known, so the principal is only kept for asking it the address
+        // set later; one the credential may not go to is dropped rather than failing the walk.
+        let principal = named.and_then(|principal| follow(exec, &at, &principal).ok());
+        // A resource that is not the principal answers the address set `404` (Stalwart's
+        // does), which says nothing about the user; only a reported set is kept.
+        return Ok(CalendarHome {
+            href: follow(exec, &at, &href)?,
+            user: principal.clone(),
+            principal,
+            addresses: address_set(&bootstrap),
+        });
     }
     // RFC 6764 §6: the calendar-home-set is a property of the principal resource,
     // so resolve the principal first, then ask it for the home-set.
-    let principal = current_user_principal(&bootstrap).ok_or_else(|| {
+    let principal = named
+        .map(|principal| follow(exec, &at, &principal))
+        .transpose()?;
+    let principal = principal.ok_or_else(|| {
         CalDavError::protocol(
             "PROPFIND returned neither calendar-home-set nor current-user-principal",
         )
     })?;
-    let from_principal = propfind_principal(exec, &principal, observer).await?;
-    home_set(&from_principal)
-        .ok_or_else(|| CalDavError::protocol("principal PROPFIND returned no calendar-home-set"))
+    let (from_principal, at) = propfind_principal(exec, &principal, observer).await?;
+    let href = home_set(&from_principal)
+        .ok_or_else(|| CalDavError::protocol("principal PROPFIND returned no calendar-home-set"))?;
+    Ok(CalendarHome {
+        href: follow(exec, &at, &href)?,
+        user: Some(principal.clone()),
+        principal: Some(principal),
+        addresses: Some(address_set(&from_principal).unwrap_or(CalendarUserAddresses::NotEnabled)),
+    })
+}
+
+/// Resolves the calendar home of **another** principal the credential may read: a shared
+/// store, bound by the principal URL `crate::shared` handed out.
+///
+/// The principal is asked directly. Its `calendar-home-set` is the store's home and its
+/// `calendar-user-address-set` the store's calendar user — its owner's addresses, never the
+/// credential's, which is the bound-store rule (`engine_provider::calendar_user`). The
+/// `current-user-principal` the same answer carries is the credential's own, kept so the
+/// bound provider can still list the stores the credential reaches.
+///
+/// # Errors
+///
+/// Returns [`CalDavError`] on a transport/HTTP failure, a principal on an origin the
+/// credential may not go to, or one that names no calendar home — a share since withdrawn
+/// fails the connect, not every call after it.
+pub(crate) async fn discover_shared_home(
+    exec: &dyn DavExecutor,
+    principal: &str,
+    observer: &dyn ConnectObserver,
+) -> Result<CalendarHome, CalDavError> {
+    let start = trusted_start(exec, principal)?;
+    let (answer, at) = propfind_principal(exec, &start, observer).await?;
+    let href = home_set(&answer).ok_or_else(|| {
+        CalDavError::protocol(
+            "the shared principal names no calendar-home-set; the credential may have lost access",
+        )
+    })?;
+    Ok(CalendarHome {
+        href: follow(exec, &at, &href)?,
+        user: current_user_principal(&answer).and_then(|user| follow(exec, &at, &user).ok()),
+        principal: Some(at),
+        addresses: Some(address_set(&answer).unwrap_or(CalendarUserAddresses::NotEnabled)),
+    })
+}
+
+/// `start_href` as an absolute URL, its origin trusted to receive the credential once it asks.
+///
+/// The start is the host's configuration (its well-known URL, or a principal it stored), so it
+/// is trusted under the same checks as any other origin.
+///
+/// # Errors
+///
+/// Returns [`CalDavError`] when the start names an origin the credential may not go to.
+pub(crate) fn trusted_start(
+    exec: &dyn DavExecutor,
+    start_href: &str,
+) -> Result<String, CalDavError> {
+    let start = exec.absolute(start_href);
+    if exec.trust_origin(&start) {
+        Ok(start)
+    } else {
+        Err(CalDavError::protocol(format!(
+            "the configured start {start:?} is a host the credential may not go to"
+        )))
+    }
+}
+
+/// Resolves `href`, which the response to a request at `at` named (a principal or a home),
+/// and trusts its origin to receive the credential once it asks.
+///
+/// The account's own server named it, so it is where the account's data is, whichever host
+/// that turns out to be: iCloud answers the principal on `caldav.icloud.com` and names the home
+/// on `pNN-caldav.icloud.com`. The trust is the same one a redirect earns
+/// ([`DavExecutor::trust_origin`]).
+///
+/// # Errors
+///
+/// Returns [`CalDavError`] when `href` cannot be resolved, or names an origin the credential
+/// may not go to (a plaintext one after TLS, or a host the credential policy refuses): going
+/// on without it would read the refusal of an unauthenticated request as the server's answer
+/// about the account.
+pub(crate) fn follow(exec: &dyn DavExecutor, at: &str, href: &str) -> Result<String, CalDavError> {
+    let href = resolve_reference(at, href)?;
+    if exec.trust_origin(&href) {
+        Ok(href)
+    } else {
+        Err(CalDavError::protocol(format!(
+            "the server named {href:?}, a host the credential may not go to"
+        )))
+    }
+}
+
+/// Asks `principal` for the addresses the server schedules as for this user.
+///
+/// The principal is the resource RFC 6638 §2.4.1 puts the property on, so a principal that
+/// does not report it is [`CalendarUserAddresses::NotEnabled`] rather than unknown.
+///
+/// # Errors
+///
+/// Returns [`CalDavError`] on a transport/HTTP failure or a redirect loop.
+pub(crate) async fn principal_addresses(
+    exec: &dyn DavExecutor,
+    principal: &str,
+) -> Result<CalendarUserAddresses, CalDavError> {
+    let (response, _) = propfind_principal(exec, principal, &IgnoreConnectSteps).await?;
+    Ok(address_set(&response).unwrap_or(CalendarUserAddresses::NotEnabled))
 }
 
 /// `PROPFIND`s `href` for the principal/home properties, following up to
-/// [`MAX_REDIRECTS`] redirects and reporting each to `observer`.
+/// [`MAX_REDIRECTS`] redirects and reporting each to `observer`. Returns the answer with the
+/// href it came from, which the hrefs in it resolve against.
 async fn propfind_principal(
     exec: &dyn DavExecutor,
     href: &str,
     observer: &dyn ConnectObserver,
-) -> Result<MultiStatus, CalDavError> {
+) -> Result<(MultiStatus, String), CalDavError> {
     let mut href = href.to_owned();
     for _ in 0..MAX_REDIRECTS {
         let response = exec
@@ -84,23 +230,29 @@ async fn propfind_principal(
             // exactly as before.
             if let Some(location) = &response.location {
                 let next = redirect_href(&href, location).ok_or_else(|| {
-                    CalDavError::protocol(format!("unresolvable redirect to {location:?}"))
+                    CalDavError::protocol(engine_provider::redirect_refused(location))
                 })?;
                 observer.step(&ConnectStep::redirected(&href, &next));
-                // The account's own server moved the chain, so the connection follows it:
-                // credentials travel to the new origin and later relative hrefs resolve
-                // there. A no-op until a hop names an origin (`DavExecutor::adopt_origin`),
-                // and refused outright when that origin would leave TLS.
-                if !exec.adopt_origin(&next) {
+                // The account's own server moved the chain, so its target may receive the
+                // credential once it asks (`DavExecutor::trust_origin`), and is refused
+                // outright when it would leave TLS or the credential policy refuses it.
+                if !exec.trust_origin(&next) {
                     return Err(CalDavError::protocol(
-                        "a discovery redirect left TLS; refusing to send the credential in the clear",
+                        "a discovery redirect left TLS or named a host the credential may not go to",
                     ));
                 }
                 href = next;
             }
             continue;
         }
-        return response.into_multistatus();
+        let multistatus = response.into_multistatus()?;
+        // A server that lets an anonymous request through answers it naming the requester
+        // `<DAV:unauthenticated/>` (RFC 5397 §3) rather than challenging: asked again once, with
+        // the credential, when the origin may receive it.
+        if multistatus.names_unauthenticated() && exec.authenticate_unasked(&href) {
+            continue;
+        }
+        return Ok((multistatus, href));
     }
     Err(CalDavError::protocol(
         "too many redirects resolving the calendar home",
@@ -135,13 +287,47 @@ pub(crate) async fn discover_scheduling(
     exec: &dyn DavExecutor,
     home_href: &str,
 ) -> Result<bool, CalDavError> {
+    authenticate_before_reading(exec, home_href).await;
     Ok(exec
         .send_options(home_href)
         .await?
         .advertises(AUTO_SCHEDULE))
 }
 
-/// Lists the calendar collections under `home_href`.
+/// Makes sure `href`'s origin has been sent the credential before something is read there whose
+/// answer depends on who asks, such as the DAV classes an `OPTIONS` reports: a server that lets
+/// an anonymous `OPTIONS` through may answer it with less than the account has. A `PROPFIND`
+/// for the requester draws the challenge, or names the requester unauthenticated (RFC 5397 §3),
+/// and either way the credential follows. A failure here is left to the read that follows,
+/// which meets the same server.
+pub(crate) async fn authenticate_before_reading(exec: &dyn DavExecutor, href: &str) {
+    if exec.sends_credential_to(href) {
+        return;
+    }
+    let Ok(response) = exec
+        .send(
+            DavMethod::Propfind,
+            href,
+            "0",
+            CURRENT_USER_PRINCIPAL_PROPFIND.to_owned(),
+        )
+        .await
+    else {
+        return;
+    };
+    if let Ok(multistatus) = response.into_multistatus()
+        && multistatus.names_unauthenticated()
+    {
+        exec.authenticate_unasked(href);
+    }
+}
+
+/// One calendar collection a home listed: the calendar, the tag the listing showed, and the
+/// href of its `DAV:owner`, resolved against the home.
+pub(crate) type ListedCalendar = (Calendar, Option<CollectionTag>, Option<String>);
+
+/// Lists the calendar collections under `home_href`, each with the tag the listing showed
+/// and its owner principal.
 ///
 /// # Errors
 ///
@@ -149,7 +335,7 @@ pub(crate) async fn discover_scheduling(
 pub(crate) async fn list_calendars(
     exec: &dyn DavExecutor,
     home_href: &str,
-) -> Result<Vec<Calendar>, CalDavError> {
+) -> Result<Vec<ListedCalendar>, CalDavError> {
     let listing = exec
         .send(
             DavMethod::Propfind,
@@ -162,8 +348,18 @@ pub(crate) async fn list_calendars(
     listing
         .responses
         .iter()
-        .filter(|response| response.props.is_calendar())
-        .map(calendar_from_response)
+        // A collection that cannot hold events (a task list) is not a calendar here.
+        .filter(|response| response.props.is_calendar() && response.props.holds_events())
+        .map(|response| {
+            Ok((
+                calendar_from_response(response)?,
+                collection_tag(&response.props),
+                response
+                    .props
+                    .get("owner")
+                    .and_then(|owner| resolve_reference(home_href, owner).ok()),
+            ))
+        })
         .collect()
 }
 
@@ -173,6 +369,17 @@ fn home_set(multistatus: &MultiStatus) -> Option<String> {
         .responses
         .iter()
         .find_map(|response| response.props.get("calendar-home-set").map(str::to_owned))
+}
+
+/// Reads the first reported `calendar-user-address-set` from a discovery response, keeping
+/// its `mailto:` entries.
+fn address_set(multistatus: &MultiStatus) -> Option<CalendarUserAddresses> {
+    multistatus.responses.iter().find_map(|response| {
+        let hrefs = response.props.hrefs("calendar-user-address-set")?;
+        Some(CalendarUserAddresses::from_uris(
+            hrefs.iter().map(String::as_str),
+        ))
+    })
 }
 
 /// Reads the first `current-user-principal` href from a discovery response.
@@ -186,307 +393,13 @@ fn current_user_principal(multistatus: &MultiStatus) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Mutex;
+#[path = "discovery_tests.rs"]
+mod tests;
 
-    use engine_provider::IgnoreConnectSteps;
+#[cfg(test)]
+#[path = "home_origin_tests.rs"]
+mod home_origin_tests;
 
-    use super::*;
-    use crate::{
-        test_support::{Replay, ok, options},
-        transport::HttpResponse,
-    };
-
-    /// The `DAV:` header Stalwart really returns for an `OPTIONS` on the calendar home.
-    const STALWART_DAV: &str = include_str!("../tests/fixtures/options-dav-stalwart.txt");
-    /// The same header from SabreDAV, which serves calendar access only.
-    const SABREDAV_DAV: &str = include_str!("../tests/fixtures/options-dav-sabredav.txt");
-
-    /// A `307` to `location`.
-    fn redirect_to(location: &str) -> HttpResponse {
-        HttpResponse {
-            status: 307,
-            body: String::new(),
-            location: Some(location.to_owned()),
-            etag: None,
-            dav: None,
-            retry_after: None,
-        }
-    }
-
-    /// Records the hops an observer sees, as `from -> to` pairs.
-    #[derive(Default)]
-    struct Hops(Mutex<Vec<String>>);
-
-    impl ConnectObserver for Hops {
-        fn step(&self, step: &ConnectStep<'_>) {
-            if let ConnectStep::Redirected { from, to, .. } = step {
-                self.0.lock().unwrap().push(format!("{from} -> {to}"));
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn every_hop_of_a_redirect_chain_is_reported_in_order() {
-        // Two hops before the principal answers, so the steps are a *sequence*.
-        let exec = Replay::new(vec![
-            redirect_to("/dav"),
-            redirect_to("/dav/cal"),
-            ok(include_str!("../tests/fixtures/principal.xml")),
-        ]);
-        let hops = Hops::default();
-        discover_home(&exec, "/.well-known/caldav", &hops)
-            .await
-            .unwrap();
-        assert_eq!(
-            *hops.0.lock().unwrap(),
-            ["/.well-known/caldav -> /dav", "/dav -> /dav/cal"]
-        );
-    }
-
-    #[tokio::test]
-    async fn a_relative_redirect_after_an_origin_change_stays_on_the_new_origin() {
-        // RFC 6764 discovery starts on the account's domain and a hosted provider may
-        // send it to the host actually serving DAV. The hop after that answers with a
-        // bare path, which belongs to the *new* origin: left as a path it would be
-        // resolved onto the connection base, which is a different server.
-        let exec = Replay::new(vec![
-            redirect_to("https://dav.example.net/principals/u/"),
-            redirect_to("/dav/calendars/u/"),
-            ok(include_str!("../tests/fixtures/principal.xml")),
-        ]);
-        discover_home(&exec, "/.well-known/caldav", &IgnoreConnectSteps)
-            .await
-            .unwrap();
-        let seen = exec.seen();
-        assert_eq!(seen[0].1, "/.well-known/caldav");
-        assert_eq!(seen[1].1, "https://dav.example.net/principals/u/");
-        assert_eq!(seen[2].1, "https://dav.example.net/dav/calendars/u/");
-    }
-
-    /// A `Replay` whose connection refuses to move — what the live client answers when
-    /// the hop names a plaintext origin (`DavExecutor::adopt_origin`).
-    struct RefusesToMove(Replay);
-
-    #[async_trait::async_trait]
-    impl DavExecutor for RefusesToMove {
-        async fn send(
-            &self,
-            method: DavMethod,
-            href: &str,
-            depth: &str,
-            body: String,
-        ) -> Result<HttpResponse, CalDavError> {
-            self.0.send(method, href, depth, body).await
-        }
-
-        async fn send_write(
-            &self,
-            request: crate::transport::WriteRequest,
-        ) -> Result<HttpResponse, CalDavError> {
-            self.0.send_write(request).await
-        }
-
-        fn adopt_origin(&self, _url: &str) -> bool {
-            false
-        }
-    }
-
-    #[tokio::test]
-    async fn a_refused_origin_change_fails_the_walk_rather_than_following_it() {
-        // Discovery starts at a bare well-known path, which names no scheme, so only the
-        // connection can tell that the hop gives up TLS. A refusal must stop the walk:
-        // every request it would go on to make carries the account's credentials.
-        let exec = RefusesToMove(Replay::new(vec![
-            redirect_to("http://dav.example.net/principals/u/"),
-            ok(include_str!("../tests/fixtures/principal.xml")),
-        ]));
-        let err = discover_home(&exec, "/.well-known/caldav", &IgnoreConnectSteps)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("left TLS"), "unexpected: {err}");
-        // And nothing was sent to the plaintext host.
-        assert_eq!(exec.0.seen().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn a_redirect_target_carrying_credentials_is_scrubbed() {
-        // A `Location` is server-controlled and may carry userinfo; these steps are
-        // built to be logged (`north-star.md`).
-        let exec = Replay::new(vec![
-            redirect_to("https://alice:hunter2@dav.example.com/cal"),
-            ok(include_str!("../tests/fixtures/principal.xml")),
-        ]);
-        let hops = Hops::default();
-        discover_home(&exec, "/.well-known/caldav", &hops)
-            .await
-            .unwrap();
-        assert_eq!(
-            *hops.0.lock().unwrap(),
-            ["/.well-known/caldav -> https://dav.example.com/cal"]
-        );
-    }
-
-    #[tokio::test]
-    async fn the_principal_second_step_is_not_a_redirect() {
-        // The RFC 6764 §6 two-step flow is two PROPFINDs of *different* resources, not
-        // one resource moving — so it emits no hop.
-        let root = ok(
-            "<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:response><D:href>/</D:href><D:propstat><D:prop><D:current-user-principal><D:href>/principals/users/dennis/</D:href></D:current-user-principal></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>",
-        );
-        let principal = ok(
-            "<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:response><D:href>/principals/users/dennis/</D:href><D:propstat><D:prop><C:calendar-home-set><D:href>/calendars/dennis/</D:href></C:calendar-home-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>",
-        );
-        let hops = Hops::default();
-        let exec = Replay::new(vec![root, principal]);
-        discover_home(&exec, "/.well-known/caldav", &hops)
-            .await
-            .unwrap();
-        assert!(hops.0.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn follows_a_redirect_then_reads_the_home() {
-        let redirect = HttpResponse {
-            status: 307,
-            body: String::new(),
-            location: Some("/dav/cal".to_owned()),
-            etag: None,
-            dav: None,
-            retry_after: None,
-        };
-        let exec = Replay::new(vec![
-            redirect,
-            ok(include_str!("../tests/fixtures/principal.xml")),
-        ]);
-        let home = discover_home(&exec, "/.well-known/caldav", &IgnoreConnectSteps)
-            .await
-            .unwrap();
-        assert_eq!(home, "/dav/cal/alice%40test.local/");
-        // Two requests: the well-known, then the redirect target.
-        let seen = exec.seen();
-        assert_eq!(seen[0].1, "/.well-known/caldav");
-        assert_eq!(seen[1].1, "/dav/cal");
-    }
-
-    #[tokio::test]
-    async fn discovers_the_home_in_two_steps_via_the_principal() {
-        // The RFC-correct shape (e.g. Soverin): the start URL returns only the
-        // current-user-principal (the home-set comes back 404 there), so discovery
-        // must PROPFIND the principal for the calendar-home-set.
-        let root = ok(
-            "<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:response><D:href>/</D:href><D:propstat><D:prop><D:current-user-principal><D:href>/principals/users/dennis/</D:href></D:current-user-principal></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat><D:propstat><D:prop><C:calendar-home-set/></D:prop><D:status>HTTP/1.1 404 Not Found</D:status></D:propstat></D:response></D:multistatus>",
-        );
-        let principal = ok(
-            "<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:response><D:href>/principals/users/dennis/</D:href><D:propstat><D:prop><C:calendar-home-set><D:href>/calendars/dennis/</D:href></C:calendar-home-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>",
-        );
-        let exec = Replay::new(vec![root, principal]);
-
-        let home = discover_home(&exec, "/.well-known/caldav", &IgnoreConnectSteps)
-            .await
-            .unwrap();
-        assert_eq!(home, "/calendars/dennis/");
-        let seen = exec.seen();
-        assert_eq!(seen[0].1, "/.well-known/caldav"); // step 1: the well-known
-        assert_eq!(seen[1].1, "/principals/users/dennis/"); // step 2: the principal
-    }
-
-    #[tokio::test]
-    async fn lists_only_calendar_collections() {
-        let exec = Replay::new(vec![ok(include_str!(
-            "../tests/fixtures/calendar-home.xml"
-        ))]);
-        let calendars = list_calendars(&exec, "/dav/cal/alice%40test.local/")
-            .await
-            .unwrap();
-        // The home itself is a plain collection and is filtered out.
-        assert_eq!(calendars.len(), 1);
-        assert_eq!(
-            calendars[0].id.as_str(),
-            "/dav/cal/alice%40test.local/default/"
-        );
-    }
-
-    #[tokio::test]
-    async fn scheduling_is_read_off_the_servers_own_options_header() {
-        // The two harness servers, verbatim. Stalwart advertises RFC 6638 §2's
-        // `calendar-auto-schedule`; SabreDAV — calendar access only — does not, and both
-        // list `calendar-access`, so nothing but the scheduling token separates them.
-        let stalwart = Replay::new(vec![options(Some(STALWART_DAV))]);
-        assert!(
-            discover_scheduling(&stalwart, "/dav/cal/alice%40test.local/")
-                .await
-                .unwrap()
-        );
-        assert_eq!(stalwart.seen()[0].0, DavMethod::Options);
-
-        let sabredav = Replay::new(vec![options(Some(SABREDAV_DAV))]);
-        assert!(
-            !discover_scheduling(&sabredav, "/calendars/alice@test.local/")
-                .await
-                .unwrap(),
-            "a plain CalDAV server must not be reported as scheduling: an RSVP there \
-             rewrites PARTSTAT and tells the organizer nothing"
-        );
-    }
-
-    #[tokio::test]
-    async fn scheduling_is_asked_of_the_calendar_home_not_the_connection_root() {
-        // The `DAV:` header belongs to a DAV resource, and a server's site root need not
-        // be one — Stalwart's answers `302` to its web UI with no header at all. So the
-        // target is the home discovery just resolved.
-        let exec = Replay::new(vec![options(Some(STALWART_DAV))]);
-        discover_scheduling(&exec, "/dav/cal/alice%40test.local/")
-            .await
-            .unwrap();
-        assert_eq!(exec.seen()[0].1, "/dav/cal/alice%40test.local/");
-    }
-
-    #[tokio::test]
-    async fn a_server_that_reports_no_scheduling_class_is_not_scheduling() {
-        // Three ways to say "no", none of which may fail the connect: no `DAV` header at
-        // all, a header listing only access classes, and a server that refuses `OPTIONS`
-        // outright. An account whose calendars read and write perfectly well must not be
-        // unusable because its server declined one discovery question.
-        for response in [
-            options(None),
-            options(Some("1, 3, calendar-access")),
-            HttpResponse {
-                status: 405,
-                body: String::new(),
-                location: None,
-                etag: None,
-                dav: None,
-                retry_after: None,
-            },
-        ] {
-            let exec = Replay::new(vec![response]);
-            assert!(!discover_scheduling(&exec, "/dav/cal/").await.unwrap());
-        }
-    }
-
-    #[tokio::test]
-    async fn a_compliance_class_is_matched_whole_and_case_insensitively() {
-        // Servers choose their own case and spacing, so the match is on the trimmed token
-        // — but it is a *whole* token: a vendor class that merely contains the RFC 6638
-        // spelling is a different feature, and reading it as scheduling would promise a
-        // host that iTIP leaves the server when it does not.
-        let cased = Replay::new(vec![options(Some("1, 3, CALENDAR-AUTO-SCHEDULE"))]);
-        assert!(discover_scheduling(&cased, "/dav/cal/").await.unwrap());
-
-        let lookalike = Replay::new(vec![options(Some("1, 3, x-calendar-auto-schedule"))]);
-        assert!(!discover_scheduling(&lookalike, "/dav/cal/").await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn a_response_without_a_home_set_is_an_error() {
-        let exec = Replay::new(vec![ok(
-            "<D:multistatus xmlns:D=\"DAV:\"><D:response><D:href>/x</D:href><D:propstat><D:prop/><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>",
-        )]);
-        assert!(
-            discover_home(&exec, "/x", &IgnoreConnectSteps)
-                .await
-                .is_err()
-        );
-    }
-}
+#[cfg(test)]
+#[path = "challenge_tests.rs"]
+mod challenge_tests;

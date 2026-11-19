@@ -257,6 +257,6 @@ fn imip_trust_covers_every_verdict() {
             expected: "attendee",
         },
     ] {
-        assert!(!reason.to_string().is_empty());
+        assert_ne!(reason.to_string(), "");
     }
 }

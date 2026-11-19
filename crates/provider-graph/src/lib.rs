@@ -33,13 +33,18 @@
 //! Tier-1 metadata only: like the other adapters, the raw MIME/body is fetched on
 //! demand later, not materialized here.
 
+mod affiliation;
+mod cal_conference;
+mod cal_conference_write;
 mod cal_fetch;
+mod cal_invite;
 mod cal_normalize;
 mod cal_override;
 mod cal_recur;
 mod cal_recur_render;
 mod cal_write;
 mod calendar;
+mod categories;
 mod contact;
 mod contact_normalize;
 mod contact_photo;
@@ -52,13 +57,16 @@ mod fetch;
 mod http_transport;
 mod identity;
 mod json;
+mod mailbox_write;
 mod mutate;
 mod normalize;
 mod normalize_state;
 mod principal;
 mod provider;
 mod report;
+mod shared;
 mod submit;
+mod teams_meetings;
 mod transport;
 
 #[cfg(test)]
@@ -67,11 +75,13 @@ mod contact_fixture_tests;
 mod contact_tests;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod write_outcome_tests;
 
-pub use cal_fetch::CalendarWindow;
 pub use calendar::GraphCalendarProvider;
 pub use contact::{GraphContactProvider, GraphContactSource};
 pub use error::GraphError;
-pub use principal::MailboxPrincipal;
+pub use principal::{MailboxAddress, MailboxPrincipal};
 pub use provider::GraphProvider;
+pub use teams_meetings::TeamsMeetings;
 pub use transport::GraphClient;

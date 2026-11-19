@@ -18,7 +18,7 @@ use engine_core::{
         PropertyId, Title,
     },
     membership::Memberships,
-    sync::{SyncState, SyncUpdate},
+    sync::{SyncScope, SyncState, SyncUpdate},
     version::{ChangeKey, ETag, RevisionTokens},
 };
 use engine_provider::{
@@ -37,6 +37,8 @@ struct FakeContacts {
     /// Answers every photo fetch with "this card has no image", the normal case for
     /// a correspondent outside the user's address books.
     no_photo: bool,
+    /// Fails every write with what this makes.
+    fail_writes: Option<fn() -> ProviderError>,
 }
 
 impl FakeContacts {
@@ -70,6 +72,7 @@ impl Provider for FakeContacts {
     }
 }
 
+impl engine_provider::MailboxWrites for FakeContacts {}
 impl CalendarWrites for FakeContacts {}
 
 #[async_trait]
@@ -191,6 +194,9 @@ impl ContactsProvider for FakeContacts {
         _draft: &ContactDraft,
     ) -> ProviderResult<ContactWriteReceipt> {
         self.creates.fetch_add(1, Ordering::SeqCst);
+        if let Some(fail) = self.fail_writes {
+            return Err(fail());
+        }
         Ok(ContactWriteReceipt::new(ContactId::try_from("c2").unwrap()))
     }
 
@@ -201,6 +207,9 @@ impl ContactsProvider for FakeContacts {
         _patch: &ContactPatch,
     ) -> ProviderResult<ContactWriteReceipt> {
         self.patches.fetch_add(1, Ordering::SeqCst);
+        if let Some(fail) = self.fail_writes {
+            return Err(fail());
+        }
         Ok(ContactWriteReceipt::new(base.id.clone()))
     }
 
@@ -210,6 +219,9 @@ impl ContactsProvider for FakeContacts {
         _base: &ContactCard,
     ) -> ProviderResult<()> {
         self.deletes.fetch_add(1, Ordering::SeqCst);
+        if let Some(fail) = self.fail_writes {
+            return Err(fail());
+        }
         Ok(())
     }
 
@@ -428,7 +440,7 @@ async fn people_paging_filters_cursor_validation_and_recipient_history_are_expos
 
     let suggestions = engine.recipient_suggestions("bob", 500).await.unwrap();
     assert_eq!(suggestions.suggestions[0].display_name, "Bob Builder");
-    assert!(suggestions.coverage.is_empty());
+    assert_eq!(suggestions.coverage, []);
     assert!(engine.forget_recipient("not-an-email").await.is_err());
     assert_eq!(
         engine.forget_recipient("bob@example.test").await.unwrap(),
@@ -441,8 +453,14 @@ async fn people_paging_filters_cursor_validation_and_recipient_history_are_expos
 #[path = "contact_cases/edges.rs"]
 mod edges;
 
+#[path = "contact_cases/forget.rs"]
+mod forget;
+
 #[path = "contact_cases/photos.rs"]
 mod photos;
 
 #[path = "contact_cases/reads.rs"]
 mod reads;
+
+#[path = "contact_cases/unconfirmed.rs"]
+mod unconfirmed;

@@ -3,16 +3,13 @@ use engine_core::{
     ids::{AddressBookId, ContactId},
     membership::Memberships,
 };
-use engine_provider::{ContactsProvider, Provider};
+use engine_provider::{ContactsProvider, IgnoreConnectSteps, Provider};
 use engine_tls::TlsClientConfig;
 
 use crate::{
     CardDavConfig, CardDavProvider, Credentials,
-    carddav_ops::{
-        bind_collection, decode_data_uri, discover_home, encode_segment, multiget_report,
-        stable_suffix,
-    },
-    test_support::{Replay, ok},
+    carddav_ops::{bind_collection, decode_data_uri, discover_home, encode_segment, stable_suffix},
+    test_support::{Replay, ok, options},
     transport::HttpResponse,
 };
 
@@ -25,9 +22,13 @@ fn credentials() -> Credentials {
 
 #[tokio::test]
 async fn public_config_builders_and_invalid_connect_are_explicit() {
-    let config = CardDavConfig::new("not a url", credentials())
-        .with_address_book("team")
-        .with_tls(TlsClientConfig::default());
+    let config = CardDavConfig::new(
+        "not a url",
+        credentials(),
+        engine_http::test_server::user_agent(),
+    )
+    .with_address_book("team")
+    .with_tls(TlsClientConfig::default());
     assert_eq!(config.base_url, "not a url");
     assert_eq!(config.discovery_path, "/.well-known/carddav");
     assert_eq!(config.address_book, "team");
@@ -49,7 +50,7 @@ fn collection_uri_and_stable_resource_helpers_cover_edge_input() {
         "/dav/books/alice/team/"
     );
     assert_eq!(encode_segment("Ada + Zoë"), "Ada%20%2B%20Zo%C3%AB");
-    let report = multiget_report("/book/a&b.vcf");
+    let report = crate::request::addressbook_multiget_report(&["/book/a&b.vcf".to_owned()]);
     assert!(report.contains("/book/a&amp;b.vcf"));
 
     let book = AddressBookId::try_from("/book/").unwrap();
@@ -76,23 +77,32 @@ fn collection_uri_and_stable_resource_helpers_cover_edge_input() {
 async fn discovery_accepts_direct_home_and_fails_closed_on_missing_or_redirected_data() {
     let direct = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:response><D:href>/</D:href><D:propstat><D:prop><C:addressbook-home-set><D:href>/books/</D:href></C:addressbook-home-set></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
     assert_eq!(
-        discover_home(&Replay::new(vec![ok(direct)]), "/start")
-            .await
-            .unwrap(),
+        discover_home(
+            &Replay::new(vec![ok(direct)]),
+            "/start",
+            &IgnoreConnectSteps
+        )
+        .await
+        .unwrap()
+        .href,
         "/books/"
     );
 
     let empty = r#"<D:multistatus xmlns:D="DAV:"/>"#;
     assert!(
-        discover_home(&Replay::new(vec![ok(empty)]), "/start")
+        discover_home(&Replay::new(vec![ok(empty)]), "/start", &IgnoreConnectSteps)
             .await
             .is_err()
     );
     let principal = r#"<D:multistatus xmlns:D="DAV:"><D:response><D:href>/</D:href><D:propstat><D:prop><D:current-user-principal><D:href>/principal/</D:href></D:current-user-principal></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
     assert!(
-        discover_home(&Replay::new(vec![ok(principal), ok(empty)]), "/start",)
-            .await
-            .is_err()
+        discover_home(
+            &Replay::new(vec![ok(principal), ok(empty)]),
+            "/start",
+            &IgnoreConnectSteps
+        )
+        .await
+        .is_err()
     );
 
     let redirects = (0..4)
@@ -106,7 +116,7 @@ async fn discovery_accepts_direct_home_and_fails_closed_on_missing_or_redirected
         })
         .collect();
     assert!(
-        discover_home(&Replay::new(redirects), "/start")
+        discover_home(&Replay::new(redirects), "/start", &IgnoreConnectSteps)
             .await
             .is_err()
     );
@@ -128,9 +138,14 @@ const MIXED_BOOKS: &str = r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:par
 #[tokio::test]
 async fn write_capability_follows_the_aggregate_privilege_and_survives_rebinding() {
     let provider = CardDavProvider::with_executor(
-        Box::new(Replay::new(vec![ok(HOME), ok(MIXED_BOOKS)])),
+        Box::new(Replay::new(vec![
+            ok(HOME),
+            options(Some("1, 3, addressbook")),
+            ok(MIXED_BOOKS),
+        ])),
         "/.well-known/carddav",
         "default",
+        &IgnoreConnectSteps,
     )
     .await
     .unwrap();
@@ -165,7 +180,9 @@ async fn a_relative_redirect_after_an_origin_change_stays_on_the_new_origin() {
         moved("/books/u/"),
         ok(home),
     ]);
-    discover_home(&exec, "/.well-known/carddav").await.unwrap();
+    discover_home(&exec, "/.well-known/carddav", &IgnoreConnectSteps)
+        .await
+        .unwrap();
     let seen = exec.seen();
     assert_eq!(seen[1].1, "https://dav.example.net/principals/u/");
     assert_eq!(seen[2].1, "https://dav.example.net/books/u/");

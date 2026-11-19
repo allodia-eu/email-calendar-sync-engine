@@ -61,6 +61,16 @@ impl FakeExecutor {
                 "urn:ietf:params:jmap:calendars": "c",
                 "urn:ietf:params:jmap:contacts": "c"
             },
+            "accounts": {
+                "c": {
+                    "accountCapabilities": {
+                        "urn:ietf:params:jmap:mail": {},
+                        "urn:ietf:params:jmap:submission": {},
+                        "urn:ietf:params:jmap:calendars": { "maxParticipantsPerEvent": 20 },
+                        "urn:ietf:params:jmap:contacts": {}
+                    }
+                }
+            },
             "apiUrl": "https://mail.test.local/jmap/",
             "downloadUrl": "https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}",
             "uploadUrl": "https://mail.test.local/upload/{accountId}/"
@@ -69,9 +79,25 @@ impl FakeExecutor {
     }
 
     pub(crate) fn from_session(session_doc: &Value, responses: Vec<Value>) -> Self {
+        Self::bound_to(session_doc, None, responses)
+    }
+
+    /// Like [`from_session`](Self::from_session), with the session bound to the shared
+    /// account `handle` names — every call then addresses that account.
+    pub(crate) fn bound_to(
+        session_doc: &Value,
+        handle: Option<&str>,
+        responses: Vec<Value>,
+    ) -> Self {
         let base = Url::parse("http://127.0.0.1:18080").unwrap();
-        let session =
-            Session::parse(session_doc, &base, SessionUrlPolicy::RebaseToConnection).unwrap();
+        let handle = handle.map(|h| engine_core::ids::SharedAccountId::try_from(h).unwrap());
+        let session = Session::parse(
+            session_doc,
+            &base,
+            SessionUrlPolicy::RebaseToConnection,
+            handle.as_ref(),
+        )
+        .unwrap();
         let parsed = responses
             .into_iter()
             .map(|v| Response::parse(&v).unwrap())
@@ -203,7 +229,11 @@ impl Executor for Arc<FakeExecutor> {
 }
 
 pub(crate) fn fixture(name: &str) -> Value {
-    let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    // Read at run time, not with `env!` alone: a cached test binary can come from another
+    // checkout (`.cargo/config.toml`).
+    let dir = std::env::var("CARGO_MANIFEST_DIR")
+        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_owned());
+    let path = format!("{dir}/tests/fixtures/{name}");
     serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}")))
         .unwrap()
 }

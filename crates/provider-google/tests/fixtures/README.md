@@ -25,7 +25,11 @@ on the account.
 | Fixture | Real call | Protects |
 | --- | --- | --- |
 | `mail/settings_send_as.json` | `users.settings.sendAs.list` | The shape a real account's send-as list has: `displayName` is present and **empty** on a mailbox nobody has named, which is what the adapter reads as "no name" rather than as a blank one. |
+| `mail/label_created_hidden.json` | `POST /gmail/v1/users/me/labels` with `labelListVisibility: labelHide`, `messageListVisibility: show` | the create a label standing for a keyword answers with: the new id, and both visibilities echoed as sent |
+| `error/label_name_conflict.json` | the same create again, for a name the account already has | the `409` another device's create leaves behind, on which the adapter reads the list again rather than creating a second label |
 | `mail/draft_created.json` | `POST /gmail/v1/users/me/drafts` | the draft object a create returns: a `drafts` id plus the message it wraps, already labelled `DRAFT` |
+| `mail/message_metadata_importance.json` | `users.messages.get?format=metadata` with `METADATA_HEADERS`, for a draft whose MIME carried `Importance: high` and `X-Priority: 1 (Highest)` | that a metadata read returns both headers when named, in the message's own order and case; and that Gmail rewrites `Date` as well as `Message-Id` on `drafts.create`. Deleted after the capture |
+| `mail/message_metadata_importance_twice.json` | the same read, for a draft carrying `Importance: low`, `X-MSMail-Priority: Low` and `Importance: high` | that every occurrence of a repeated header is returned, in order, so the importance rule can read the last. Deleted after the capture |
 | `mail/draft_updated.json` | `PUT /gmail/v1/users/me/drafts/{id}` on that draft | the same **draft** id with a **new** message id under it: what makes Gmail the one adapter whose draft key survives a re-save |
 | `error/draft_not_found.json` | `DELETE …/drafts/{id}` on a draft already deleted | the `404` a retried draft delete meets, so a retryable op settles rather than parking |
 | `mail/profile.json` | `GET /gmail/v1/users/me/profile` | the account cursor (`historyId`) a snapshot persists |
@@ -45,9 +49,13 @@ on the account.
 | `mail/modify_not_spam.json` | the same with `removeLabelIds:["SPAM"], addLabelIds:["INBOX"]` | the not-junk report; removing `SPAM` *alone* leaves the message in no place label at all |
 | `error/invalid_label_phishing.json` | the same with `addLabelIds:["PHISHING"]` | Gmail has no phishing label — `400 Invalid label`, so the verdict is refused rather than filed as junk |
 | `error/*.json` | a 400(label)/401/403(rate)/403(perm)/404/410 | `error` envelope → `FailureClass` mapping |
+| `error/invalid_page_token.json` | `messages.list?pageToken=bogus` | Gmail's answer to a page token it cannot read: `400 INVALID_ARGUMENT "Invalid pageToken"`. A backfill whose stored token draws this starts again from the first page (`src/pass.rs`). A well-formed numeric token Gmail does not recognise is **not** refused: it answers the first page, so a stale token costs a re-fetch and never skips mail. |
 | `error/quota_exceeded.json` | the `403` a sustained width-8 drain draws | Gmail's **per-minute quota** refusal, verbatim: `PERMISSION_DENIED` with `errors[0].reason: rateLimitExceeded`, and a `google.rpc.ErrorInfo` naming `totalQueryCostPerMinutePerUser`, `6000`, `1/min/{project}/{user}` and `window_start_time`. The window figure is what `src/throttle.rs` turns into a wait, so this file is where "the server named an instant" is pinned — but see the next row, because this is the **minority** shape. |
 | `error/quota_exceeded_untimed.json` | the same call, a different refusal minutes later | The same `403` with the **same** `ErrorInfo` and **no** `window_start_time`. Two refusals in three look like this (14,710 measured; 32% carry the field), so the instant is a bonus and never a guarantee. Kept beside its twin so nobody reads one fixture as a contract. |
 | `error/concurrency_exceeded.json` | the `429` a salvo of 200 draws | Gmail's **other** limit: `RESOURCE_EXHAUSTED`, "Too many concurrent requests for user." Captured to keep the two apart — a count of refusals cannot say which one it counted. |
+| `identity/userinfo_workspace.json` | `GET /oauth2/v3/userinfo` with a token holding `userinfo.email` alone, on a Workspace account | the `hd` field that makes the account an organization's (`affiliation`); the domain, address, `sub` and picture are fakes |
+| `identity/userinfo_personal.json` | the same call on a personal account | the same reply without `hd`: the answer "personal" |
+| `error/userinfo_without_scope.json` | the same call with a token holding only `calendar` | the `401` a grant without `userinfo.email` gets, which says nothing about the account |
 
 ## Real-behavior findings (captured, not assumed)
 
@@ -121,12 +129,15 @@ on the account.
 | Fixture | Real call | Protects |
 | --- | --- | --- |
 | `calendar/calendars.json` | `GET /calendar/v3/users/me/calendarList` | calendar-list → `Calendar` (primary + a reader-role holiday calendar; access role, colour) |
+| `calendar/calendars_shared_roles.json` | the same call on the throwaway, after a **second account** granted it one calendar per role (`live_calendar_roles.rs`); the four entries as returned, the list wrapper around them assembled | `writer`, `writerWithoutPrivateAccess`, `reader`, `freeBusyReader` → `CalendarAccess`, held against what each role was seen to allow. Scrubbed: each id's 64 hex digits (Google's `@group.calendar.google.com` format kept) and the owner's address in a writer's `dataOwner` |
 | `calendar/events_list.json` | `GET /calendar/v3/calendars/primary/events?singleEvents=false` | the event page (masters kept with `RRULE`) + `nextSyncToken` |
 | `calendar/events_delta.json` | same, replaying the `syncToken` | delta shape: an updated event + a `status:"cancelled"` tombstone + a new `nextSyncToken` |
 | `calendar/event_single.json` | one timed event | single event + attendees/location/organizer |
 | `calendar/event_recurring_master.json` | a `GET …/events/{id}` series master | `recurrence` `RRULE` + zoned start/end |
 | `calendar/event_allday.json` | an all-day event | `start.date`/`end.date` (zoneless) |
 | `calendar/event_meet.json` | a Google Meet event | `conferenceData`/`hangoutLink` (join credential scrubbed) |
+| `calendar/meet_space.json` | `POST https://meet.googleapis.com/v2/spaces` with `{}`, on a personal account | the space `MeetMeetings` reads a meeting from: `meetingUri` and `meetingCode` (both scrubbed, as is the space's `name`), and that a personal account's space carries **no** `phoneAccess` |
+| `error/meet_space_without_scope.json` | the same call with a token that does not hold `meetings.space.created` | the `403` `ACCESS_TOKEN_SCOPE_INSUFFICIENT` a grant without the scope gets, which is permanent rather than a rate limit |
 | `calendar/event_invitation_answered.json` | an `events.import`ed invitation, answered `tentative` with a note | an event the account did **not** organize, read back after an RSVP: my status, and the organizer merged with their own `attendees[]` entry (Finding 16) |
 | `calendar/event_organizer_declined.json` | a self-organized event answered `declined` | the same address as `organizer` *and* attendee → **one** participant, roles `{owner, attendee}`, carrying the answer — not the organizer's implied `accepted` (Finding 16) |
 
@@ -194,7 +205,8 @@ handle → a placeholder.
 | `contacts/group_created.json` | `POST /v1/contactGroups` | the group create echo |
 | `error/contacts_stale_etag.json` | `updateContact` with a superseded etag | `400 FAILED_PRECONDITION` → `Conflict` (Finding 13) |
 | `error/contacts_directory_precondition.json` | `people:listDirectoryPeople` on a consumer account | `400 FAILED_PRECONDITION` → source `Unavailable` (Finding 15) |
-| `error/contacts_sync_token_invalid.json` | a malformed `syncToken` | `400 INVALID_ARGUMENT` — **not** the `410` expiry signal |
+| `error/contacts_sync_token_invalid.json` | a malformed `syncToken` | `400 INVALID_ARGUMENT` — **not** the expiry signal |
+| `error/contacts_sync_token_expired.json` | `connections.list` with a `syncToken` more than seven days old, from a client's log | `400 FAILED_PRECONDITION` + `ErrorInfo` `EXPIRED_SYNC_TOKEN` → `NeedsResync` (Finding 22) |
 
 12. **A People page with nothing to report omits the collection key entirely.** A quiet
     incremental sync answers exactly `{"nextSyncToken": "…"}` — no `connections` array at
@@ -242,3 +254,13 @@ handle → a placeholder.
     it. The adapter now waits that `403` out rather than failing the scope (finding 21 and
     `src/throttle.rs`), so a suite that meets it pauses; a suite that keeps spending faster
     than 6,000 units a minute still outruns every window it waits for.
+
+<!-- Finding 22 opens its own list, so it renders under its own number. -->
+
+22. **An expired People sync token is `400 FAILED_PRECONDITION`, not `410`.** Tokens expire
+    seven days after the sync that issued them, and the answer shares its status and code
+    with a stale-etag write (Finding 13); only `error.details[]`, a `google.rpc.ErrorInfo`
+    with reason `EXPIRED_SYNC_TOKEN`, tells them apart. Read as a conflict, the token is
+    replayed on every pass and the address book never changes again. A malformed token
+    is a different answer again (`400 INVALID_ARGUMENT`), so a live test cannot produce
+    this one on demand; the fixture is the body a real client received.

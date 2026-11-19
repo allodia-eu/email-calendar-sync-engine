@@ -362,7 +362,7 @@ mod tests {
         assert!(!chunk.mode.tombstones());
         assert!(!chunk.is_reconcile_final());
         assert_eq!(chunk.advance_to, Some(SyncState::new("v1;n5;b3")));
-        assert!(chunk.present.is_empty());
+        assert_eq!(chunk.present, []);
     }
 
     #[test]

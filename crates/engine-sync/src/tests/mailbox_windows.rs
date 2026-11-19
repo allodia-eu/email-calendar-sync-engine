@@ -103,6 +103,7 @@ impl Provider for Folder {
 }
 
 impl CalendarWrites for Folder {}
+impl engine_provider::MailboxWrites for Folder {}
 
 fn dated(id: &str, mailbox: &str, received: &str) -> Message {
     let mut message = message(id, mailbox, id);

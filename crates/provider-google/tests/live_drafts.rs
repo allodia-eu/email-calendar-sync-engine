@@ -45,6 +45,7 @@ fn provider(token: String) -> GmailProvider {
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     GmailProvider::new(client)
@@ -77,8 +78,11 @@ fn unique_run_id() -> u128 {
 /// for a reason that has nothing to do with drafts.
 async fn snapshot(provider: &GmailProvider) -> Vec<Message> {
     let emails = provider.sync_email(&account(), None).await.expect("sync");
-    let SyncUpdate::Snapshot { objects, .. } = emails.update else {
-        panic!("a cursorless sync is a snapshot");
+    let SyncUpdate::Delta {
+        changed: objects, ..
+    } = emails.update
+    else {
+        panic!("a cursorless sync is an additive backfill");
     };
     objects
 }
@@ -163,6 +167,31 @@ async fn live_gmail_replacing_a_draft_keeps_its_draft_id() {
         .expect("a second discard is done, not an error");
 }
 
+/// A draft saved before anyone is addressed: Gmail refused the empty `To` group a Bcc-only send
+/// carries ("Invalid To header"), so a stored draft writes no `To` at all.
+#[tokio::test]
+async fn live_gmail_a_draft_with_no_recipients_is_stored() {
+    let Some(token) = token() else {
+        eprintln!("skipping live_gmail_a_draft_with_no_recipients: GOOGLE_ACCESS_TOKEN unset");
+        return;
+    };
+    let p = provider(token);
+    let run = unique_run_id();
+    let unaddressed = Draft::new(
+        MessageIdHeader::new(format!("live-gmail-draft-unaddressed-{run}@test.local")).unwrap(),
+        EmailAddress::new(SELF_ADDRESS),
+        Vec::new(),
+        format!("Live draft {run}: no recipients"),
+        "Saved as a draft by the live test (never sent).",
+    );
+
+    let key = p
+        .put_draft(&account(), &unaddressed, None)
+        .await
+        .expect("a draft with no recipients is stored");
+    p.delete_draft(&account(), &key).await.expect("discard");
+}
+
 #[tokio::test]
 async fn live_gmail_a_saved_draft_is_labelled_a_draft() {
     let Some(token) = token() else {
@@ -191,8 +220,11 @@ async fn live_gmail_a_saved_draft_is_labelled_a_draft() {
         .expect("the account has a DRAFT label");
 
     let emails = p.sync_email(&account(), None).await.expect("sync");
-    let SyncUpdate::Snapshot { objects, .. } = emails.update else {
-        panic!("a cursorless sync is a snapshot");
+    let SyncUpdate::Delta {
+        changed: objects, ..
+    } = emails.update
+    else {
+        panic!("a cursorless sync is an additive backfill");
     };
     let saved = objects
         .iter()

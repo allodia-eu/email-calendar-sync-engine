@@ -18,9 +18,10 @@
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ThreadId},
-    mail::{EmailAddress, Mailbox, MailboxRole, Message, ThreadRef},
+    mail::{EmailAddress, Importance, Mailbox, MailboxRole, Message, ThreadRef},
     membership::Memberships,
 };
+use engine_provider::KeywordName;
 use serde_json::Value;
 
 use crate::{
@@ -85,6 +86,12 @@ fn estimated_size(value: &Value) -> Option<u64> {
     (total > 0).then(|| total.saturating_mul(4) / 3 + BODY_ALLOWANCE)
 }
 
+/// The message properties every sync reads.
+///
+/// **Keep the recipients in it.** Graph resolves `sender` to an SMTP address only when the
+/// recipients are selected alongside it: live, a message sent on behalf of a shared mailbox read
+/// back with `sender` but no `toRecipients` named the delegate by X.500 `legacyExchangeDN`, which
+/// the normalizer would store in `Envelope::sender` as though it were an address (`graph.md`).
 pub(crate) const MESSAGE_SELECT: &[&str] = &[
     "id",
     "internetMessageId",
@@ -103,8 +110,10 @@ pub(crate) const MESSAGE_SELECT: &[&str] = &[
     "isDraft",
     "hasAttachments",
     "flag",
+    "categories",
     "bodyPreview",
     "changeKey",
+    "importance",
 ];
 
 /// The well-known mail-folder aliases that map to a normalized [`MailboxRole`].
@@ -183,7 +192,10 @@ pub(crate) fn apply_roles(mailboxes: &mut [Mailbox], resolved: &[(MailboxId, Mai
 ///
 /// Returns [`GraphError::Protocol`] if `id` or `parentFolderId` is missing (Graph
 /// mail always carries its single-folder membership) or a value is malformed.
-pub(crate) fn message_from_json(value: &Value) -> Result<Message, GraphError> {
+pub(crate) fn message_from_json(
+    value: &Value,
+    names: &[KeywordName],
+) -> Result<Message, GraphError> {
     let id = wrap_id(MessageId::try_from(req_str(value, "id")?), "message id")?;
     let folder = wrap_id(
         MailboxId::try_from(req_str(value, "parentFolderId")?),
@@ -197,7 +209,7 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, GraphError> {
             "conversation id",
         )?));
     }
-    message.keywords = keywords_from_json(value);
+    message.keywords = keywords_from_json(value, names);
     message.has_attachment = bool_field(value, "hasAttachments");
     message.size = estimated_size(value);
     message.received_at = datetime(value, "receivedDateTime")?;
@@ -213,6 +225,10 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, GraphError> {
     envelope.to = recipients(value, "toRecipients");
     envelope.cc = recipients(value, "ccRecipients");
     envelope.bcc = recipients(value, "bccRecipients");
+    // Exchange folds a received message's `Importance` and `X-Priority` into this one property.
+    envelope.importance = opt_str(value, "importance")
+        .and_then(Importance::parse)
+        .unwrap_or_default();
     if let Some(header) = message_id_header(value)? {
         envelope.message_id = vec![header];
     }
@@ -269,3 +285,7 @@ fn message_id_header(value: &Value) -> Result<Option<MessageIdHeader>, GraphErro
 #[cfg(test)]
 #[path = "normalize_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "importance_shapes_tests.rs"]
+mod importance_shapes_tests;

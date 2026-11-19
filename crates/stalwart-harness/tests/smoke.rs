@@ -12,7 +12,9 @@
 
 use std::{net::TcpStream, sync::Arc, time::Duration};
 
-use stalwart_harness::{CONTACT_UID, GATE_VAR, Harness, ImapProbe, ONE_OFF_EVENT_UID, run_probe};
+use stalwart_harness::{
+    CONTACT_UID, GATE_VAR, Harness, ImapProbe, ONE_OFF_EVENT_UID, SHARED_GROUP_ACCOUNT, run_probe,
+};
 
 /// Return the configured harness, or `None` (skipping, with a note labelled by
 /// the current test's name) when Stalwart is absent.
@@ -42,6 +44,28 @@ fn server_becomes_ready() {
     };
     h.wait_until_ready(Duration::from_secs(30))
         .expect("Stalwart /healthz/live should report ready");
+}
+
+/// The harness must not ration unauthenticated requests, or a run's outcome depends on how
+/// recently the suites last ran (#333). Stalwart allows 100 a minute per client IP by default,
+/// and every live run spends them: a readiness poll per test, and the uncredentialed first
+/// request of every DAV connection. So this sends more than a minute's default allowance and
+/// requires every one to be answered — against a harness without the entrypoint's
+/// `relax_anonymous_http_limit` it fails at the 101st at the latest.
+#[test]
+fn anonymous_requests_are_not_rationed() {
+    let Some(h) = ready_harness() else {
+        return;
+    };
+    for n in 1..=150 {
+        let status = h.healthz().expect("healthz answers").status;
+        assert_eq!(
+            status, 200,
+            "unauthenticated request {n} was answered {status}: the harness is still on \
+             Stalwart's anonymous rate limit. Recreate it so entrypoint.sh relaxes it \
+             (`docker compose down -v && up`)"
+        );
+    }
 }
 
 #[test]
@@ -96,6 +120,85 @@ fn imap_answers_and_seed_present() {
         probe.dup_subject_hits, 2,
         "the duplicate-Message-ID pair should both be present in INBOX"
     );
+}
+
+#[test]
+fn jmap_session_lists_the_shared_accounts() {
+    let Some(h) = ready_harness() else {
+        return;
+    };
+    let session = h.jmap_session().expect("JMAP session should be fetchable");
+    let accounts = session
+        .get("accounts")
+        .and_then(serde_json::Value::as_object)
+        .expect("session has an accounts object");
+    // Keyed by name: the ids are server-assigned and change with a fresh bootstrap.
+    let by_name = |name: &str| {
+        accounts
+            .values()
+            .find(|account| account.get("name").and_then(serde_json::Value::as_str) == Some(name))
+            .unwrap_or_else(|| panic!("session lists no account named {name}: {accounts:?}"))
+    };
+    let flag = |account: &serde_json::Value, name: &str| {
+        account.get(name).and_then(serde_json::Value::as_bool)
+    };
+    let owner = h.read_only_share_owner().address.clone();
+
+    // Alice's own store, and the two shared with her: the group mailbox and bob's INBOX.
+    assert_eq!(flag(by_name(&h.account), "isPersonal"), Some(true));
+    assert_eq!(
+        flag(by_name(SHARED_GROUP_ACCOUNT), "isPersonal"),
+        Some(false)
+    );
+    assert_eq!(flag(by_name(&owner), "isPersonal"), Some(false));
+
+    // The account flag, pinned in both directions. Bob's share exposes one mailbox that
+    // grants read alone, and since v1 Stalwart says so on the account (v0.16 said
+    // `isReadOnly: false`); the group, every folder of which alice may write, says writable.
+    // The flag still cannot replace per-folder rights — a share mixing a writable and a
+    // read-only folder says `false` — so if either value moves, revisit the rationale in
+    // docs/agent-guidance/stalwart-harness.md and modeling.md.
+    assert_eq!(
+        flag(by_name(&owner), "isReadOnly"),
+        Some(true),
+        "the read-only share's account flag changed; revisit the per-folder-rights rationale"
+    );
+    assert_eq!(
+        flag(by_name(SHARED_GROUP_ACCOUNT), "isReadOnly"),
+        Some(false),
+        "the writable share's account flag changed; revisit the per-folder-rights rationale"
+    );
+}
+
+#[test]
+fn imap_namespace_advertises_the_shared_stores() {
+    let Some(h) = ready_harness() else {
+        return;
+    };
+    let probe = imap_probe_over_tls(&h);
+    // RFC 2342's three positions are Personal, Other Users', Shared. Stalwart puts granted
+    // stores in the *second* while naming the prefix "Shared Folders" — the reason the
+    // engine treats both foreign positions alike rather than looking for the third.
+    assert!(
+        probe
+            .namespace
+            .starts_with(r#"* NAMESPACE (("" "/")) (("Shared Folders" "/"))"#),
+        "alice's NAMESPACE should carry the foreign prefix in the other-users' position: {:?}",
+        probe.namespace
+    );
+    // And a flat LIST interleaves both stores with her own folders — the gap attribution
+    // against NAMESPACE closes in the IMAP provider.
+    for shared_inbox in [
+        format!("Shared Folders/{SHARED_GROUP_ACCOUNT}/INBOX"),
+        format!("Shared Folders/{}/INBOX", h.read_only_share_owner().address),
+    ] {
+        assert!(
+            probe.mailboxes.contains(&shared_inbox),
+            "LIST should include {shared_inbox}: {:?}",
+            probe.mailboxes
+        );
+    }
+    assert!(probe.mailboxes.iter().any(|name| name == "INBOX"));
 }
 
 #[test]

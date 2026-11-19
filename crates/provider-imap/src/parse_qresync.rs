@@ -146,7 +146,10 @@ mod tests {
         assert!(!plain.iter().any(|c| c.eq_ignore_ascii_case("QRESYNC")));
 
         // No CAPABILITY line at all → no atoms (treated as no QRESYNC, the fallback).
-        assert!(parse_capabilities(&lines(&["OK nothing to see here"])).is_empty());
+        assert_eq!(
+            parse_capabilities(&lines(&["OK nothing to see here"])),
+            [] as [String; 0]
+        );
     }
 
     #[test]
@@ -157,10 +160,10 @@ mod tests {
             ["CONDSTORE", "QRESYNC"]
         );
         // A bare `* ENABLED` (server enabled nothing) must NOT be treated as success.
-        assert!(parse_enabled(&lines(&["ENABLED"])).is_empty());
+        assert_eq!(parse_enabled(&lines(&["ENABLED"])), [] as [String; 0]);
         assert_eq!(parse_enabled(&lines(&["ENABLED CONDSTORE"])), ["CONDSTORE"]);
         // A non-ENABLED line is ignored.
-        assert!(parse_enabled(&lines(&["OK done"])).is_empty());
+        assert_eq!(parse_enabled(&lines(&["OK done"])), [] as [String; 0]);
     }
 
     #[test]
@@ -174,7 +177,10 @@ mod tests {
             [3, 4, 5, 9, 12, 13]
         );
         // Non-VANISHED lines are ignored.
-        assert!(parse_vanished(&lines(&["2 FETCH (UID 2 FLAGS ())"])).is_empty());
+        assert_eq!(
+            parse_vanished(&lines(&["2 FETCH (UID 2 FLAGS ())"])),
+            [] as [u32; 0]
+        );
     }
 
     #[test]
@@ -185,7 +191,10 @@ mod tests {
             [5, 7, 8]
         );
         // An empty set (just the marker, no UIDs) yields nothing, never panics.
-        assert!(parse_vanished(&lines(&["VANISHED (EARLIER)"])).is_empty());
+        assert_eq!(
+            parse_vanished(&lines(&["VANISHED (EARLIER)"])),
+            [] as [u32; 0]
+        );
     }
 
     #[test]

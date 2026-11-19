@@ -4,8 +4,8 @@ This is a Cargo workspace containing the PIM sync engine crates, provider adapte
 
 ## Prerequisites
 
-- **Rust** (stable, **1.96+**, edition 2024) via [rustup](https://rustup.rs/).
-  The repository pins `rust-version = "1.96"`.
+- **Rust** (stable, **1.99+**, edition 2024) via [rustup](https://rustup.rs/).
+  The repository pins `rust-version = "1.99"`.
 - For linting and formatting, the `rustfmt` and `clippy` components:
 
   ```sh
@@ -42,7 +42,7 @@ Some tests are gated on a live Stalwart Docker harness (JMAP, IMAP, SMTP, CalDAV
 These checks are mandatory before a change lands (see [`AGENTS.md`](AGENTS.md)); CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs them on every push and pull request. Run them with warnings-as-errors to match CI exactly:
 
 ```sh
-export RUSTFLAGS="-D warnings" RUSTDOCFLAGS="-D warnings"
+export CARGO_BUILD_WARNINGS=deny
 
 scripts/ci/check-file-length.sh
 cargo +nightly fmt --all --check
@@ -97,6 +97,7 @@ cargo llvm-cov report --fail-under-lines "$threshold" \
 │   ├── engine-search/            # Query DSL and executor
 │   ├── engine-recurrence/        # Recurrence expansion
 │   ├── engine-mime/              # MIME / RFC 5322 body extraction
+│   ├── engine-html/              # Mail HTML sanitiser and reading document
 │   ├── engine-tls/               # Shared TLS trust policy
 │   ├── provider-jmap/            # JMAP adapter
 │   ├── provider-imap/            # IMAP + SMTP adapter

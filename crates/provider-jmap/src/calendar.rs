@@ -15,9 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use engine_core::{
     calendar::{
-        Calendar, Event, EventStatus, FreeBusyStatus, Frequency, Location, NDay, Participant,
-        ParticipantRole, ParticipationStatus, Privacy, Recurrence, RecurrenceBound,
-        RecurrenceOverride, RecurrenceRule, VirtualLocation, Weekday,
+        Calendar, DetectionSources, Event, EventStatus, FreeBusyStatus, Frequency, Location, NDay,
+        Participant, ParticipantRole, ParticipationStatus, Privacy, Recurrence, RecurrenceBound,
+        RecurrenceOverride, RecurrenceRule, Weekday, add_detected,
     },
     ids::{CalendarId, EventId, Uid},
     membership::Memberships,
@@ -28,6 +28,7 @@ use engine_core::{
 use serde_json::Value;
 
 use crate::{
+    calendar_conference::parse_conferences,
     error::JmapError,
     json::{datetime, opt_str, req_str, true_keys, wrap_id},
 };
@@ -53,6 +54,7 @@ pub(crate) fn calendar_from_json(value: &Value) -> Result<Calendar, JmapError> {
         calendar.is_default = default;
     }
     calendar.time_zone = parse_zone(value, "timeZone")?;
+    calendar.access = crate::calendar_rights::calendar_rights(value.get("myRights"));
     Ok(calendar)
 }
 
@@ -98,7 +100,15 @@ pub(crate) fn event_from_json(value: &Value) -> Result<Event, JmapError> {
     event.recurrence = parse_recurrence(value)?;
     event.participants = parse_participants(value);
     event.locations = parse_locations(value);
-    event.virtual_locations = parse_virtual_locations(value);
+    event.conferences = parse_conferences(value);
+    add_detected(
+        &mut event.conferences,
+        &DetectionSources {
+            locations: &event.locations,
+            description: event.description.as_deref(),
+            ..DetectionSources::default()
+        },
+    );
     event.color = opt_str(value, "color").map(str::to_owned);
     event.keywords = string_set(value, "keywords");
     event.categories = string_set(value, "categories");
@@ -307,7 +317,33 @@ fn parse_participants(value: &Value) -> Vec<Participant> {
     let Some(map) = value.get("participants").and_then(Value::as_object) else {
         return Vec::new();
     };
-    map.values().map(participant_from_json).collect()
+    let mut parsed: Vec<Participant> = Vec::new();
+    for value in map.values() {
+        let participant = participant_from_json(value);
+        let duplicate = participant.email.as_deref().and_then(|email| {
+            parsed.iter_mut().find(|existing| {
+                existing
+                    .email
+                    .as_deref()
+                    .is_some_and(|address| engine_core::scheduling::addresses_match(address, email))
+            })
+        });
+        if let Some(existing) = duplicate {
+            if existing.name.is_none() {
+                existing.name.clone_from(&participant.name);
+            }
+            existing.roles.extend(participant.roles);
+            if existing.participation_status == ParticipationStatus::NeedsAction
+                && participant.participation_status != ParticipationStatus::NeedsAction
+            {
+                existing.participation_status = participant.participation_status;
+            }
+            existing.expect_reply |= participant.expect_reply;
+        } else {
+            parsed.push(participant);
+        }
+    }
+    parsed
 }
 
 fn participant_from_json(participant: &Value) -> Participant {
@@ -317,7 +353,10 @@ fn participant_from_json(participant: &Value) -> Participant {
         .map(|roles| {
             roles
                 .keys()
-                .map(|role| ParticipantRole::from_wire(role))
+                .map(|role| match role.as_str() {
+                    "required" => ParticipantRole::Attendee,
+                    _ => ParticipantRole::from_wire(role),
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -329,8 +368,7 @@ fn participant_from_json(participant: &Value) -> Participant {
         name: opt_str(participant, "name").map(str::to_owned),
         // A cal-address URI ("mailto:alice@…") in either JSCalendar version; store the
         // bare address as the reconciliation key.
-        email: participant_address(participant)
-            .map(|addr| addr.strip_prefix("mailto:").unwrap_or(addr).to_owned()),
+        email: participant_address(participant).map(engine_core::scheduling::normalize_address),
         kind: None,
         roles,
         participation_status,
@@ -349,14 +387,12 @@ fn participant_from_json(participant: &Value) -> Participant {
 /// `urn:ietf:params:jmap:calendars` capability is an empty object in the JMAP Session and
 /// its account-level properties are byte-identical between draft-24 and draft-27, so
 /// nothing in the session says which JSCalendar a server serves. JSCalendar 2.0 does define
-/// a `version` property (jscalendarbis §3.1.2) — the only in-band signal that exists — but
-/// Stalwart neither emits it nor honours it, and how it *refuses* it moved between the two
-/// pins this repo has run: v0.16.15 rejected a create carrying `version` with
-/// `invalidProperties: ["version"]`, while v0.16.21 accepts the create and silently drops the
-/// property (never echoed back, and asking for it in `properties` still returns nothing —
-/// both observed). The conclusion is unchanged and if anything firmer: a signal that can be
-/// swallowed without a word is no signal. So the adapter reads the shape rather than asking,
-/// and the shape is unambiguous:
+/// a `version` property (jscalendarbis §3.1.2) — the only in-band signal that exists — but it
+/// belongs to one object, not to the server, and Stalwart's handling of it moved with every
+/// pin this repo has run: v0.16.15 rejected a create carrying it with
+/// `invalidProperties: ["version"]`, v0.16.21 accepted the create and silently dropped it, and
+/// v1.0.2 returns `"2.0"` on every event, CalDAV-written ones included (all observed). So the
+/// adapter reads the shape rather than asking, and the shape is unambiguous:
 ///
 /// - **2.0** (jscalendarbis §3.4.6): a scalar `calendarAddress`.
 /// - **1.0** ([RFC 8984] §4.4.6): `sendTo`, a map of *method* → URI.
@@ -387,26 +423,6 @@ fn parse_locations(value: &Value) -> Vec<Location> {
             loc.name = opt_str(location, "name").map(str::to_owned);
             loc.description = opt_str(location, "description").map(str::to_owned);
             loc
-        })
-        .collect()
-}
-
-/// Maps the `virtualLocations` map's values into virtual locations (dropping any
-/// without the mandatory `uri`).
-fn parse_virtual_locations(value: &Value) -> Vec<VirtualLocation> {
-    let Some(map) = value.get("virtualLocations").and_then(Value::as_object) else {
-        return Vec::new();
-    };
-    map.values()
-        .filter_map(|location| {
-            let uri = opt_str(location, "uri")?;
-            let mut vloc = VirtualLocation::new(uri);
-            vloc.name = opt_str(location, "name").map(str::to_owned);
-            vloc.description = opt_str(location, "description").map(str::to_owned);
-            if let Some(features) = location.get("features").and_then(Value::as_object) {
-                vloc.features = features.keys().cloned().collect();
-            }
-            Some(vloc)
         })
         .collect()
 }

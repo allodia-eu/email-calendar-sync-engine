@@ -1,6 +1,6 @@
 //! Unit tests for the draft verbs' rejecting defaults
 //! ([`Provider::put_draft`](super::Provider::put_draft) /
-//! [`delete_draft`](super::Provider::delete_draft)). A sibling file so `provider.rs`
+//! [`delete_draft`](super::Provider::delete_draft)). A sibling of `provider.rs` so it
 //! stays under the line limit.
 
 use engine_core::{
@@ -62,6 +62,7 @@ async fn storing_a_draft_defaults_to_unsupported() {
 /// Two adapters that both reject cannot tell those apart, so this one succeeds.
 struct FakeDrafts;
 
+impl crate::MailboxWrites for FakeDrafts {}
 impl crate::CalendarWrites for FakeDrafts {}
 
 #[async_trait::async_trait]

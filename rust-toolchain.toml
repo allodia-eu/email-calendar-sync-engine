@@ -8,14 +8,14 @@
 #
 # Bumping is a deliberate, standalone PR: a new stable can add default-warn rustc/clippy lints, and
 # this workspace denies all warnings (`[workspace.lints]` in the root Cargo.toml, plus
-# `RUSTFLAGS: -D warnings` in CI), so the bump is where those surface and get fixed — not a red
+# `CARGO_BUILD_WARNINGS: deny` in CI), so the bump is where those surface and get fixed — not a red
 # build on someone's unrelated change.
 #
 # This is a build pin, not the MSRV. The floor the crates promise is `rust-version` in the root
 # Cargo.toml, and it moves independently.
 #
 # `cargo fmt` is the one exception: rustfmt.toml uses nightly-only options, so formatting runs on
-# the pinned nightly instead — `cargo +nightly-2026-07-07 fmt` (see AGENTS.md).
+# the pinned nightly instead — `cargo +nightly-2026-10-28 fmt` (see AGENTS.md).
 [toolchain]
-channel = "1.97.0"
+channel = "1.99.1"
 components = ["clippy"]

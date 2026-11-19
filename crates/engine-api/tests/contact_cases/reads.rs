@@ -18,7 +18,7 @@ async fn address_books_and_person_sources_answer_where_a_write_would_land() {
     // An account that has never synced contacts has no books rather than an error, so a host
     // can ask before the first sync and simply offer nothing.
     let unsynced = AccountId::try_from("account-2").unwrap();
-    assert!(engine.address_books(&unsynced).await.unwrap().is_empty());
+    assert_eq!(engine.address_books(&unsynced).await.unwrap(), []);
 
     let ada = engine
         .people_page(&PeopleQuery {
@@ -43,11 +43,11 @@ async fn address_books_and_person_sources_answer_where_a_write_would_land() {
     );
 
     // A person id that never existed resolves to nothing to edit rather than to an error.
-    assert!(
+    assert_eq!(
         engine
             .person_sources(engine_api::PersonId::new(9999).unwrap())
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        []
     );
 }

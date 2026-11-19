@@ -72,12 +72,12 @@ pub(in crate::contract) async fn a_retryable_failure_comes_back_when_its_backoff
         PendingOpClaim::Refused(ClaimRejection::Backoff)
     );
     // The batch claim skips it for the same reason, rather than leasing it early.
-    assert!(
+    assert_eq!(
         store
             .claim_pending_ops(account.clone(), lease_request("drainer", 300), 10)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        []
     );
 
     clock.advance(Duration::from_secs(31));
@@ -134,13 +134,7 @@ pub(in crate::contract) async fn a_retryable_failure_settles_once_its_attempts_r
         Some(PendingOpState::Failed)
     );
     // Settled, so it leaves the queue read: nothing is still outstanding.
-    assert!(
-        store
-            .list_pending_ops(account.clone())
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(store.list_pending_ops(account.clone()).await.unwrap(), []);
     assert_eq!(
         store
             .claim_pending_op(account, op, lease_request("worker", 300))
@@ -330,13 +324,7 @@ pub(in crate::contract) async fn a_queue_read_lists_what_has_not_settled<S: Stor
 ) {
     let account = acct("acct-queue-read");
     let other = acct("acct-queue-read-other");
-    assert!(
-        store
-            .list_pending_ops(account.clone())
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(store.list_pending_ops(account.clone()).await.unwrap(), []);
 
     let first = store
         .enqueue_pending_op(account.clone(), pending_op("q-1", "res-q1"))

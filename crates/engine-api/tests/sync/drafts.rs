@@ -100,7 +100,7 @@ async fn a_save_with_no_network_is_kept_and_the_drain_reports_its_key() {
         Some(ProviderKey::new("draft-1").unwrap()),
         "the host learns what the queued draft was stored under"
     );
-    assert!(engine.outbox(&account()).await.unwrap().is_empty());
+    assert_eq!(engine.outbox(&account()).await.unwrap(), []);
 }
 
 /// A discard made with no network is kept too, so a draft the user deleted does not
@@ -134,5 +134,5 @@ async fn a_discard_with_no_network_is_kept_and_drains() {
     };
     let report = engine.drain_outbox(&healthy, &account()).await.unwrap();
     assert_eq!(report.delivered(), 1);
-    assert!(engine.outbox(&account()).await.unwrap().is_empty());
+    assert_eq!(engine.outbox(&account()).await.unwrap(), []);
 }

@@ -13,6 +13,12 @@ use crate::{
     transport::Connection,
 };
 
+/// The credential's own store on a server advertising no namespaces — every folder is its
+/// own, the behaviour these tests predate namespaces with.
+fn own() -> crate::store::MailStore {
+    crate::store::MailStore::own(&crate::store::Namespaces::default())
+}
+
 const GREETING: &str = "* OK ready\r\n";
 const LOGIN_OK: &str = "a1 OK LOGIN ok\r\n";
 const DRAFTS_LIST: &str =
@@ -50,7 +56,7 @@ async fn saving_again_appends_the_new_copy_then_removes_the_old() {
     .await;
 
     let old = ProviderKey::new("imap:v70:u4@Drafts").unwrap();
-    let key = put_draft(&mut connection, &draft(), Some(&old))
+    let key = put_draft(&mut connection, &own(), &draft(), Some(&old))
         .await
         .unwrap();
 
@@ -85,7 +91,9 @@ async fn a_first_save_appends_without_removing_anything() {
     ]))
     .await;
 
-    let key = put_draft(&mut connection, &draft(), None).await.unwrap();
+    let key = put_draft(&mut connection, &own(), &draft(), None)
+        .await
+        .unwrap();
 
     assert_eq!(key.as_str(), "imap:v70:u9@Drafts");
     assert!(!written(&recorded).contains("UID STORE"));
@@ -106,7 +114,7 @@ async fn a_new_copy_that_cannot_replace_the_old_is_still_saved() {
     .await;
 
     let old = ProviderKey::new("imap:v70:u4@Drafts").unwrap();
-    let key = put_draft(&mut connection, &draft(), Some(&old))
+    let key = put_draft(&mut connection, &own(), &draft(), Some(&old))
         .await
         .unwrap();
 
@@ -129,7 +137,9 @@ async fn a_draft_saved_without_uidplus_is_found_by_its_message_id() {
     .await;
 
     let unplaced = ProviderKey::new("draft:compose-1@test.local").unwrap();
-    delete_draft(&mut connection, &unplaced).await.unwrap();
+    delete_draft(&mut connection, &own(), &unplaced)
+        .await
+        .unwrap();
 
     let sent = written(&recorded);
     assert!(
@@ -155,7 +165,9 @@ async fn removing_a_draft_that_is_already_gone_is_done() {
     .await;
 
     let unplaced = ProviderKey::new("draft:compose-1@test.local").unwrap();
-    delete_draft(&mut connection, &unplaced).await.unwrap();
+    delete_draft(&mut connection, &own(), &unplaced)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -170,7 +182,9 @@ async fn removing_a_draft_whose_folder_was_recreated_is_a_conflict() {
     .await;
 
     let stale = ProviderKey::new("imap:v70:u4@Drafts").unwrap();
-    let err = delete_draft(&mut connection, &stale).await.unwrap_err();
+    let err = delete_draft(&mut connection, &own(), &stale)
+        .await
+        .unwrap_err();
 
     assert_eq!(err.class(), FailureClass::Conflict);
 }

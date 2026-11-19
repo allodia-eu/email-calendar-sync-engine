@@ -1,0 +1,80 @@
+{
+ "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('00000000-0000-0000-0000-00000000bbbb')/events/$entity",
+ "@odata.etag": "W/\"fixtureChangeKey0001==\"",
+ "id": "AAMkAGZpeHR1cmUtdGVhbXMtdGV4dC1ib2R5AEYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+ "createdDateTime": "2026-11-04T08:18:03.9951634Z",
+ "lastModifiedDateTime": "2026-11-04T08:18:07.6406127Z",
+ "changeKey": "fixtureChangeKey0001==",
+ "categories": [],
+ "transactionId": null,
+ "originalStartTimeZone": "Europe/Amsterdam",
+ "originalEndTimeZone": "Europe/Amsterdam",
+ "iCalUId": "040000008200E00074C5B7101A82E008000000000000000000000000000000000000000000000000000000000000000000000000FEEDFACE",
+ "uid": "040000008200E00074C5B7101A82E008000000000000000000000000000000000000000000000000000000000000000000000000FEEDFACE",
+ "reminderMinutesBeforeStart": 15,
+ "isReminderOn": true,
+ "hasAttachments": false,
+ "subject": "PIM fixture: Teams meeting with long notes",
+ "bodyPreview": "Agenda for the quarterly review: the figures first, then the forecast.\r\n\r\nPlease read the Q3 report before we meet, and bring any questions about the regional split, the hiring plan and the budget for next year. We will keep the last ten minutes for decis",
+ "importance": "normal",
+ "sensitivity": "normal",
+ "isAllDay": false,
+ "isCancelled": false,
+ "isOrganizer": true,
+ "responseRequested": true,
+ "seriesMasterId": null,
+ "showAs": "busy",
+ "type": "singleInstance",
+ "webLink": "https://outlook.office365.com/owa/?itemid=fixture&exvsurl=1&path=/calendar/item",
+ "onlineMeetingUrl": null,
+ "isOnlineMeeting": true,
+ "onlineMeetingProvider": "teamsForBusiness",
+ "allowNewTimeProposals": true,
+ "occurrenceId": null,
+ "isDraft": false,
+ "hideAttendees": false,
+ "responseStatus": {
+  "response": "organizer",
+  "time": "0001-01-01T00:00:00Z"
+ },
+ "body": {
+  "contentType": "text",
+  "content": "Agenda for the quarterly review: the figures first, then the forecast.\r\n\r\nPlease read the Q3 report<https://example.com/q3-report> before we meet, and bring any questions about the regional split, the hiring plan and the budget for next year. We will keep the last ten minutes for decisions and owners.\r\n\r\n________________________________________________________________________________\r\nMicrosoft Teams-vergadering\r\nDeelnemen: https://teams.microsoft.com/meet/9990000000000016?p=EXAMPLEpasscode000\r\nVergadering-id: 999 000 000 000 001 6\r\nWachtwoordcode: ab12cd34\r\n________________________________\r\nHeeft u hulp nodig?<https://aka.ms/JoinTeamsMeeting?omkt=nl-NL> | Systeemreferentie<https://teams.microsoft.com/l/meetup-join/19%3ameeting_MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAw%40thread.v2/0?context=%7b%22Tid%22%3a%2200000000-0000-0000-0000-00000000aaaa%22%2c%22Oid%22%3a%2200000000-0000-0000-0000-00000000bbbb%22%7d>\r\nVoor organisatoren: Vergaderopties<https://teams.microsoft.com/meetingOptions/?organizerId=00000000-0000-0000-0000-00000000bbbb&tenantId=00000000-0000-0000-0000-00000000aaaa&threadId=19_meeting_MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAw@thread.v2&messageId=0&language=nl-NL>\r\n________________________________________________________________________________\r\n"
+ },
+ "start": {
+  "dateTime": "2026-11-18T14:00:00.0000000",
+  "timeZone": "Europe/Amsterdam"
+ },
+ "end": {
+  "dateTime": "2026-11-18T14:30:00.0000000",
+  "timeZone": "Europe/Amsterdam"
+ },
+ "location": {
+  "displayName": "Microsoft Teams-vergadering",
+  "locationType": "default",
+  "uniqueId": "Microsoft Teams-vergadering",
+  "uniqueIdType": "private"
+ },
+ "locations": [
+  {
+   "displayName": "Microsoft Teams-vergadering",
+   "locationType": "default",
+   "uniqueId": "Microsoft Teams-vergadering",
+   "uniqueIdType": "private",
+   "addedBy": ""
+  }
+ ],
+ "recurrence": null,
+ "attendees": [],
+ "organizer": {
+  "emailAddress": {
+   "name": "Test User",
+   "address": "testuser@example.test"
+  }
+ },
+ "onlineMeeting": {
+  "joinUrl": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAw%40thread.v2/0?context=%7b%22Tid%22%3a%2200000000-0000-0000-0000-00000000aaaa%22%2c%22Oid%22%3a%2200000000-0000-0000-0000-00000000bbbb%22%7d"
+ },
+ "calendar@odata.associationLink": "https://graph.microsoft.com/v1.0/users('00000000-0000-0000-0000-00000000bbbb')/calendars('calendar-default')/$ref",
+ "calendar@odata.navigationLink": "https://graph.microsoft.com/v1.0/users('00000000-0000-0000-0000-00000000bbbb')/calendars('calendar-default')"
+}

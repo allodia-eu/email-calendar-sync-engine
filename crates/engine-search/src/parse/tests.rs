@@ -17,7 +17,7 @@ fn empty_input_is_an_empty_query() {
 fn bare_words_are_free_text_terms() {
     let q = MailQuery::parse("quarterly report").unwrap();
     assert_eq!(q.text.unscoped, vec!["quarterly", "report"]);
-    assert!(q.text.scoped.is_empty());
+    assert_eq!(q.text.scoped, []);
 }
 
 #[test]
@@ -49,7 +49,7 @@ fn each_mail_operator_parses() {
 #[test]
 fn mail_subject_is_scoped_text_not_a_filter() {
     let q = MailQuery::parse("subject:invoice").unwrap();
-    assert!(q.text.unscoped.is_empty());
+    assert_eq!(q.text.unscoped, [] as [String; 0]);
     assert_eq!(
         q.text.scoped,
         vec![ScopedTerm {
@@ -87,7 +87,7 @@ fn unknown_operators_are_free_text() {
     // The keyword is not known, so the whole token (colon and all) is text.
     let q = MailQuery::parse("fromm:x foo:bar plain").unwrap();
     assert_eq!(q.text.unscoped, vec!["fromm:x", "foo:bar", "plain"]);
-    assert!(q.from.is_empty());
+    assert_eq!(q.from, [] as [String; 0]);
 }
 
 #[test]

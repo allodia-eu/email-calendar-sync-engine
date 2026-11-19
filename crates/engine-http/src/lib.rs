@@ -31,25 +31,46 @@
 //! experience as an unexplained stall is reported through [`ThrottleObserver`], which the host
 //! implements and logs. A [`ThrottleEvent`] carries the provider label, the status, the attempt
 //! and the delay, and deliberately carries no URL: a request path names the user's own mail.
+//!
+//! # A server that stops answering
+//!
+//! The funnel also bounds every wait on the server by the shared
+//! [`Deadlines`](engine_provider::Deadlines), phase by phase, so a silent server fails a
+//! request after the same time on every HTTP adapter as on IMAP and SMTP, and a large body
+//! that keeps moving is never cut off. An adapter builds its client with [`client`] and says
+//! which requests are submissions ([`Exchange`]); a failure tells it whether the request
+//! [may have been received](SendError::may_have_been_received). See `deadline.rs`.
 
 mod classify;
+mod deadline;
+mod error;
 mod gate;
+mod hand_over;
 mod observed;
 mod observer;
+mod pace;
 mod policy;
 mod send;
+#[cfg(any(test, feature = "test-server"))]
+pub mod test_server;
+mod user_agent;
 
 pub use classify::{StatusAlone, Throttle, ThrottleClassifier};
+pub use deadline::{Exchange, chunk_within, client};
+pub use error::{SendError, gateway_without_answer};
 pub use gate::{GatePermit, RequestGate};
 pub use observed::ObservedConnection;
 pub use observer::{IgnoreThrottles, ThrottleEvent, ThrottleObserver};
 pub use policy::RetryPolicy;
 pub use send::{RetryConfig, Sent, send_retrying};
+pub use user_agent::{InvalidUserAgent, UserAgent};
 
 #[cfg(test)]
 mod classify_send_tests;
 #[cfg(test)]
 mod gate_tests;
+#[cfg(test)]
+mod pace_tests;
 #[cfg(test)]
 mod send_test_support;
 #[cfg(test)]

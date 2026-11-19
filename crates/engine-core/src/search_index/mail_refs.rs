@@ -132,6 +132,6 @@ mod tests {
 
     #[test]
     fn a_message_with_no_headers_has_no_rows() {
-        assert!(project_refs(&key(), &envelope(&[], &[]), None).is_empty());
+        assert_eq!(project_refs(&key(), &envelope(&[], &[]), None), []);
     }
 }

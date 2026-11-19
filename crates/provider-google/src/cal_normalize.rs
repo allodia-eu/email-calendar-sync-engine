@@ -21,11 +21,11 @@
 
 use engine_core::{
     calendar::{
-        Calendar, CalendarAccess, Event, EventStatus, FreeBusyStatus, Location, Participant,
-        ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence,
-        RecurrenceOverride, VirtualLocation, parse_rrule,
+        Calendar, CalendarAccess, ConferenceService, DetectionSources, Event, EventStatus,
+        FreeBusyStatus, Location, Participant, ParticipantKind, ParticipantRole,
+        ParticipationStatus, Privacy, Recurrence, RecurrenceOverride, add_detected, parse_rrule,
     },
-    ids::{CalendarId, EventId, Uid},
+    ids::{CalendarId, Uid},
     membership::Memberships,
     patch::PatchObject,
     time::{CalendarDate, CalendarDateTime, LocalDateTime, TimeZoneId},
@@ -35,13 +35,14 @@ use engine_ical::parse_recurrence_dates;
 use serde_json::Value;
 
 use crate::{
+    cal_conference,
     cal_override::local_of,
     error::GoogleError,
     json::{bool_field, datetime, opt_str, req_str, wrap_id},
 };
 
 /// The namespaced key under which the whole raw Google event JSON is preserved.
-const RAW_EVENT_KEY: &str = "google/event";
+pub(crate) const RAW_EVENT_KEY: &str = "google/event";
 
 /// Normalizes one Google `calendarList` entry into a [`Calendar`] container.
 ///
@@ -71,15 +72,53 @@ pub(crate) fn calendar_from_json(value: &Value) -> Result<Calendar, GoogleError>
         None => None,
     };
     calendar.access = access_role(opt_str(value, "accessRole"));
+    calendar.native_conferences = native_conferences(value);
     calendar.revisions = revisions(value);
     Ok(calendar)
 }
 
-/// Maps a Google `accessRole` to a [`CalendarAccess`]. `writer` grants write; `reader`
-/// and `freeBusyReader` are read-only; `owner` is full.
+/// The meetings the calendar's server makes itself, from
+/// `conferenceProperties.allowedConferenceSolutionTypes`.
+///
+/// Only `hangoutsMeet` makes one: `eventHangout` and `eventNamedHangout` name the retired
+/// classic Hangouts. A Workspace admin can switch Meet off, which leaves the list without it.
+fn native_conferences(value: &Value) -> Vec<ConferenceService> {
+    let allows_meet = value
+        .get("conferenceProperties")
+        .and_then(|properties| properties.get("allowedConferenceSolutionTypes"))
+        .and_then(Value::as_array)
+        .is_some_and(|types| types.iter().any(|t| t == "hangoutsMeet"));
+    if allows_meet {
+        vec![ConferenceService::GoogleMeet]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Maps a `calendarList` entry's `accessRole` to a [`CalendarAccess`].
+///
+/// Google's roles are different grants, and collapsing any two of them tells a host it may
+/// do something the API refuses — or, for `freeBusyReader`, that it may read events it is
+/// only allowed to see the busy times of:
+///
+/// - `owner` — everything, including "the additional ability to see and modify access levels of
+///   other users": sharing, and deleting the calendar.
+/// - `writer`, `writerWithoutPrivateAccess` — read and write **events**, but not share the calendar
+///   or delete it, which stay the owner's. The two differ only in whether a private event's details
+///   are visible, which [`CalendarAccess`] does not model.
+/// - `reader` — see the events, change nothing.
+/// - `freeBusyReader` — see only that time is taken, never the events.
+///
+/// An absent or unrecognized role reads as `reader`: visible and immutable, which hides a
+/// capability rather than inviting a write the API will reject.
 fn access_role(role: Option<&str>) -> CalendarAccess {
     match role {
-        Some("owner" | "writer") => CalendarAccess::owner(),
+        Some("owner") => CalendarAccess::owner(),
+        Some("writer" | "writerWithoutPrivateAccess") => CalendarAccess {
+            may_write: true,
+            ..CalendarAccess::reader()
+        },
+        Some("freeBusyReader") => CalendarAccess::free_busy_only(),
         _ => CalendarAccess::reader(),
     }
 }
@@ -98,10 +137,11 @@ pub(crate) fn event_from_json(
     calendar: &CalendarId,
     default_zone: Option<&str>,
 ) -> Result<Event, GoogleError> {
-    let id = wrap_id(EventId::try_from(req_str(value, "id")?), "event id")?;
+    let raw_id = req_str(value, "id")?;
+    let id = crate::cal_id::event_id(calendar.key().as_str(), raw_id)?;
     let uid_raw = opt_str(value, "iCalUID")
         .filter(|u| !u.is_empty())
-        .unwrap_or_else(|| id.as_str());
+        .unwrap_or(raw_id);
     let uid =
         Uid::new(uid_raw).map_err(|e| GoogleError::protocol(format!("bad event uid: {e}")))?;
 
@@ -139,7 +179,15 @@ pub(crate) fn event_from_json(
     event.recurrence = recurrence(value)?;
     event.participants = participants(value);
     event.locations = locations(value);
-    event.virtual_locations = virtual_locations(value);
+    event.conferences = cal_conference::conferences(value);
+    add_detected(
+        &mut event.conferences,
+        &DetectionSources {
+            locations: &event.locations,
+            description: event.description.as_deref(),
+            ..DetectionSources::default()
+        },
+    );
     event.revisions = revisions(value);
     // Preserve the provider-native payload beside the projection (Google is neither iCal
     // nor JSCalendar, so it rides `extended`, not `raw_ical`/`raw_jscalendar`).
@@ -347,29 +395,6 @@ fn locations(value: &Value) -> Vec<Location> {
         .filter(|l| !l.is_empty())
         .map(|name| vec![Location::named(name)])
         .unwrap_or_default()
-}
-
-/// The Meet/conference join URL as a virtual location: the `hangoutLink`, else a
-/// `conferenceData.entryPoints` video URI.
-fn virtual_locations(value: &Value) -> Vec<VirtualLocation> {
-    let uri = opt_str(value, "hangoutLink")
-        .filter(|u| !u.is_empty())
-        .or_else(|| entry_point_uri(value));
-    uri.map(|u| vec![VirtualLocation::new(u)])
-        .unwrap_or_default()
-}
-
-/// The first `conferenceData.entryPoints` video URI, if any.
-fn entry_point_uri(value: &Value) -> Option<&str> {
-    value
-        .get("conferenceData")
-        .and_then(|c| c.get("entryPoints"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|e| opt_str(e, "entryPointType") == Some("video"))
-        .and_then(|e| opt_str(e, "uri"))
-        .filter(|u| !u.is_empty())
 }
 
 /// The revision tokens Google supplies: the `etag` (Google exposes no separate change

@@ -1,0 +1,18 @@
+{
+  "error": {
+    "code": 403,
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "domain": "googleapis.com",
+        "metadata": {
+          "method": "google.apps.meet.v2.SpacesService.CreateSpace",
+          "service": "meet.googleapis.com"
+        },
+        "reason": "ACCESS_TOKEN_SCOPE_INSUFFICIENT"
+      }
+    ],
+    "message": "Request had insufficient authentication scopes.",
+    "status": "PERMISSION_DENIED"
+  }
+}

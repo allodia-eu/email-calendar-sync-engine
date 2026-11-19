@@ -47,6 +47,7 @@ fn provider(token: String) -> GmailProvider {
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     GmailProvider::new(client)
@@ -114,45 +115,12 @@ async fn live_nested_labels_carry_their_parent() {
     assert_eq!(orphan.parent, None);
 }
 
-#[tokio::test]
-async fn live_snapshot_then_delta_cycle() {
-    let Some(token) = token() else {
-        eprintln!("skipping live_snapshot_then_delta_cycle: GOOGLE_ACCESS_TOKEN unset");
-        return;
-    };
-    let provider = provider(token);
-
-    // A first sync is a reconciling snapshot; capture the account historyId cursor.
-    let snapshot = provider
-        .sync_email(&account(), None)
-        .await
-        .expect("snapshot");
-    assert!(snapshot.is_snapshot());
-    let SyncUpdate::Snapshot { objects, .. } = &snapshot.update else {
-        panic!("expected a snapshot");
-    };
-    assert!(!objects.is_empty(), "the test account has messages");
-    // Every snapshot message carries a provider-assigned thread and an envelope.
-    assert!(objects.iter().all(|m| m.thread.is_some()));
-    let cursor = snapshot.next_cursor.clone();
-    assert!(cursor.as_str().chars().all(|c| c.is_ascii_digit()));
-
-    // An immediate delta from that cursor must not error and must advance (or hold) the
-    // cursor — proving the real history.list request shape is accepted.
-    let delta = provider
-        .sync_email(&account(), Some(&cursor))
-        .await
-        .expect("delta");
-    assert!(!delta.is_snapshot(), "a delta from a live cursor");
-    let _ = &delta.next_cursor;
-}
-
-// NOTE: the aged-out-cursor → `HistoryExpired` → snapshot-restart recovery is proven
+// NOTE: the aged-out-cursor → `HistoryExpired` → backfill-restart recovery is proven
 // offline (`fetch::tests::delta_page_maps_a_404_to_history_expired`,
-// `provider::tests::sync_email_restarts_...`). It has no live test: a `startHistoryId`
-// only 404s once it ages out of Gmail's retained history window, which a fresh test
-// account never reaches (an id of "1" is still *inside* the window there and returns a
-// valid — large — delta, not a 404). See `tests/fixtures/README.md`.
+// `provider::tests::sync_email_backfills_again_...`, `pass::tests::an_expired_history_...`). It has
+// no live test: a `startHistoryId` only 404s once it ages out of Gmail's retained history window,
+// which a fresh test account never reaches (an id of "1" is still *inside* the window there and
+// returns a valid, large delta, not a 404). See `tests/fixtures/README.md`.
 
 #[tokio::test]
 async fn live_message_source_round_trips() {
@@ -165,8 +133,11 @@ async fn live_message_source_round_trips() {
         .sync_email(&account(), None)
         .await
         .expect("snapshot");
-    let SyncUpdate::Snapshot { objects, .. } = &snapshot.update else {
-        panic!("expected a snapshot");
+    let SyncUpdate::Delta {
+        changed: objects, ..
+    } = &snapshot.update
+    else {
+        panic!("a cursorless sync is an additive backfill");
     };
     // Try messages until one yields a source: the mutating live tests run concurrently on
     // this shared account, so any single pick can be deleted out from under us (a 404).
@@ -233,7 +204,11 @@ async fn live_send_returns_a_real_id_and_gmail_rewrites_the_message_id() {
     let draft = live_draft(&marker);
 
     let receipt = provider
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send");
     // Gmail returns the sent message's real id immediately (unlike SMTP/Graph sendMail).
@@ -271,7 +246,11 @@ async fn live_edit_mail_mark_read_and_flag_are_accepted() {
     let marker = format!("edit-p{}", std::process::id());
     // Send a throwaway to operate on, then exercise every edit verb's real request shape.
     let receipt = provider
-        .submit_email(&account(), &live_draft(&marker))
+        .submit_email(
+            &account(),
+            &live_draft(&marker),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send");
     let key = receipt.email_key;
@@ -307,7 +286,11 @@ async fn live_archive_to_all_mail_leaves_the_inbox_and_is_accepted_by_gmail() {
     // A self-addressed send lands in INBOX (and SENT), so there is an inbox membership to
     // leave. This is the shape the product archives.
     let receipt = provider
-        .submit_email(&account(), &live_draft(&marker))
+        .submit_email(
+            &account(),
+            &live_draft(&marker),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send");
     let key = receipt.email_key;
@@ -357,8 +340,11 @@ async fn labels_of(provider: &GmailProvider, key: &engine_core::ids::ProviderKey
         .sync_email(&account(), None)
         .await
         .expect("snapshot");
-    let SyncUpdate::Snapshot { objects, .. } = &snapshot.update else {
-        panic!("expected a snapshot");
+    let SyncUpdate::Delta {
+        changed: objects, ..
+    } = &snapshot.update
+    else {
+        panic!("a cursorless sync is an additive backfill");
     };
     objects
         .iter()
@@ -388,18 +374,28 @@ async fn live_a_label_change_comes_back_as_state_not_a_whole_message() {
     let provider = provider(token);
     let marker = format!("state-p{}", std::process::id());
     let receipt = provider
-        .submit_email(&account(), &live_draft(&marker))
+        .submit_email(
+            &account(),
+            &live_draft(&marker),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send");
     let key = receipt.email_key;
 
     // Take the cursor *after* the send, so the delta below carries the label change and not
     // the arrival — an id in `messagesAdded` is a new message and is fetched whole, which is
-    // the other branch.
-    let cursor = provider
+    // the other branch. A first sync ends on its reconcile, which then ends on the bare
+    // historyId a delta goes on from.
+    let backfill = provider
         .sync_email(&account(), None)
         .await
-        .expect("snapshot")
+        .expect("backfill")
+        .next_cursor;
+    let cursor = provider
+        .sync_email(&account(), Some(&backfill))
+        .await
+        .expect("reconcile")
         .next_cursor;
 
     provider

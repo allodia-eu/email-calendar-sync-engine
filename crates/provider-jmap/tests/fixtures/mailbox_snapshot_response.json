@@ -1,6 +1,26 @@
 {
   "methodResponses": [
     [
+      "Mailbox/query",
+      {
+        "accountId": "c",
+        "queryState": "qb2",
+        "canCalculateChanges": false,
+        "position": 0,
+        "total": 7,
+        "ids": [
+          "b",
+          "i",
+          "h",
+          "a",
+          "d",
+          "e",
+          "c"
+        ]
+      },
+      "0"
+    ],
+    [
       "Mailbox/get",
       {
         "accountId": "c",
@@ -177,7 +197,7 @@
         ],
         "notFound": []
       },
-      "0"
+      "1"
     ]
   ],
   "sessionState": "2f72d7c8"

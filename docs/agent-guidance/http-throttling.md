@@ -102,19 +102,21 @@ Surveyed across every adapter, because a throttle is not a provider-specific sym
 |---|---|---|---|---|---|
 | `provider-graph` | `429` (+ `Retry-After`) | **4 per mailbox** | Documented `MailboxConcurrency`, and measured: a sharp cliff, 4 clean over 460 requests and 5 refused 13% | **yes**, in `HttpTransport::new` | no — the status is the whole answer |
 | `provider-jmap` | `429`, method `rateLimit`/`overQuota`, **and a `400`** (below) | the session's `maxConcurrentRequests` | **The server states it** (RFC 8620 §2) — 4 on Stalwart, 10 on Fastmail | **yes**, in `JmapClient::connect`, once the session resolves | **yes**, `400` → `JmapThrottles` |
-| `provider-google` | **both**: `429` for concurrency, `403` for the per-minute quota | **between 48 and 64 per user**, measured | See "Gmail has two limits, and they are not the same limit" | yes, at `MAX_CONCURRENT_GETS` (20), comfortably under it | **yes**, `403` → `GoogleThrottles` |
-| `provider-caldav` + CardDAV | `429` (Stalwart); SabreDAV refuses nothing | **none found** — clean at widths 1–64 on both servers | Measured on two implementations; `provider-caldav/tests/live_concurrency.rs` | **no** | no — the status is the whole answer |
+| `provider-google` | **both**: `429` for concurrency, `403` for the per-minute quota | **between 48 and 64 per user**, measured | See "Gmail has two limits, and they are not the same limit" | yes, at `MAX_CONCURRENT_GETS` (20), comfortably under it, **and paces it** to the published quota (`provider-google/src/quota.rs`) | **yes**, `403` → `GoogleThrottles` |
+| `provider-caldav` + CardDAV | Stalwart: `429` for rate, **and a `400`** for concurrency (below); SabreDAV refuses nothing | **Stalwart: 4 per account**, its JMAP `maxConcurrentRequests` applied to DAV too and stated nowhere in DAV; SabreDAV: none found to 64 | Measured: `provider-caldav/tests/live_concurrency.rs` (rate) and `live_concurrency_refusal.rs` (width) | **no** — no DAV server states a number to narrow to | **yes**, `400` → `DavThrottles` |
 | `provider-imap` | `NO [LIMIT]` to `LOGIN`, a 4xx to SMTP `AUTH` → `RateLimited`, waited out by nobody (`imap-smtp.md`) | 1 **per connection** | Not HTTP, and one connection is one command at a time | n/a — not an HTTP adapter | n/a |
 
 ⚠️ **Graph and Gmail both have a concurrency ceiling; Graph's is the one a gate is sized
 against.** Graph's is 4 and an ordinary pass walks straight into it. Gmail's is between 48 and
 64 and nothing this engine does goes near it — the adapter fans out 20 wide — so the gate is
 narrowed there for a different reason, stated below. JMAP's is honoured because the server
-states a number and ignoring a stated limit is indefensible whether or not it bites. On the
-DAV servers the thing that refuses is a **rate**, and a width bound does not control a rate:
-halving the width of a drain that then runs twice as long delivers the same requests per
-second. Keep the two quantities apart — conflating them is how the Gmail figures below came to
-be wrong twice, in opposite directions.
+states a number and ignoring a stated limit is indefensible whether or not it bites. Stalwart
+holds DAV to the same 4, but nothing in DAV states it, so the DAV adapter waits the refusal out
+instead of narrowing to a number it would have to guess for every other server. What a steady
+DAV sync meets is a **rate**, and a width bound does not control a rate: halving the width of a
+drain that then runs twice as long delivers the same requests per second. Keep the two
+quantities apart — conflating them is how the Gmail figures below came to be wrong twice, in
+opposite directions.
 
 ⚠️ **`provider-imap`'s `1` is the odd one out among the *widths*, and it is the reason
 `min`-ing these into a fan-out is wrong.** Every HTTP adapter's number is a bound on the
@@ -238,6 +240,35 @@ Consequences:
   as a guarantee, and this was within an hour of being written up as one. Treat the instant as
   a bonus: two refusals in three carry nothing but the classification, and a host backs off on
   its own schedule there.
+- **The gate paces Gmail to its quota, so this adapter alone never meets the `403`.** Google
+  publishes the budget and the price of every call
+  (<https://developers.google.com/workspace/gmail/api/reference/quota>, for every project
+  created on or after 1 May 2026): **20 units to fetch a message, 60 for its source**, 5 to
+  list a page, 2 for a history page, against 6,000 per user per minute. Measured on the test
+  account: 299 metadata fetches succeeded in the minute before the first refusal. A snapshot
+  page of a hundred messages is therefore 2,005 units, three pages a minute at most, and a
+  20-wide fan-out spends a minute's budget in seconds: a pass that met the wall partway and
+  started again from the top next time never finished a large mailbox. So the adapter states
+  a budget on the account's gate (`RequestGate::pace_to`, 5,400 units a minute: nine tenths,
+  leaving the rest to the user's other clients of the same project) and charges every call
+  its price before sending it (`RequestGate::spend`). The budget is the gate's for the gate's
+  own reason: the snapshot, the body warm and a second core all spend one user's units.
+  Calls are served in the order they asked, so a 60-unit body fetch is never starved by a
+  stream of 20-unit gets. Calendar and People are billed under quotas of their own and cost
+  nothing here. `provider-google/tests/live_quota_pace.rs` drains the test mailbox three times
+  back to back, about 11,600 units, with no refusal; without the pace the second drain is
+  refused. A project created before May 2026 keeps Google's older, larger quota, and this pace
+  is merely slower than it needs to be there.
+- What still meets the `403` is another client of the same user: the app on a second device
+  spends the same budget, and no gate in this process can see it.
+- **Three things the pace does not count, each decided rather than overlooked.** A call is
+  charged once, before `send_retrying`, so its retries go out uncharged: they only happen while
+  the server is already refusing, and whether Google bills a refused call is unmeasured. A
+  reservation is not given back when the call that made it is dropped (a page's buffered gets,
+  after a refusal), which errs towards waiting longer than needed. And a call is charged before
+  it takes a lane, so calls whose turn came while every lane was busy go out together when lanes
+  free, at most the lane ceiling's worth (20); holding a lane while waiting on the pace instead
+  would let a queue of Gmail calls starve the account's calendar and contacts of lanes.
 - A quota window is tens of seconds, so when the instant *is* named it is past the absorb
   bound and goes back to the caller rather than being slept on. Proved end to end against the
   live account in `tests/live_quota_throttle.rs` — refused, told 37.5 s, came back then,
@@ -255,13 +286,25 @@ shape is the result, not the numbers:
 | fixed 25/s, widths 1 · 4 · 16 · 64 | 0% refused throughout | 0% refused throughout |
 | fixed width 8, rates 10 · 50 · 150 · 400/s | 0% · 0% · **a few %** · **tens of %** | 0% throughout |
 
-So **neither bounds concurrency**; Stalwart bounds rate (tripping between 50/s and 150/s, and
-saying so with a proper `429`), and SabreDAV refused nothing at all up to 400/s. The second arm
-matters as much as the first: without a rate that *does* provoke a refusal, "clean at every
-width" would just mean the probe never pushed hard enough.
+So at a steady rate the width bound is not the lever on either server; Stalwart bounds rate
+(tripping between 50/s and 150/s, and saying so with a proper `429`), and SabreDAV refused
+nothing at all up to 400/s. The second arm matters as much as the first: without a rate that
+*does* provoke a refusal, "clean at every width" would just mean the probe never pushed hard
+enough.
 
-That is why no DAV adapter narrows the gate — now on evidence rather than on nobody having
-looked.
+⚠️ **That table once read "neither bounds concurrency", and for Stalwart it was wrong.** At 25/s
+a request finishes long before the next arrives, so about one is ever in flight whatever the
+width bound allows, and arm A cannot see a ceiling on requests *in flight*. Offered all at once,
+Stalwart refuses past **4 per account** (48 simultaneous `PUT`s: 34 refused; split across two
+accounts, half the refusals), with a `400` and JMAP's `maxConcurrentRequests` problem body — the
+same cap its JMAP session states, on an endpoint that states nothing (#332). The refusal also
+carries `RateLimit-Policy: "concurrent-requests";q=4` (the IETF `RateLimit` header draft), which
+the engine does not read. `live_concurrency_refusal.rs` offers 24 creates at once through one
+provider and requires every one to land.
+
+No DAV adapter narrows the gate even so: the number is Stalwart's alone and arrives only on a
+refusal, so narrowing every DAV account to it would cap iCloud or Fastmail at a guess. The
+refusal is waited out instead (below).
 
 ### One gate, one account — the scope is the whole difficulty
 
@@ -278,14 +321,15 @@ process-wide, so clone it per account through `gated` rather than building a sec
 
 ## When the status is not the answer
 
-Two of the four adapters signal a throttle with a status that reads as something else, and
-**each of them already knows it** — the verdict simply arrived after the retry decision, which
+Three of the four HTTP adapters signal a throttle with a status that reads as something else,
+and **each of them already knows it** — the verdict simply arrived after the retry decision, which
 had read the status and moved on.
 
 | Adapter | Arrives as | Reads as | Really is |
 |---|---|---|---|
 | `provider-google` | `403 PERMISSION_DENIED` | no permission | the per-minute quota, when `errors[0].reason` is a rate-limit reason |
 | `provider-jmap` | `400` + `urn:ietf:params:jmap:error:limit` | a bad request | too many at once, when `limit` is `maxConcurrentRequests` |
+| `provider-caldav` | the same `400` and body, from Stalwart's DAV endpoint | a bad request | the same: Stalwart counts DAV and JMAP requests against one cap |
 
 **The adapter reads the body; `engine-http` still owns every question about waiting.** A
 `RetryConfig` carries a `ThrottleClassifier` the adapter supplies through `classifying`, the
@@ -299,7 +343,7 @@ Three properties hold the design together:
   is waited out on exactly the path it always was. A classifier can turn a reply that was being
   handed back into one that is waited out, and can never do the reverse.
 - **Bodies are read only where the adapter asked.** `reads_body_of(status)` is consulted before
-  anything is buffered, and claims `403` for Google and `400` for JMAP — nothing else. A
+  anything is buffered, and claims `403` for Google and `400` for JMAP and DAV — nothing else. A
   classifier that claimed `200` would buffer every page the adapter ever fetched.
 - **Nothing is reconstructed.** Reading a body used to mean losing the reply —
   `Response::bytes` consumes `self` — so the first version of this took the reply apart and
@@ -342,12 +386,13 @@ hit. Only `maxConcurrentRequests` is one a client clears by waiting — `maxSize
 the real server precisely so the reader can be shown discriminating between them.
 
 RFC 8620 scopes `maxConcurrentRequests` to the API endpoint and defines no companion for
-downloads, but a server may apply one number to more than that. **Stalwart applies it to
-uploads and, as measured here, to nothing else:** 300 simultaneous API calls and 300
-simultaneous blob *downloads* were all answered `200`, while 16 simultaneous uploads drew six
-`400`s — reported under the name `maxConcurrentRequests` even though the session advertises a
-separate `maxConcurrentUpload`. One counter, two names. It still defaults to `1` when a session
-omits it, rather than to a guess.
+downloads, but a server may apply one number to more than that. **Of the JMAP endpoint's
+traffic, Stalwart applies it to uploads and, as measured here, to nothing else:** 300
+simultaneous API calls and 300 simultaneous blob *downloads* were all answered `200`, while 16
+simultaneous uploads drew six `400`s — reported under the name `maxConcurrentRequests` even
+though the session advertises a separate `maxConcurrentUpload`. One counter, two names, and it
+holds Stalwart's DAV endpoint to the same number (above). It still defaults to `1` when a
+session omits it, rather than to a guess.
 
 That is also why the refusal is only reachable at all with **more than one client**:
 `JmapClient::connect` narrows the account's gate to the stated number, so this adapter alone
@@ -357,16 +402,13 @@ account, which is what that sentence looks like in practice.
 
 ## Known gaps
 
-- **Rate is unbounded everywhere.** The gate bounds *width*, and on three of the five adapters
-  width is not the quantity the server counts — Gmail bills units per minute, Stalwart's DAV
-  endpoint trips somewhere between 50/s and 150/s, and nothing in the engine paces requests per
-  second. What exists now is the **reactive** half: a rate limit, once hit, is classified,
-  waited out if brief, and otherwise reported with the instant it clears. The proactive half — a token bucket per account, which is a different instrument
-  from `RequestGate` and would need a rate to be stated or learned — is deliberately not built.
-  Two reasons, and the second is the real one: no server in this set states a rate the way JMAP
-  states a width, so any bucket would be a guess; and a guess low enough to be safe on a
-  drained quota is a guess that halves throughput on a rested one. Revisit it if a host reports
-  quota refusals that the backoff does not absorb.
+- **Rate is unbounded everywhere but Gmail.** Stalwart's DAV endpoint trips somewhere between
+  50/s and 150/s and nothing paces it: no server but Google states a rate, so a budget there
+  would be a guess, and a guess low enough to be safe on a drained quota halves throughput on a
+  rested one. What exists for them is the **reactive** half: a rate limit, once hit, is
+  classified, waited out if brief, and otherwise reported with the instant it clears. Gmail is
+  paced because Google publishes both the budget and the price of every call ("The gate paces
+  Gmail" above).
 - **A host that ignores `retry_after` is worse off than one that did not have it**, for a
   wait between five seconds and a minute: it now gets a failed scope where a task used to
   sleep and succeed. That is the deliberate trade — the sleep was holding the account's gate
@@ -390,6 +432,8 @@ account, which is what that sentence looks like in practice.
   meets.
 - A transport failure (connection reset, timeout) is not retried here. Whether the server
   acted is unknowable from this layer, and the sync pass above already repeats a failed pass.
+  What the funnel does report is whether the request may have been received, which keeps a
+  submission from being sent twice (`deadlines.md`).
 - `Method::is_idempotent` answers `false` for the WebDAV extension methods, so a `503` on
   `PROPFIND`/`REPORT` is not retried even though their own RFCs say a replay is safe.
   Conservative in the safe direction.

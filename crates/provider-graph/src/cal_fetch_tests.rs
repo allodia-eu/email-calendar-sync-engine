@@ -73,7 +73,7 @@ async fn events_snapshot_keeps_masters_and_singles_and_drops_occurrences() {
     assert_eq!(page.kind, SyncKind::Snapshot);
     assert_eq!(page.changed.len(), 3, "master + 2 singles kept");
     assert_eq!(page.present.len(), 3);
-    assert!(page.removed.is_empty());
+    assert_eq!(page.removed, []);
     // Exactly one of the kept events is the recurring master.
     assert_eq!(page.changed.iter().filter(|e| e.is_recurring()).count(), 1);
     // One edited occurrence, plus the two the master says were removed.
@@ -149,10 +149,11 @@ async fn a_series_master_is_re_read_in_its_own_zone_not_the_display_zone() {
         .iter()
         .find(|(url, _)| url.contains("calendarView/delta"))
         .expect("the delta was fetched");
-    assert_eq!(
-        delta_prefer.as_deref(),
-        Some("outlook.timezone=\"Pacific/Auckland\""),
-        "the pass itself still reads in the host's display zone"
+    assert!(
+        delta_prefer
+            .as_deref()
+            .is_some_and(|p| p.starts_with("outlook.timezone=\"Pacific/Auckland\"")),
+        "the pass itself still reads in the host's display zone: {delta_prefer:?}"
     );
     let (_, master_prefer) = asked
         .iter()
@@ -162,6 +163,39 @@ async fn a_series_master_is_re_read_in_its_own_zone_not_the_display_zone() {
         master_prefer.as_deref(),
         Some("outlook.timezone=\"W. Europe Standard Time\""),
         "the master is read in its own originalStartTimeZone"
+    );
+}
+
+#[tokio::test]
+async fn the_delta_asks_for_each_body_as_text() {
+    // An HTML body otherwise reaches the description only as `bodyPreview`, cut at 255
+    // characters, and a notes edit written back from it takes a Teams meeting off the event:
+    // Exchange keeps the meeting only while the body still holds its block (measured).
+    let (client, prefers) = fake_client_recording(
+        delta_routes()
+            .into_iter()
+            .map(|(key, doc)| (key, Ok(doc)))
+            .collect(),
+    );
+    events_page(
+        &client,
+        &calendar_id(),
+        None,
+        None,
+        window(),
+        "Europe/Amsterdam",
+    )
+    .await
+    .unwrap();
+
+    let asked = prefers.lock().unwrap().clone();
+    let (_, delta_prefer) = asked
+        .iter()
+        .find(|(url, _)| url.contains("calendarView/delta"))
+        .expect("the delta was fetched");
+    assert_eq!(
+        delta_prefer.as_deref(),
+        Some("outlook.timezone=\"Europe/Amsterdam\", outlook.body-content-type=\"text\"")
     );
 }
 
@@ -256,7 +290,7 @@ async fn a_delta_tombstones_a_removed_event() {
     .await
     .unwrap();
     assert_eq!(page.kind, SyncKind::Delta);
-    assert!(page.changed.is_empty());
+    assert_eq!(page.changed, []);
     assert!(overrides.is_empty());
     assert_eq!(page.removed.len(), 1);
     assert_eq!(page.removed[0].as_str(), "evt-gone");

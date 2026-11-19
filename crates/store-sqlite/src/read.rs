@@ -9,6 +9,7 @@ use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey},
     sync::SyncScope,
     time::{ExpansionWindow, Horizon, UtcDateTime},
+    version::CollectionTag,
     write::PendingOpId,
 };
 use engine_store::{
@@ -36,6 +37,18 @@ impl<C: Clock> StoreRead for SqliteStore<C> {
     async fn expansion_window(&self, scope: &SyncScope) -> Result<Option<ExpansionWindow>> {
         let key = scope_key(scope);
         self.read(move |conn| crate::window_ops::expansion_window(conn, &key))
+            .await
+    }
+
+    async fn collection_tag(&self, scope: &SyncScope) -> Result<Option<CollectionTag>> {
+        let key = scope_key(scope);
+        self.read(move |conn| crate::window_ops::collection_tag(conn, &key))
+            .await
+    }
+
+    async fn fetch_window(&self, scope: &SyncScope) -> Result<Option<Horizon>> {
+        let key = scope_key(scope);
+        self.read(move |conn| crate::window_ops::fetch_window(conn, &key))
             .await
     }
 
@@ -102,12 +115,14 @@ impl<C: Clock> StoreRead for SqliteStore<C> {
     }
 
     async fn list_pending_ops(&self, account: AccountId) -> Result<Vec<PendingOpRow>> {
-        self.read(move |conn| outbox_ops::list_pending_ops(conn, &account))
+        let now = self.clock.now();
+        self.read(move |conn| outbox_ops::list_pending_ops(conn, &account, now))
             .await
     }
 
     async fn pending_op_state(&self, id: PendingOpId) -> Result<Option<PendingOpState>> {
-        self.read(move |conn| outbox_ops::pending_op_state(conn, id))
+        let now = self.clock.now();
+        self.read(move |conn| outbox_ops::pending_op_state(conn, id, now))
             .await
     }
 

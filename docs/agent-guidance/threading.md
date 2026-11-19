@@ -84,7 +84,7 @@ or `Engine::rebuild_thread_index` (`engine-sync` `threading.rs`).
   deleted keeps a name no remaining member owns. Both are rare (`References` accumulates every
   ancestor) and both leave a thread that is still unique and still stable.
 - IMAP must fetch the `References` header for this to work — it is **not** in the IMAP
-  `ENVELOPE`, so `provider-imap` fetches `BODY.PEEK[HEADER.FIELDS (REFERENCES)]` alongside
+  `ENVELOPE`, so `provider-imap` fetches it in a `BODY.PEEK[HEADER.FIELDS (…)]` item alongside
   `ENVELOPE` (`imap-smtp.md`).
 
 ## Host responsibility

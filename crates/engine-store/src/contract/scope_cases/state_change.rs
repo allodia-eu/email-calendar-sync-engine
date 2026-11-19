@@ -2,7 +2,7 @@
 
 use engine_core::{
     ids::ProviderKey,
-    mail::{Keyword, MailFlags, MailState, MailStateChange, SystemKeyword},
+    mail::{Importance, Keyword, MailFlags, MailState, MailStateChange, SystemKeyword},
     search_index::{MailRow, MembershipKind, MembershipRow, project_state_change},
     sync::{SyncState, SyncUpdate},
     time::UtcDateTime,
@@ -26,6 +26,7 @@ fn seeded_row(key: &str) -> MailRow {
         date_utc: Some("2026-01-03T00:00:00Z".parse::<UtcDateTime>().unwrap()),
         flags: MailFlags::default(),
         has_attachment: true,
+        importance: Importance::High,
         size_octets: None,
         from_name: Some("Alice".to_owned()),
         from_addr: Some("alice@example.com".to_owned()),
@@ -148,6 +149,7 @@ pub(in crate::contract) async fn state_change_moves_flags_and_leaves_the_rest<
         "the ordering date survives, so the row does not jump to the bottom of the list"
     );
     assert!(listed.mail.has_attachment);
+    assert_eq!(listed.mail.importance, Importance::High);
     assert_eq!(
         listed.mail.revisions.mod_seq.map(ModSeq::get),
         Some(77),

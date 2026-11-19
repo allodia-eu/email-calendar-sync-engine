@@ -16,12 +16,12 @@
 #![allow(dead_code, unreachable_pub)]
 
 use engine_core::{
-    ids::{AccountId, MailboxId},
+    ids::{AccountId, MailboxId, SharedAccountId},
     mail::Mailbox,
     sync::SyncUpdate,
 };
 use engine_provider::Provider;
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{Credentials, ImapAccount, ImapConfig, ImapProvider};
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
 /// A live IMAP server this suite can run against.
@@ -60,6 +60,14 @@ pub const DOVECOT_REV2: Server = Server {
     password: "dovecot-alice-pw",
 };
 
+/// The owners of the two stores shared with the seeded account on **every** harness: one
+/// sharing its whole mailbox with every right, one sharing its INBOX read-only (`lr`).
+/// Stalwart makes the first a group principal, Dovecot a user granting ACLs; the addresses
+/// are the same on both, which is what lets one contract run against each.
+pub const FULL_SHARE_OWNER: &str = "support@test.local";
+/// See [`FULL_SHARE_OWNER`].
+pub const READ_ONLY_SHARE_OWNER: &str = "bob@test.local";
+
 /// Every server a suite should run against, skipping those whose variable is unset.
 pub const SERVERS: [Server; 3] = [STALWART, DOVECOT_REV1, DOVECOT_REV2];
 
@@ -80,6 +88,26 @@ pub async fn connect(server: &Server, test: &str) -> Option<LiveProvider> {
 /// Connects to `server` bound to `mailbox`, named by its **decoded** identity. Binding is
 /// what makes the transport put the wire form back on the `SELECT` that follows.
 pub async fn connect_to(server: &Server, mailbox: &str, test: &str) -> Option<LiveProvider> {
+    dial(server, None, mailbox, test).await
+}
+
+/// Like [`connect_to`], scoped to the shared store `handle` names — the binding a host makes
+/// after discovery (`ImapAccount::with_shared_account`).
+pub async fn connect_shared(
+    server: &Server,
+    handle: &SharedAccountId,
+    mailbox: &str,
+    test: &str,
+) -> Option<LiveProvider> {
+    dial(server, Some(handle), mailbox, test).await
+}
+
+async fn dial(
+    server: &Server,
+    shared: Option<&SharedAccountId>,
+    mailbox: &str,
+    test: &str,
+) -> Option<LiveProvider> {
     let Ok(addr) = std::env::var(server.addr_var) else {
         eprintln!(
             "skipping {test} on {}: {} unset",
@@ -88,16 +116,18 @@ pub async fn connect_to(server: &Server, mailbox: &str, test: &str) -> Option<Li
         return None;
     };
     let host = addr.rsplit_once(':').map_or("localhost", |(host, _)| host);
-    let config = ImapConfig::new(addr.as_str(), host, server.account, server.password);
-    Some(
-        ImapProvider::connect(
-            &config,
-            no_verify_connector(),
-            MailboxId::try_from(mailbox).unwrap(),
-        )
+    let config = ImapConfig::new(
+        addr.as_str(),
+        host,
+        Credentials::password(server.account, server.password),
+    );
+    let mut account = ImapAccount::connect(&config, no_verify_connector())
         .await
-        .unwrap_or_else(|err| panic!("connect to the {} harness: {err}", server.label)),
-    )
+        .unwrap_or_else(|err| panic!("connect to the {} harness: {err}", server.label));
+    if let Some(handle) = shared {
+        account = account.with_shared_account(handle.clone());
+    }
+    Some(account.provider(MailboxId::try_from(mailbox).unwrap()))
 }
 
 /// One account's folders as the provider reports them.

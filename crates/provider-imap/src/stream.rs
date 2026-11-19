@@ -22,11 +22,12 @@
 //! Previews are **not** hydrated here (reading bodies would defeat fast metadata
 //! streaming); a host fetches bodies on demand for the rows it shows.
 //!
-//! The returned stream holds the connection's [`Mutex`](tokio::sync::Mutex) guard for
-//! its whole lifetime (the session is stateful and sequential — one command at a
-//! time), so a host must drive **one** email stream over a given connection at a time;
-//! it must not poll two concurrently over the same connection (each folder gets its
-//! own connection, so the per-folder fan-out is unaffected).
+//! The returned stream borrows the connection mutably for its whole lifetime (the session is
+//! stateful and sequential — one command at a time). The provider lends it one from the
+//! account's pool for the pass (`crate::provider`), so concurrent passes run on separate
+//! connections.
+
+use std::sync::Arc;
 
 use engine_core::{
     ids::{MailboxId, ProviderKey},
@@ -36,22 +37,23 @@ use engine_core::{
 use engine_provider::{EmailChunk, PassMode, ProviderError, ProviderResult, SyncKind, split_page};
 use futures_util::Stream;
 use time::Month;
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    sync::Mutex,
-};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     cursor::MailboxCursor,
     mail::message_from_fetch,
-    provider::format_imap_date,
-    sync::{FETCH_ITEMS, effective_uid_next, sync_page_selected, uid_set_spec},
+    metadata_fetch::{FETCH_ITEMS, needs_structure, settle_across, spare_helpers},
+    parse::FetchRow,
+    pool::ImapPool,
+    sync::{effective_uid_next, sync_page_selected, uid_set_spec},
     transport::Connection,
+    transport_command::format_imap_date,
 };
 
 /// Streams the bound mailbox's email for one pass. See the module docs.
 pub(crate) fn stream_email<'a, S>(
-    connection: &'a Mutex<Connection<S>>,
+    conn: &'a mut Connection<S>,
+    pool: Option<&'a Arc<ImapPool<S>>>,
     mailbox: &'a MailboxId,
     cursor: Option<&'a SyncState>,
     window: SyncWindow,
@@ -59,10 +61,10 @@ pub(crate) fn stream_email<'a, S>(
     chunk_size: usize,
 ) -> impl Stream<Item = ProviderResult<EmailChunk>> + Send + 'a
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
 {
     async_stream::try_stream! {
-        let mut conn = connection.lock().await;
+        let fetch_batch = conn.negotiated.within_message_limit(fetch_batch);
         let qresync = conn.qresync_enabled();
         let select = if qresync {
             conn.select_condstore(mailbox.as_str()).await?
@@ -70,8 +72,8 @@ where
             conn.select(mailbox.as_str()).await?
         };
         let uid_validity = select.uid_validity;
-        let uid_next = effective_uid_next(&mut conn, &select).await?;
-        let prior = cursor.and_then(MailboxCursor::decode);
+        let uid_next = effective_uid_next(conn, &select).await?;
+        let prior = cursor.and_then(MailboxCursor::current);
         let since = imap_since(window)?;
 
         // A cold backfill: a first sync (no cursor), or one resuming below a prior
@@ -91,28 +93,31 @@ where
             // expunge changes that happen, *during* the backfill are caught by the first
             // delta afterwards), preserved across resumes — the resumed SELECT's fresher
             // values would otherwise skip everything that changed since the kill.
-            let frontier = MailboxCursor {
-                uid_validity,
-                uid_next: prior.map_or(uid_next, |p| p.uid_next),
-                highest_modseq: prior.and_then(|p| p.highest_modseq).or(select.highest_modseq),
-                backfill_low: None,
-            };
             // A backfill that STARTS fresh this session (no prior watermark) sees the
             // whole in-window set in one run, so its completing chunk reconciles: it
             // tombstones local rows the server no longer has (the `reset`/`clear`/
             // normalizer contract). A *resumed* backfill only saw part of the set this
             // session, so it completes additively (no tombstone) — the reconcile lands
-            // on the next uninterrupted pass.
+            // on the next uninterrupted pass, which its cursor therefore may not skip.
             let is_fresh = prior.is_none();
+            let frontier = MailboxCursor {
+                uid_validity,
+                uid_next: prior.map_or(uid_next, |p| p.uid_next),
+                highest_modseq: prior.and_then(|p| p.highest_modseq).or(select.highest_modseq),
+                backfill_low: None,
+                reconciled: is_fresh,
+                version: crate::cursor::CURSOR_VERSION,
+            };
             let (groups, windowed_total) =
-                backfill_groups(&mut conn, high, since.as_deref(), fetch_batch).await?;
+                backfill_groups(conn, high, since.as_deref(), fetch_batch).await?;
             // The progress denominator: the in-window count when bounded, else the
             // mailbox's message count from SELECT.
             let total = windowed_total
                 .or_else(|| Some(usize::try_from(select.exists).unwrap_or(usize::MAX)));
             let empty = groups.is_empty();
             let scan = backfill_scan(
-                &mut conn,
+                conn,
+                pool,
                 mailbox,
                 uid_validity,
                 groups,
@@ -147,7 +152,7 @@ where
             // Reuse the SELECT already done above — the mailbox stays selected across
             // the pass, so the page path must not re-SELECT.
             let page = sync_page_selected(
-                &mut conn,
+                conn,
                 mailbox,
                 &select,
                 uid_next,
@@ -206,6 +211,7 @@ where
 #[allow(clippy::too_many_arguments)] // the fetch inputs plus the reconcile flag are all distinct
 fn backfill_scan<'c, S>(
     conn: &'c mut Connection<S>,
+    pool: Option<&'c Arc<ImapPool<S>>>,
     mailbox: &'c MailboxId,
     uid_validity: u32,
     groups: Vec<(String, u32)>,
@@ -215,7 +221,7 @@ fn backfill_scan<'c, S>(
     is_fresh: bool,
 ) -> impl Stream<Item = ProviderResult<EmailChunk>> + 'c
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
 {
     async_stream::try_stream! {
         let last_index = groups.len().saturating_sub(1);
@@ -225,12 +231,52 @@ where
         for (index, (spec, group_low)) in groups.into_iter().enumerate() {
             conn.uid_fetch_stream_start(&spec, FETCH_ITEMS).await?;
             let mut buf: Vec<Message> = Vec::new();
-            while let Some(row) = conn.next_fetch_row().await? {
+            // A row goes out as its headers arrive, so the list fills before the structure fetch
+            // below has run: on Yahoo most mail is multipart and that fetch takes seconds a
+            // group. One the headers left the attachment flag open for goes out as having none,
+            // which is how an open row reads, and a copy waits for the group's metadata to end;
+            // those are then settled at once over this connection and any spare ones
+            // (`crate::metadata_fetch`), and only a row whose structure shows an attachment goes
+            // out again, before the group's checkpoint.
+            let mut open: Vec<FetchRow> = Vec::new();
+            let mut corrected: Vec<FetchRow> = Vec::new();
+            let mut settled = false;
+            loop {
+                let (row, first_seen) = match conn.next_fetch_row().await? {
+                    Some(row) => {
+                        if needs_structure(&row) {
+                            open.push(row.clone());
+                        }
+                        (row, true)
+                    }
+                    None if !settled && !open.is_empty() => {
+                        let helpers =
+                            spare_helpers(pool, mailbox.as_str(), uid_validity, open.len()).await;
+                        corrected = settle_across(conn, helpers, &mut open).await?;
+                        corrected.retain(|row| row.has_attachment == Some(true));
+                        settled = true;
+                        continue;
+                    }
+                    None => match corrected.pop() {
+                        Some(row) => (row, false),
+                        None => break,
+                    },
+                };
                 let message = message_from_fetch(&row, mailbox, uid_validity);
-                if is_fresh {
+                if is_fresh && first_seen {
                     present.push(message.id.key().clone());
                 }
-                buf.push(message);
+                // A correction whose first copy has not gone out yet takes its place, so one chunk
+                // never names a message twice.
+                let held = if first_seen {
+                    None
+                } else {
+                    buf.iter_mut().find(|held| held.id == message.id)
+                };
+                match held {
+                    Some(held) => *held = message,
+                    None => buf.push(message),
+                }
                 if chunk_size != 0 && buf.len() >= chunk_size {
                     // An intermediate chunk of this group: visible, cursor held.
                     yield EmailChunk::additive_held(core::mem::take(&mut buf), Vec::new(), total);
@@ -252,7 +298,11 @@ where
                 };
             } else {
                 // An intermediate group checkpoints its lowest UID (the resume point).
-                let checkpoint = MailboxCursor { backfill_low: Some(group_low), ..*frontier };
+                let checkpoint = MailboxCursor {
+                    backfill_low: Some(group_low),
+                    reconciled: false,
+                    ..*frontier
+                };
                 yield EmailChunk::additive(changed, Vec::new(), total, checkpoint.encode());
             }
         }

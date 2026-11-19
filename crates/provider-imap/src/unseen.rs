@@ -22,10 +22,10 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     error::{ImapError, ImapResult},
+    mail::is_hierarchy_level,
     parse::ListRow,
     tokenize::{Item, items_of},
     transport::Connection,
-    transport_command::list_command,
 };
 
 /// How many mailboxes the per-mailbox fallback will probe in one pass. A server
@@ -36,36 +36,6 @@ use crate::{
 const MAX_STATUS_PROBES: usize = 100;
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
-    /// `LIST "" "*" RETURN (SPECIAL-USE STATUS (UNSEEN))` — every mailbox, its role and
-    /// its unread count in one round trip. Only valid when the server advertised
-    /// `LIST-STATUS`; the `SPECIAL-USE` option rides along only where that too was
-    /// advertised.
-    ///
-    /// Both options are needed, because an **extended** `LIST` returns exactly the
-    /// extended data its options name (RFC 5258 §3): asking only for the counts is how a
-    /// folder list ends up with every badge and no roles, on the same server whose plain
-    /// `LIST` volunteers them.
-    ///
-    /// Returns the rows and the counts keyed by mailbox name. A server may answer a
-    /// `LIST` row with no `STATUS` line (it does that for `\Noselect` containers, which
-    /// hold no messages to count), so the map is deliberately sparse rather than one
-    /// entry per row.
-    pub(crate) async fn list_with_unseen(
-        &mut self,
-    ) -> ImapResult<(Vec<ListRow>, HashMap<String, u32>)> {
-        let response = self
-            .command(&list_command(
-                self.negotiated.must_request_special_use(),
-                true,
-            ))
-            .await?;
-        // Untagged only: `LIST` and `STATUS` data never rides the completion line, and
-        // reading it as though it might invents a mailbox out of the server's prose.
-        let lines = response.untagged();
-        let rows = crate::parse::parse_list(lines)?;
-        Ok((rows, parse_status_unseen(lines)))
-    }
-
     /// `STATUS <mailbox> (UNSEEN)` — one mailbox's unread count, or `None` if the
     /// server answered without one.
     ///
@@ -118,22 +88,22 @@ pub(crate) fn parse_status_unseen(lines: &[Vec<u8>]) -> HashMap<String, u32> {
 /// The `UNSEEN` value from a `STATUS` attribute list, or `None` when the server did
 /// not return that attribute.
 fn unseen_of(attributes: &[Item]) -> Option<u32> {
-    attributes
-        .chunks_exact(2)
-        .find(|pair| {
-            pair[0]
-                .as_atom()
+    let (pairs, _) = attributes.as_chunks::<2>();
+    pairs
+        .iter()
+        .find(|[name, _]| {
+            name.as_atom()
                 .is_some_and(|atom| atom.eq_ignore_ascii_case("UNSEEN"))
         })
-        .and_then(|pair| pair[1].as_atom())
+        .and_then(|[_, value]| value.as_atom())
         .and_then(|value| value.parse().ok())
 }
 
 /// Fills in every listed mailbox's unread count with one `STATUS` each — the fallback
 /// for a server without `LIST-STATUS`.
 ///
-/// `\Noselect` rows are skipped (they are hierarchy nodes, and `STATUS` on one is an
-/// error, not a zero), and a mailbox the server *refuses* (`NO`/`BAD`) is left uncounted
+/// `\Noselect` and `\NonExistent` rows are skipped (they are hierarchy nodes, and `STATUS` on one
+/// is an error, not a zero), and a mailbox the server *refuses* (`NO`/`BAD`) is left uncounted
 /// rather than failing the whole folder list — one unreadable folder must not cost the
 /// user every other folder's badge. Probing stops at [`MAX_STATUS_PROBES`].
 ///
@@ -155,7 +125,7 @@ where
     let mut counts = HashMap::new();
     for row in rows
         .iter()
-        .filter(|row| !has_noselect(&row.attributes))
+        .filter(|row| !is_hierarchy_level(&row.attributes))
         .take(MAX_STATUS_PROBES)
     {
         match connection.status_unseen(&row.name).await {
@@ -167,13 +137,6 @@ where
         }
     }
     Ok(counts)
-}
-
-/// Whether a `LIST` row carries `\Noselect` — a container that holds no messages.
-fn has_noselect(attributes: &[String]) -> bool {
-    attributes
-        .iter()
-        .any(|attribute| attribute.eq_ignore_ascii_case("\\Noselect"))
 }
 
 #[cfg(test)]

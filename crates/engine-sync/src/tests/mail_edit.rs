@@ -9,6 +9,14 @@ fn target() -> ProviderKey {
     ProviderKey::new("imap:v1:u42@INBOX").unwrap()
 }
 
+/// The edit the server applied; a test whose provider accepts every edit expects nothing else.
+fn applied(sent: crate::MailEditSent) -> crate::MailEditOutcome {
+    match sent {
+        crate::MailEditSent::Applied(outcome) => outcome,
+        crate::MailEditSent::Queued { .. } => panic!("the edit stayed queued"),
+    }
+}
+
 #[tokio::test]
 async fn edit_mail_enqueues_then_applies_and_records_success() {
     let provider = FakeMail::new(vec![], vec![]);
@@ -25,6 +33,7 @@ async fn edit_mail_enqueues_then_applies_and_records_success() {
     )
     .await
     .unwrap();
+    let outcome = applied(outcome);
 
     // The edit resolved to the target message key and reached terminal success.
     assert_eq!(outcome.message_key, target());
@@ -98,6 +107,7 @@ async fn distinct_idempotency_keys_let_two_edits_of_one_message_both_run() {
     )
     .await
     .unwrap();
+    let first = applied(first);
     let second = edit_mail(
         &provider,
         &store,
@@ -109,6 +119,7 @@ async fn distinct_idempotency_keys_let_two_edits_of_one_message_both_run() {
     )
     .await
     .unwrap();
+    let second = applied(second);
 
     assert_ne!(first.op, second.op);
     assert_eq!(
@@ -174,6 +185,7 @@ async fn an_edit_applies_behind_a_backlog_of_unresolved_ops() {
     )
     .await
     .unwrap();
+    let outcome = applied(outcome);
 
     assert_eq!(
         store.pending_op_state(outcome.op).await.unwrap(),
@@ -243,21 +255,21 @@ async fn a_second_edit_of_one_message_waits_for_the_first() {
         }
     );
 
-    let outcome = archived.expect("the archive waits for the mark-read, it does not fail");
+    let outcome = applied(archived.expect("the archive waits for the mark-read, it does not fail"));
     assert_eq!(
         store.pending_op_state(outcome.op).await.unwrap(),
         Some(PendingOpState::Succeeded)
     );
 }
 
-/// A resource nothing releases fails the write once, and leaves the op behind.
+/// A resource nothing releases leaves the write queued once the wait runs out.
 ///
 /// The wait is bounded: a lease leaked by a process that died mid-write would
 /// otherwise hold the caller for the lease's whole TTL. Past the bound the caller is
-/// told which condition refused it, and the op stays durably enqueued — the intent is
-/// the drainer's to finish, not this driver's to discard.
+/// told the write is queued, and the op stays durably enqueued — the intent is the
+/// drainer's to finish, not this driver's to discard.
 #[tokio::test(start_paused = true)]
-async fn a_resource_nothing_releases_fails_the_write_after_the_bound() {
+async fn a_resource_nothing_releases_leaves_the_write_queued_after_the_bound() {
     let provider = FakeMail::new(vec![], vec![]);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
@@ -282,7 +294,7 @@ async fn a_resource_nothing_releases_fails_the_write_after_the_bound() {
         .await
         .unwrap();
 
-    let err = edit_mail(
+    let sent = edit_mail(
         &provider,
         &store,
         &account(),
@@ -292,14 +304,12 @@ async fn a_resource_nothing_releases_fails_the_write_after_the_bound() {
         &MailEdit::move_to(target(), MailboxId::try_from("Archive").unwrap()),
     )
     .await
-    .unwrap_err();
-    let crate::SyncError::Outbox(message) = err else {
-        panic!("a held resource is an outbox refusal, got {err:?}")
+    .unwrap();
+    // Not refused: the drainer sends it once the holder settles.
+    let crate::MailEditSent::Queued { retry_after, .. } = sent else {
+        panic!("a held resource leaves the write queued, got {sent:?}")
     };
-    assert!(
-        message.contains("Busy"),
-        "the refusal must name its condition: {message}"
-    );
+    assert_eq!(retry_after, None);
 
     // Still enqueued, still runnable once the holder settles.
     let op_id = store

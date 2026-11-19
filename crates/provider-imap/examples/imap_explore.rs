@@ -17,6 +17,11 @@
 //! read -rs IMAP_PASS; export IMAP_PASS   # type the password (no echo)
 //! cargo run -p provider-imap --example imap_explore
 //! # optional: IMAP_PORT=993 (default), IMAP_MAILBOX=INBOX (default)
+//! # OAuth 2.0 instead of a password: set IMAP_TOKEN to an access token (and leave
+//! #   IMAP_PASS unset). The mechanism — `OAUTHBEARER` or `XOAUTH2` — is negotiated
+//! #   from what the server advertises. Mint one with `tools/yahoo-oauth` (Yahoo/AOL)
+//! #   or `tools/google-oauth token` (Gmail, whose default scope is already
+//! #   `https://mail.google.com/`).
 //! # optional: IMAP_QRESYNC=1 verifies the CONDSTORE/QRESYNC delta (read-only).
 //! # optional: IMAP_IDLE=1 watches the mailbox via IMAP IDLE push (read-only);
 //! #           IMAP_IDLE_SECS sets the window (default 40) — send yourself mail to see it.
@@ -35,21 +40,33 @@ use engine_core::{
 };
 use engine_provider::{Draft, PassMode, Provider};
 use futures_util::StreamExt as _;
-use provider_imap::{ImapConfig, ImapProvider, ImapWatcher};
-use tokio_rustls::TlsConnector;
+use provider_imap::{Credentials, ImapAccount, ImapConfig};
+use tokio::net::TcpStream;
+use tokio_rustls::{TlsConnector, client::TlsStream};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (Ok(host), Ok(user), Ok(pass)) = (
-        env::var("IMAP_HOST"),
-        env::var("IMAP_USER"),
-        env::var("IMAP_PASS"),
-    ) else {
-        eprintln!("Set IMAP_HOST, IMAP_USER, IMAP_PASS to run. For example:");
+    let (Ok(host), Ok(user)) = (env::var("IMAP_HOST"), env::var("IMAP_USER")) else {
+        eprintln!("Set IMAP_HOST, IMAP_USER, and IMAP_PASS (or IMAP_TOKEN) to run:");
         eprintln!("  export IMAP_HOST=imap.example.com IMAP_USER=you@example.com");
         eprintln!("  read -rs IMAP_PASS; export IMAP_PASS   # type the password, no echo");
+        eprintln!("  # …or, for OAuth 2.0: export IMAP_TOKEN=\"$(…mint an access token…)\"");
         eprintln!("  cargo run -p provider-imap --example imap_explore");
         return Ok(());
+    };
+    // An access token takes precedence, so switching an account to OAuth is one env var
+    // rather than an edit here.
+    let credentials = match (env::var("IMAP_TOKEN"), env::var("IMAP_PASS")) {
+        (Ok(token), _) => Credentials::oauth2(user.clone(), token),
+        (Err(_), Ok(pass)) => Credentials::password(user.clone(), pass),
+        (Err(_), Err(_)) => {
+            eprintln!("Set IMAP_PASS (a password) or IMAP_TOKEN (an OAuth access token).");
+            return Ok(());
+        }
+    };
+    let how = match &credentials {
+        Credentials::OAuth2 { .. } => "OAuth 2.0",
+        _ => "password",
     };
     let port: u16 = env::var("IMAP_PORT")
         .ok()
@@ -57,9 +74,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(993);
     let mailbox = env::var("IMAP_MAILBOX").unwrap_or_else(|_| "INBOX".to_owned());
 
-    println!("Connecting to {host}:{port} as {user} (implicit TLS)…");
+    println!("Connecting to {host}:{port} as {user} (implicit TLS, {how})…");
     let address = user.clone();
-    let mut config = ImapConfig::new(format!("{host}:{port}"), host.clone(), user, pass);
+    let mut config = ImapConfig::new(format!("{host}:{port}"), host.clone(), credentials);
 
     // Opt-in SMTP submission over implicit TLS + AUTH (a real provider; port 465).
     let sending = env::var("IMAP_SEND").is_ok();
@@ -72,12 +89,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config = config.with_smtp_tls(format!("{smtp_host}:{smtp_port}"), smtp_host);
     }
 
-    let provider = ImapProvider::connect(
-        &config,
-        verifying_connector(),
-        MailboxId::try_from(mailbox.as_str())?,
-    )
-    .await?;
+    let imap = ImapAccount::connect(&config, verifying_connector()).await?;
+    let provider = imap.provider(MailboxId::try_from(mailbox.as_str())?);
     let account = AccountId::try_from("explore")?;
 
     // Folder list.
@@ -85,10 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let SyncUpdate::Snapshot { objects, .. } = &folders.update {
         println!("\n{} folders:", objects.len());
         for m in objects {
-            let role = m
-                .role
-                .as_ref()
-                .map_or_else(String::new, |r| format!("  [{r}]"));
+            let role = m.role.as_ref().map_or_default(|r| format!("  [{r}]"));
             println!("  {}{role}", m.name);
         }
     }
@@ -103,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Opt-in read-only push: watch the mailbox via IMAP IDLE and print events.
     if env::var("IMAP_IDLE").is_ok() {
-        idle_watch(&config, &mailbox).await?;
+        idle_watch(&imap, &mailbox).await?;
     }
 
     // Opt-in write: save a test draft to Drafts via IMAP APPEND (no SMTP).
@@ -131,7 +141,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Test send from provider-imap",
             "Sent by the imap_explore example over SMTP AUTH + implicit TLS.",
         );
-        let receipt = provider.submit_email(&account, &mail).await?;
+        let receipt = provider
+            .submit_email(
+                &account,
+                &mail,
+                &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+            )
+            .await?;
         println!(
             "\nSent a test mail to yourself (key: {}). Check your inbox + Sent.",
             receipt.email_key
@@ -251,7 +267,10 @@ async fn qresync_check<P: Provider>(
 /// yourself an email while it runs to watch the `Changed` notification arrive instantly
 /// — nothing is mutated. A 20-second keep-alive makes the periodic heartbeat visible in
 /// the window (a real desktop watch uses the 28-minute default).
-async fn idle_watch(config: &ImapConfig, mailbox: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn idle_watch(
+    imap: &ImapAccount<TlsStream<TcpStream>>,
+    mailbox: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
 
     let window: u64 = env::var("IMAP_IDLE_SECS")
@@ -262,13 +281,9 @@ async fn idle_watch(config: &ImapConfig, mailbox: &str) -> Result<(), Box<dyn st
         "\n[IDLE] watching {mailbox} for {window}s — send yourself an email to see it arrive \
          instantly (nothing is mutated)..."
     );
-    let mut watcher = ImapWatcher::connect(
-        config,
-        verifying_connector(),
-        MailboxId::try_from(mailbox)?,
-        Duration::from_secs(20),
-    )
-    .await?;
+    let mut watcher = imap
+        .watch(MailboxId::try_from(mailbox)?, Duration::from_secs(20))
+        .await?;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(window);
     loop {

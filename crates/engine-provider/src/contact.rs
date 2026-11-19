@@ -252,6 +252,7 @@ mod tests {
         }
     }
 
+    impl crate::MailboxWrites for Unsupported {}
     impl CalendarWrites for Unsupported {}
 
     #[async_trait]

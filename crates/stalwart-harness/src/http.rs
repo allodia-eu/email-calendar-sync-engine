@@ -42,8 +42,17 @@ impl HttpResponse {
     }
 }
 
+/// How many times a probe is sent before a concurrency refusal is handed back.
+const ATTEMPTS: u32 = 8;
+
 /// Send one HTTP/1.0 request over a fresh plaintext connection and read the
-/// whole response.
+/// whole response, sending it again while Stalwart refuses it for being over the
+/// account's concurrency cap ([`is_concurrency_refusal`]).
+///
+/// The smoke tests run in parallel as one account, and Stalwart counts its JMAP and
+/// DAV requests against one cap of 4 in flight, so a session fetch overlapping the
+/// CalDAV and CardDAV probes was now and then answered `400` (#332). The engine waits
+/// that refusal out; a probe that did not would report a harness fault that is not one.
 ///
 /// `auth` is an optional `(user, password)` pair sent as HTTP Basic. `headers`
 /// are extra request headers (e.g. `Depth` for a CalDAV `PROPFIND`).
@@ -54,6 +63,37 @@ impl HttpResponse {
 /// read/write fails, and [`HarnessError::Protocol`] if the response is not a
 /// well-formed HTTP status line.
 pub(crate) fn request(
+    addr: &str,
+    method: &str,
+    path: &str,
+    auth: Option<(&str, &str)>,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Result<HttpResponse, HarnessError> {
+    let mut attempt = 1;
+    loop {
+        let response = send_once(addr, method, path, auth, headers, body)?;
+        if attempt == ATTEMPTS || !is_concurrency_refusal(&response) {
+            return Ok(response);
+        }
+        std::thread::sleep(Duration::from_millis(50) * attempt);
+        attempt += 1;
+    }
+}
+
+/// Whether `response` is Stalwart refusing a request over the account's concurrency cap: a
+/// `400` carrying RFC 8620's `limit` problem details for `maxConcurrentRequests`, which a
+/// request clears by waiting, unlike every other `400`.
+fn is_concurrency_refusal(response: &HttpResponse) -> bool {
+    response.status == 400
+        && serde_json::from_slice::<serde_json::Value>(&response.body).is_ok_and(|problem| {
+            problem["type"] == "urn:ietf:params:jmap:error:limit"
+                && problem["limit"] == "maxConcurrentRequests"
+        })
+}
+
+/// One exchange of [`request`], refusal or not.
+fn send_once(
     addr: &str,
     method: &str,
     path: &str,
@@ -150,7 +190,7 @@ pub fn base64_encode(input: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{base64_encode, parse_response};
+    use super::{base64_encode, is_concurrency_refusal, parse_response};
 
     // RFC 4648 test vectors.
     #[test]
@@ -177,6 +217,34 @@ mod tests {
         assert_eq!(resp.status, 207);
         assert!(resp.headers.contains("Content-Type: application/xml"));
         assert_eq!(resp.body, b"<d:multistatus/>");
+    }
+
+    /// A response with `status` and `body`, as `parse_response` reads one off the wire.
+    fn reply(status: &str, body: &str) -> super::HttpResponse {
+        parse_response(format!("HTTP/1.1 {status}\r\n\r\n{body}").as_bytes()).expect("parses")
+    }
+
+    #[test]
+    fn only_the_concurrency_limit_400_is_sent_again() {
+        // The body Stalwart v1.0.2 sent to a session fetch overlapping the DAV probes.
+        let limit = |name: &str| {
+            format!(
+                r#"{{"type":"urn:ietf:params:jmap:error:limit","status":400,"limit":"{name}"}}"#
+            )
+        };
+        assert!(is_concurrency_refusal(&reply(
+            "400 Bad Request",
+            &limit("maxConcurrentRequests")
+        )));
+        // The same body under another status, another limit, and a 400 that is no problem
+        // details at all are each the answer, not a reason to ask again.
+        for response in [
+            reply("200 OK", &limit("maxConcurrentRequests")),
+            reply("400 Bad Request", &limit("maxSizeRequest")),
+            reply("400 Bad Request", "maxConcurrentRequests"),
+        ] {
+            assert!(!is_concurrency_refusal(&response), "{response:?}");
+        }
     }
 
     #[test]

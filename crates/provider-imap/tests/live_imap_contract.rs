@@ -17,7 +17,9 @@
 #[path = "common/imap_live.rs"]
 mod imap_live;
 
-use engine_core::mail::MailboxRole;
+use engine_core::{ids::AccountId, mail::MailboxRole, sync::SyncWindow, time::CalendarDate};
+use engine_provider::Provider;
+use futures_util::StreamExt;
 use imap_live::{SERVERS, connect, find, folders};
 
 #[tokio::test]
@@ -179,8 +181,13 @@ async fn a_mailbox_id_addresses_the_mailbox_it_names() {
         // decoded id was sent unencoded would not.
         //
         // The name is the folder's own, the last segment of that path, so the two are equal
-        // exactly at the top level and the id carries the rest of the way down.
+        // exactly at the top level and the id carries the rest of the way down. The inbox is
+        // the exception: its id is `INBOX` however the server spells its name.
         for mailbox in &all {
+            if mailbox.role == Some(MailboxRole::Inbox) {
+                assert_eq!(mailbox.id.as_str(), "INBOX", "{}", server.label);
+                continue;
+            }
             assert!(
                 mailbox.id.as_str().ends_with(&mailbox.name),
                 "{}: the id {} should address the folder it names, {}",
@@ -217,5 +224,43 @@ async fn one_mailbox_has_one_identity_on_either_dialect() {
         let mailbox = find(&all, "Überweisungen");
         assert_eq!(mailbox.id.as_str(), "Überweisungen", "{}", server.label);
         assert!(!mailbox.id.as_str().contains('&'), "{}", server.label);
+    }
+}
+
+/// Every message one pass over INBOX streams, under `window`.
+async fn streamed(provider: &imap_live::LiveProvider, window: SyncWindow) -> usize {
+    let account = AccountId::try_from("live-contract").unwrap();
+    let mut stream = provider.stream_email(&account, None, window, 50, 20);
+    let mut total = 0;
+    while let Some(chunk) = stream.next().await {
+        total += chunk.expect("a streamed chunk").changed.len();
+    }
+    total
+}
+
+#[tokio::test]
+async fn a_window_that_covers_the_whole_folder_streams_every_message() {
+    for server in &SERVERS {
+        let Some(provider) = connect(
+            server,
+            "a_window_that_covers_the_whole_folder_streams_every_message",
+        )
+        .await
+        else {
+            continue;
+        };
+        // Unbounded, the pass walks the UID range itself; bounded, it fetches what `UID
+        // SEARCH SINCE` matched. A window older than every seeded message matches them all,
+        // which on IMAP4rev2 arrives as one `ESEARCH ALL a:b` range: a parser that kept the
+        // two ends streamed two messages here, and every folder a window covered whole lost
+        // the rest.
+        let everything = streamed(&provider, SyncWindow::full()).await;
+        let since_long_ago = streamed(
+            &provider,
+            SyncWindow::since(CalendarDate::new(2000, 1, 1).unwrap()),
+        )
+        .await;
+        assert!(everything > 2, "{}: the seed holds several", server.label);
+        assert_eq!(since_long_ago, everything, "{}", server.label);
     }
 }

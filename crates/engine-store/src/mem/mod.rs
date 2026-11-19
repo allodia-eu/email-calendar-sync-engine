@@ -15,13 +15,14 @@
 
 use core::fmt;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::Mutex,
 };
 
 use engine_core::{
     error::FailureClass,
     ids::{AccountId, ContactId, MessageId, ProviderKey},
+    mail::Keyword,
     people::{CanonicalEmail, PeopleSnapshot},
     recipient::{RecipientCoverage, RecipientObservation},
     search_index::{
@@ -29,7 +30,8 @@ use engine_core::{
         MembershipRow,
     },
     sync::{SyncObject, SyncScope, SyncState},
-    time::{ExpansionWindow, UtcDateTime},
+    time::{ExpansionWindow, Horizon, UtcDateTime},
+    version::CollectionTag,
     write::{IdempotencyKey, PendingOp, PendingOpId},
 };
 use serde_json::Value;
@@ -43,6 +45,9 @@ use crate::{
 };
 
 mod contact;
+mod keyword_edits;
+mod lifecycle;
+mod outbox;
 mod read;
 mod threading;
 mod write;
@@ -80,6 +85,10 @@ pub(super) struct ScopeCell {
     state: Option<SyncState>,
     /// The window this scope's occurrence rows are materialized over (event scopes only).
     window: Option<ExpansionWindow>,
+    /// The collection tag recorded with `state`.
+    collection_tag: Option<CollectionTag>,
+    /// The fetch window recorded with `state` (windowed event scopes only).
+    fetch_window: Option<Horizon>,
     objects: HashMap<ProviderKey, Value>,
     fts: HashMap<ProviderKey, Vec<FtsField>>,
     occurrences: HashMap<ProviderKey, Vec<OccurrenceRow>>,
@@ -100,6 +109,8 @@ impl ScopeCell {
             lease_expiry: None,
             state: None,
             window: None,
+            collection_tag: None,
+            fetch_window: None,
             objects: HashMap::new(),
             fts: HashMap::new(),
             occurrences: HashMap::new(),
@@ -253,6 +264,11 @@ struct OpCell {
     next_attempt_at: Option<UtcDateTime>,
     failure_class: Option<FailureClass>,
     detail: Option<String>,
+    /// The token of the attempt that recorded handing the message over, while it matters.
+    handed_over: Option<FenceToken>,
+    /// When the op reached a terminal state, once it has; set by the sweep that applies its
+    /// keyword change ([`Inner::settle_keyword_edits`]).
+    settled_at: Option<UtcDateTime>,
 }
 
 /// The whole store state, behind one mutex (a reference impl, not a throughput
@@ -271,6 +287,9 @@ struct Inner {
     /// Keyed by (account, contact, **resource**) — a card can carry several media
     /// resources and they must not share a cache entry.
     contact_photos: BTreeMap<(AccountId, ContactId, String), PhotoCell>,
+    /// The keywords the server last reported for a message with a queued change still unsettled
+    /// ([`KeywordEdit`](engine_core::write::KeywordEdit)).
+    server_keywords: HashMap<(AccountId, ProviderKey), BTreeSet<Keyword>>,
 }
 
 /// One cached photo entry: the bytes, or a stamped record that there are none.
@@ -320,6 +339,7 @@ impl<C: Clock> MemStore<C> {
                 recipient_coverage: BTreeMap::new(),
                 contact_availability: BTreeMap::new(),
                 contact_photos: BTreeMap::new(),
+                server_keywords: HashMap::new(),
             }),
         }
     }

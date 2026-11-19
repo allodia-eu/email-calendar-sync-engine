@@ -41,10 +41,10 @@ use engine_core::{
     calendar::{Event, ParticipationStatus},
     ids::AccountId,
     sync::SyncUpdate,
-    time::CalendarDate,
+    time::Horizon,
 };
 use engine_provider::{CalendarWrites, EventRsvp, Provider, RsvpResponse};
-use provider_graph::{CalendarWindow, GraphCalendarProvider, GraphClient};
+use provider_graph::{GraphCalendarProvider, GraphClient};
 
 const GRAPH: &str = "https://graph.microsoft.com/v1.0";
 
@@ -68,11 +68,12 @@ fn http() -> reqwest::Client {
         .expect("an HTTP client on the engine's TLS policy")
 }
 
-fn calendar_window() -> CalendarWindow {
-    CalendarWindow::new(
-        CalendarDate::new(2026, 8, 1).unwrap(),
-        CalendarDate::new(2026, 11, 1).unwrap(),
+fn calendar_window() -> Horizon {
+    Horizon::new(
+        "2026-08-01T00:00:00Z".parse().unwrap(),
+        "2026-11-01T00:00:00Z".parse().unwrap(),
     )
+    .unwrap()
 }
 
 /// The address behind a token, so neither account is hardcoded.
@@ -93,24 +94,24 @@ async fn whoami(token: &str) -> String {
         .to_owned()
 }
 
-/// A calendar provider for `token`, bound to that account's default calendar.
-async fn calendar_provider(token: &str) -> GraphCalendarProvider {
+/// A calendar provider for `token`, and that account's default calendar.
+async fn calendar_provider(token: &str) -> (GraphCalendarProvider, engine_core::ids::CalendarId) {
     let client = GraphClient::connect(
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     let placeholder = GraphCalendarProvider::new(
         client,
-        engine_core::ids::CalendarId::try_from("placeholder").unwrap(),
-        calendar_window(),
         engine_core::time::TimeZoneId::iana("Europe/Amsterdam").unwrap(),
     );
     let calendars = placeholder
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("a calendar list sync is a snapshot");
     };
@@ -124,13 +125,15 @@ async fn calendar_provider(token: &str) -> GraphCalendarProvider {
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
-    GraphCalendarProvider::new(
-        client,
+    (
+        GraphCalendarProvider::new(
+            client,
+            engine_core::time::TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+        ),
         default,
-        calendar_window(),
-        engine_core::time::TimeZoneId::iana("Europe/Amsterdam").unwrap(),
     )
 }
 
@@ -199,10 +202,14 @@ async fn send_invitation(organizer_token: &str, mime: &str) {
 
 /// Polls the account's calendar through the adapter until the meeting is filed — it crosses
 /// two mailboxes and is then processed by the receiving one, so it is not there at once.
-async fn await_filed(provider: &GraphCalendarProvider, subject: &str) -> Event {
+async fn await_filed(
+    provider: &GraphCalendarProvider,
+    calendar: &engine_core::ids::CalendarId,
+    subject: &str,
+) -> Event {
     for _ in 0..20 {
         let sync = provider
-            .sync_events(&account(), None)
+            .sync_events(&account(), calendar, None, calendar_window())
             .await
             .expect("sync events");
         let SyncUpdate::Snapshot { objects, .. } = &sync.update else {
@@ -241,17 +248,18 @@ fn answer_of(event: &Event, address: &str) -> ParticipationStatus {
 /// way, so a real failure still says what was there.
 async fn await_answer(
     provider: &GraphCalendarProvider,
+    calendar: &engine_core::ids::CalendarId,
     subject: &str,
     address: &str,
     want: &ParticipationStatus,
 ) -> Event {
-    let mut last = await_filed(provider, subject).await;
+    let mut last = await_filed(provider, calendar, subject).await;
     for _ in 0..20 {
         if answer_of(&last, address) == *want {
             return last;
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        last = await_filed(provider, subject).await;
+        last = await_filed(provider, calendar, subject).await;
     }
     last
 }
@@ -325,8 +333,8 @@ async fn live_an_invitation_from_outside_exchange_keeps_its_own_uid() {
     )
     .await;
 
-    let provider = calendar_provider(&token).await;
-    let filed = await_filed(&provider, &subject).await;
+    let (provider, calendar) = calendar_provider(&token).await;
+    let filed = await_filed(&provider, &calendar, &subject).await;
 
     // The claim: the meeting the calendar holds is the meeting the mail announced.
     assert_eq!(
@@ -403,8 +411,8 @@ async fn live_an_invitation_from_outside_exchange_can_be_answered() {
     )
     .await;
 
-    let provider = calendar_provider(&token).await;
-    let filed = await_filed(&provider, &subject).await;
+    let (provider, calendar) = calendar_provider(&token).await;
+    let filed = await_filed(&provider, &calendar, &subject).await;
 
     // The join, restated here as the precondition it is: answering the wrong event, or no event,
     // is the failure this test exists for, so it must not be able to pass by answering something
@@ -429,7 +437,14 @@ async fn live_an_invitation_from_outside_exchange_can_be_answered() {
         .await
         .expect("an invitation organized outside Exchange can be answered on its filed copy");
 
-    let answered = await_answer(&provider, &subject, &me, &ParticipationStatus::Accepted).await;
+    let answered = await_answer(
+        &provider,
+        &calendar,
+        &subject,
+        &me,
+        &ParticipationStatus::Accepted,
+    )
+    .await;
     assert_eq!(
         answer_of(&answered, &me),
         ParticipationStatus::Accepted,

@@ -87,8 +87,15 @@ async fn submit_mail_settles_a_permanent_failure_instead_of_queueing_it() {
     .unwrap_err();
     assert!(matches!(err, crate::SyncError::Provider(_)));
 
-    // Nothing outstanding: it will not be attempted again.
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    // Settled, and listed as failed with the message it would have sent: it will not be
+    // attempted again unless the user asks.
+    let rows = store.list_pending_ops(account()).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state, PendingOpState::Failed);
+    assert_eq!(
+        serde_json::from_value::<Draft>(rows[0].payload.clone()).unwrap(),
+        draft("send-3@test.local")
+    );
     let op_id = store
         .enqueue_pending_op(
             account(),
@@ -152,4 +159,28 @@ fn draft_round_trips_through_a_durable_payload() {
     let payload = serde_json::to_value(&original).unwrap();
     let restored: Draft = serde_json::from_value(payload).unwrap();
     assert_eq!(restored, original);
+}
+
+#[tokio::test]
+async fn submit_mail_reports_the_keywords_the_filed_copy_carries() {
+    let provider = FakeMail::new(vec![], vec![]);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    let keyword = engine_core::mail::Keyword::new("project-x").unwrap();
+    let draft = draft("send-kw@test.local").with_sent_copy_keyword(keyword.clone());
+
+    let outcome = submit_mail(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+        &draft,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        outcome.sent_copy_keywords,
+        std::collections::BTreeSet::from([keyword])
+    );
 }

@@ -73,23 +73,7 @@ pub(crate) fn decode_data_uri(uri: &str) -> Option<Vec<u8>> {
     if !header.ends_with(";base64") {
         return None;
     }
-    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::new();
-    let mut bits = 0_u32;
-    let mut count = 0_u8;
-    for byte in payload.bytes().filter(|byte| !byte.is_ascii_whitespace()) {
-        if byte == b'=' {
-            break;
-        }
-        let digit = alphabet.iter().position(|candidate| *candidate == byte)?;
-        bits = (bits << 6) | u32::try_from(digit).ok()?;
-        count += 6;
-        if count >= 8 {
-            count -= 8;
-            out.push(u8::try_from((bits >> count) & 0xFF).ok()?);
-        }
-    }
-    Some(out)
+    crate::base64::decode(payload)
 }
 
 pub(crate) async fn message_source(

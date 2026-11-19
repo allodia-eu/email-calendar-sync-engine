@@ -46,14 +46,18 @@ mod scheduling;
 
 pub use engine::{
     CalendarDelete, CalendarWrite, ContactDelete, ContactReconciled, ContactWrite, Engine,
-    MailboxSpan, PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled, queued_draft,
+    MailboxSpan, MailboxWrite, PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled,
+    queued_draft,
 };
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
 pub use engine_core::calendar::{
-    Calendar, Event, EventKind, EventStatus, FreeBusyStatus, Frequency, Location, NDay,
-    Participant, ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence,
-    RecurrenceBound, RecurrenceOverride, RecurrenceRule, RecurrenceSkip, VirtualLocation, Weekday,
+    AccessCodes, Calendar, Conference, ConferenceFeature, ConferenceKey, ConferenceOrigin,
+    ConferenceService, ConferenceText, ConferenceUri, ConferenceUriError, DetectedIn, EntryKind,
+    EntryPoint, Event, EventKind, EventStatus, FreeBusyStatus, Frequency, Location, NDay,
+    NativeState, Participant, ParticipantKind, ParticipantRole, ParticipationStatus, Privacy,
+    Recurrence, RecurrenceBound, RecurrenceOverride, RecurrenceRule, RecurrenceSkip, UriScheme,
+    Weekday,
 };
 // The payload of a `RecurrenceOverride::Patch` — what one occurrence changed about itself.
 // The variant is re-exported above, so without this a host can match on it and then not name
@@ -74,6 +78,8 @@ pub use engine_core::scheduling::{
     find_calendar_part, normalize_address, reconcile,
 };
 pub use engine_core::{
+    // What an adapter's `affiliation` answers, which a host stores with the account.
+    affiliation::Affiliation,
     contact::{
         AddressBook, ContactCard, ContactDraft, ContactField, ContactFieldSet, ContactKind,
         ContactPatch, ContactResource, ContactSourceClass, FieldPatch,
@@ -85,12 +91,12 @@ pub use engine_core::{
     // reach-around this re-export block exists to prevent.
     ids::{
         AccountId, AddressBookId, CalendarId, ContactId, EventId, MailboxId, MessageIdHeader,
-        PersonId, ProviderKey, ThreadId, Uid,
+        OrganizationId, PersonId, ProviderKey, SharedAccountId, ThreadId, Uid,
     },
     mail::{
-        AttachmentPartId, EmailAddress, InlinePart, Keyword, Mailbox, MailboxRole, Message,
-        MessageAttachment, MessageAttachmentContent, MessageBody, SystemKeyword, ThreadProvenance,
-        ThreadRef,
+        AttachmentPartId, EmailAddress, Importance, InlinePart, Keyword, Mailbox, MailboxAccess,
+        MailboxRole, Message, MessageAttachment, MessageAttachmentContent, MessageBody,
+        SystemKeyword, ThreadProvenance, ThreadRef,
     },
     // The set-of-containers type an `Event`'s `calendars` and a `Message`'s mailbox memberships
     // are expressed in.
@@ -106,8 +112,9 @@ pub use engine_core::{
     raw::RawIcal,
     recipient::{RecipientCoverage, RecipientInteraction, RecipientSuggestion},
     // `MailboxWindows` is what `StreamTuning::within` and the local prune take when a mailbox
-    // is held further back than its account.
-    sync::{MailboxWindows, SyncScope, SyncWindow},
+    // is held further back than its account; `SearchDomain` names what
+    // `Engine::forget_account_domain` forgets.
+    sync::{MailboxWindows, SearchDomain, SyncScope, SyncWindow},
     // `CalendarDateTime` is the type of `Event::start` and `Event::recurrence_id`, and `Duration`
     // the type of `Event::duration` — both public fields on a type this facade returns.
     time::{
@@ -127,22 +134,30 @@ pub use engine_core::{error::FailureClass, mail::MailFlags, search_index::MailRo
 /// [`ThrottleObserver`], because the engine writes no logs of its own.
 ///
 /// [`RequestGate`] is the one with a **per-account** lifetime rather than a per-process one.
-/// A server that limits concurrency counts requests against the account, so one gate is built
-/// per account and cloned to every provider connected for it; the adapter fills in the number,
-/// because only it knows the server. See its docs, and
+/// A server that limits concurrency, or bills a rate, counts against the account, so one gate
+/// is built per account and cloned to every provider connected for it; the adapter fills in
+/// the ceiling and any budget, because only it knows the server. See its docs, and
 /// `docs/agent-guidance/http-throttling.md`.
 pub use engine_http::{
     IgnoreThrottles, RequestGate, RetryConfig, RetryPolicy, ThrottleEvent, ThrottleObserver,
 };
+/// The product a host names in every request's `User-Agent`, required by every HTTP provider's
+/// constructor: the host's application and its version, so a provider can tell whose traffic
+/// it is. The engine adds no product of its own.
+pub use engine_http::{InvalidUserAgent, UserAgent};
 pub use engine_provider::{
-    CalendarWrites, Capabilities, ContactDestination, ContactPhoto, ContactsProvider,
-    ContentIdHeader, DeleteTarget, Draft, DraftAttachment, DraftAttachmentDisposition,
-    DraftCalendar, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp,
-    EventWrite, EventWriteReceipt, IdentityControls, MailEdit, MailEditReceipt, MessageReport,
-    Occurrence, OverrideSurvival, PatchTarget, Provider, RecurrenceEdit, ReplyDelivery,
-    ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts, RsvpControls,
-    RsvpResponse, SenderIdentity, SenderIdentityId, SentCopy, SubmissionReceipt, TextEdit,
-    WriteGuard, WritePrecondition,
+    AttachedConference, CalendarAddress, CalendarUserAddresses, CalendarWrites, Capabilities,
+    ConferenceEdit, ContactDestination, ContactPhoto, ContactsProvider, ContentIdHeader,
+    DeleteTarget, Draft, DraftAttachment, DraftAttachmentDisposition, DraftCalendar,
+    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
+    EventWriteReceipt, IdentityControls, InvitationError, Invitee, InviteePatch, InviteeRole,
+    JitsiMeetings, JitsiServerError, KeywordName, MailEdit, MailEditReceipt, MailboxEdit,
+    MailboxEditReceipt, MailboxWrites, MeetingDraft, MeetingKey, MeetingKeyError, MeetingRequest,
+    MeetingService, MessageReport, NewConference, Occurrence, OverrideSurvival, PatchTarget,
+    Provider, RecurrenceEdit, ReplyDelivery, ReportControls, ReportEvidence, ReportReceipt,
+    ReportVerdict, ReportVerdicts, RsvpControls, RsvpResponse, SchedulingIdentity, SenderIdentity,
+    SenderIdentityId, SentCopy, SharedAccount, SharedAccounts, SourceStream, StoreDomains,
+    SubmissionReceipt, TextEdit, WriteGuard, WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,
@@ -151,16 +166,19 @@ pub use engine_recurrence::{
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 use engine_store::StoreError;
 pub use engine_store::{
-    ContactPhotoFile, MailListRow, OccurrenceRow, OpRejection, PendingOpRow, PendingOpState,
-    PruneReport, SchemaStatus, SourcesDropped, SweepReport, SyncApplied, TzdataVersion,
+    Confirmation, ContactPhotoFile, MailListRow, OccurrenceRow, OpRejection, PendingOpRow,
+    PendingOpState, PruneReport, SchemaStatus, SourcesDropped, SweepReport, SyncApplied,
+    TzdataVersion,
 };
 pub use engine_sync::{
-    AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,
-    ContactSourceReport, ContactSyncReport, ContactWriteOutcome, DraftPut, DrainOutcome,
-    DrainReport, DrainedOp, EventSyncReport, FolderSync, HorizonExpansion, IgnoreCommits,
-    MailEditOutcome, MailSyncReport, PeopleRebuildReport, ProgressSnapshot, PutDraftOutcome,
-    ReportOutcome, StreamTuning, SubmitOutcome, SyncCommit, SyncError, SyncObserver, SyncTiming,
-    ThreadRebuildReport, UnexpandableEvent,
+    AccountProgress, CalendarReach, CalendarSyncReport, CalendarWriteOutcome,
+    ContactReconcileReport, ContactSourceReport, ContactSyncReport, ContactWriteOutcome, DraftPut,
+    DrainOutcome, DrainReport, DrainedOp, EventScopePass, EventScopeReach, EventScopeSync,
+    EventSyncReport, FolderSync, HorizonExpansion, IgnoreCommits, MailEditOutcome, MailEditSent,
+    MailSyncReport, MailboxChange, MailboxEditOutcome, MailboxNameError, MailboxPlace,
+    PeopleRebuildReport, ProgressSnapshot, PutDraftOutcome, ReportOutcome, ScopeReach,
+    StreamTuning, SubmitOutcome, SyncCommit, SyncError, SyncObserver, SyncTiming,
+    ThreadRebuildReport, UnexpandableEvent, validate_mailbox_name,
 };
 pub use scheduling::InboundScheduling;
 
@@ -170,7 +188,9 @@ pub use scheduling::InboundScheduling;
 /// engine error unchanged, so the original `source()` chain (provider failure
 /// class, store backend detail) stays inspectable. [`Busy`](ApiError::Busy) is
 /// split out from a sync failure so a host can tell a benign scope-contention race
-/// — safe to retry — from a real error.
+/// — safe to retry — from a real error. A failed write answers
+/// [`may_have_applied`](ApiError::may_have_applied): whether to tell the user it was not
+/// saved, or that it was not confirmed.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ApiError {
@@ -209,6 +229,65 @@ impl ApiError {
             self,
             Self::Sync(SyncError::Provider(err))
                 if err.class() == engine_core::error::FailureClass::Conflict
+        )
+    }
+
+    /// Whether a write that failed **may have been applied** all the same.
+    ///
+    /// `true` where the request may have reached the server and no answer of the server's
+    /// own came back: the reply was lost or never came, a gateway answered for a server that
+    /// gave none, or the answer could not be read. Also `true` where the server applied the
+    /// write and only recording that locally failed. `false` means it was not applied: the
+    /// server refused it, the request never reached the server, or the call failed before
+    /// sending anything.
+    ///
+    /// The same answer on every provider for a calendar or contact write and for a send, so a
+    /// host can say "not confirmed" rather than "not saved" without asking which provider it
+    /// was. Do not repeat the write to find out: a create would be made twice. The next sync
+    /// shows what the server holds.
+    ///
+    /// **Mail and folder edits are not covered.** Their adapters do not classify a lost
+    /// answer, so a failed mark-read, move, delete or folder change answers `false` whether or
+    /// not the server applied it; the next sync reconciles it.
+    ///
+    /// The provider half of this is
+    /// [`ProviderError::requires_confirmation`](engine_provider::ProviderError::requires_confirmation),
+    /// reachable through [`source`](std::error::Error::source) from this error.
+    #[must_use]
+    pub fn may_have_applied(&self) -> bool {
+        match self {
+            Self::Sync(SyncError::Provider(err)) => err.requires_confirmation(),
+            Self::Sync(SyncError::Unrecorded(_)) => true,
+            _ => false,
+        }
+    }
+
+    /// Whether the provider can never serve the one item this call asked for, however often it
+    /// is asked, while the account and its other items are unaffected: a message the server
+    /// stored but cannot give back. A host may stop asking for that item. Any other failure,
+    /// permanent ones included, may be about the account or the request and says nothing about
+    /// the item.
+    ///
+    /// The provider half of this is
+    /// [`ProviderError::is_item_unavailable`](engine_provider::ProviderError::is_item_unavailable).
+    #[must_use]
+    pub fn item_unavailable(&self) -> bool {
+        matches!(self, Self::Sync(SyncError::Provider(err)) if err.is_item_unavailable())
+    }
+
+    /// Whether this call **never ran** because the runtime it was queued on is shutting
+    /// down.
+    ///
+    /// Not a failure of the account, the server or the store: nothing was attempted and
+    /// nothing was written, and the next launch does the work. A host that reports failures
+    /// (a status badge, a log line, a count) should report the process ending instead, or
+    /// nothing at all.
+    #[must_use]
+    pub fn is_shutting_down(&self) -> bool {
+        matches!(
+            self,
+            Self::Store(StoreError::ShuttingDown)
+                | Self::Sync(SyncError::Store(StoreError::ShuttingDown))
         )
     }
 
@@ -285,5 +364,62 @@ mod error_tests {
         let transient = ApiError::Sync(SyncError::Provider(ProviderError::retryable("blip")));
         assert!(!transient.is_conflict(), "retryable is not a conflict");
         assert!(!ApiError::Busy.is_conflict(), "Busy is not a conflict");
+    }
+
+    #[test]
+    fn a_write_that_may_have_been_applied_is_told_apart_from_one_that_was_not() {
+        let unconfirmed = ApiError::Sync(SyncError::Provider(ProviderError::needs_confirmation(
+            "the reply never came",
+        )));
+        assert!(unconfirmed.may_have_applied());
+        let unrecorded = ApiError::Sync(SyncError::Unrecorded(StoreError::StaleLease));
+        assert!(unrecorded.may_have_applied());
+        // Something written is not "nothing was attempted".
+        let shutdown = ApiError::Sync(SyncError::Unrecorded(StoreError::ShuttingDown));
+        assert!(!shutdown.is_shutting_down());
+
+        for not_applied in [
+            ApiError::Sync(SyncError::Provider(ProviderError::retryable(
+                "connect refused",
+            ))),
+            ApiError::Sync(SyncError::Provider(ProviderError::permanent("403"))),
+            ApiError::Sync(SyncError::Provider(ProviderError::conflict("412"))),
+            ApiError::Sync(SyncError::Store(StoreError::Backend("disk full".into()))),
+            ApiError::Sync(SyncError::Outbox("not claimable".into())),
+            ApiError::Busy,
+            ApiError::InvalidInput("bad".into()),
+        ] {
+            assert!(!not_applied.may_have_applied(), "{not_applied}");
+        }
+    }
+
+    #[test]
+    fn an_item_the_provider_can_never_serve_is_told_apart_from_other_permanent_failures() {
+        let unavailable = ApiError::Sync(SyncError::Provider(ProviderError::item_unavailable(
+            "cannot give this message back",
+        )));
+        assert!(unavailable.item_unavailable());
+        for other in [
+            ApiError::Sync(SyncError::Provider(ProviderError::permanent("403"))),
+            ApiError::Sync(SyncError::Provider(ProviderError::retryable("blip"))),
+            ApiError::Busy,
+        ] {
+            assert!(!other.item_unavailable(), "{other}");
+        }
+    }
+
+    #[test]
+    fn a_call_the_shutdown_cancelled_is_told_apart_from_a_failure() {
+        // Both shapes a store call cancelled at shutdown reaches a host in: a direct store
+        // read, and a sync whose apply never ran.
+        assert!(ApiError::Store(StoreError::ShuttingDown).is_shutting_down());
+        assert!(ApiError::Sync(SyncError::Store(StoreError::ShuttingDown)).is_shutting_down());
+
+        assert!(!ApiError::Store(StoreError::Backend("disk full".into())).is_shutting_down());
+        assert!(
+            !ApiError::Sync(SyncError::Provider(ProviderError::retryable("blip")))
+                .is_shutting_down()
+        );
+        assert!(!ApiError::Busy.is_shutting_down());
     }
 }

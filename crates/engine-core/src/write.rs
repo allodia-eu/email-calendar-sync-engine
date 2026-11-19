@@ -18,7 +18,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{error::FailureClass, ids::ProviderKey, time::Duration};
+use crate::{error::FailureClass, ids::ProviderKey, sync::SearchDomain, time::Duration};
+
+#[path = "write_keyword_edit.rs"]
+mod keyword_edit;
+
+pub use keyword_edit::KeywordEdit;
 
 /// Defines a non-empty string newtype used by the write contract.
 macro_rules! nonempty_str {
@@ -130,6 +135,9 @@ pub enum PendingOpKind {
     MailDraftPut,
     /// Removing a stored draft: discarded, or sent and now stale.
     MailDraftDelete,
+    /// Changing an account's folder tree: creating, renaming, moving, trashing or deleting
+    /// a folder.
+    MailboxEdit,
     /// Creating an event.
     CalendarCreate,
     /// Applying an edit to a stored event.
@@ -155,12 +163,13 @@ impl PendingOpKind {
     /// a new variant impossible to forget: adding one there is a compile error, and the
     /// round-trip test over this list is what then catches a missing decode arm, which no
     /// compiler sees because decoding matches strings.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::MailSubmit,
         Self::MailEdit,
         Self::MailReport,
         Self::MailDraftPut,
         Self::MailDraftDelete,
+        Self::MailboxEdit,
         Self::CalendarCreate,
         Self::CalendarPatch,
         Self::CalendarDocument,
@@ -170,6 +179,28 @@ impl PendingOpKind {
         Self::ContactPatch,
         Self::ContactDelete,
     ];
+
+    /// The domain this op writes to, so forgetting a domain withdraws its queued writes and
+    /// only those.
+    #[must_use]
+    pub fn domain(self) -> SearchDomain {
+        match self {
+            Self::MailSubmit
+            | Self::MailEdit
+            | Self::MailReport
+            | Self::MailDraftPut
+            | Self::MailDraftDelete
+            | Self::MailboxEdit => SearchDomain::Mail,
+            Self::CalendarCreate
+            | Self::CalendarPatch
+            | Self::CalendarDocument
+            | Self::CalendarRsvp
+            | Self::CalendarDelete => SearchDomain::Calendar,
+            Self::ContactCreate | Self::ContactPatch | Self::ContactDelete => {
+                SearchDomain::Contacts
+            }
+        }
+    }
 }
 
 /// A durable pending write operation.
@@ -189,6 +220,11 @@ pub struct PendingOp {
     pub resource_key: ResourceKey,
     /// The operation description, interpreted by the outbox/provider layer.
     pub payload: Value,
+    /// The keyword change this op makes, which the store shows from the moment it is queued
+    /// until the server confirms it or refuses it for good ([`KeywordEdit`]). `None` for every
+    /// op whose effect the store learns only from the server.
+    #[serde(default)]
+    pub keyword_edit: Option<KeywordEdit>,
 }
 
 impl PendingOp {
@@ -206,7 +242,15 @@ impl PendingOp {
             depends_on: Vec::new(),
             resource_key,
             payload,
+            keyword_edit: None,
         }
+    }
+
+    /// The same op, showing `edit` in the store while it is queued.
+    #[must_use]
+    pub fn with_keyword_edit(mut self, edit: KeywordEdit) -> Self {
+        self.keyword_edit = Some(edit);
+        self
     }
 }
 
@@ -258,7 +302,7 @@ mod tests {
             ResourceKey::new("message:m1").unwrap(),
             json!({ "op": "setKeywords", "add": ["$seen"] }),
         );
-        assert!(op.depends_on.is_empty());
+        assert_eq!(op.depends_on, []);
         let json = serde_json::to_string(&op).unwrap();
         assert_eq!(serde_json::from_str::<PendingOp>(&json).unwrap(), op);
     }
@@ -286,6 +330,22 @@ mod tests {
         }
         // Two verbs that share a resource key are still told apart by the kind.
         assert_ne!(PendingOpKind::MailEdit, PendingOpKind::MailReport);
+    }
+
+    #[test]
+    fn every_kind_belongs_to_the_domain_it_writes() {
+        use crate::sync::SearchDomain::{Calendar, Contacts, Mail};
+        for kind in PendingOpKind::ALL {
+            let name = format!("{kind:?}");
+            let expected = if name.starts_with("Mail") {
+                Mail
+            } else if name.starts_with("Calendar") {
+                Calendar
+            } else {
+                Contacts
+            };
+            assert_eq!(kind.domain(), expected, "{kind:?}");
+        }
     }
 
     #[test]

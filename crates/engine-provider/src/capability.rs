@@ -7,7 +7,9 @@
 //! capability URNs (`urn:ietf:params:jmap:mail` → [`Capabilities::mail`], etc.)
 //! and grows as protocol features are added.
 
-use crate::{IdentityControls, OverrideSurvival, ReportControls, RsvpControls, WriteGuard};
+use crate::{
+    IdentityControls, OverrideSurvival, ReportControls, RsvpControls, SharedAccounts, WriteGuard,
+};
 
 /// The data domains a provider supports.
 ///
@@ -36,6 +38,8 @@ pub struct Capabilities {
     mail: bool,
     mail_writes: bool,
     mail_drafts: bool,
+    pub(crate) mailbox_writes: bool,
+    pub(crate) sent_copy_keywords: bool,
     /// `None` when the adapter cannot report a message at all; otherwise which
     /// verdicts it can express and how much the provider tells us. One field rather
     /// than several, so "acknowledged but cannot report" is unrepresentable.
@@ -64,10 +68,16 @@ pub struct Capabilities {
     /// unrepresentable.
     override_survival: Option<OverrideSurvival>,
     calendar_scheduling: bool,
+    conference_writes: bool,
+    pub(crate) windowed_events: bool,
     pub(crate) contacts: bool,
     pub(crate) contact_writes: Option<WriteGuard>,
     pub(crate) contact_groups: bool,
     pub(crate) contact_photos: bool,
+    /// How the credential can find stores besides its own. Not a flag: "the server
+    /// lists them" and "the server answers only for an address you name" are different
+    /// promises, and a host's onboarding differs between them (`crate::shared`).
+    pub(crate) shared_accounts: SharedAccounts,
 }
 
 impl Capabilities {
@@ -78,6 +88,8 @@ impl Capabilities {
             mail: false,
             mail_writes: false,
             mail_drafts: false,
+            mailbox_writes: false,
+            sent_copy_keywords: false,
             mail_report: None,
             message_source: false,
             sender_identities: None,
@@ -89,10 +101,13 @@ impl Capabilities {
             calendar_rsvp: None,
             override_survival: None,
             calendar_scheduling: false,
+            conference_writes: false,
+            windowed_events: false,
             contacts: false,
             contact_writes: None,
             contact_groups: false,
             contact_photos: false,
+            shared_accounts: SharedAccounts::Unsupported,
         }
     }
 
@@ -105,10 +120,16 @@ impl Capabilities {
 
     /// Marks mail **writes** (mark-read/flag, move, delete via
     /// [`Provider::edit_mail`](crate::Provider::edit_mail)) as supported. Distinct
-    /// from [`with_mail`](Self::with_mail), the read capability — a mailbox the
-    /// account can read but not mutate (a shared read-only IMAP folder) advertises
-    /// [`mail`](Self::mail) without this, exactly as a no-SMTP adapter advertises
-    /// [`mail`](Self::mail) without [`submission`](Self::submission).
+    /// from [`with_mail`](Self::with_mail), the read capability — an account the
+    /// transport will not let mutate anything advertises [`mail`](Self::mail) without
+    /// this, exactly as a no-SMTP adapter advertises [`mail`](Self::mail) without
+    /// [`submission`](Self::submission).
+    ///
+    /// It says the transport can *issue* an edit, not that every folder will accept one.
+    /// Which folders do is a per-folder answer, on
+    /// [`Mailbox::access`](engine_core::mail::Mailbox::access): a store shared read-only
+    /// advertises this capability like any other, because the account-level flag that
+    /// could have said otherwise does not (`providers.md`).
     #[must_use]
     pub const fn with_mail_writes(mut self) -> Self {
         self.mail_writes = true;
@@ -264,6 +285,15 @@ impl Capabilities {
     #[must_use]
     pub const fn with_calendar_scheduling(mut self) -> Self {
         self.calendar_scheduling = true;
+        self
+    }
+
+    /// Marks video-meeting writes as supported: a create's
+    /// [`EventDraft::conference`](crate::EventDraft::conference) and a patch's
+    /// [`EventPatch::conference`](crate::EventPatch::conference).
+    #[must_use]
+    pub const fn with_conference_writes(mut self) -> Self {
+        self.conference_writes = true;
         self
     }
 
@@ -426,6 +456,13 @@ impl Capabilities {
     #[must_use]
     pub const fn calendar_scheduling(self) -> bool {
         self.calendar_scheduling
+    }
+
+    /// Whether the adapter puts a video meeting on an event and takes one off. Without it, a
+    /// create or patch that carries one is refused rather than written without the meeting.
+    #[must_use]
+    pub const fn conference_writes(self) -> bool {
+        self.conference_writes
     }
 }
 

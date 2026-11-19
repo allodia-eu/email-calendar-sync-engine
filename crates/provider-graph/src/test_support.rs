@@ -33,6 +33,11 @@ pub(crate) fn retry() -> engine_http::RetryConfig {
     engine_http::RetryConfig::default()
 }
 
+/// The product tests name in every request.
+pub(crate) fn user_agent() -> engine_http::UserAgent {
+    engine_http::test_server::user_agent()
+}
+
 /// What a fake route answers with: a fixture body, or an HTTP status plus the Graph error
 /// envelope to fail with. The failing form exists so a recovery path can be driven offline —
 /// notably Graph answering `410 SyncStateNotFound` once a stored deltaLink has aged out.
@@ -48,12 +53,26 @@ struct Fake {
     /// read requested — the fake answers the same fixture whatever the header says, so
     /// nothing else here could tell a right header from a wrong one.
     prefers: PreferLog,
+    /// Every request, as `(method, url, body)`, so a write test can assert what was sent
+    /// even though the answer is canned.
+    requests: RequestLog,
 }
+
+/// The `(method, url, body)` of every request a fake received, in order.
+pub(crate) type RequestLog = Arc<Mutex<Vec<(&'static str, String, Option<Value>)>>>;
 
 /// The `(url, Prefer)` pairs a fake was asked for, shared with the test that built it.
 pub(crate) type PreferLog = Arc<Mutex<Vec<(String, Option<String>)>>>;
 
 impl Fake {
+    fn log(&self, method: &'static str, url: &str, body: &[u8]) {
+        let body = (!body.is_empty()).then(|| serde_json::from_slice(body).unwrap_or(Value::Null));
+        self.requests
+            .lock()
+            .expect("requests lock")
+            .push((method, url.to_owned(), body));
+    }
+
     fn route(&self, url: &str) -> Result<&FakeRoute, GraphError> {
         self.routes
             .iter()
@@ -74,6 +93,7 @@ impl GraphTransport for Fake {
     }
 
     async fn get(&self, url: &str) -> Result<Value, GraphError> {
+        self.log("GET", url, &[]);
         match self.route(url)? {
             Ok(doc) => Ok(doc.clone()),
             Err((status, body)) => Err(GraphError::status(*status, body.to_string())),
@@ -102,8 +122,9 @@ impl GraphTransport for Fake {
         &self,
         url: &str,
         _content_type: &str,
-        _body: Vec<u8>,
+        body: Vec<u8>,
     ) -> Result<Option<Value>, GraphError> {
+        self.log("POST", url, &body);
         // Like every offline fake, the request body is ignored — a matched route's canned
         // answer is served regardless of what was sent (`AGENTS.md`); the *request shape*
         // (valid base64 MIME, `text/plain`) is asserted by the mock-server transport test
@@ -120,8 +141,9 @@ impl GraphTransport for Fake {
         url: &str,
         _content_type: &str,
         _if_match: Option<&str>,
-        _body: Vec<u8>,
+        body: Vec<u8>,
     ) -> Result<Option<Value>, GraphError> {
+        self.log("PATCH", url, &body);
         // Body/If-Match ignored (canned answer, `AGENTS.md`); the request shape is
         // asserted by the mock-server transport test and the live test.
         match self.route(url)? {
@@ -132,6 +154,7 @@ impl GraphTransport for Fake {
     }
 
     async fn delete(&self, url: &str, _if_match: Option<&str>) -> Result<(), GraphError> {
+        self.log("DELETE", url, &[]);
         match self.route(url)? {
             Ok(_) => Ok(()),
             Err((status, body)) => Err(GraphError::status(*status, body.to_string())),
@@ -158,20 +181,30 @@ pub(crate) fn fake_client_fallible(routes: Vec<(&str, FakeRoute)>) -> GraphClien
 /// Like [`fake_client_fallible`], plus the log of what each request asked for in its
 /// `Prefer` header.
 pub(crate) fn fake_client_recording(routes: Vec<(&str, FakeRoute)>) -> (GraphClient, PreferLog) {
+    let (client, prefers, _) = fake_client_logged(routes);
+    (client, prefers)
+}
+
+/// Like [`fake_client_recording`], plus the log of every request's method, URL and body.
+pub(crate) fn fake_client_logged(
+    routes: Vec<(&str, FakeRoute)>,
+) -> (GraphClient, PreferLog, RequestLog) {
     let routes = routes
         .into_iter()
         .map(|(key, answer)| (key.to_owned(), answer))
         .collect();
     let prefers: PreferLog = Arc::default();
+    let requests: RequestLog = Arc::default();
     let client = GraphClient::with_transport(
         Box::new(Fake {
             routes,
             unauthenticated: Mutex::new(Vec::new()),
             prefers: Arc::clone(&prefers),
+            requests: Arc::clone(&requests),
         }),
         "https://graph.test".to_owned(),
     );
-    (client, prefers)
+    (client, prefers, requests)
 }
 
 /// Parses a fixture string into JSON.
@@ -187,7 +220,7 @@ pub(crate) fn json(fixture: &str) -> Value {
 /// without a live token. Routes are matched in order, so list the most specific
 /// first. The background thread serves connections for the test's lifetime.
 pub(crate) fn replay_server(routes: Vec<(&'static str, Value)>) -> String {
-    use std::io::{Read, Write};
+    use std::io::Write;
     let routes: Vec<(String, String)> = routes
         .into_iter()
         .map(|(key, doc)| (key.to_owned(), doc.to_string()))
@@ -197,9 +230,8 @@ pub(crate) fn replay_server(routes: Vec<(&'static str, Value)>) -> String {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let mut buf = [0u8; 8192];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            let request = String::from_utf8_lossy(&buf[..n]);
+            let request = engine_http::test_server::read_request_blocking(&mut stream);
+            let request = String::from_utf8_lossy(&request);
             let path = request
                 .lines()
                 .next()
@@ -241,52 +273,13 @@ pub(crate) fn capturing_server(
     );
     std::thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
-            let request = read_full_request(&mut stream);
+            let request = engine_http::test_server::read_request_blocking(&mut stream);
+            let request = String::from_utf8_lossy_owned(request);
             let _ = tx.send(request);
             let _ = stream.write_all(response.as_bytes());
         }
     });
     (format!("http://{addr}"), rx)
-}
-
-/// Reads a full HTTP request (headers + `Content-Length` body) off `stream`.
-fn read_full_request(stream: &mut std::net::TcpStream) -> String {
-    use std::io::Read;
-    let mut data = Vec::new();
-    let mut buf = [0u8; 4096];
-    while let Ok(n) = stream.read(&mut buf) {
-        if n == 0 {
-            break;
-        }
-        data.extend_from_slice(&buf[..n]);
-        // Stop once the headers and exactly `Content-Length` more body bytes are in.
-        if request_complete(&data) {
-            break;
-        }
-    }
-    String::from_utf8_lossy(&data).into_owned()
-}
-
-/// Whether `data` holds a complete HTTP request: the header terminator plus at least
-/// the `Content-Length` body bytes that follow it.
-fn request_complete(data: &[u8]) -> bool {
-    let Some(header_end) = data
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|p| p + 4)
-    else {
-        return false;
-    };
-    let headers = String::from_utf8_lossy(&data[..header_end]);
-    let len = headers
-        .lines()
-        .find_map(|line| {
-            line.to_ascii_lowercase()
-                .strip_prefix("content-length:")
-                .and_then(|v| v.trim().parse::<usize>().ok())
-        })
-        .unwrap_or(0);
-    data.len() >= header_end + len
 }
 
 /// Decodes a standard RFC 4648 base64 string (test-only; the crate itself only

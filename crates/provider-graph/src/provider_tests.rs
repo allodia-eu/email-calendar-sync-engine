@@ -50,6 +50,21 @@ async fn advertises_per_folder_scopes_and_mail_capability() {
     // Mutating writes and submission are advertised alongside read/sync.
     assert!(info.capabilities.mail_writes());
     assert!(info.capabilities.submission());
+    // No keyword reaches the filed copy until one has a category name to go by.
+    assert!(!info.capabilities.sent_copy_keywords());
+    let named = engine_provider::KeywordName::new(
+        engine_core::mail::Keyword::new("project-x").unwrap(),
+        "Project X",
+    )
+    .unwrap();
+    let with_names =
+        GraphProvider::new(fake_client(vec![]), folder.clone()).with_keyword_names(vec![named]);
+    assert!(
+        with_names
+            .connection_info()
+            .capabilities
+            .sent_copy_keywords()
+    );
     // A fixture-fed fake transport speaks neither HTTP nor TLS, so it observes
     // neither version.
     assert_eq!(info.http_version, None);
@@ -373,6 +388,7 @@ async fn end_to_end_against_a_fixture_replay_server() {
         base,
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap();
     let provider = GraphProvider::new(client, MailboxId::try_from("folder-inbox").unwrap());
@@ -405,6 +421,7 @@ async fn replay_server_404s_an_unrouted_path() {
         crate::test_support::replay_server(vec![]),
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap();
     assert!(client.get(&client.url("/me/nope")).await.is_err());
@@ -463,7 +480,7 @@ async fn a_shared_mailbox_reads_its_own_identity_not_the_signed_in_user() {
         "/users/info@example.org?$select=displayName",
         jval!({ "displayName": "Info Desk", "mail": "info@example.org" }),
     )])
-    .with_principal(crate::MailboxPrincipal::user("info@example.org"));
+    .with_principal(crate::MailboxPrincipal::user("info@example.org").unwrap());
     let provider = GraphProvider::new(client, MailboxId::try_from("inbox").unwrap());
 
     let identities = provider.sender_identities(&account()).await.unwrap();

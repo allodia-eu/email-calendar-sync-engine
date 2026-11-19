@@ -6,20 +6,22 @@
 
 use async_trait::async_trait;
 use engine_core::{
-    calendar::{Calendar, Event},
+    calendar::Event,
     contact::{AddressBook, ContactCard, ContactDraft, ContactPatch, ContactResource},
-    ids::{AccountId, ContactId, ProviderKey},
+    ids::{AccountId, CalendarId, ContactId, ProviderKey},
     mail::{Mailbox, Message},
     raw::RawMime,
     sync::{SyncScope, SyncState, SyncWindow},
+    time::Horizon,
 };
 
 use crate::{
-    CalendarWrites, ConnectionInfo, ContactDestination, ContactPhoto, ContactSourceSync,
-    ContactWriteReceipt, ContactsProvider, Draft, EmailStream, EventDeletion, EventDraft,
-    EventEdit, EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport,
+    CalendarListing, CalendarUserAddresses, CalendarWrites, ConnectionInfo, ContactDestination,
+    ContactPhoto, ContactSourceSync, ContactWriteReceipt, ContactsProvider, Draft, EmailStream,
+    EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, HandOver,
+    MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport,
     Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
-    SubmissionReceipt,
+    SharedAccount, SourceStream, SubmissionReceipt,
 };
 
 /// A boxed provider is itself a [`Provider`], delegating every method to the box's
@@ -84,8 +86,9 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         &self,
         account: &AccountId,
         draft: &Draft,
+        hand_over: &HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
-        (**self).submit_email(account, draft).await
+        (**self).submit_email(account, draft, hand_over).await
     }
 
     async fn file_sent_copy(
@@ -125,6 +128,14 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         (**self).fetch_message_source(account, message).await
     }
 
+    fn fetch_message_sources<'a>(
+        &'a self,
+        account: &'a AccountId,
+        messages: &'a [Message],
+    ) -> SourceStream<'a> {
+        (**self).fetch_message_sources(account, messages)
+    }
+
     async fn report_message(
         &self,
         account: &AccountId,
@@ -146,28 +157,40 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         (**self).set_sender_name(account, identity, name).await
     }
 
+    async fn list_shared_accounts(&self) -> ProviderResult<Vec<SharedAccount>> {
+        (**self).list_shared_accounts().await
+    }
+
+    async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
+        (**self).resolve_shared_account(address).await
+    }
+
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
         (**self).calendar_scope(account)
     }
 
-    fn event_scope(&self, account: &AccountId) -> SyncScope {
-        (**self).event_scope(account)
+    fn event_scope(&self, account: &AccountId, calendar: &CalendarId) -> SyncScope {
+        (**self).event_scope(account, calendar)
     }
 
     async fn sync_calendars(
         &self,
         account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Calendar>> {
+    ) -> ProviderResult<CalendarListing> {
         (**self).sync_calendars(account, cursor).await
     }
 
     async fn sync_events(
         &self,
         account: &AccountId,
+        calendar: &CalendarId,
         cursor: Option<&SyncState>,
+        window: Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
-        (**self).sync_events(account, cursor).await
+        (**self)
+            .sync_events(account, calendar, cursor, window)
+            .await
     }
 }
 
@@ -217,6 +240,25 @@ impl<P: CalendarWrites + ?Sized> CalendarWrites for Box<P> {
         deletion: &EventDeletion,
     ) -> ProviderResult<()> {
         (**self).delete_event(account, base, deletion).await
+    }
+
+    async fn calendar_user_addresses(
+        &self,
+        account: &AccountId,
+    ) -> ProviderResult<CalendarUserAddresses> {
+        (**self).calendar_user_addresses(account).await
+    }
+}
+
+/// The folder-write half, delegated for the same reason as [`CalendarWrites`] above.
+#[async_trait]
+impl<P: MailboxWrites + ?Sized> MailboxWrites for Box<P> {
+    async fn edit_mailbox(
+        &self,
+        account: &AccountId,
+        edit: &MailboxEdit,
+    ) -> ProviderResult<MailboxEditReceipt> {
+        (**self).edit_mailbox(account, edit).await
     }
 }
 

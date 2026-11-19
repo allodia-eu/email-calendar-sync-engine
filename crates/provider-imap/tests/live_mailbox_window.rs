@@ -25,7 +25,7 @@ use engine_core::{
 use engine_provider::Provider;
 use engine_store::{MailSelector, ManualClock, StoreRead, WorkerId};
 use engine_sync::{IgnoreCommits, StreamTuning, sync_mail};
-use provider_imap::{ImapConfig, ImapProvider};
+use provider_imap::{Credentials, ImapAccount, ImapConfig};
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
 use tokio_rustls::client::TlsStream;
@@ -36,7 +36,7 @@ const MARKER: &str = "mbwimap";
 /// The date every planted message carries: before the account window, inside Sent's.
 const PLANTED_AT: &str = "2020-03-02T09:00:00Z";
 
-type LiveProvider = ImapProvider<TlsStream<tokio::net::TcpStream>>;
+type LiveAccount = ImapAccount<TlsStream<tokio::net::TcpStream>>;
 
 /// Destroys what this run planted, however the run ends.
 struct Planted<'a> {
@@ -61,16 +61,19 @@ impl Drop for Planted<'_> {
     }
 }
 
-async fn connect(harness: &Harness, auth: (&str, &str), mailbox: &MailboxId) -> LiveProvider {
+async fn login(harness: &Harness, auth: (&str, &str)) -> LiveAccount {
     let host = harness
         .imap_addr
         .rsplit_once(':')
         .map_or("localhost", |(host, _)| host);
-    let config = ImapConfig::new(harness.imap_addr.as_str(), host, auth.0, auth.1);
-    ImapProvider::connect(
+    let config = ImapConfig::new(
+        harness.imap_addr.as_str(),
+        host,
+        Credentials::password(auth.0, auth.1),
+    );
+    ImapAccount::connect(
         &config,
         engine_tls::TlsClientConfig::dangerous_accept_any().connector(),
-        mailbox.clone(),
     )
     .await
     .expect("connect IMAP")
@@ -126,7 +129,8 @@ async fn a_deepened_sent_folder_reaches_back_and_no_other_folder_does() {
 
     let account = AccountId::try_from("live-window-imap").unwrap();
     let inbox = MailboxId::try_from("INBOX").unwrap();
-    let first = connect(&harness, auth, &inbox).await;
+    let imap = login(&harness, auth).await;
+    let first = imap.provider(inbox);
     let SyncUpdate::Snapshot { objects, .. } = first
         .sync_mailboxes(&account, None)
         .await
@@ -139,7 +143,7 @@ async fn a_deepened_sent_folder_reaches_back_and_no_other_folder_does() {
         .iter()
         .find(|mailbox| mailbox.role == Some(MailboxRole::Sent))
         .map_or_else(|| panic!("the account's Sent folder"), |m| m.id.clone());
-    let providers = vec![first, connect(&harness, auth, &sent).await];
+    let providers = vec![first, imap.provider(sent.clone())];
 
     let store =
         SqliteStore::open_in_memory(ManualClock::new("2026-09-01T00:00:00Z".parse().unwrap()))

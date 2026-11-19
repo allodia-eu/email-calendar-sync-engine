@@ -25,9 +25,12 @@ mod contact_photo;
 mod contact_query;
 mod contact_reads;
 mod contacts;
+mod forget;
 mod identities;
 mod mailbox_reads;
+mod mailbox_writes;
 mod reads;
+mod shared_accounts;
 mod sync;
 mod writes;
 
@@ -36,6 +39,7 @@ pub use contacts::{
     ContactDelete, ContactReconciled, ContactWrite, PeoplePage, PeopleQuery, RecipientSuggestions,
 };
 pub use mailbox_reads::MailboxSpan;
+pub use mailbox_writes::MailboxWrite;
 pub use writes::queued_draft;
 
 /// The worker identity this engine stamps on every lease it claims.

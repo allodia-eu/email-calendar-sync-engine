@@ -123,6 +123,6 @@ mod tests {
         let roots = parse_components("END:VEVENT\nLOOSE:prop\nBEGIN:VCALENDAR\nEND:VCALENDAR\n");
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].name, "VCALENDAR");
-        assert!(roots[0].properties.is_empty());
+        assert_eq!(roots[0].properties, []);
     }
 }

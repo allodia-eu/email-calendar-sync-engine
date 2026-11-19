@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "ErrorInvalidUser",
+    "message": "The requested user 'nobody@example.test' is invalid.",
+    "innererror": {
+      "message": "The requested user 'nobody@example.test' is invalid.",
+      "type": "Microsoft.Exchange.Services.OData.InvalidUserException"
+    }
+  }
+}

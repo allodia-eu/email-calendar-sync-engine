@@ -1,0 +1,26 @@
+* 1 FETCH (UID 1 FLAGS ($hasnoattachment \Seen) INTERNALDATE "18-Nov-2026 10:13:32 +0000" RFC822.SIZE 318 ENVELOPE ("Mon, 12 Jan 2026 09:00:00 +0000" "Fixture: high importance" (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) NIL NIL NIL "<importance-high@test.local>") BODY[HEADER.FIELDS (REFERENCES IMPORTANCE X-MSMAIL-PRIORITY X-PRIORITY CONTENT-TYPE CONTENT-DISPOSITION)] {86}
+Importance: High
+X-Priority: 1 (Highest)
+Content-Type: text/plain; charset=utf-8
+
+)
+* 2 FETCH (UID 2 FLAGS ($hasnoattachment \Seen) INTERNALDATE "18-Nov-2026 10:13:32 +0000" RFC822.SIZE 317 ENVELOPE ("Mon, 12 Jan 2026 09:00:00 +0000" "Fixture: low importance in X-Priority alone" (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) NIL NIL NIL "<importance-low@test.local>") BODY[HEADER.FIELDS (REFERENCES IMPORTANCE X-MSMAIL-PRIORITY X-PRIORITY CONTENT-TYPE CONTENT-DISPOSITION)] {67}
+X-Priority: 5 (Lowest)
+Content-Type: text/plain; charset=utf-8
+
+)
+* 3 FETCH (UID 3 FLAGS ($hasnoattachment \Seen) INTERNALDATE "18-Nov-2026 10:13:32 +0000" RFC822.SIZE 282 ENVELOPE ("Mon, 12 Jan 2026 09:00:00 +0000" "Fixture: no importance stated" (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) NIL NIL NIL "<importance-normal@test.local>") BODY[HEADER.FIELDS (REFERENCES IMPORTANCE X-MSMAIL-PRIORITY X-PRIORITY CONTENT-TYPE CONTENT-DISPOSITION)] {43}
+Content-Type: text/plain; charset=utf-8
+
+)
+* 4 FETCH (UID 4 FLAGS ($hasnoattachment \Seen) INTERNALDATE "18-Nov-2026 10:13:32 +0000" RFC822.SIZE 327 ENVELOPE ("Mon, 12 Jan 2026 09:00:00 +0000" "Fixture: Importance twice, low then high" (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) NIL NIL NIL "<importance-twice@test.local>") BODY[HEADER.FIELDS (REFERENCES IMPORTANCE X-MSMAIL-PRIORITY X-PRIORITY CONTENT-TYPE CONTENT-DISPOSITION)] {78}
+Importance: low
+Importance: high
+Content-Type: text/plain; charset=utf-8
+
+)
+* 5 FETCH (UID 5 FLAGS ($hasnoattachment \Seen) INTERNALDATE "18-Nov-2026 10:13:32 +0000" RFC822.SIZE 327 ENVELOPE ("Mon, 12 Jan 2026 09:00:00 +0000" "Fixture: low importance in X-MSMail-Priority alone" (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) (("Alice Tester" NIL "alice" "test.local")) NIL NIL NIL "<importance-msmail@test.local>") BODY[HEADER.FIELDS (REFERENCES IMPORTANCE X-MSMAIL-PRIORITY X-PRIORITY CONTENT-TYPE CONTENT-DISPOSITION)] {67}
+X-MSMail-Priority: Low
+Content-Type: text/plain; charset=utf-8
+
+)

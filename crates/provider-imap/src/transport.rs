@@ -7,20 +7,17 @@
 //! the read/sync slice needs (`LOGIN`, `SELECT`, `UID SEARCH`, `UID FETCH`, `LIST`,
 //! `LOGOUT`); the higher-level snapshot/delta logic lives in [`crate::sync`].
 
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use std::time::Duration;
+
+use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 
 use crate::{
     capability::Negotiated,
+    deadline::{self, BOUNDS},
     error::{ImapError, ImapResult},
-    parse::{self, FetchRow, ListRow, SelectData},
-    transport_command::{list_command, quote},
+    parse::{self, FetchRow, ListRow},
+    transport_command::{ListReturn, list_command, quote},
 };
-
-/// The largest `{n}` literal we will read into memory. A hostile or buggy server
-/// could announce an enormous literal (`* {4000000000}`); the cap bounds the
-/// allocation so adversarial input cannot exhaust memory (`north-star.md` security).
-/// Generous enough for any real metadata response (and future body fetches).
-const MAX_LITERAL: usize = 64 * 1024 * 1024;
 
 /// A connected IMAP session over a generic async byte stream.
 pub(crate) struct Connection<S> {
@@ -41,6 +38,8 @@ pub(crate) struct Connection<S> {
     /// [`Connection::command`] drains the leftover response to this tag before issuing
     /// its own, so the connection self-heals rather than desyncing.
     pub(crate) pending_tag: Option<String>,
+    /// The mailbox this session has open, if any ([`crate::transport_select`]).
+    pub(crate) selected: Option<crate::transport_select::Selection>,
 }
 
 impl<S> core::fmt::Debug for Connection<S> {
@@ -66,6 +65,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             tag: 0,
             negotiated: Negotiated::default(),
             pending_tag: None,
+            selected: None,
         };
         connection.read_greeting().await?;
         Ok(connection)
@@ -79,7 +79,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     }
 
     /// Reads the untagged greeting: `* OK`/`* PREAUTH` is success, `* BYE` is a
-    /// refusal.
+    /// refusal. A server that accepts the connection and never greets is given
+    /// [`Deadlines::reply`](engine_provider::Deadlines::reply), as every response is.
     async fn read_greeting(&mut self) -> ImapResult<()> {
         let line = self.read_line().await?;
         let text = String::from_utf8_lossy(&line);
@@ -106,44 +107,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// Writes raw bytes and flushes — the unframed send the IDLE primitives need to
     /// issue `<tag> IDLE\r\n` and the bare `DONE\r\n` continuation
     /// ([`crate::idle`]), which fall outside [`command`](Self::command)'s tagged
-    /// request/response shape.
+    /// request/response shape. Every write here goes through it, a piece at a time
+    /// ([`deadline::write`]), so a server that stops reading cannot hold one.
     pub(crate) async fn send_raw(&mut self, bytes: &[u8]) -> ImapResult<()> {
-        self.inner.write_all(bytes).await?;
-        self.inner.flush().await?;
-        Ok(())
-    }
-
-    /// Reads one logical line: bytes through the next `\n`, with any `{n}` literal
-    /// the line announces inlined (the n bytes, then the continuation). Literals
-    /// can themselves announce further literals, so this loops.
-    ///
-    /// `pub(crate)` so the IDLE read loop ([`crate::idle`]) can consume the
-    /// unsolicited untagged responses the server streams while idling, reusing the
-    /// same literal-aware framing as the command path.
-    pub(crate) async fn read_line(&mut self) -> ImapResult<Vec<u8>> {
-        let mut line = Vec::new();
-        loop {
-            let before = line.len();
-            let read = self.inner.read_until(b'\n', &mut line).await?;
-            if read == 0 {
-                return Err(ImapError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "connection closed mid-response",
-                )));
-            }
-            if let Some(len) = trailing_literal_len(&line[before..]) {
-                if len > MAX_LITERAL {
-                    return Err(ImapError::protocol(format!(
-                        "server announced a {len}-byte literal exceeding the {MAX_LITERAL}-byte cap"
-                    )));
-                }
-                let mut literal = vec![0u8; len];
-                self.inner.read_exact(&mut literal).await?;
-                line.extend_from_slice(&literal);
-                continue;
-            }
-            return Ok(line);
-        }
+        Ok(deadline::write(&mut self.inner, bytes).await?)
     }
 
     /// Sends a tagged command and collects its untagged responses and completion
@@ -151,22 +118,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// preamble (`crate::transport_starttls`) can issue `CAPABILITY`/`STARTTLS` over
     /// the plaintext connection reusing the tagged round trip.
     pub(crate) async fn command(&mut self, command: &str) -> ImapResult<Response> {
+        self.command_within(command, BOUNDS.reply()).await
+    }
+
+    /// [`command`](Self::command), with each read of its response bounded by `stall` as
+    /// [`read_line_within`](Self::read_line_within) bounds a line.
+    async fn command_within(&mut self, command: &str, stall: Duration) -> ImapResult<Response> {
         // If a streamed `UID FETCH` was abandoned mid-response, finish reading it to
         // its tag first so this command's reply is not corrupted by leftover lines.
         self.drain_pending().await?;
         let tag = self.next_tag();
-        let request = format!("{tag} {command}\r\n");
-        self.inner.write_all(request.as_bytes()).await?;
-        self.inner.flush().await?;
-        self.read_response(&tag).await
+        self.send_raw(format!("{tag} {command}\r\n").as_bytes())
+            .await?;
+        self.read_response_within(&tag, stall).await
     }
 
-    /// Reads untagged responses until this command's tagged completion.
+    /// Reads untagged responses until this command's tagged completion, each line bounded by
+    /// [`Deadlines::reply`](engine_provider::Deadlines::reply).
     pub(crate) async fn read_response(&mut self, tag: &str) -> ImapResult<Response> {
+        self.read_response_within(tag, BOUNDS.reply()).await
+    }
+
+    async fn read_response_within(&mut self, tag: &str, stall: Duration) -> ImapResult<Response> {
         let mut untagged = Vec::new();
         let prefix = format!("{tag} ");
         loop {
-            let line = self.read_line().await?;
+            let line = self.read_line_within(Some(stall)).await?;
             if let Some(body) = strip_ascii_prefix(&line, b"* ") {
                 untagged.push(body.to_vec());
                 continue;
@@ -195,21 +172,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         }
     }
 
-    /// `LOGIN user password`. A `NO` here is an authentication failure, not a
-    /// generic invalid-state error, unless it carries `[LIMIT]`: the server is refusing
-    /// sessions for this account, and the credential was never judged.
-    ///
-    /// Only here, because RFC 5530's `LIMIT` is any implementation limit: on `STORE` it can
-    /// mean too many keywords, which no wait will fix. Before a session exists, the only
-    /// limit left to hit is on sessions.
+    /// `LOGIN user password`. A `NO` here is classed as a sign-in refusal
+    /// ([`ImapError::refused_sign_in`]), not as a generic invalid-state error.
     pub(crate) async fn login(&mut self, user: &str, password: &str) -> ImapResult<()> {
         let command = format!("LOGIN {} {}", quote(user), quote(password));
         match self.command(&command).await {
             Ok(_) => Ok(()),
-            Err(ImapError::No(detail)) if opens_with_code(&detail, "LIMIT") => {
-                Err(ImapError::rate_limited(detail))
-            }
-            Err(ImapError::No(detail)) => Err(ImapError::auth(detail)),
+            Err(ImapError::No(detail)) => Err(ImapError::refused_sign_in(detail)),
             Err(other) => Err(other),
         }
     }
@@ -233,8 +202,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     ///
     /// [`ImapError::Io`] or another non-refusal failure of `CAPABILITY`/`ENABLE`.
     pub(crate) async fn negotiate(&mut self) -> ImapResult<()> {
-        let response = self.command("CAPABILITY").await?;
-        let capabilities = crate::parse_qresync::parse_capabilities(&response.into_all_lines());
+        let capabilities = self.capabilities().await?;
         self.negotiated = Negotiated::from_capabilities(&capabilities);
 
         let arguments = self.negotiated.enable_arguments();
@@ -253,36 +221,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             Err(other) => return Err(other),
         }
         Ok(())
-    }
-
-    /// `SELECT mailbox`, returning its UID space and message count. Response codes
-    /// in either an untagged `* OK [..]` or the tagged completion are honored.
-    pub(crate) async fn select(&mut self, mailbox: &str) -> ImapResult<SelectData> {
-        let response = self
-            .command(&format!("SELECT {}", self.quoted_name(mailbox)))
-            .await?;
-        parse::parse_select(&response.into_all_lines())
-    }
-
-    /// `SELECT mailbox (CONDSTORE)` — opens the mailbox CONDSTORE-aware (RFC 7162
-    /// §3.1.8) so the response carries `[HIGHESTMODSEQ n]`, the baseline a QRESYNC
-    /// delta records in its cursor. Used in place of [`Connection::select`] for the
-    /// sync path on a QRESYNC session.
-    pub(crate) async fn select_condstore(&mut self, mailbox: &str) -> ImapResult<SelectData> {
-        let response = self
-            .command(&format!("SELECT {} (CONDSTORE)", self.quoted_name(mailbox)))
-            .await?;
-        parse::parse_select(&response.into_all_lines())
-    }
-
-    /// `EXAMINE mailbox` — the read-only `SELECT` (RFC 9051 §6.3.2): same response
-    /// shape, but opens the mailbox without write intent and does not reset
-    /// `\Recent`, so a body peek needs no write access to the folder.
-    pub(crate) async fn examine(&mut self, mailbox: &str) -> ImapResult<SelectData> {
-        let response = self
-            .command(&format!("EXAMINE {}", self.quoted_name(mailbox)))
-            .await?;
-        parse::parse_select(&response.into_all_lines())
     }
 
     /// `UID FETCH <set> (<items>)`, returning the parsed rows.
@@ -313,13 +251,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         Ok((rows, vanished))
     }
 
-    /// `UID SEARCH SINCE <date>` — the UIDs of messages whose `INTERNALDATE` is on or
-    /// after `date` (an IMAP `dd-Mon-yyyy` date, RFC 9051 §6.4.4), used to find the
-    /// floor of a sync-depth window so a snapshot fetches only recent mail. `date` is
-    /// caller-formatted from a calendar date (digits + a fixed month abbreviation), so
-    /// it carries no quoting or injection risk.
-    pub(crate) async fn uid_search_since(&mut self, date: &str) -> ImapResult<Vec<u32>> {
-        self.uid_search(&format!("SINCE {date}")).await
+    /// `UID FETCH <set> (<items>) (CHANGEDSINCE <modseq>)` — the CONDSTORE form (RFC 7162
+    /// §3.1.4.1): every message in `set` whose mod-sequence is above `modseq`. Unlike
+    /// [`uid_fetch_changedsince`](Self::uid_fetch_changedsince) it names no `VANISHED`, which
+    /// only a QRESYNC session may ask for, so it says nothing of what was expunged.
+    pub(crate) async fn uid_fetch_changed(
+        &mut self,
+        set: &str,
+        items: &str,
+        modseq: u64,
+    ) -> ImapResult<Vec<FetchRow>> {
+        let response = self
+            .command(&format!(
+                "UID FETCH {set} ({items}) (CHANGEDSINCE {modseq})"
+            ))
+            .await?;
+        parse::parse_fetch(&response.untagged)
     }
 
     /// `UID SEARCH <criteria>` in the selected mailbox — the matched UIDs (empty if none
@@ -341,20 +288,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// concurrent flag update) cannot return the wrong message's bytes.
     pub(crate) async fn uid_fetch_body(&mut self, uid: u32) -> ImapResult<Option<Vec<u8>>> {
         let response = self
-            .command(&format!("UID FETCH {uid} (BODY.PEEK[])"))
+            .command_within(&format!("UID FETCH {uid} (BODY.PEEK[])"), BOUNDS.stall())
             .await?;
         Ok(crate::parse_body::parse_fetch_body(&response.untagged, uid))
     }
 
-    /// `LIST "" "*"`, returning every mailbox — asking for its SPECIAL-USE attributes
-    /// wherever the server advertised RFC 6154, on either dialect (see
+    /// `LIST "" <pattern>`, returning the mailboxes it matches — asking for their
+    /// SPECIAL-USE attributes wherever the server advertised RFC 6154, on either dialect (see
     /// [`Negotiated::must_request_special_use`]; [`crate::place`] resolves the Sent/Drafts
-    /// folder from them).
-    pub(crate) async fn list(&mut self) -> ImapResult<Vec<ListRow>> {
+    /// folder from them). `pattern` is a decoded name pattern, encoded here for the wire.
+    pub(crate) async fn list(&mut self, pattern: &str) -> ImapResult<Vec<ListRow>> {
         let response = self
             .command(&list_command(
-                self.negotiated.must_request_special_use(),
-                false,
+                &self.quoted_name(pattern),
+                ListReturn {
+                    special_use: self.negotiated.must_request_special_use(),
+                    ..ListReturn::default()
+                },
             ))
             .await?;
         parse::parse_list(response.untagged())
@@ -385,16 +335,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         self.command(&format!("UID EXPUNGE {set}")).await?;
         Ok(())
     }
-}
-
-/// Whether a completion's text opens with the argument-less response code `code`. A code
-/// is only a code at the start of the text (RFC 3501 `resp-text`), and it is an atom, so
-/// case does not matter.
-fn opens_with_code(detail: &str, code: &str) -> bool {
-    detail
-        .strip_prefix('[')
-        .and_then(|rest| rest.split_once(']'))
-        .is_some_and(|(found, _)| found.eq_ignore_ascii_case(code))
 }
 
 /// Extracts `(validity, uid)` from an `[APPENDUID validity uid]` response code
@@ -440,20 +380,6 @@ impl Response {
     }
 }
 
-/// The literal length a line announces (`…{n}` or `…{n+}` before its CRLF), if any.
-fn trailing_literal_len(line: &[u8]) -> Option<usize> {
-    let trimmed = line.strip_suffix(b"\n")?;
-    let trimmed = trimmed.strip_suffix(b"\r").unwrap_or(trimmed);
-    let inside = trimmed.strip_suffix(b"}")?;
-    let inside = inside.strip_suffix(b"+").unwrap_or(inside);
-    let open = inside.iter().rposition(|&b| b == b'{')?;
-    let digits = &inside[open + 1..];
-    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
-        return None;
-    }
-    std::str::from_utf8(digits).ok()?.parse().ok()
-}
-
 /// Strips an ASCII prefix, returning the remainder without its trailing CRLF.
 /// `pub(crate)` so [`crate::idle`] can peel the `* ` from an untagged line before
 /// classifying the IDLE notification it carries.
@@ -470,3 +396,7 @@ mod tests;
 #[cfg(test)]
 #[path = "transport_negotiate_tests.rs"]
 mod negotiate_tests;
+
+#[cfg(test)]
+#[path = "transport_refusal_tests.rs"]
+mod refusal_tests;

@@ -31,6 +31,7 @@
 #[macro_use]
 mod macros;
 
+pub mod affiliation;
 pub mod attachment;
 pub mod calendar;
 pub mod contact;

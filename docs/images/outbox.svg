@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="926" viewBox="0 0 960 926" role="img" aria-labelledby="t d">
+  <title id="t">The outbox: saved first, sent later</title>
+  <desc id="d">A write is saved, claimed under a lease, sent by the provider, and its outcome recorded. The outcome decides whether it is done, retried after a backoff, parked for confirmation, or failed.</desc>
+  <style>
+    svg { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif; }
+    .bg { fill: #ffffff; stroke: #d0d7de; }
+    .ink { fill: #1f2328; }
+    .muted { fill: #59636e; }
+    .code { font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace; font-size: 0.92em; }
+    .h1 { font-size: 24px; font-weight: 700; }
+    .h2 { font-size: 17px; font-weight: 700; }
+    .h3 { font-size: 16px; font-weight: 650; }
+    .body { font-size: 14px; }
+    .small { font-size: 13px; }
+    .badge { font-size: 13px; font-weight: 700; letter-spacing: 0.02em; }
+    .panel { fill: #f6f8fa; stroke: #d0d7de; }
+    .box { fill: #ffffff; stroke: #d0d7de; }
+    .rail { stroke: #d0d7de; }
+    .wire { stroke: #8c959f; fill: none; }
+    .wire-head { fill: #8c959f; }
+    .blue-f { fill: #ddf4ff; } .blue-s { stroke: #0969da; } .blue-t { fill: #0969da; } .blue-solid { fill: #0969da; }
+    .green-f { fill: #dafbe1; } .green-s { stroke: #1a7f37; } .green-t { fill: #116329; } .green-solid { fill: #1a7f37; }
+    .amber-f { fill: #fff8c5; } .amber-s { stroke: #9a6700; } .amber-t { fill: #7d4e00; } .amber-solid { fill: #9a6700; }
+    .red-f { fill: #ffebe9; } .red-s { stroke: #cf222e; } .red-t { fill: #a40e26; } .red-solid { fill: #cf222e; }
+    .gray-f { fill: #f6f8fa; } .gray-s { stroke: #8c959f; } .gray-t { fill: #59636e; } .gray-solid { fill: #6e7781; }
+    .zone-safe { fill: #1a7f37; fill-opacity: 0.05; }
+    .zone-risk { fill: #bf8700; fill-opacity: 0.07; }
+    .on-solid { fill: #ffffff; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; stroke: #30363d; }
+      .ink { fill: #e6edf3; }
+      .muted { fill: #9198a1; }
+      .panel { fill: #151b23; stroke: #30363d; }
+      .box { fill: #0d1117; stroke: #3d444d; }
+      .rail { stroke: #3d444d; }
+      .wire { stroke: #656c76; }
+      .wire-head { fill: #656c76; }
+      .blue-f { fill: #121d2f; } .blue-s { stroke: #4493f8; } .blue-t { fill: #79c0ff; } .blue-solid { fill: #1f6feb; }
+      .green-f { fill: #12261e; } .green-s { stroke: #2ea043; } .green-t { fill: #56d364; } .green-solid { fill: #238636; }
+      .amber-f { fill: #272115; } .amber-s { stroke: #bb8009; } .amber-t { fill: #e3b341; } .amber-solid { fill: #9e6a03; }
+      .red-f { fill: #25171c; } .red-s { stroke: #f85149; } .red-t { fill: #ff7b72; } .red-solid { fill: #da3633; }
+      .gray-f { fill: #151b23; } .gray-s { stroke: #656c76; } .gray-t { fill: #9198a1; } .gray-solid { fill: #656c76; }
+      .zone-safe { fill: #2ea043; fill-opacity: 0.07; }
+      .zone-risk { fill: #bb8009; fill-opacity: 0.09; }
+    }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="wire-head"/>
+    </marker>
+  </defs>
+<rect x="0.5" y="0.5" width="959" height="925" rx="16" class="bg"/>
+<text x="32" y="50" class="h1 ink">The outbox: saved first, sent later</text>
+<text x="32" y="78" class="body muted">Every write a host asks for (a send, a flag, a move, an RSVP, a calendar edit) takes</text>
+<text x="32" y="98" class="body muted">the same four steps, and its outcome decides what happens to it next.</text>
+<rect x="32" y="120" width="200" height="168" rx="12" class="box" stroke-width="1.5"/>
+<circle cx="62" cy="150" r="14" class="blue-solid"/>
+<text x="62" y="155" class="badge on-solid" text-anchor="middle">1</text>
+<text x="86" y="156" class="h2 ink">Save</text>
+<text x="50" y="190" class="body ink">Stored as an op and</text>
+<text x="50" y="210" class="body ink">synced to disk before</text>
+<text x="50" y="230" class="body ink">any network I/O. The</text>
+<text x="50" y="250" class="body ink">same idempotency key</text>
+<text x="50" y="270" class="body ink">is the same op.</text>
+<path d="M236,204.0 L260,204.0" class="wire" stroke-width="2" marker-end="url(#head)"/>
+<rect x="264" y="120" width="200" height="168" rx="12" class="box" stroke-width="1.5"/>
+<circle cx="294" cy="150" r="14" class="blue-solid"/>
+<text x="294" y="155" class="badge on-solid" text-anchor="middle">2</text>
+<text x="318" y="156" class="h2 ink">Claim</text>
+<text x="282" y="190" class="body ink">A worker leases it with</text>
+<text x="282" y="210" class="body ink">a fencing token. It waits</text>
+<text x="282" y="230" class="body ink">for its dependencies and</text>
+<text x="282" y="250" class="body ink">for other writes to the</text>
+<text x="282" y="270" class="body ink">same resource.</text>
+<path d="M468,204.0 L492,204.0" class="wire" stroke-width="2" marker-end="url(#head)"/>
+<rect x="496" y="120" width="200" height="168" rx="12" class="box" stroke-width="1.5"/>
+<circle cx="526" cy="150" r="14" class="blue-solid"/>
+<text x="526" y="155" class="badge on-solid" text-anchor="middle">3</text>
+<text x="550" y="156" class="h2 ink">Call</text>
+<text x="514" y="190" class="body ink">The provider does the</text>
+<text x="514" y="210" class="body ink">work: SMTP, JMAP,</text>
+<text x="514" y="230" class="body ink">Graph, Gmail, CalDAV,</text>
+<text x="514" y="250" class="body ink">CardDAV.</text>
+<path d="M700,204.0 L724,204.0" class="wire" stroke-width="2" marker-end="url(#head)"/>
+<rect x="728" y="120" width="200" height="168" rx="12" class="box" stroke-width="1.5"/>
+<circle cx="758" cy="150" r="14" class="blue-solid"/>
+<text x="758" y="155" class="badge on-solid" text-anchor="middle">4</text>
+<text x="782" y="156" class="h2 ink">Record</text>
+<text x="746" y="190" class="body ink">The outcome is stored</text>
+<text x="746" y="210" class="body ink">under the lease. A</text>
+<text x="746" y="230" class="body ink">stale token is refused,</text>
+<text x="746" y="250" class="body ink">so a late worker cannot</text>
+<text x="746" y="270" class="body ink">overwrite a newer one.</text>
+<rect x="32" y="344" width="896" height="348" rx="12" class="panel"/>
+<text x="52" y="376" class="h2 ink">What the outcome does</text>
+<path d="M828.0,292 L828.0,340" class="wire" stroke-width="2" marker-end="url(#head)"/>
+<rect x="52" y="400" width="90" height="24" rx="12" class="green-solid"/><text x="97.0" y="416.5" class="badge on-solid" text-anchor="middle">Succeeded</text>
+<text x="252" y="417" class="body ink">Done. It leaves the queue, and the drain report says what it became</text>
+<text x="252" y="437" class="body ink">(its provider key).</text>
+<rect x="52" y="462" width="105" height="24" rx="12" class="blue-solid"/><text x="104.5" y="478.5" class="badge on-solid" text-anchor="middle">Retry later</text>
+<text x="252" y="479" class="body ink">A dropped connection, a <tspan class="code">503</tspan>, a rate limit. Back to Pending with a backoff:</text>
+<text x="252" y="499" class="body ink">30 s doubling to 30 min, or the server's own <tspan class="code">Retry-After</tspan>. Other writes give</text>
+<text x="252" y="519" class="body ink">up after 8 attempts; a send never does.</text>
+<rect x="52" y="544" width="158" height="24" rx="12" class="amber-solid"/><text x="131.0" y="560.5" class="badge on-solid" text-anchor="middle">Needs confirmation</text>
+<text x="252" y="561" class="body ink">Sends only: it may already be in front of its recipients. Parked, never</text>
+<text x="252" y="581" class="body ink">retried blindly, until its copy in Sent, the host, or the attempt itself</text>
+<text x="252" y="601" class="body ink">settles it.</text>
+<rect x="52" y="626" width="67" height="24" rx="12" class="red-solid"/><text x="85.5" y="642.5" class="badge on-solid" text-anchor="middle">Failed</text>
+<text x="252" y="643" class="body ink">A conflict, a bad login, a permanent refusal: waiting would not help.</text>
+<text x="252" y="663" class="body ink">A failed send stays listed, for the user to send again or delete.</text>
+<path d="M52,474 L40,474 Q20,474 20,454 L20,328 Q20,316 32,316 L352.0,316 Q364.0,316 364.0,304 L364.0,292" class="wire" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#head)"/>
+<text x="374.0" y="312" class="small muted">when its backoff has passed</text>
+<text x="32" y="736" class="h2 ink">Who runs the queue</text>
+<text x="32" y="760" class="body muted">The engine holds no timer: the host knows when the network is back, so the host decides when a pass runs.</text>
+<rect x="32" y="782" width="200" height="112" rx="12" class="box" stroke-width="1.5"/>
+<text x="48" y="812" class="h3 ink">The write itself</text>
+<text x="48" y="838" class="small ink">A host call (send, flag,</text>
+<text x="48" y="857" class="small ink">RSVP, …) saves its op and</text>
+<text x="48" y="876" class="small ink">runs it straight away.</text>
+<rect x="264" y="782" width="200" height="112" rx="12" class="box" stroke-width="1.5"/>
+<text x="280" y="812" class="h3 ink"><tspan class="code">drain_outbox</tspan></text>
+<text x="280" y="838" class="small ink">Picks up whatever is</text>
+<text x="280" y="857" class="small ink">queued: on reconnect,</text>
+<text x="280" y="876" class="small ink">after a sync, on request.</text>
+<rect x="496" y="782" width="200" height="112" rx="12" class="box" stroke-width="1.5"/>
+<text x="512" y="812" class="h3 ink">Start-up recovery</text>
+<text x="512" y="838" class="small ink"><tspan class="code">recover_interrupted_ops</tspan></text>
+<text x="512" y="857" class="small ink">settles what the last</text>
+<text x="512" y="876" class="small ink">process left in flight.</text>
+<rect x="728" y="782" width="200" height="112" rx="12" class="box" stroke-width="1.5"/>
+<text x="744" y="812" class="h3 ink">The user, via the host</text>
+<text x="744" y="838" class="small ink"><tspan class="code">outbox</tspan> lists the queue;</text>
+<text x="744" y="857" class="small ink">cancel, retry now and</text>
+<text x="744" y="876" class="small ink">confirm act on one op.</text>
+</svg>

@@ -145,3 +145,110 @@ async fn a_key_mailbox_with_crlf_is_rejected_before_the_wire() {
         written(&recorded)
     );
 }
+
+/// A `BODY[]` response like [`body_response`], completing under `tag`.
+fn tagged_body(tag: &str, uid: u32, body: &str) -> String {
+    format!(
+        "* 3 FETCH (UID {uid} BODY[] {{{}}}\r\n{body})\r\n{tag} OK FETCH completed\r\n",
+        body.len()
+    )
+}
+
+#[tokio::test]
+async fn a_second_read_in_the_open_mailbox_skips_the_examine() {
+    // A warm reads a folder's bodies one after another; opening the folder before each one
+    // doubles the round trips for an answer the session already holds.
+    let server = script(&[
+        GREETING,
+        LOGIN_OK,
+        EXAMINE_V7,
+        &tagged_body("a3", 42, "first"),
+        &tagged_body("a4", 43, "second"),
+    ]);
+    let (mut conn, recorded) = logged_in(server).await;
+
+    fetch_message_source(&mut conn, &target()).await.unwrap();
+    let second = ProviderKey::new("imap:v7:u43@INBOX").unwrap();
+    let raw = fetch_message_source(&mut conn, &second).await.unwrap();
+
+    assert_eq!(raw.as_bytes(), b"second");
+    let sent = written(&recorded);
+    assert_eq!(sent.matches("EXAMINE").count(), 1, "{sent}");
+    assert!(sent.contains("a4 UID FETCH 43 (BODY.PEEK[])"), "{sent}");
+}
+
+#[tokio::test]
+async fn a_read_in_another_mailbox_opens_that_one() {
+    let examine_sent = "* 1 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\na4 OK [READ-ONLY] done\r\n";
+    let server = script(&[
+        GREETING,
+        LOGIN_OK,
+        EXAMINE_V7,
+        &tagged_body("a3", 42, "inbox"),
+        examine_sent,
+        &tagged_body("a5", 5, "sent"),
+    ]);
+    let (mut conn, recorded) = logged_in(server).await;
+
+    fetch_message_source(&mut conn, &target()).await.unwrap();
+    let in_sent = ProviderKey::new("imap:v7:u5@Sent").unwrap();
+    let raw = fetch_message_source(&mut conn, &in_sent).await.unwrap();
+
+    assert_eq!(raw.as_bytes(), b"sent");
+    assert!(written(&recorded).contains("a4 EXAMINE \"Sent\""));
+}
+
+#[tokio::test]
+async fn a_refused_examine_leaves_no_mailbox_to_reuse() {
+    // A failed `SELECT`/`EXAMINE` deselects whatever was open (RFC 9051 §6.3.1). A session
+    // that still believed INBOX was open would read the next INBOX UID without opening it,
+    // and the server would answer for no mailbox at all.
+    let server = script(&[
+        GREETING,
+        LOGIN_OK,
+        EXAMINE_V7,
+        &tagged_body("a3", 42, "first"),
+        "a4 NO [NONEXISTENT] no such mailbox\r\n",
+        "* 3 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\na5 OK [READ-ONLY] done\r\n",
+        &tagged_body("a6", 43, "again"),
+    ]);
+    let (mut conn, recorded) = logged_in(server).await;
+
+    fetch_message_source(&mut conn, &target()).await.unwrap();
+    let gone = ProviderKey::new("imap:v7:u1@Gone").unwrap();
+    assert!(fetch_message_source(&mut conn, &gone).await.is_err());
+    let again = ProviderKey::new("imap:v7:u43@INBOX").unwrap();
+    fetch_message_source(&mut conn, &again).await.unwrap();
+
+    assert!(written(&recorded).contains("a5 EXAMINE \"INBOX\""));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_body_that_stops_arriving_fails_as_a_lost_connection() {
+    use tokio::io::AsyncWriteExt;
+
+    // The server starts the literal and then sends nothing more, as a socket does whose path
+    // died mid-response. Without a bound the read waits for the OS to give up retransmitting.
+    let (client, mut server) = tokio::io::duplex(64 * 1024);
+    server
+        .write_all(
+            concat!(
+                "* OK ready\r\n",
+                "* 3 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\na1 OK [READ-ONLY] done\r\n",
+                "* 3 FETCH (UID 42 BODY[] {100}\r\nFrom: a@b\r\n",
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut conn = Connection::open(client).await.unwrap();
+
+    let err = fetch_message_source(&mut conn, &target())
+        .await
+        .unwrap_err();
+
+    // Retryable: the connection is gone, not the message, so a fresh one may well succeed.
+    assert_eq!(err.class(), FailureClass::Retryable, "{err}");
+    assert!(err.to_string().contains("sent nothing"), "{err}");
+    drop(server);
+}

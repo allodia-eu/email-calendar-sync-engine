@@ -2,7 +2,7 @@
 //! per-folder sync methods on `Engine`.
 
 use engine_core::{
-    ids::AccountId,
+    ids::{AccountId, CalendarId},
     sync::{MailboxWindows, SearchDomain},
     time::TimeZoneId,
 };
@@ -10,10 +10,11 @@ use engine_provider::{ContactsProvider, Provider};
 use engine_recurrence::Horizon;
 use engine_store::{MessageSourceCache, PruneReport, SourcesDropped, Store, SweepReport};
 use engine_sync::{
-    CalendarSyncReport, ContactSourceReport, ContactSyncReport, EventSyncReport, HorizonExpansion,
-    MailSyncReport, PeopleRebuildReport, StreamTuning, SyncObserver, ThreadRebuildReport,
-    expand_calendar_horizon, rebuild_thread_index, reconcile_calendar_events, refresh_folders,
-    sync_address_books, sync_calendar, sync_contact_cards, sync_contacts, sync_mail,
+    CalendarReach, CalendarSyncReport, ContactSourceReport, ContactSyncReport, EventSyncReport,
+    HorizonExpansion, MailSyncReport, PeopleRebuildReport, StreamTuning, SyncObserver,
+    ThreadRebuildReport, expand_calendar_horizon, reach_calendar, rebuild_thread_index,
+    reconcile_calendar_events, refresh_folders, sync_address_books, sync_calendar,
+    sync_contact_cards, sync_contacts, sync_mail,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
@@ -173,7 +174,8 @@ impl Engine {
     /// re-normalizes the account from scratch — the host's "reset / full refetch". The
     /// durable outbox (queued sends) is preserved. Sync afterwards to repopulate; until
     /// then the previously-synced objects remain readable and are reconciled by that
-    /// re-snapshot. The same clear happens automatically when the engine's
+    /// re-snapshot. A sync running meanwhile is stopped at its next commit rather than
+    /// writing its cursor back. The same clear happens automatically when the engine's
     /// `NORMALIZER_VERSION` changes (`store-and-sync.md`).
     ///
     /// # Errors
@@ -223,11 +225,13 @@ impl Engine {
     /// Clears just the **mail** scopes' sync cursors, so the next [`Engine::sync_mail`]
     /// re-snapshots them. The targeted counterpart of [`Engine::reset`]: it reconciles
     /// mail with the server without clearing the calendar or re-fetching the whole
-    /// account. Against a **QRESYNC** IMAP server a plain `sync_mail` delta already
-    /// reconciles flag, move, and expunge changes incrementally (`imap-smtp.md`), so
-    /// this is the **fallback** for a server without QRESYNC (where a delta brings new
-    /// arrivals only) or a host that wants to force a full mail re-snapshot; a plain
-    /// `sync_mail` after it reconciles, since the cleared scopes snapshot.
+    /// account. A plain `sync_mail` delta already reconciles flag, move and expunge changes
+    /// on every IMAP server: incrementally with QRESYNC, and without it by reading every
+    /// held message's flags and the set still present (`imap-smtp.md`). This is for a host
+    /// that wants to force a full mail re-snapshot, or to fetch under a new sync window; a
+    /// plain `sync_mail` after it reconciles, since the cleared scopes snapshot. A mail
+    /// sync running meanwhile is stopped at its next commit rather than writing its
+    /// cursor back, and the scope can be claimed at once.
     ///
     /// # Errors
     ///
@@ -236,30 +240,6 @@ impl Engine {
         for scope in self.scopes_in(account, SearchDomain::Mail).await? {
             self.store.clear_scope_cursor(&scope).await?;
         }
-        Ok(())
-    }
-
-    /// Purges every durable trace of `account` from the local store — its synced
-    /// objects, the derived search/occurrence rows, its sync scopes and cursors, the
-    /// queued outbox ops, and the cached message bodies. The host calls this when it
-    /// **removes** an account, so that a later re-add of the same login starts clean:
-    /// account ids derive from the address, so a re-add hits the same scopes, and
-    /// without this it would resume from stale cursors over orphaned rows (and, on a
-    /// server without QRESYNC, never expunge mail deleted while the account was gone).
-    ///
-    /// The destructive counterpart of [`reset`](Self::reset): reset only clears cursors
-    /// so the next sync reconciles the still-present objects; this drops the objects and
-    /// forgets the scopes outright. Run it after the account is detached from the
-    /// runtime, with no sync of it in flight. The content-addressed blobs on disk are
-    /// deduplicated and carry no refcount, so no row owns one; follow this with
-    /// [`sweep_unreferenced_blobs`](Self::sweep_unreferenced_blobs) to reclaim the ones
-    /// this account was the last to name.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError::Store`] on a backend failure.
-    pub async fn forget_account(&self, account: &AccountId) -> Result<(), ApiError> {
-        self.store.forget_account(account).await?;
         Ok(())
     }
 
@@ -348,16 +328,21 @@ impl Engine {
         Ok(self.store.sweep_unreferenced_blobs().await?)
     }
 
-    /// Syncs one account's calendars from `provider`: calendar containers first,
-    /// then events, expanding each event's occurrences over `horizon` (resolving
-    /// floating times through `host_zone`) before the commit
-    /// (`calendar-semantics.md`).
+    /// Syncs one account's calendars from `provider`, which serves every one of them: the
+    /// calendar list first, then each calendar's events, concurrently, expanding each event's
+    /// occurrences before the commit (`calendar-semantics.md`). `horizon` and `host_zone` seed
+    /// the expansion window only on the account's first sync; after that the window the store
+    /// holds wins ([`expand_horizon`](Engine::expand_horizon) moves it).
+    ///
+    /// A calendar whose listing tag has not moved since its last sync is skipped without a
+    /// request. Each event scope's outcome is reported on its own in
+    /// [`CalendarSyncReport::scopes`]: one calendar failing, or held by another pass, leaves
+    /// the rest synced.
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError::Busy`] if another sync already holds this account's
-    /// calendar scope, or [`ApiError::Sync`] if the provider fetch fails or the
-    /// store rejects the apply.
+    /// Returns [`ApiError::Busy`] if another sync already holds this account's calendar
+    /// list, or [`ApiError::Sync`] if the list cannot be fetched or applied.
     pub async fn sync_calendar<P: Provider>(
         &self,
         provider: &P,
@@ -378,8 +363,9 @@ impl Engine {
         .map_err(map_sync_error)
     }
 
-    /// Re-reads one account's **events** through the provider's delta and commits the
-    /// result: the calendar containers are neither fetched nor claimed.
+    /// Re-reads the **events** of `calendar`'s scope through the provider's delta and commits
+    /// the result: the calendar list is neither fetched nor claimed, and no other calendar's
+    /// scope is touched.
     ///
     /// It re-expands whatever it changed over the window the store already holds, so — like
     /// a write — it can neither widen nor narrow what the host has expanded.
@@ -397,18 +383,26 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError::Busy`] if another sync already holds this account's event
-    /// scope, or [`ApiError::Sync`] if the provider fetch fails, the store rejects the
-    /// apply, or the account's calendars have never been synced (there is then no window to
-    /// expand over — [`sync_calendar`](Engine::sync_calendar) first).
+    /// Returns [`ApiError::Busy`] if another sync already holds the calendar's event scope,
+    /// or [`ApiError::Sync`] if the provider fetch fails, the store rejects the apply, or the
+    /// calendar has never been synced (there is then no window to expand over —
+    /// [`sync_calendar`](Engine::sync_calendar) first).
     pub async fn reconcile_calendar_events<P: Provider>(
         &self,
         provider: &P,
         account: &AccountId,
+        calendar: &CalendarId,
     ) -> Result<EventSyncReport, ApiError> {
-        reconcile_calendar_events(provider, &self.store, account, worker(), LEASE_TTL)
-            .await
-            .map_err(map_sync_error)
+        reconcile_calendar_events(
+            provider,
+            &self.store,
+            account,
+            calendar,
+            worker(),
+            LEASE_TTL,
+        )
+        .await
+        .map_err(map_sync_error)
     }
 
     /// Re-expands one account's **already-synced** events over `horizon`, resolving
@@ -430,10 +424,15 @@ impl Engine {
     /// It re-expands every stored event on every call, so widen in coarse chunks
     /// against a persisted watermark rather than calling it per page.
     ///
+    /// A calendar another pass holds is **waited for**, not reported busy: that pass expands
+    /// only what it changes, over the window it found, so nothing else would widen it. The wait
+    /// ends when the pass does (or its lease lapses, if it died); drop the future to stop
+    /// waiting. Expanding only what the store holds, it shows no event a windowed transport
+    /// never fetched: [`reach_calendar`](Engine::reach_calendar) fetches those.
+    ///
     /// # Errors
     ///
-    /// Returns [`ApiError::Busy`] if another sync holds a calendar scope, or
-    /// [`ApiError::Sync`] if the store rejects the apply. An event whose recurrence the
+    /// Returns [`ApiError::Sync`] if the store rejects the apply. An event whose recurrence the
     /// expander cannot handle is **not** an error — it is reported in
     /// [`HorizonExpansion::unexpandable`], so one unsupported rule never stops the rest
     /// of the calendar from materializing.
@@ -453,5 +452,45 @@ impl Engine {
         )
         .await
         .map_err(map_sync_error)
+    }
+
+    /// Makes the store hold every event of `account`'s calendars that falls in `range`, and keeps
+    /// them current from then on.
+    ///
+    /// Most transports fetch a calendar whole, and for them this asks the server nothing. A
+    /// **windowed** one
+    /// ([`Capabilities::windowed_events`](engine_provider::Capabilities::windowed_events):
+    /// Graph, Google) fetches only inside the window its cursor was opened over, the host's
+    /// horizon at the first sync, and the store records that window. A range inside it is
+    /// answered without a request; a range past it reopens the calendar's cursor over the union
+    /// of the two, as a fresh snapshot, so the events it brings are kept current by every sync
+    /// after. A range is never fetched twice: a second call for the same range waits for the
+    /// first, then finds it covered. A calendar another pass holds is waited for, not reported
+    /// busy.
+    ///
+    /// It fetches; it does not widen what is **shown**. A host paging its grid past the horizon
+    /// calls this with the range it is about to show and [`expand_horizon`](Engine::expand_horizon)
+    /// with its new horizon, in either order: each fetched event is expanded over the window the
+    /// store holds. Each reopen re-reads the whole union, so ask in coarse steps, as for
+    /// `expand_horizon`.
+    ///
+    /// While it runs, reads answer from the store as it was; the fetched events land in one
+    /// commit per calendar. A calendar that fails is reported in
+    /// [`CalendarReach::failures`] and records nothing, so asking again fetches it again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the stored calendar list cannot be read. Everything after
+    /// that is reported per calendar, one no [`sync_calendar`](Engine::sync_calendar) has
+    /// reached as [`SyncError::NoExpansionWindow`](engine_sync::SyncError::NoExpansionWindow).
+    pub async fn reach_calendar<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+        range: Horizon,
+    ) -> Result<CalendarReach, ApiError> {
+        reach_calendar(provider, &self.store, account, worker(), LEASE_TTL, range)
+            .await
+            .map_err(map_sync_error)
     }
 }

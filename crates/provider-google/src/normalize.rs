@@ -10,6 +10,8 @@
 //!   the keyword axis (`$seen` is the *absence* of `UNREAD`; `STARRED` → `$flagged`) and are
 //!   **excluded** from membership and from the label list. `DRAFT` is both a place (the Drafts
 //!   label) *and* the `$draft` state.
+//! - The system labels that mark a message without filing it ([`is_unfiled_label`]: the inbox
+//!   categories, `CHAT`, the superstars) are excluded the same way, and carry no state either.
 //! - `threadId` is the provider-assigned thread ([`ThreadProvenance::ProviderAssigned`]), never
 //!   re-grouped by local derivation.
 //! - The `Message-Id` header is preserved (bracket-stripped) as a threading hint, never identity —
@@ -26,7 +28,10 @@ use std::collections::{BTreeSet, HashMap};
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ThreadId},
-    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, Message, SystemKeyword, ThreadRef},
+    mail::{
+        EmailAddress, Importance, ImportanceHeaders, Keyword, Mailbox, MailboxRole, Message,
+        SystemKeyword, ThreadRef,
+    },
     membership::Memberships,
     time::UtcDateTime,
     version::RevisionTokens,
@@ -42,20 +47,56 @@ use crate::{
 /// onto the message's keyword axis and are never emitted as mailboxes.
 pub(crate) const KEYWORD_LABELS: &[&str] = &["UNREAD", "STARRED"];
 
+/// The Gmail system labels besides the inbox categories (`CATEGORY_*`) that mark a message
+/// without filing it: chat history, and the superstars, which Gmail lists in a message's
+/// `labelIds` when the user has turned them on.
+const UNFILED_LABELS: &[&str] = &[
+    "CHAT",
+    "YELLOW_STAR",
+    "ORANGE_STAR",
+    "RED_STAR",
+    "PURPLE_STAR",
+    "BLUE_STAR",
+    "GREEN_STAR",
+    "RED_BANG",
+    "ORANGE_GUILLEMET",
+    "YELLOW_BANG",
+    "GREEN_CHECK",
+    "BLUE_INFO",
+    "PURPLE_QUESTION",
+];
+
+/// Whether `id` is a Gmail system label that is not a place a user files mail in: an inbox
+/// category, `CHAT` or a superstar. It is neither a mailbox nor a membership, so a message
+/// carrying only such labels is in All Mail, as Gmail shows it. `IMPORTANT` is not one: it
+/// has a role of its own.
+pub(crate) fn is_unfiled_label(id: &str) -> bool {
+    id.starts_with("CATEGORY_") || UNFILED_LABELS.contains(&id)
+}
+
 /// The synthetic mailbox id every message with no other label falls back into — Gmail's
-/// implicit "All Mail" (an archived, uncategorized message carries no folder-like
-/// label, but the engine's [`Memberships`] must be non-empty). Gmail exposes no label id
-/// for All Mail, so the adapter reserves this one and emits the matching mailbox in the
-/// label list ([`crate::fetch::labels`]).
+/// implicit "All Mail" (an archived message carries no folder-like label, but the engine's
+/// [`Memberships`] must be non-empty). Gmail exposes no label id for All Mail, so the adapter
+/// reserves this one and emits the matching mailbox in the label list ([`crate::fetch::labels`]).
 pub(crate) const ALL_MAIL_ID: &str = "ALL_MAIL";
 
 /// The header set the metadata fetch requests (`metadataHeaders`) — exactly the fields
 /// [`message_from_json`] reads. Keeps the captured payload minimal and deterministic.
-pub(crate) const METADATA_HEADERS: &[&str] =
-    &["From", "To", "Cc", "Bcc", "Subject", "Date", "Message-Id"];
+pub(crate) const METADATA_HEADERS: &[&str] = &[
+    "From",
+    "To",
+    "Cc",
+    "Bcc",
+    "Subject",
+    "Date",
+    "Message-Id",
+    "Importance",
+    "X-MSMail-Priority",
+    "X-Priority",
+];
 
-/// The normalized [`MailboxRole`] for a Gmail system label id, or `None` for a
-/// category/chat/custom label (which is a roleless mailbox).
+/// The normalized [`MailboxRole`] for a Gmail system label id, or `None` for a user's label
+/// (a roleless mailbox).
 fn label_role(id: &str) -> Option<MailboxRole> {
     match id {
         "INBOX" => Some(MailboxRole::Inbox),
@@ -69,7 +110,8 @@ fn label_role(id: &str) -> Option<MailboxRole> {
 }
 
 /// Normalizes one Gmail `label` into a [`Mailbox`], or `None` for a keyword-only label
-/// (`UNREAD`/`STARRED`), which is state rather than a place.
+/// (`UNREAD`/`STARRED`), which is state rather than a place, and for an unfiled one
+/// ([`is_unfiled_label`]).
 ///
 /// The name arrives as Gmail stores it, which for a nested label is the whole path
 /// (`Work/Clients`). [`nest_labels`] is what turns that into a parent and a folder's own name,
@@ -80,13 +122,16 @@ fn label_role(id: &str) -> Option<MailboxRole> {
 /// Returns [`GoogleError::Protocol`] if the label lacks a usable `id`.
 pub(crate) fn label_from_json(value: &Value) -> Result<Option<Mailbox>, GoogleError> {
     let id = req_str(value, "id")?;
-    if KEYWORD_LABELS.contains(&id) {
+    if KEYWORD_LABELS.contains(&id) || is_unfiled_label(id) {
         return Ok(None);
     }
     // System labels have an uppercase id as their name; custom labels carry the user's.
     let name = opt_str(value, "name").unwrap_or(id).to_owned();
     let mut mailbox = Mailbox::new(wrap_id(MailboxId::try_from(id), "label id")?, name);
     mailbox.role = label_role(id);
+    // A nested label is a user label named under its parent, and a user label's name cannot
+    // start with a system label's, so only a user label holds another (`labels_write`).
+    mailbox.accepts_children = opt_str(value, "type") == Some("user");
     // `users.labels.list` does not return counts — only `users.labels.get` does,
     // which would be one request per label on every folder-list sync. So this reads
     // the field where it is present and leaves it absent otherwise; Gmail folder
@@ -143,6 +188,7 @@ pub(crate) fn all_mail_mailbox() -> Mailbox {
         "All Mail",
     );
     mailbox.role = Some(MailboxRole::All);
+    mailbox.accepts_children = false;
     mailbox
 }
 
@@ -192,6 +238,9 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, GoogleError> {
     envelope.message_id = message_id_header(header(headers, "Message-Id"))?
         .into_iter()
         .collect();
+    envelope.importance = Importance::from_headers(ImportanceHeaders::from_lookup(|name| {
+        last_header(headers, name)
+    }));
     message.sent_at = header(headers, "Date").and_then(parse_rfc2822);
 
     Ok(message)
@@ -231,13 +280,13 @@ pub(crate) fn label_ids(value: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The membership mailboxes for a label set: every label that is not keyword-only,
-/// falling back to the synthetic All Mail when none remain (an archived, uncategorized
-/// message) so the non-empty [`Memberships`] invariant holds.
+/// The membership mailboxes for a label set: every label that is neither keyword-only nor
+/// unfiled ([`is_unfiled_label`]), falling back to the synthetic All Mail when none remain (an
+/// archived message) so the non-empty [`Memberships`] invariant holds.
 pub(crate) fn memberships_of(labels: &[String]) -> Result<Memberships<MailboxId>, GoogleError> {
     let mut ids = Vec::new();
     for label in labels {
-        if KEYWORD_LABELS.contains(&label.as_str()) {
+        if KEYWORD_LABELS.contains(&label.as_str()) || is_unfiled_label(label) {
             continue;
         }
         ids.push(wrap_id(MailboxId::try_from(label.as_str()), "label id")?);
@@ -253,16 +302,31 @@ pub(crate) fn memberships_of(labels: &[String]) -> Result<Memberships<MailboxId>
 /// The first header whose name matches `key` case-insensitively (`Message-Id` vs
 /// `Message-ID`), or `None`.
 fn header<'a>(headers: Option<&'a Value>, key: &str) -> Option<&'a str> {
+    headers_named(headers, key).next()
+}
+
+/// The last header whose name matches `key`: the one the importance rule reads
+/// ([`ImportanceHeaders`]). A metadata read returns every occurrence, in the message's order.
+fn last_header<'a>(headers: Option<&'a Value>, key: &str) -> Option<&'a str> {
+    headers_named(headers, key).last()
+}
+
+/// The value of every header whose name matches `key` case-insensitively, in order.
+fn headers_named<'a>(
+    headers: Option<&'a Value>,
+    key: &str,
+) -> impl Iterator<Item = &'a str> + use<'a> {
+    let key = key.to_owned();
     headers
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .find(|h| {
+        .filter(move |h| {
             h.get("name")
                 .and_then(Value::as_str)
-                .is_some_and(|name| name.eq_ignore_ascii_case(key))
+                .is_some_and(|name| name.eq_ignore_ascii_case(&key))
         })
-        .and_then(|h| h.get("value").and_then(Value::as_str))
+        .filter_map(|h| h.get("value").and_then(Value::as_str))
 }
 
 /// Parses the epoch-millis `internalDate` into a UTC instant (Gmail's message-received
@@ -280,7 +344,7 @@ fn internal_date(value: &Value) -> Result<Option<UtcDateTime>, GoogleError> {
 }
 
 /// Parses an RFC 2822 `Date` header into a UTC instant, or `None` if unparseable.
-fn parse_rfc2822(raw: &str) -> Option<UtcDateTime> {
+pub(crate) fn parse_rfc2822(raw: &str) -> Option<UtcDateTime> {
     let odt =
         time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc2822).ok()?;
     utc_from_offset(odt).ok()

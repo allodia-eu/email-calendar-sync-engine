@@ -223,15 +223,23 @@ pub(in crate::contract) async fn a_dead_lease_holds_no_resource<S: Store + Store
         matches!(claim, PendingOpClaim::Leased(ref l) if l.id == later),
         "a dead lease must not hold the resource, got {claim:?}"
     );
-    // The abandoned op is still there, still unresolved: recovering the resource is
-    // not the same as discarding the intent.
+    // The abandoned op is still there, recovered rather than discarded: freeing the resource
+    // is not the same as dropping the intent. An interrupted edit is a retryable failure.
     assert_eq!(
         store.pending_op_state(abandoned).await.unwrap(),
-        Some(PendingOpState::InFlight)
+        Some(PendingOpState::Pending)
     );
-    // And such an op is claimable again itself, under a token that fences out the
-    // driver that walked away with the old one. This is what unwedges an account:
-    // nothing has to notice the abandoned op, the next attempt simply takes it.
+    // And such an op is claimable again itself once its backoff passes, under a token that
+    // fences out the driver that walked away with the old one. This is what unwedges an
+    // account: nothing has to notice the abandoned op, the next attempt simply takes it.
+    assert_eq!(
+        store
+            .claim_pending_op(account.clone(), solo, lease_request("w2", 30))
+            .await
+            .unwrap(),
+        PendingOpClaim::Refused(ClaimRejection::Backoff)
+    );
+    clock.advance(crate::retry_delay(1, None));
     let retaken = store
         .claim_pending_op(account.clone(), solo, lease_request("w2", 30))
         .await

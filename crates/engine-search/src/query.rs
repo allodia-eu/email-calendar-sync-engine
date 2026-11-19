@@ -143,7 +143,7 @@ mod tests {
     fn empty_queries_are_the_defaults() {
         assert!(MailQuery::default().text.is_empty());
         assert!(CalendarQuery::default().text.is_empty());
-        assert!(MailQuery::default().from.is_empty());
+        assert_eq!(MailQuery::default().from, [] as [String; 0]);
     }
 
     #[test]

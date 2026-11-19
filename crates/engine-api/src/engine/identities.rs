@@ -1,13 +1,14 @@
 //! The account's sender identities: reading the names a provider holds, and changing
-//! one where the provider lets the account holder.
+//! one where the provider lets the account holder. Beside them, the addresses the
+//! account's calendar schedules as.
 //!
-//! Neither call touches the store. A sender name is a **host preference**, not synced
+//! No call here touches the store. A sender name is a **host preference**, not synced
 //! PIM state: the `From` a send carries is assembled from the caller's
 //! [`Draft`](engine_provider::Draft), so the host's own copy is what reaches the wire
 //! and the server's copy is a courtesy to the account's other clients. What the engine
 //! owns here is the protocol, nothing else.
 
-use engine_provider::{Provider, SenderIdentity, SenderIdentityId};
+use engine_provider::{CalendarUserAddresses, Provider, SenderIdentity, SenderIdentityId};
 use engine_sync::SyncError;
 
 use crate::{ApiError, Engine};
@@ -44,6 +45,29 @@ impl Engine {
     ) -> Result<Vec<SenderIdentity>, ApiError> {
         provider
             .sender_identities(account)
+            .await
+            .map_err(|err| ApiError::Sync(SyncError::Provider(err)))
+    }
+
+    /// The calendar user addresses `provider`'s server treats as `account`'s user: the
+    /// addresses under which it organises, answers and delivers scheduling messages itself.
+    ///
+    /// Read this before relying on the server to schedule for an address. RFC 6638 §3.1 has a
+    /// CalDAV server act only for an `ORGANIZER` or `ATTENDEE` in the principal's address
+    /// set, and one outside it gets neither a server-sent message nor a status saying none was
+    /// sent. A provider that cannot say answers [`CalendarUserAddresses::Unknown`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] wrapping the provider failure when the server was asked
+    /// and the request failed.
+    pub async fn calendar_user_addresses<P: Provider>(
+        &self,
+        provider: &P,
+        account: &engine_core::ids::AccountId,
+    ) -> Result<CalendarUserAddresses, ApiError> {
+        provider
+            .calendar_user_addresses(account)
             .await
             .map_err(|err| ApiError::Sync(SyncError::Provider(err)))
     }

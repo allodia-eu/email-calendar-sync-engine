@@ -23,7 +23,7 @@ use engine_provider::{MessageReport, ProviderError, ProviderResult, ReportReceip
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    target::{Access, reject_control_chars, select_target},
+    target::{reject_control_chars, select_target},
     transport::Connection,
 };
 
@@ -62,7 +62,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let key = &report.target;
-    let (mailbox, uid, selected) = select_target(connection, key, Access::ReadWrite).await?;
+    let (mailbox, uid, selected) = select_target(connection, key).await?;
 
     if !selected.permanent_flags_allow_new {
         return Err(ProviderError::invalid_state(format!(

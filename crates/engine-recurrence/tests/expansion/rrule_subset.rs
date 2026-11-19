@@ -341,5 +341,5 @@ fn count_before_horizon_still_limits_the_series() {
         instant("2027-01-01T00:00:00Z"),
     )
     .unwrap();
-    assert!(expand_ok(&ev, horizon).is_empty());
+    assert_eq!(expand_ok(&ev, horizon), []);
 }

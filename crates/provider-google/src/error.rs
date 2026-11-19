@@ -11,10 +11,12 @@
 //! which is a **rate limit** when its reason says so and an insufficient-permission
 //! **permanent** failure otherwise.
 //!
-//! Two status codes drive a resync-style recovery, and they differ by API:
+//! Three answers drive a resync-style recovery, and they differ by API:
 //! - **Google Calendar** returns `410 Gone` for an expired `syncToken`
 //!   ([`FailureClass::NeedsResync`], the analogue of Graph's `410` / JMAP's
 //!   `cannotCalculateChanges`).
+//! - **Google People** returns `400 FAILED_PRECONDITION` with an `ErrorInfo` reason of
+//!   `EXPIRED_SYNC_TOKEN`; the same status without that reason is a stale-etag conflict.
 //! - **Gmail** returns `404` for a `startHistoryId` that has aged out of the history window; that
 //!   is *not* globally a resync (a `404` on a message `get` just means the message is gone), so the
 //!   Gmail fetch layer special-cases a `404` from the `history.list` call rather than classifying
@@ -28,9 +30,10 @@ use serde_json::Value;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum GoogleError {
-    /// The HTTP request itself failed (connect, timeout, TLS, or body decode).
+    /// The HTTP exchange itself failed (connect, TLS, a body, or a server that went quiet
+    /// for longer than the shared deadlines allow).
     #[error("Google transport error: {0}")]
-    Transport(#[from] reqwest::Error),
+    Transport(#[from] engine_http::SendError),
 
     /// The server returned a non-success HTTP status. The machine `reason` (or the
     /// canonical `status`) is captured when the body carried the standard envelope,
@@ -117,11 +120,69 @@ impl GoogleError {
         Self::HistoryExpired(detail.into())
     }
 
+    /// What this error is as the failure of a submission: the class it always has, except
+    /// where the request may have reached the server and no answer of its own came back
+    /// ([`leaves_outcome_unknown`](Self::leaves_outcome_unknown)). That one may have sent the
+    /// message, so it needs confirming and is never retried
+    /// (`ProviderError::needs_confirmation`).
+    pub(crate) fn into_submission_error(self) -> ProviderError {
+        self.unless_unknown("the message may have been sent")
+    }
+
+    /// What this error is as the failure of a calendar or contact write: the class it always
+    /// has, which means the write was not applied, except where it may have been
+    /// ([`leaves_outcome_unknown`](Self::leaves_outcome_unknown)).
+    pub(crate) fn into_write_error(self) -> ProviderError {
+        self.unless_unknown("the change may have been applied")
+    }
+
+    /// Whether this error, ending a request that changes something, leaves unknown whether it
+    /// did: the exchange failed after the request may have reached the server, a gateway's
+    /// `502` or `504` says the server behind it gave no answer rather than that it refused,
+    /// or a success arrived whose body cannot be read. Every other status is the server's own
+    /// answer, and a connect or handshake that never completed sent nothing.
+    fn leaves_outcome_unknown(&self) -> bool {
+        match self {
+            Self::Transport(err) => err.may_have_been_received(),
+            Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
+            Self::Json(_) => true,
+            Self::HistoryExpired(_) | Self::Protocol(_) => false,
+        }
+    }
+
+    /// The body of a write's success, where the adapter needs nothing from it beyond the
+    /// status: the body when it reads, and none when it is not JSON, because the status
+    /// already says the write was done. Every failure is as
+    /// [`into_write_error`](Self::into_write_error).
+    pub(crate) fn optional_answer(
+        result: Result<Option<Value>, Self>,
+    ) -> Result<Option<Value>, ProviderError> {
+        match result {
+            // The transport makes this only from a success's body.
+            Err(Self::Json(_)) => Ok(None),
+            other => other.map_err(Self::into_write_error),
+        }
+    }
+
+    fn unless_unknown(self, outcome: &str) -> ProviderError {
+        if self.leaves_outcome_unknown() {
+            let detail = format!("{self}; {outcome}");
+            ProviderError::needs_confirmation(detail).with_source(self)
+        } else {
+            self.into()
+        }
+    }
+
     /// The engine-neutral class this protocol error maps to.
     #[must_use]
     pub fn failure_class(&self) -> FailureClass {
         match self {
             Self::Transport(e) => transport_class(e),
+            // People's expired syncToken shares a stale-etag write's status; only the
+            // `ErrorInfo` reason marks it as a resync.
+            Self::Status {
+                status: 400, body, ..
+            } if is_expired_sync_token(body) => FailureClass::NeedsResync,
             Self::Status { status, reason, .. } => status_class(*status, reason.as_deref()),
             // An aged-out Gmail historyId forces a full resync.
             Self::HistoryExpired(_) => FailureClass::NeedsResync,
@@ -132,13 +193,20 @@ impl GoogleError {
     }
 }
 
-/// Maps a reqwest transport error to a [`FailureClass`]: a body that did not decode
-/// is a permanent protocol mismatch; connect/timeout/request failures are transient.
-fn transport_class(err: &reqwest::Error) -> FailureClass {
+/// Maps a failed exchange to a [`FailureClass`]: a body that did not decode is a permanent
+/// protocol mismatch; every other failure, a server gone quiet included, is transient.
+fn transport_class(err: &engine_http::SendError) -> FailureClass {
     if err.is_decode() {
         FailureClass::Permanent
     } else {
         FailureClass::Retryable
+    }
+}
+
+/// A client error outside any exchange, such as a client that could not be built.
+impl From<reqwest::Error> for GoogleError {
+    fn from(err: reqwest::Error) -> Self {
+        Self::Transport(err.into())
     }
 }
 
@@ -156,6 +224,31 @@ fn error_reason(body: &str) -> Option<String> {
     first_reason
         .or_else(|| error.get("status").and_then(Value::as_str))
         .map(str::to_owned)
+}
+
+/// `true` when the envelope carries a `google.rpc.ErrorInfo` whose reason is
+/// `EXPIRED_SYNC_TOKEN`: how People says a `syncToken` is more than seven days old.
+fn is_expired_sync_token(body: &str) -> bool {
+    serde_json::from_str::<Value>(body).is_ok_and(|envelope| {
+        error_info(&envelope)
+            .and_then(|info| info.get("reason"))
+            .and_then(Value::as_str)
+            == Some("EXPIRED_SYNC_TOKEN")
+    })
+}
+
+/// The `google.rpc.ErrorInfo` among an envelope's `error.details[]`, a list of typed
+/// messages in which a `Help` may sit beside it.
+pub(crate) fn error_info(envelope: &Value) -> Option<&Value> {
+    envelope
+        .get("error")?
+        .get("details")?
+        .as_array()?
+        .iter()
+        .find(|detail| {
+            detail.get("@type").and_then(Value::as_str)
+                == Some("type.googleapis.com/google.rpc.ErrorInfo")
+        })
 }
 
 /// `true` when a `403`'s reason marks a rate/quota limit rather than a permission
@@ -186,7 +279,8 @@ fn status_class(status: u16, reason: Option<&str>) -> FailureClass {
         // conflict, so classifying it `Permanent` would make a host drop a recoverable
         // outbox entry. (The same status/reason pair also marks an optional source as
         // absent — a consumer account's Workspace directory — but that is intercepted
-        // as `Unavailable` before it is ever classified.)
+        // as `Unavailable` before it is ever classified. An expired People `syncToken`
+        // shares the pair too; `failure_class` reads its `ErrorInfo` before this runs.)
         400 if reason == Some("FAILED_PRECONDITION") => FailureClass::Conflict,
         409 | 412 => FailureClass::Conflict,
         410 => FailureClass::NeedsResync,
@@ -194,6 +288,14 @@ fn status_class(status: u16, reason: Option<&str>) -> FailureClass {
         500..=599 => FailureClass::Retryable,
         _ => FailureClass::Permanent,
     }
+}
+
+/// A calendar or contact write the server said it performed, in an answer that does not say
+/// what it performed: a success with no body, or one missing the identity the caller needs.
+/// The write may have been applied, so it needs confirming
+/// (`ProviderError::needs_confirmation`).
+pub(crate) fn unread_answer(detail: &str) -> ProviderError {
+    ProviderError::needs_confirmation(format!("{detail}; the change may have been applied"))
 }
 
 impl From<GoogleError> for ProviderError {
@@ -222,6 +324,10 @@ mod tests {
     const HISTORY_GONE: &str = include_str!("../tests/fixtures/error/history_gone.json");
     const SYNC_TOKEN_GONE: &str = include_str!("../tests/fixtures/error/sync_token_gone.json");
     const INVALID_LABEL: &str = include_str!("../tests/fixtures/error/invalid_label.json");
+    const CONTACTS_SYNC_TOKEN_EXPIRED: &str =
+        include_str!("../tests/fixtures/error/contacts_sync_token_expired.json");
+    const CONTACTS_STALE_ETAG: &str =
+        include_str!("../tests/fixtures/error/contacts_stale_etag.json");
 
     #[test]
     fn real_error_bodies_yield_their_reason_and_class() {
@@ -276,6 +382,16 @@ mod tests {
         let expired = GoogleError::history_expired("startHistoryId too old");
         assert_eq!(expired.failure_class(), FailureClass::NeedsResync);
         assert!(expired.to_string().contains("full resync"));
+    }
+
+    #[test]
+    fn people_expired_sync_token_needs_resync_but_a_stale_etag_stays_a_conflict() {
+        // Captured from a client that last synced contacts more than seven days earlier:
+        // the status and code are a stale-etag write's, and only the `ErrorInfo` differs.
+        let expired = GoogleError::status(400, CONTACTS_SYNC_TOKEN_EXPIRED);
+        assert_eq!(expired.failure_class(), FailureClass::NeedsResync);
+        let stale = GoogleError::status(400, CONTACTS_STALE_ETAG);
+        assert_eq!(stale.failure_class(), FailureClass::Conflict);
     }
 
     #[test]

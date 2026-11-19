@@ -49,11 +49,15 @@
 //! writing. Under [`WriteGuard::Absent`](crate::WriteGuard::Absent) a stale write silently
 //! wins, so "the write succeeded" does not mean "no concurrent edit was lost".
 
+mod conference;
 mod delete;
+mod invitation;
+mod meeting_text;
 mod patch;
 mod rsvp;
 mod writes;
 
+pub use conference::{AttachedConference, ConferenceEdit, NewConference, refuse_native_conference};
 pub use delete::{DeleteTarget, EventDeletion, Occurrence};
 use engine_core::{
     calendar::{Event, RecurrenceRule},
@@ -62,6 +66,11 @@ use engine_core::{
     time::{CalendarDateTime, UtcDateTime},
     version::RevisionTokens,
 };
+pub use invitation::{
+    CalendarAddress, InvitationError, Invitee, InviteePatch, InviteeRole, MeetingDraft,
+    SchedulingIdentity,
+};
+pub use meeting_text::{MeetingText, meeting_text};
 pub use patch::{EventEdit, EventPatch, PatchTarget, RecurrenceEdit, TextEdit};
 pub use rsvp::{EventRsvp, ReplyDelivery, RsvpResponse};
 use serde::{Deserialize, Serialize};
@@ -153,6 +162,14 @@ pub struct EventDraft {
     /// Changing or removing the rule afterwards goes through
     /// [`EventPatch::recurrence`](crate::EventPatch::recurrence).
     pub recurrence: Option<DraftRecurrence>,
+    /// Scheduling data when the event is a meeting rather than an appointment.
+    #[serde(default)]
+    pub meeting: Option<MeetingDraft>,
+    /// A video meeting to put on the event. Read
+    /// [`Capabilities::conference_writes`](crate::Capabilities::conference_writes) first: an
+    /// adapter without it refuses the create.
+    #[serde(default)]
+    pub conference: Option<NewConference>,
 }
 
 impl EventDraft {
@@ -176,6 +193,8 @@ impl EventDraft {
             location: None,
             stamp,
             recurrence: None,
+            meeting: None,
+            conference: None,
         }
     }
 
@@ -200,6 +219,20 @@ impl EventDraft {
     #[must_use]
     pub fn repeating(mut self, recurrence: DraftRecurrence) -> Self {
         self.recurrence = Some(recurrence);
+        self
+    }
+
+    /// Makes the new event a meeting and names its organiser and invitees.
+    #[must_use]
+    pub fn meeting(mut self, meeting: MeetingDraft) -> Self {
+        self.meeting = Some(meeting);
+        self
+    }
+
+    /// Puts a video meeting on the new event.
+    #[must_use]
+    pub fn conference(mut self, conference: NewConference) -> Self {
+        self.conference = Some(conference);
         self
     }
 }

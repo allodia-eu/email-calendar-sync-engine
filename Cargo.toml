@@ -6,7 +6,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.96"
+rust-version = "1.99"
 publish = false
 license = "MPL-2.0"
 
@@ -70,6 +70,9 @@ debug = 0
 # `target/debugger/` rather than `target/debug/`, so turning it on does not evict the warm dev
 # cache — at the cost of a second target dir while it exists, so `cargo clean -p <crate>` it
 # afterwards.
+#
+# Not Cargo's built-in `debug` profile (new in 1.99): that one is `dev` under another name, and
+# writes to `target/debug/` beside it, which is the directory this profile exists to stay out of.
 [profile.debugger]
 inherits = "dev"
 debug = true
@@ -92,7 +95,7 @@ async-stream = "0.3.6"
 tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread"] }
 # SQLite backend: `bundled` compiles a pinned SQLite amalgamation (FTS5 enabled),
 # so the build needs no system libsqlite3 and every platform agrees on one engine.
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "0.40.1", features = ["bundled", "functions"] }
 tempfile = "3.27.0"
 # Recurrence expansion resolves wall-clock times through IANA zones. We force the
 # bundled, version-pinned tzdb and disable jiff's defaults so it never reads the
@@ -114,6 +117,11 @@ reqwest = { version = "0.13.5", default-features = false, features = ["json", "r
 # `HttpVersion` in one place (`engine-provider`'s `http` feature). Must stay on the same
 # major as the copy reqwest resolves, or the versions would be distinct types.
 http = "1.4.1"
+# The request body `engine-http` hands reqwest in pieces, so the send funnel can see how much
+# of a request a server has taken (`docs/agent-guidance/deadlines.md`). Both are leaf crates
+# reqwest already resolves, on the same majors, so they compile nothing new.
+bytes = "1.11.1"
+http-body = "1.0.1"
 # URL parsing for `engine-provider`'s `same_origin` credential guard: an adapter must
 # not send the account's `Authorization` header to a host named by remote content.
 # Same major as the copy reqwest resolves, for one `Url` type across the tree.
@@ -150,7 +158,12 @@ quick-xml = "0.42.0"
 # it is pure Rust so it cross-compiles to mobile like the rest of the stack. The
 # `full_encoding` feature (no longer default since 0.11.2) pulls the full legacy
 # charset tables so non-UTF-8 bodies decode correctly.
-mail-parser = { version = "0.11.4", default-features = false, features = ["full_encoding"] }
+mail-parser = { version = "1.0.1", default-features = false, features = ["full_encoding"] }
+# The RFC 2047 encoded-word decoder mail-parser itself runs on header text
+# (`engine-mime::encoded_word`), with mail-parser's charset table plugged in. 1.0 moved
+# the codecs out of mail-parser into this crate, which it already depends on, so this adds
+# nothing to the tree; it is kept on the same version mail-parser resolves.
+encodify = "1.0.2"
 # Content addressing for the on-disk raw-message/attachment blob area
 # (`store-sqlite`): blobs are named by the SHA-256 of their bytes, deduping IMAP
 # copies of one message and giving filesystem-safe, fixed-length names. Pure Rust,
@@ -164,6 +177,16 @@ x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 # Only the email domain is folded; the local part remains byte/case exact
 # (`docs/agent-guidance/contacts.md`).
 idna = "1.1.0"
+# Sanitises a message's raw (hostile) text/html into a safe, inert subset before any host renders
+# it (`engine-html`, `html.md`): one hardened, pure-Rust sanitiser shared by every host, mobile and
+# server alike. The body fetch still returns HTML unsanitised (`mime.md`); a host sanitises with
+# this crate. Hand-rolling an HTML allowlist over a tolerant parser is exactly the correctness and
+# safety risk a maintained, html5ever-based one exists to remove.
+ammonia = "4.2.4"
+# Tokenises a message's CSS so a dark render can move its colours and nothing else
+# (`engine-html`'s scheme transform). Already in the tree as ammonia's own dependency, at this
+# version and with these features, so it adds no crate.
+cssparser = { version = "0.38.0", default-features = false }
 
 # Internal crates, referenced by path so members opt in with `workspace = true`.
 engine-core = { path = "crates/engine-core" }
@@ -174,6 +197,7 @@ httpdate = "1.0.3"
 engine-http = { path = "crates/engine-http" }
 engine-tls = { path = "crates/engine-tls" }
 engine-mime = { path = "crates/engine-mime" }
+engine-html = { path = "crates/engine-html" }
 # The iCalendar layer is transport-neutral: iMIP carries it over *mail* on every
 # account type, so it cannot live inside the CalDAV adapter (see the crate docs).
 engine-ical = { path = "crates/engine-ical" }
@@ -198,7 +222,7 @@ missing_docs = "warn"
 missing_debug_implementations = "warn"
 unreachable_pub = "warn"
 
-# Rustdoc's lints, denied here rather than only through CI's `RUSTDOCFLAGS: -D warnings`. Without
+# Rustdoc's lints, denied here rather than only through CI's `CARGO_BUILD_WARNINGS: deny`. Without
 # this a broken doc link is a *warning* locally and an error on the runner, so the `cargo doc` line
 # in AGENTS.md — the one that exists to catch exactly this — cannot fail on a developer's machine.
 [workspace.lints.rustdoc]

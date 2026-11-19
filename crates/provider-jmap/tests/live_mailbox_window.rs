@@ -99,6 +99,7 @@ async fn an_older_arrival_is_kept_only_in_the_deepened_mailbox() {
     let provider = JmapProvider::connect(JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(auth.0, auth.1),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect JMAP");
@@ -131,7 +132,7 @@ async fn an_older_arrival_is_kept_only_in_the_deepened_mailbox() {
     // The first pass is the snapshot; it establishes the cursor the delta runs from.
     let report = pass().await;
     assert!(report.is_ok(), "{report:?}");
-    assert!(held(&store, &account).await.is_empty());
+    assert_eq!(held(&store, &account).await, [] as [String; 0]);
 
     let mut planted = Planted {
         harness: &harness,

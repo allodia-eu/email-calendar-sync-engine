@@ -5,8 +5,12 @@
 use engine_core::{ids::MailboxId, mail::MailboxRole};
 
 use super::*;
-use crate::test_support::{
-    FakeRoute, fake_client, fake_client_fallible, json, probe_client, replay_server, retry, tls,
+use crate::{
+    named_labels::NamedLabels,
+    test_support::{
+        FakeRoute, fake_client, fake_client_fallible, json, probe_client, replay_server, retry,
+        tls, user_agent,
+    },
 };
 
 const LABELS: &str = include_str!("../tests/fixtures/mail/labels.json");
@@ -23,6 +27,9 @@ const HISTORY_GONE: &str = include_str!("../tests/fixtures/error/history_gone.js
 
 /// The message-get routes both snapshot and delta re-fetch need (message-0 has no
 /// captured detail fixture, so it is a minimal inline valid message).
+#[path = "fetch_history_tests.rs"]
+mod history;
+
 fn message_routes() -> Vec<(&'static str, serde_json::Value)> {
     vec![
         ("/messages/message-2", json(META_LABELED)),
@@ -37,7 +44,7 @@ fn message_routes() -> Vec<(&'static str, serde_json::Value)> {
 #[tokio::test]
 async fn labels_map_roles_and_append_all_mail() {
     let client = fake_client(vec![("/labels", json(LABELS))]);
-    let mailboxes = labels(&client).await.unwrap();
+    let mailboxes = labels(&client, &[]).await.unwrap().0;
     // The keyword-only labels are excluded; All Mail is appended.
     assert!(!mailboxes.iter().any(|m| m.id.as_str() == "STARRED"));
     assert!(mailboxes.iter().any(|m| m.role == Some(MailboxRole::Inbox)));
@@ -53,7 +60,7 @@ async fn current_history_id_reads_the_profile_cursor() {
     let client = fake_client(vec![("/profile", json(PROFILE))]);
     let cursor = current_history_id(&client).await.unwrap();
     // The scrubbed profile's historyId is the snapshot's delta start cursor.
-    assert!(!cursor.as_str().is_empty());
+    assert_ne!(cursor.as_str(), "");
     assert!(cursor.as_str().chars().all(|c| c.is_ascii_digit()));
 }
 
@@ -68,19 +75,15 @@ async fn message_source_decodes_the_base64url_raw() {
 }
 
 #[tokio::test]
-async fn snapshot_page_lists_fetches_each_and_carries_the_history_cursor() {
+async fn a_listed_page_fetches_each_listed_message_full() {
     let mut routes = vec![("/messages?maxResults", json(LIST))];
     routes.extend(message_routes());
     let client = fake_client(routes);
-    let history = SyncState::new("1617");
-    let page = snapshot_page(&client, None, None, &history).await.unwrap();
-    assert_eq!(page.kind, SyncKind::Snapshot);
-    // All three listed ids are fetched full and present; the cursor is the captured
-    // account historyId, not anything the list returned.
-    assert_eq!(page.changed.len(), 3);
-    assert_eq!(page.present.len(), 3);
-    assert!(page.removed.is_empty());
-    assert_eq!(page.next_cursor.as_str(), "1617");
+    let page = listed_page(&client, None, None, &NamedLabels::default())
+        .await
+        .unwrap();
+    assert_eq!(page.messages.len(), 3);
+    assert!(page.stopped.is_none());
     assert!(page.next_page.is_none());
 }
 
@@ -88,30 +91,26 @@ async fn snapshot_page_lists_fetches_each_and_carries_the_history_cursor() {
 async fn snapshot_windows_by_after_epoch_only_when_a_floor_is_set() {
     let client = fake_client(vec![]);
     let floor = CalendarDate::new(2026, 4, 1).unwrap();
-    let windowed = list_url(&client, None, Some(floor));
+    let windowed = list_url(&client, None, Some(floor), 100);
     // Midnight 2026-04-01 UTC = 1775001600.
     assert!(windowed.contains("&q=after:1775001600"), "{windowed}");
-    assert!(!list_url(&client, None, None).contains("q=after"));
+    assert!(!list_url(&client, None, None, 100).contains("q=after"));
 }
 
 #[tokio::test]
-async fn a_junk_message_is_filed_in_spam_and_kept_in_the_present_set() {
-    // Captured from a real account whose message sat in Junk. `present` is what a
-    // snapshot tombstones against, so a spam message missing from it is not merely
-    // unreported — it is deleted from the store on the next reconcile.
+async fn a_junk_message_is_fetched_and_filed_in_spam() {
+    // Captured from a real account whose message sat in Junk. A listing that left it out
+    // would also leave it out of the reconcile, which would then delete it from the store;
+    // `every_snapshot_page_asks_for_spam_and_trash` pins the request that keeps it in.
     let client = fake_client(vec![
         ("/messages?maxResults", json(LIST_JUNK)),
         ("/messages/message-junk", json(META_JUNK)),
     ]);
-    let page = snapshot_page(&client, None, None, &SyncState::new("1662"))
+    let page = listed_page(&client, None, None, &NamedLabels::default())
         .await
         .unwrap();
 
-    let message = page.changed.first().expect("the junk message is carried");
-    assert!(
-        page.present.contains(message.id.key()),
-        "a junk message stays in the present set"
-    );
+    let message = page.messages.first().expect("the junk message is carried");
     // `SPAM` is an ordinary place label, so it files like any other folder; `UNREAD`
     // is a keyword and does not.
     let places: Vec<&str> = message.mailboxes.iter().map(MailboxId::as_str).collect();
@@ -129,9 +128,9 @@ async fn every_snapshot_page_asks_for_spam_and_trash() {
     let floor = CalendarDate::new(2026, 4, 1).unwrap();
     let token = PageToken::new("NEXT_PAGE");
     for url in [
-        list_url(&client, None, None),
-        list_url(&client, None, Some(floor)),
-        list_url(&client, Some(&token), Some(floor)),
+        list_url(&client, None, None, 100),
+        list_url(&client, None, Some(floor), 100),
+        list_url(&client, Some(&token), Some(floor), 100),
     ] {
         assert!(url.contains("&includeSpamTrash=true"), "{url}");
     }
@@ -141,7 +140,7 @@ async fn every_snapshot_page_asks_for_spam_and_trash() {
 async fn page_urls_continue_from_a_page_token() {
     let client = fake_client(vec![]);
     let token = PageToken::new("NEXT_PAGE");
-    assert!(list_url(&client, Some(&token), None).contains("&pageToken=NEXT_PAGE"));
+    assert!(list_url(&client, Some(&token), None, 100).contains("&pageToken=NEXT_PAGE"));
     assert!(
         history_url(&client, &SyncState::new("42"), Some(&token)).contains("&pageToken=NEXT_PAGE")
     );
@@ -161,12 +160,12 @@ async fn snapshot_skips_a_message_that_404s_between_list_and_get() {
             Err((404, json(r#"{"error":{"code":404}}"#))),
         ),
     ]);
-    let page = snapshot_page(&client, None, None, &SyncState::new("9"))
+    let page = listed_page(&client, None, None, &NamedLabels::default())
         .await
         .unwrap();
-    // Only the two fetchable messages survive.
-    assert_eq!(page.changed.len(), 2);
-    assert_eq!(page.present.len(), 2);
+    // Only the two fetchable messages survive, and a deleted one is no failure.
+    assert_eq!(page.messages.len(), 2);
+    assert!(page.stopped.is_none());
 }
 
 /// A list page of `count` ids plus a get route per id, for the fan-out tests. Ids are
@@ -204,10 +203,10 @@ async fn a_snapshot_page_fetches_its_messages_concurrently() {
     // rows reach the list only after the last fetch has returned.
     let (routes, _) = wide_page(60);
     let (client, probe) = probe_client(as_routes(&routes));
-    let page = snapshot_page(&client, None, None, &SyncState::new("7"))
+    let page = listed_page(&client, None, None, &NamedLabels::default())
         .await
         .unwrap();
-    assert_eq!(page.changed.len(), 60);
+    assert_eq!(page.messages.len(), 60);
     // One list call plus one get per message.
     assert_eq!(probe.calls(), 61);
     assert_eq!(
@@ -222,7 +221,7 @@ async fn a_page_smaller_than_the_window_never_exceeds_its_own_size() {
     // The window is a ceiling, not a target: a page of three does not open twenty requests.
     let (routes, _) = wide_page(3);
     let (client, probe) = probe_client(as_routes(&routes));
-    snapshot_page(&client, None, None, &SyncState::new("7"))
+    listed_page(&client, None, None, &NamedLabels::default())
         .await
         .unwrap();
     assert_eq!(probe.peak(), 3);
@@ -233,10 +232,10 @@ async fn concurrent_fetches_still_land_in_the_order_the_server_listed_them() {
     // Fetches complete in whatever order they finish; the page must not inherit that order.
     let (routes, ids) = wide_page(40);
     let (client, _) = probe_client(as_routes(&routes));
-    let page = snapshot_page(&client, None, None, &SyncState::new("7"))
+    let page = listed_page(&client, None, None, &NamedLabels::default())
         .await
         .unwrap();
-    let got: Vec<&str> = page.changed.iter().map(|m| m.id.key().as_str()).collect();
+    let got: Vec<&str> = page.messages.iter().map(|m| m.id.key().as_str()).collect();
     assert_eq!(got, ids.iter().map(String::as_str).collect::<Vec<_>>());
 }
 
@@ -263,7 +262,7 @@ async fn a_delta_page_refetches_its_new_arrivals_concurrently() {
         ));
     }
     let (client, probe) = probe_client(as_routes(&routes));
-    let page = delta_page(&client, &SyncState::new("1"), None)
+    let page = delta_page(&client, &SyncState::new("1"), None, &NamedLabels::default())
         .await
         .unwrap();
     assert_eq!(page.changed.len(), 30);
@@ -275,16 +274,21 @@ async fn delta_page_refetches_changed_and_advances_the_cursor() {
     let mut routes = vec![("/history?startHistoryId", json(HISTORY))];
     routes.extend(message_routes());
     let client = fake_client(routes);
-    let page = delta_page(&client, &SyncState::new("1532"), None)
-        .await
-        .unwrap();
+    let page = delta_page(
+        &client,
+        &SyncState::new("1532"),
+        None,
+        &NamedLabels::default(),
+    )
+    .await
+    .unwrap();
     assert_eq!(page.kind, SyncKind::Delta);
     // message-1 was added, so it is fetched whole; message-2 only changed labels, which the
     // history page already answered in full.
     assert_eq!(page.changed.len(), 1);
     assert_eq!(page.patched.len(), 1);
-    assert!(page.present.is_empty()); // a delta carries no present set
-    assert!(page.removed.is_empty());
+    assert_eq!(page.present, []); // a delta carries no present set
+    assert_eq!(page.removed, []);
     // The cursor advances to the response's latest historyId.
     assert_eq!(page.next_cursor.as_str(), "1681");
 }
@@ -294,182 +298,17 @@ async fn delta_page_tombstones_a_deleted_message_without_refetch() {
     // message-3 is added *and* deleted in the same window → tombstone only, no re-fetch
     // route provided, so a re-fetch attempt would error; the test passing proves none.
     let client = fake_client(vec![("/history?startHistoryId", json(HISTORY_DELETED))]);
-    let page = delta_page(&client, &SyncState::new("1681"), None)
-        .await
-        .unwrap();
-    assert!(page.changed.is_empty());
+    let page = delta_page(
+        &client,
+        &SyncState::new("1681"),
+        None,
+        &NamedLabels::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.changed, []);
     assert_eq!(page.removed.len(), 1);
     assert_eq!(page.removed[0].as_str(), "message-3");
-}
-
-/// One `labelsRemoved` history page in the captured shape (see `history_delta.json`):
-/// `labelIds` is what moved, `message.labelIds` what the message was left holding.
-fn labels_removed(moved: &[&str], resulting: &[&str]) -> serde_json::Value {
-    serde_json::json!({
-        "history": [{
-            "id": "1700",
-            "labelsRemoved": [{
-                "labelIds": moved,
-                "message": { "id": "message-9", "threadId": "t9", "labelIds": resulting },
-            }],
-        }],
-        "historyId": "1700",
-    })
-}
-
-#[tokio::test]
-async fn a_mark_read_is_answered_by_the_history_page_itself() {
-    // `UNREAD` removed and nothing else: the page already carries the resulting label
-    // set, so this costs no `messages.get` at all. No message route is registered, so a
-    // re-fetch would error — the test passing is the proof.
-    let client = fake_client(vec![(
-        "/history?startHistoryId",
-        labels_removed(&["UNREAD"], &["INBOX", "CATEGORY_PERSONAL"]),
-    )]);
-    let page = delta_page(&client, &SyncState::new("1681"), None)
-        .await
-        .unwrap();
-
-    assert!(page.changed.is_empty(), "a mark-read rewrites no message");
-    assert_eq!(page.patched.len(), 1);
-    assert_eq!(page.patched[0].key.as_str(), "message-9");
-    // Gmail's `UNREAD` is inverted, so its *absence* from the resulting set is `$seen`.
-    assert!(
-        page.patched[0]
-            .state
-            .keywords
-            .iter()
-            .any(|k| k.as_system() == Some(engine_core::mail::SystemKeyword::Seen))
-    );
-}
-
-#[tokio::test]
-async fn an_archive_is_a_state_change_that_carries_the_new_filing() {
-    // Gmail files by label, so removing `INBOX` is an archive — a membership change. A state
-    // change carries filing, so this needs no re-fetch either; what it must not do is lose the
-    // move. No message route is registered, so a re-fetch would error.
-    let client = fake_client(vec![(
-        "/history?startHistoryId",
-        labels_removed(&["INBOX"], &["UNREAD", "CATEGORY_PERSONAL"]),
-    )]);
-    let page = delta_page(&client, &SyncState::new("1681"), None)
-        .await
-        .unwrap();
-
-    assert!(page.changed.is_empty(), "an archive rewrites no message");
-    assert_eq!(page.patched.len(), 1);
-    let filing = page.patched[0]
-        .state
-        .mailboxes
-        .as_ref()
-        .expect("Gmail files in place, so the change says where");
-    assert!(!filing.contains(&MailboxId::try_from("INBOX").unwrap()));
-    assert!(filing.contains(&MailboxId::try_from("CATEGORY_PERSONAL").unwrap()));
-    // `UNREAD` is keyword state, never a place.
-    assert!(!filing.contains(&MailboxId::try_from("UNREAD").unwrap()));
-}
-
-#[tokio::test]
-async fn a_message_left_with_no_folder_label_is_filed_in_all_mail() {
-    // An archived, uncategorized message carries no folder-like label at all, and the engine's
-    // membership set may not be empty — the same synthetic home the whole-object path uses.
-    let client = fake_client(vec![(
-        "/history?startHistoryId",
-        labels_removed(&["INBOX"], &[]),
-    )]);
-    let page = delta_page(&client, &SyncState::new("1681"), None)
-        .await
-        .unwrap();
-    let filing = page.patched[0].state.mailboxes.as_ref().expect("filing");
-    assert!(filing.contains(&MailboxId::try_from("ALL_MAIL").unwrap()));
-}
-
-#[tokio::test]
-async fn an_absent_resulting_label_set_refetches_rather_than_guessing() {
-    // A partial with no `message.labelIds` at all is not an empty label set. Reading it
-    // as one would hand `keywords_from_labels` an empty list, whose missing `UNREAD`
-    // means `$seen` — silently marking unread mail read.
-    let client = fake_client(vec![
-        (
-            "/history?startHistoryId",
-            serde_json::json!({
-                "history": [{
-                    "id": "1700",
-                    "labelsRemoved": [{
-                        "labelIds": ["UNREAD"],
-                        "message": { "id": "message-9", "threadId": "t9" },
-                    }],
-                }],
-                "historyId": "1700",
-            }),
-        ),
-        (
-            "/messages/message-9",
-            serde_json::json!({ "id": "message-9", "threadId": "t9", "labelIds": ["INBOX"] }),
-        ),
-    ]);
-    let page = delta_page(&client, &SyncState::new("1681"), None)
-        .await
-        .unwrap();
-
-    assert!(page.patched.is_empty());
-    assert_eq!(page.changed.len(), 1);
-}
-
-#[tokio::test]
-async fn a_new_message_that_also_changed_labels_is_still_fetched_whole() {
-    // The same id in `messagesAdded` and `labelsAdded`: we hold none of its content, so
-    // the label half must not shortcut the fetch.
-    let client = fake_client(vec![
-        (
-            "/history?startHistoryId",
-            serde_json::json!({
-                "history": [{
-                    "id": "1700",
-                    "messagesAdded": [{
-                        "message": { "id": "message-9", "threadId": "t9", "labelIds": ["UNREAD"] },
-                    }],
-                    "labelsAdded": [{
-                        "labelIds": ["STARRED"],
-                        "message": {
-                            "id": "message-9", "threadId": "t9",
-                            "labelIds": ["UNREAD", "STARRED"],
-                        },
-                    }],
-                }],
-                "historyId": "1700",
-            }),
-        ),
-        (
-            "/messages/message-9",
-            serde_json::json!({
-                "id": "message-9", "threadId": "t9", "labelIds": ["UNREAD", "STARRED"],
-            }),
-        ),
-    ]);
-    let page = delta_page(&client, &SyncState::new("1681"), None)
-        .await
-        .unwrap();
-
-    assert!(page.patched.is_empty());
-    assert_eq!(page.changed.len(), 1);
-}
-
-#[tokio::test]
-async fn delta_page_maps_a_404_to_history_expired() {
-    // An aged-out startHistoryId (404) becomes the resync signal, not a plain permanent.
-    let client = fake_client_fallible(vec![(
-        "/history?startHistoryId",
-        Err((404, json(HISTORY_GONE))),
-    )]);
-    let err = delta_page(&client, &SyncState::new("1"), None)
-        .await
-        .unwrap_err();
-    assert!(matches!(err, GoogleError::HistoryExpired(_)));
-    assert_eq!(
-        err.failure_class(),
-        engine_core::error::FailureClass::NeedsResync
-    );
 }
 
 #[tokio::test]
@@ -477,7 +316,7 @@ async fn the_whole_stack_runs_over_the_reqwest_replay_server() {
     // Drive the real reqwest transport (via with_base) at the replay server, proving the
     // label fetch works end-to-end without a live token.
     let base = replay_server(vec![("/labels", json(LABELS))]);
-    let client = crate::GoogleClient::with_base("t", base, tls(), &retry()).unwrap();
-    let mailboxes = labels(&client).await.unwrap();
+    let client = crate::GoogleClient::with_base("t", base, tls(), &retry(), &user_agent()).unwrap();
+    let mailboxes = labels(&client, &[]).await.unwrap().0;
     assert!(mailboxes.iter().any(|m| m.role == Some(MailboxRole::Inbox)));
 }

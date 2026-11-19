@@ -27,6 +27,11 @@ fn wire(draft: &Draft) -> String {
     String::from_utf8(assemble_message(draft, datetime!(2026-06-20 12:00:00 UTC)).unwrap()).unwrap()
 }
 
+fn stored_draft(draft: &Draft) -> String {
+    String::from_utf8(assemble_draft_message(draft, datetime!(2026-06-20 12:00:00 UTC)).unwrap())
+        .unwrap()
+}
+
 fn filed(draft: &Draft) -> String {
     String::from_utf8(assemble_filed_message(draft, datetime!(2026-06-20 12:00:00 UTC)).unwrap())
         .unwrap()
@@ -77,4 +82,40 @@ fn the_two_assemblies_are_identical_when_there_is_no_bcc() {
     // difference), which is why a caller can reuse the wire bytes for the Sent copy then.
     let draft = draft_with_cc_bcc().with_bcc(Vec::new());
     assert_eq!(wire(&draft), filed(&draft));
+}
+
+#[test]
+fn a_draft_with_no_to_recipients_carries_no_to_header() {
+    // A draft is often saved before anyone is addressed. It names the recipients it has, so it
+    // carries no `To` at all rather than the empty group a Bcc-only *send* needs: Gmail's
+    // `drafts.create` refuses that group with HTTP 400 "Invalid To header" (observed), and a
+    // client resuming the draft would otherwise read the group's name as a recipient.
+    let draft = Draft::new(
+        MessageIdHeader::new("draft@host").unwrap(),
+        EmailAddress::new("alice@test.local"),
+        Vec::new(),
+        "Subject line",
+        "body",
+    )
+    .with_bcc(vec![EmailAddress::new("dave@test.local")]);
+    let text = stored_draft(&draft);
+    assert!(!text.contains("To:"), "{text}");
+    assert!(text.contains("Bcc: dave@test.local\r\n"), "{text}");
+
+    // The Sent copy of the same message as a send keeps the group: it records what went out.
+    let sent = filed(&draft);
+    assert!(sent.contains("To: undisclosed-recipients:;\r\n"), "{sent}");
+}
+
+#[test]
+fn a_draft_with_to_recipients_is_the_filed_copy() {
+    let draft = Draft::new(
+        MessageIdHeader::new("draft@host").unwrap(),
+        EmailAddress::new("alice@test.local"),
+        vec![EmailAddress::new("bob@test.local")],
+        "Subject line",
+        "body",
+    )
+    .with_bcc(vec![EmailAddress::new("dave@test.local")]);
+    assert_eq!(stored_draft(&draft), filed(&draft));
 }

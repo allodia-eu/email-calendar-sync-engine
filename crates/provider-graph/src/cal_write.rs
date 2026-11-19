@@ -20,8 +20,13 @@ use engine_provider::{
 use serde_json::{Map, Value, json};
 
 use crate::{
-    cal_normalize::cross_system_uid, cal_recur_render::render_recurrence, error::GraphError,
-    json::opt_str, transport::GraphClient,
+    cal_conference_write,
+    cal_invite::{draft_attendees, merge_attendees},
+    cal_normalize::cross_system_uid,
+    cal_recur_render::render_recurrence,
+    error::{GraphError, unread_answer},
+    json::opt_str,
+    transport::GraphClient,
 };
 
 /// Creates `draft` in the bound `calendar_path` (`/me/calendars/{id}`) via `POST …/events`.
@@ -41,8 +46,9 @@ pub(crate) async fn create_event(
             "application/json",
             serde_json::to_vec(&body).map_err(GraphError::from)?,
         )
-        .await?
-        .ok_or_else(|| ProviderError::permanent("create event returned no body"))?;
+        .await
+        .map_err(GraphError::into_write_error)?
+        .ok_or_else(|| unread_answer("create event returned no body"))?;
     receipt(&created, draft.uid.clone())
 }
 
@@ -67,6 +73,7 @@ pub(crate) async fn patch_event(
              rule of its own",
         ));
     }
+    edit.refuse_conference_on_occurrence()?;
     // An empty patch changes nothing; skip the round trip and report the current revision.
     if edit.patch.is_empty() {
         return Ok(EventWriteReceipt::new(
@@ -83,20 +90,24 @@ pub(crate) async fn patch_event(
         ),
     };
     let body = build_patch(base, &edit.patch)?;
-    let updated = client
+    let answer = client
         .patch(
             &client.url(&format!("/events/{id}")),
             "application/json",
             guard,
             serde_json::to_vec(&body).map_err(GraphError::from)?,
         )
-        .await?;
+        .await;
     // Graph echoes the event it patched. On an instance that is the *occurrence*, whose id
-    // is not the series' — so the echo is read only for a series edit; the receipt always
-    // names the event the caller holds.
-    match (updated, &edit.target) {
-        (Some(event), PatchTarget::Series) => receipt(&event, base.uid.clone()),
-        _ => Ok(EventWriteReceipt::new(
+    // is not the series' — so the echo is read only for a series edit, where it carries the
+    // new revision; the receipt always names the event the caller holds.
+    let updated = match &edit.target {
+        PatchTarget::Series => answer.map_err(GraphError::into_write_error)?,
+        PatchTarget::Instance(_) => GraphError::optional_answer(answer).map(|_| None)?,
+    };
+    match updated {
+        Some(event) => receipt(&event, base.uid.clone()),
+        None => Ok(EventWriteReceipt::new(
             base.id.clone(),
             base.uid.clone(),
             RevisionTokens::none(),
@@ -129,7 +140,7 @@ pub(crate) async fn rsvp_event(
     base: &Event,
     rsvp: &EventRsvp,
 ) -> ProviderResult<EventWriteReceipt> {
-    client
+    let answer = client
         .post(
             &client.url(&format!(
                 "/events/{}/{}",
@@ -139,7 +150,8 @@ pub(crate) async fn rsvp_event(
             "application/json",
             serde_json::to_vec(&build_rsvp(rsvp)).map_err(GraphError::from)?,
         )
-        .await?;
+        .await;
+    GraphError::optional_answer(answer)?;
     Ok(EventWriteReceipt::new(
         base.id.clone(),
         base.uid.clone(),
@@ -205,7 +217,7 @@ pub(crate) async fn delete_event(
     {
         // A `404` — already deleted (or moved) — is idempotent success, like a clean delete.
         Ok(()) | Err(GraphError::Status { status: 404, .. }) => Ok(()),
-        Err(other) => Err(other.into()),
+        Err(other) => Err(other.into_write_error()),
     }
 }
 
@@ -252,6 +264,12 @@ fn build_create(draft: &EventDraft) -> ProviderResult<Value> {
             render_recurrence(&recurrence.rule, calendar_date_of(&draft.start))?,
         );
     }
+    if let Some(attendees) = draft_attendees(draft)? {
+        body.insert("attendees".to_owned(), attendees);
+        body.insert("responseRequested".to_owned(), json!(true));
+        body.insert("transactionId".to_owned(), json!(draft.uid.as_str()));
+    }
+    cal_conference_write::apply_to_create(draft, &mut body)?;
     Ok(Value::Object(body))
 }
 
@@ -312,6 +330,10 @@ fn build_patch(base: &Event, patch: &EventPatch) -> ProviderResult<Value> {
         };
         body.insert("recurrence".to_owned(), value);
     }
+    if let Some(edit) = patch.invitee_edit() {
+        body.insert("attendees".to_owned(), merge_attendees(base, edit)?);
+    }
+    cal_conference_write::apply_to_patch(base, patch, &mut body)?;
     Ok(Value::Object(body))
 }
 
@@ -362,7 +384,7 @@ fn fmt_local(local: &engine_core::time::LocalDateTime) -> String {
 }
 
 /// A Graph `body` for a plain-text value.
-fn text_body(content: &str) -> Value {
+pub(crate) fn text_body(content: &str) -> Value {
     json!({ "contentType": "text", "content": content })
 }
 
@@ -388,10 +410,9 @@ fn receipt(
     event: &Value,
     fallback_uid: engine_core::ids::Uid,
 ) -> ProviderResult<EventWriteReceipt> {
-    let id = opt_str(event, "id")
-        .ok_or_else(|| ProviderError::permanent("write response had no event id"))?;
+    let id = opt_str(event, "id").ok_or_else(|| unread_answer("write response had no event id"))?;
     let event_id = EventId::try_from(id)
-        .map_err(|e| ProviderError::permanent(format!("bad created event id: {e}")))?;
+        .map_err(|e| unread_answer(&format!("bad created event id: {e}")).with_source(e))?;
     let uid = cross_system_uid(event)
         .and_then(|u| engine_core::ids::Uid::new(u).ok())
         .unwrap_or(fallback_uid);
@@ -406,3 +427,11 @@ fn receipt(
 #[cfg(test)]
 #[path = "cal_write_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "cal_invite_tests.rs"]
+mod invite_tests;
+
+#[cfg(test)]
+#[path = "cal_conference_write_tests.rs"]
+mod conference_write_tests;

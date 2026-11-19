@@ -362,5 +362,5 @@ async fn a_drain_that_is_still_offline_parks_the_draft_op_again() {
     .await
     .unwrap();
     assert_eq!(recovered.delivered(), 2);
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    assert_eq!(store.list_pending_ops(account()).await.unwrap(), []);
 }

@@ -38,7 +38,7 @@ use engine_core::{
 };
 use engine_provider::{Provider, ProviderError, ScopeSync};
 use engine_store::{
-    ApplyBatch, DerivedWrite, LeaseRequest, Store, StoreError, StoreRead, SyncApplied,
+    ApplyBatch, DerivedWrite, LeaseRequest, Store, StoreError, StoreRead, SyncApplied, SyncLease,
 };
 
 /// How many times a scope is re-claimed after a `StaleLease` before giving up.
@@ -66,7 +66,9 @@ pub enum SyncError {
     /// A calendar reconcile was asked for on an event scope that has never been expanded,
     /// so there is no window to re-expand a changed event over.
     ///
-    /// Only reachable by reconciling before the account's calendars have ever synced. It is
+    /// Only reachable by reconciling a calendar no [`sync_calendar`] pass has reached: before
+    /// the account's first, or one its listing does not name. A listed calendar's window is
+    /// recorded before its first fetch, so a pass that then fails still leaves one. It is
     /// an error rather than a silent no-op because expanding nothing would store the events
     /// with **zero** occurrence rows *and* advance the cursor — so the next sync would see
     /// no changes and the grid would stay empty forever. Sync the calendar first.
@@ -78,6 +80,12 @@ pub enum SyncError {
     /// Contact sources changed during every people-index CAS retry.
     #[error("contact sources kept changing during people-index rebuild")]
     ConcurrentPeopleRebuild,
+    /// A calendar or contact write the provider **applied**, or a send that was delivered or
+    /// may have been, whose outcome the store could not record. The change is on the server;
+    /// the next sync brings the store up to it. Distinct from [`Store`](Self::Store), which
+    /// such a write returns only where nothing was applied.
+    #[error("the write was applied, and recording it failed: {0}")]
+    Unrecorded(#[source] StoreError),
 }
 
 impl SyncError {
@@ -153,6 +161,22 @@ pub(crate) trait ScopeSyncer: Sync {
     /// The scope this syncer claims and applies under.
     fn scope(&self, account: &AccountId) -> SyncScope;
 
+    /// Reads from the store what the fetch depends on, once the scope's lease is held and
+    /// before every fetch, a re-claim's included: `cursor` is the one the claim returned.
+    ///
+    /// A read made before the claim can be overtaken by the pass that held the lease, and a
+    /// fetch decided on it then undoes what that pass recorded. Returning a halt releases the
+    /// lease without fetching. Only the event scope has anything to read.
+    async fn prepare(
+        &self,
+        store: &dyn StoreRead,
+        scope: &SyncScope,
+        cursor: Option<&SyncState>,
+    ) -> Result<Option<Self::Halt>, SyncError> {
+        let _ = (store, scope, cursor);
+        Ok(None)
+    }
+
     /// Fetches the scope's changes since `cursor`.
     async fn fetch(
         &self,
@@ -165,6 +189,20 @@ pub(crate) trait ScopeSyncer: Sync {
     /// Takes the whole [`ScopeSync`], not just its update: a mail pass also carries
     /// keyword-only changes, which project to rows without being objects.
     fn derive(&self, sync: &ScopeSync<Self::Object>) -> DerivedWrite;
+
+    /// The collection's tag as the listing read it before this pass, recorded with the cursor
+    /// ([`ApplyBatch::collection_tag`]). Only a scope that is one listed collection has one.
+    fn collection_tag(&self) -> Option<engine_core::version::CollectionTag> {
+        None
+    }
+
+    /// The window `sync`'s cursor was opened over, recorded with it
+    /// ([`ApplyBatch::fetch_window`]). Only a windowed event scope that has just opened one has
+    /// it; a delta continues its cursor's window and leaves the recorded one.
+    fn fetch_window(&self, sync: &ScopeSync<Self::Object>) -> Option<engine_core::time::Horizon> {
+        let _ = sync;
+        None
+    }
 
     /// Recipient observations to write in the *same* transaction as the batch.
     /// Empty for every scope but email.
@@ -210,6 +248,17 @@ where
         let claim = store
             .claim_sync_scope(account.clone(), &scope, req.clone())
             .await?;
+        match syncer.prepare(store, &scope, claim.state.as_ref()).await {
+            Ok(None) => {}
+            Ok(Some(halt)) => {
+                store.release_sync_scope(claim.lease).await?;
+                return Ok(ScopeRun::Halted(halt));
+            }
+            Err(err) => {
+                let _ = store.release_sync_scope(claim.lease).await;
+                return Err(err);
+            }
+        }
         // Release the lease if the provider fetch fails (e.g. the account is offline),
         // so a leaked lease does not block the next sync with a spurious `ScopeHeld`.
         let fetched = match syncer.fetch(account, claim.state.as_ref()).await {
@@ -237,8 +286,12 @@ where
                 return Err(err);
             }
         };
+        let tag = syncer.collection_tag();
         let batch = ApplyBatch::new(&sync.update, &derived, &[], &sync.next_cursor)
-            .with_recipient_observations(&observations);
+            .with_recipient_observations(&observations)
+            .with_collection_tag(tag.as_ref())
+            .with_fetch_window(syncer.fetch_window(&sync));
+        let batch = read_since(batch, &claim.lease, req);
         match store.apply_sync_update(&claim.lease, batch).await {
             Ok(applied) => {
                 store.release_sync_scope(claim.lease).await?;
@@ -299,6 +352,24 @@ pub(crate) fn derive_messages(messages: &[Message]) -> DerivedWrite {
     derived
 }
 
+/// Marks `batch` as read by the pass holding `lease`, claimed under `req`, so the store keeps
+/// showing a queued keyword change the server accepted after the pass began reading.
+///
+/// The pass start is read off the lease rather than a clock of this crate's: a lease's expiry is
+/// the store's clock at the claim plus the TTL asked for, and the handle keeps that expiry however
+/// often the store renews the lease, so the claim instant is on the clock the store settles ops
+/// by. Every pass claims before it reads.
+pub(crate) fn read_since<'a, T: SyncObject>(
+    batch: ApplyBatch<'a, T>,
+    lease: &SyncLease,
+    req: &LeaseRequest,
+) -> ApplyBatch<'a, T> {
+    match lease.expiry().checked_sub(req.ttl) {
+        Some(started) => batch.observed_from(started),
+        None => batch,
+    }
+}
+
 /// The created-or-updated objects an update carries (a delta's `changed` or a
 /// snapshot's `objects`) — what gets projected. Tombstoned/removed keys are the
 /// store's job, not the projection's.
@@ -312,22 +383,34 @@ pub(crate) fn changed_objects<T: SyncObject>(update: &SyncUpdate<T>) -> &[T] {
 mod attachment;
 mod body;
 mod calendar;
+mod calendar_scopes;
 mod contact;
 mod horizon;
+mod keep_alive;
 mod mail_account;
 mod mail_report;
 mod observer;
 mod outbox;
 mod progress;
+mod reach;
 mod recipients;
+mod scope_wait;
+mod sent_copies;
+mod source_answer;
 mod stream;
 mod threading;
+mod vanished;
+mod warm;
+mod window_cursor;
 pub use attachment::{
     fetch_message_attachment, fetch_message_attachments, fetch_message_scheduling,
     fetch_message_source,
 };
 pub use body::{ensure_message_source, fetch_inline_parts, fetch_message_body};
-pub use calendar::{CalendarSyncReport, EventSyncReport, reconcile_calendar_events, sync_calendar};
+pub use calendar::{
+    CalendarSyncReport, EventScopePass, EventScopeSync, EventSyncReport, reconcile_calendar_events,
+    sync_calendar,
+};
 pub use contact::{
     ContactReconcileReport, ContactSourceReport, ContactSyncReport, PeopleRebuildReport,
     rebuild_people_index, reconcile_contact_card, reconcile_contact_deletion, sync_address_books,
@@ -339,14 +422,19 @@ pub use mail_report::{FolderSync, MailSyncReport, SyncTiming};
 pub use observer::{IgnoreCommits, SyncCommit, SyncObserver};
 pub use outbox::{
     CalendarWriteOutcome, ContactWriteOutcome, DraftPut, DrainOutcome, DrainReport, DrainedOp,
-    MailEditOutcome, PutDraftOutcome, ReportOutcome, SubmitOutcome, create_calendar_event,
+    MailEditOutcome, MailEditSent, MailboxChange, MailboxEditOutcome, MailboxNameError,
+    MailboxPlace, PutDraftOutcome, ReportOutcome, SubmitOutcome, create_calendar_event,
     create_contact, delete_calendar_event, delete_contact, delete_draft_mail, drain_outbox,
-    edit_mail, patch_calendar_event, patch_contact, put_calendar_document, put_draft_mail,
-    report_message, rsvp_calendar_event, submit_mail,
+    edit_mail, edit_mailbox, mail_edit_op, patch_calendar_event, patch_contact,
+    put_calendar_document, put_draft_mail, queue_mail_edit, report_message, rsvp_calendar_event,
+    send_mail_edit, submit_mail, validate_mailbox_name,
 };
 pub use progress::{AccountProgress, ProgressSnapshot};
+pub use reach::{CalendarReach, EventScopeReach, ScopeReach, reach_calendar};
 pub use stream::StreamTuning;
 pub use threading::{ThreadRebuildReport, rebuild_thread_index};
+pub use vanished::{forget_vanished_folders, reconcile_folders};
+pub use warm::warm_message_sources;
 
 #[cfg(test)]
 mod tests;

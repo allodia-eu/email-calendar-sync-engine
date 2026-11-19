@@ -46,7 +46,7 @@ pub(crate) async fn put_draft(
 
     // The stored draft keeps its `Bcc` header, so resuming it restores every recipient;
     // it is created in the mailbox and never delivered from here.
-    let mime = engine_rfc5322::assemble_filed_message(draft, OffsetDateTime::now_utc())?;
+    let mime = engine_rfc5322::assemble_draft_message(draft, OffsetDateTime::now_utc())?;
     let body = engine_rfc5322::base64_encode(&mime).into_bytes();
     // MIME format, exactly as `sendMail` takes it: `text/plain` is the **request's**
     // content type, declaring that the body is a base64 RFC 5322 message, and says

@@ -26,7 +26,7 @@ use engine_core::{
     calendar::{Calendar, Event},
     ids::{CalendarId, ProviderKey},
     sync::SyncState,
-    time::CalendarDate,
+    time::{CalendarDate, Horizon},
 };
 use engine_provider::{PageToken, SyncKind, SyncPage};
 use futures_util::{StreamExt, TryStreamExt, stream};
@@ -50,11 +50,11 @@ const MAX_CONCURRENT_MASTER_READS: usize = 8;
 const PENDING_CURSOR: &str = "graph-cal-pending";
 
 /// The date window a calendar sync covers: `calendarView` requires an explicit range,
-/// and the returned `deltaLink` encodes it, so it is applied only to the initial
-/// request. A host sizes it from its recurrence-expansion horizon (`providers.md`:
-/// calendar coverage "may be inherently time-windowed").
+/// and the returned `deltaLink` encodes it, so it is applied only to the request that opens a
+/// cursor. The engine names it per fetch
+/// ([`Provider::sync_events`](engine_provider::Provider::sync_events)).
 #[derive(Debug, Clone, Copy)]
-pub struct CalendarWindow {
+pub(crate) struct CalendarWindow {
     /// The inclusive lower bound (00:00:00 UTC of this date).
     pub start: CalendarDate,
     /// The exclusive upper bound (00:00:00 UTC of this date).
@@ -64,8 +64,18 @@ pub struct CalendarWindow {
 impl CalendarWindow {
     /// A window spanning `[start, end)` — the date range `calendarView` covers.
     #[must_use]
-    pub fn new(start: CalendarDate, end: CalendarDate) -> Self {
+    pub(crate) fn new(start: CalendarDate, end: CalendarDate) -> Self {
         Self { start, end }
+    }
+}
+
+impl From<Horizon> for CalendarWindow {
+    /// The whole UTC days covering `horizon` ([`Horizon::covering_dates`]): the window the
+    /// engine names in
+    /// [`Provider::sync_events`](engine_provider::Provider::sync_events).
+    fn from(horizon: Horizon) -> Self {
+        let (start, end) = horizon.covering_dates();
+        Self::new(start, end)
     }
 }
 
@@ -105,9 +115,10 @@ pub(crate) struct EventsPage {
 /// encodes the window). `display_zone` (an IANA name) rides a `Prefer: outlook.timezone`
 /// header so Graph returns each event's wall clock in that zone rather than UTC — a
 /// zoneless UTC reading expands a recurring master DST-incorrectly
-/// (`calendar-semantics.md`). It must be re-sent on every request (headers are not
-/// encoded in the deltaLink). A series master is then re-read in its own authoring zone
-/// (see this module's header).
+/// (`calendar-semantics.md`). The same header asks for each body as text, Exchange's own
+/// rendering of the whole of it ([`delta_prefer`]). It must be re-sent on every request
+/// (headers are not encoded in the deltaLink). A series master is then re-read in its own
+/// authoring zone (see this module's header).
 pub(crate) async fn events_page(
     client: &GraphClient,
     calendar: &CalendarId,
@@ -124,7 +135,7 @@ pub(crate) async fn events_page(
     let doc = client
         .get_with_prefer(
             &page_url(client, calendar, cursor, page, window),
-            Some(&prefer(display_zone)),
+            Some(&delta_prefer(display_zone)),
         )
         .await?;
 
@@ -240,6 +251,18 @@ async fn read_master(
 /// The `Prefer` header value asking Graph for wall clocks in `zone`.
 fn prefer(zone: &str) -> String {
     format!("outlook.timezone=\"{zone}\"")
+}
+
+/// The `Prefer` header value for a delta page: wall clocks in `zone`, and each body as text.
+///
+/// Without the second, an HTML body reaches the description only as `bodyPreview`, which
+/// Graph cuts at 255 characters. A notes edit written back from that loses the rest, and on a
+/// Teams meeting it loses the meeting too: Exchange keeps `isOnlineMeeting` only while the
+/// body still holds Teams' block (measured on a work tenant). Read as text, the body is whole
+/// and every link keeps its target as `label<url>`, so the edit the host writes back keeps
+/// the block.
+fn delta_prefer(zone: &str) -> String {
+    format!("{}, outlook.body-content-type=\"text\"", prefer(zone))
 }
 
 /// The URL for the next page: a `@odata.nextLink` continuation, else the delta `cursor`,

@@ -107,9 +107,17 @@ each over its own `GraphClient` on the same token. The mail layers:
   The exception, **not in the docs** and observed on consumer mailboxes, is a
   *lightweight* property change (notably `isRead`): it returns only the changed
   property + `id`, with **no** `@odata.etag`. So the adapter uses the entry
-  directly when it carries `@odata.etag` (the common case) and resolves the
-  etag-less partials as **state changes** through the narrow `MESSAGE_STATE_SELECT`
-  rather than re-fetching the whole message.
+  directly when it carries `@odata.etag` (the common case) and resolves an
+  etag-less partial as a **state change** through the narrow `MESSAGE_STATE_SELECT`,
+  but only when every property it names is one that select reads, or its folder
+  (`normalize_state::names_only_state`). An etag-less entry naming anything else,
+  `importance` or a draft's `subject` above all, is read whole: Exchange changes
+  content under a stable id (a draft's `PATCH`, Outlook's importance on a received
+  message), and treating that as a state change would lose it. Observed November 2026,
+  an importance-only and a subject-only change to a draft and an importance change to
+  a received message each came back as a full entry, while an `isRead` change came back
+  full in one capture and lightweight in `live_provider.rs` the same day. Nothing
+  promises either form for any change, so both are handled for every one.
 
   That narrow read cannot ask for the etag: `@odata.etag` is an OData *annotation*,
   not a property, so naming it in a `$select` is an error — whether a `$select`ed
@@ -157,6 +165,8 @@ when the sent copy syncs back and cannot carry `In-Reply-To`/`References` (Graph
 `internetMessageHeaders` only accepts custom `x-*` headers). The MIME form ships the
 whole message the caller assembled — pre-generated `Message-ID`, threading, `Cc`/
 `Bcc`, an HTML alternative, attachments — verbatim, exactly like IMAP's SMTP `DATA`.
+Its hand-over is recorded before the last piece of that body, the point of no return
+(`providers.md`).
 
 - **One shared assembler.** The RFC 5322 / MIME bytes come from **`engine-rfc5322`**
   (`assemble_filed_message`) — the same crate `provider-imap` feeds to SMTP `DATA`,
@@ -173,10 +183,46 @@ whole message the caller assembled — pre-generated `Message-ID`, threading, `C
   reconciles by `Message-ID` when Sent Items next syncs. A malformed MIME body is the
   documented `400 ErrorMimeContentInvalidBase64String` (permanent); `401`/`429`/`5xx`
   classify as auth/rate-limit/retryable through the shared status mapping.
+- **A `sendMail` that loses its answer needs confirming.** It goes through
+  `GraphClient::submit`, which waits the `submission` bound for the `202`. Once the request
+  may have reached Graph, a failure (a timeout or a dropped connection) is
+  `ProviderError::needs_confirmation`, never a retry; before it (connect, handshake, a body
+  Graph stopped taking) it is `Retryable` (`deadlines.md`).
 - **Live-verified.** A self-addressed send against the real account is confirmed to
   come back into the Inbox carrying the *exact* pre-generated `Message-ID` — proving
   Graph preserves it in the MIME form (`tests/live_provider.rs`, gated on
   `GRAPH_ACCESS_TOKEN`). The `Mail.Send` delegated scope is required.
+
+### Keywords on the filed copy, as categories
+
+Graph stores no free-form keyword. The nearest thing is `categories`, a list of names on each
+message that Outlook shows the person. So a keyword a draft asks for on its filed copy
+(`Draft::sent_copy_keywords`) is kept only when the host registered a name for it
+(`GraphProvider::with_keyword_names`, taking `KeywordName`s), and only then does the adapter
+advertise `sent_copy_keywords` (`crate::categories`).
+
+- **After the send, never inside it.** `sendMail` answers `202` and files the copy a moment
+  later, with no id. The copy is looked up in Sent Items by the `internetMessageId` the MIME
+  carried (`$filter=internetMessageId eq '<…>'`), after each wait of a short schedule (five
+  tries over about five seconds; a live mailbox shows it within about three), and given the
+  category with a `PATCH {categories}` that keeps any the person set. The message is delivered
+  before any of it starts: a copy not found or a refused `PATCH` only leaves the keyword out of
+  `SubmissionReceipt::sent_copy_keywords`.
+- **One category per keyword, whatever the device's language.** Before its first tag an adapter
+  asks Sent Items for a message already carrying any of the keyword's names
+  (`categories/any(c:c eq '…') or …`) and settles on the name it finds, creating the category
+  under `KeywordName::create_as` only when none is in use. The master category list
+  (`/me/outlook/masterCategories`) would answer directly, but reading it takes
+  `MailboxSettings.Read`, which a mail client has no other use for. A category set on a message
+  is **not** added to the master list (live-verified), so Outlook shows it without a colour.
+- **Read back through sync.** `categories` is in both `$select`s (`MESSAGE_SELECT` and
+  `MESSAGE_STATE_SELECT`), and a category matching a registered name, ignoring case, is reported
+  as the keyword. Any other category is the person's own and reports nothing. A category change
+  arrives in the folder's `messages/delta` (live-verified).
+- **Live-verified** (`tests/live_sent_copy_categories.rs`): the receipt keeps the keyword, the
+  Sent copy syncs back carrying it, and a second adapter registering the names the other way
+  round tags its copy with the category the first created. The copy delivered to the Inbox
+  carries none.
 
 ## Drafts
 
@@ -186,6 +232,14 @@ what sending it would have delivered. Graph files it into Drafts and sets `isDra
 itself: nothing in the request names a folder, which is live-verified rather than
 assumed (`tests/live_drafts.rs`). Graph advertises `mail_drafts`.
 
+- **Importance is the message's `importance` property**, in `MESSAGE_SELECT`. Exchange reads it
+  from a message's MIME by the rule `Importance::from_headers` copies, observed for thirty header
+  shapes in `tests/fixtures/mail/importance_header_shapes.json` and checked against the engine's
+  rule by `importance_shapes_tests.rs` (MICROSOFT-1 lists where it departs from RFC 5322). A
+  draft created from MIME takes it from the `Importance` header the assembler writes; a re-save's
+  `PATCH` sends it every time, normal included, or lowering it would never reach the stored draft
+  (`tests/live_importance.rs`). A change to it arrives as a changed message, never as state
+  (above).
 - **A re-save rewrites the stored message in place: `PATCH /me/messages/{id}`.** A
   draft's `subject`, `body`, `from` and recipient collections are writable while
   `isDraft` is true (they are read-only once it is not), so a text edit is **one
@@ -259,8 +313,9 @@ different Graph shapes (Graph models mail state as typed properties, not a keywo
 - **`SetKeywords` → `PATCH /messages/{id}` `{isRead, flag}`.** `$seen`→`isRead` (bool),
   `$flagged`→`flag.flagStatus` (`flagged`/`notFlagged`). These are the **only** two
   writable keyword-like properties Graph exposes, so any other keyword is **rejected**
-  (`InvalidState`), never silently dropped — `$draft` is read-only and Graph categories
-  are a separate concept. Both sides empty is a no-op (no request). The edits are
+  (`InvalidState`), never silently dropped — `$draft` is read-only, and a category is
+  written only as a named keyword on a sent message's filed copy (see "Keywords on the
+  filed copy, as categories"). Both sides empty is a no-op (no request). The edits are
   **unconditional** (no `If-Match`): the `MailEdit` shape carries no ETag guard, like
   IMAP `UID STORE` and JMAP `Email/set`.
 - **`MoveTo` → `POST /messages/{id}/move` `{destinationId}`.** Immutable ids are stable
@@ -289,7 +344,45 @@ mark-reads + flags it (asserting the re-sync reflects both keywords), moves it t
 (asserting it leaves the inbox), and permanent-deletes it — all against the real account.
 The `Mail.ReadWrite` delegated scope is required.
 
+## Folder writes (create, rename, move, trash, delete)
+
+`edit_mailbox` maps the neutral [`MailboxEdit`] onto the `mailFolder` verbs
+(`crate::mailbox_write`), and the mail provider advertises `mailbox_writes`. Folder writes
+are account-level, so any folder-bound provider makes them.
+
+| edit | request |
+|---|---|
+| `Create` | `POST /mailFolders/{parent}/childFolders {displayName}`; the top level is the well-known `msgfolderroot`, which the parent slot accepts |
+| `Update` | `GET /mailFolders/{id}?$select=id,displayName,parentFolderId`, then `PATCH {displayName}` if the name differs and `POST …/move {destinationId}` if the parent does |
+| `Trash` | the same rename-then-move, into the Deleted Items id the host resolved |
+| `Delete` | `POST /mailFolders/{id}/permanentDelete` |
+
+- **A folder id does not move.** Containers take no part in immutable ids, "but their
+  regular IDs were already constant" (outlook-immutable-id). The receipt still names the
+  id the move answered with.
+- **The rename goes first.** On `Trash` the name was chosen to be free in Deleted Items, and
+  the folder's own name may already be taken there.
+- **`Delete` is `permanentDelete`**, which removes the folder and its items and does not
+  place the folder in Purges; the docs leave `DELETE` saying only that the folder is
+  deleted, and Outlook's own delete is a move to Deleted Items, which `Trash` already is.
+  `permanentDelete` is served on the global cloud only. A `404` is success: the op behind
+  it is retried.
+- **A duplicate create is answered with the existing folder**: on `409` or
+  `ErrorFolderExists` the parent's `childFolders` is read and a folder of **exactly** that
+  name is the success a retry meets. One differing only in case is a `Conflict`, as are a
+  `404` on an update or trash and a duplicate on a rename or move.
+
+**Live verification is pending.** The offline tests assert every request's method, path and
+body, over response bodies that follow the documented shapes and are marked as not observed;
+`ErrorFolderExists` in particular is the code Exchange is known to use, not one captured
+here. `tests/live_mailbox_writes.rs` covers every edit and cleans up after itself, and has
+not run against a mailbox yet.
+
 ## Shared mailboxes (the multi-mailbox model)
+
+The neutral seam is `SharedAccounts` (`providers.md`). The mail provider's Inbox probe reports
+a store with `StoreDomains` mail; the calendar provider's calendar probe (below) reports its
+calendar. A host wanting both asks both providers and onboards the store once.
 
 One signed-in user (one OAuth credential) can access several mailboxes: their own
 and any shared/other mailbox they hold delegate access to — Graph addresses the
@@ -306,11 +399,11 @@ multi-account:
   is special at the store/sync/search layer.
 - **The credential is shared.** Credentials live outside the store (host-owned —
   `north-star.md`), so several accounts can map to the same token. The host's
-  account onboarding owns the credential → accounts mapping and the
-  add-a-shared-mailbox flow (deferred).
+  account onboarding owns the credential → accounts mapping; the engine answers
+  which mailboxes that credential can open (below).
 - **The provider differs only by a `MailboxPrincipal`.** `GraphClient::for_mailbox`
   roots every request at `/me` (`MailboxPrincipal::Me`) or `/users/{address}`
-  (`MailboxPrincipal::user`); the rest of the provider — folder list, role
+  (`MailboxPrincipal::User`); the rest of the provider — folder list, role
   resolution, snapshot/delta, re-fetch — is principal-agnostic. This stays in
   `provider-graph`: a Graph-specific URL detail does **not** belong in generic
   `engine-core` types (AGENTS hard rule).
@@ -318,11 +411,165 @@ multi-account:
   (`north-star.md`). Search/threading remain per-account.
 
 So adding a shared mailbox is, for the engine, just another account pointed at a
-`User` principal. (Not live-verified — a personal Microsoft account cannot host
-shared mailboxes; verification awaits a work/school account.)
+`User` principal. **Live-verified** against a real Microsoft 365 tenant
+(`tools/graph-oauth --profile m365`, `tests/live_shared.rs`, gated on `GRAPH_SHARED_MAILBOX`
+so it skips for the personal account the rest of the live suite uses — and so no real
+address is ever written into the repository).
+
+### Onboarding: `resolve_shared_account`, and only that
+
+- **There is no list route.** Nothing in Graph answers "which mailboxes have been shared with
+  me", so the adapter advertises `SharedAccounts::ByAddress`, leaves `list_shared_accounts`
+  at its rejecting default, and a host asks the user to type an address. The resolver probes
+  `GET /users/{addr}/mailFolders/inbox?$select=id` — a mail-folder read, needing only the
+  `Mail.Read*.Shared` scope a sync of that mailbox needs anyway.
+- **Binding is `MailboxPrincipal::shared(&handle)`**, the handle being the address the probe
+  succeeded for. It re-checks the handle rather than trusting it, since a host stores it
+  between the two calls.
+- **Graph will not say that a mailbox exists but is not shared with you.** A real tenant
+  answered three different `404`s — `ErrorInvalidUser`, `MailboxNotEnabledForRESTAPI`,
+  `ErrorItemNotFound` ("Default folder Inbox not found", which #89 recorded for a group) — and
+  never `403`: #89 probed every mailbox of a tenant, unshared ones included, so an unshared
+  mailbox is a `404` too. So `Permanent` means **not resolvable by
+  you**, never "does not exist". `403 ErrorAccessDenied` is the credential's *grant* falling
+  short of the route and classifies `Authentication`, because a re-consent fixes it. A
+  throttle or outage keeps its own class: a probe whose whole answer is a status code must
+  never read a `429` as "no such mailbox".
+- **The caller's own mailbox is refused, under any address.** `/users/{own address}` answers
+  `200` like any shared mailbox — as does any alias — and a host would onboard the signed-in
+  mailbox a second time. Addresses cannot be compared (an alias is another string), but
+  **Inbox ids can**: probed live, the Inbox id was identical through `/me`,
+  `/users/{own upn}` and `/users/{own address in upper case}`, and different for the shared
+  mailbox. So the resolver reads `/me/mailFolders/inbox?$select=id` too and refuses a match;
+  a credential with no mailbox of its own (`404`) stands the check down.
+
+### The shared mailbox's calendar
+
+Probed live on a work tenant (2026-11-10 and 11), a delegate with Full Access, token with
+`Calendars.ReadWrite.Shared`; pinned in `tests/live_shared_calendar.rs`:
+
+- **Not in the delegate's `/me/calendars`.** A shared mailbox's calendar is reachable only
+  under its own principal, so it is onboarded like its mail: `GraphCalendarProvider` advertises
+  `SharedAccounts::ByAddress` and resolves with `GET /users/{addr}/calendar?$select=id`
+  (`crate::shared::resolve_calendar`). Same address check, same `404` = not resolvable by you
+  (an unknown address is `ErrorInvalidUser`; a group, `ErrorItemNotFound` "Default folder
+  Calendar not found"), same `403` = a grant shortfall.
+- **The own-store check compares calendar ids.** The default calendar's id differs between the
+  shared mailbox and the delegate's own, and is the same through `/me` and
+  `/users/{own address}` in any case, so the resolver refuses a match with
+  `/me/calendar?$select=id`, as the Inbox probe does with Inbox ids.
+- **Everything else is the provider under `/users/{address}`, unchanged.** The default calendar
+  lists `canEdit` and `owner.address` the shared mailbox (read into `Calendar::owner`);
+  `calendarView/delta` ends in a `deltaLink`; create, `If-Match` patch and delete work, a stale
+  `If-Match` being `412 ErrorIrresolvableConflict`; a meeting made there is organised by the
+  shared mailbox and its Teams meeting (`isOnlineMeeting`) is the calendar's own; and
+  `POST /users/{shared}/events/{id}/accept` answers for the shared mailbox, the organiser's copy
+  turning accepted. An event id is per mailbox: the shared one's is `404` under `/me/events`.
+- **The calendar user is the shared mailbox**: `calendar_user_addresses` reads the principal's
+  identity (`crate::identity`), which is the bound mailbox — where the delegate may edit its
+  default calendar. Bound, the provider first reads that calendar's `canEdit` and answers
+  `NotEnabled` when it is `false`: a read-only delegate schedules as nobody there
+  (`engine_provider::calendar_user`). Live, Full Access reads `canEdit: true`; the `false` case is
+  the documented field, unobserved, like the read-only delegate below.
+- **Two oddities, pinned rather than relied on.** The delegate's own copy of a meeting they
+  made from the shared calendar reads *accepted* before anyone answered — every run since
+  2026-11-10. And once (not reproduced since) the shared mailbox received two acceptance
+  replies for it, the sent copy of the invitation naming the delegate's X.500
+  `legacyExchangeDN`, not an SMTP address, as `sender`.
+- **A standalone Teams meeting is the delegate's.** `TeamsMeetings` posts to
+  `/me/onlineMeetings` on the global root whatever principal its client is rooted at, since
+  Graph makes online meetings for the signed-in user alone; live, one made through a client
+  bound to the shared mailbox was found and deleted by the delegate's own. An event-attached
+  Teams meeting (`isOnlineMeeting`, above) is the shared mailbox's.
+- **Not verified**: a delegate granted the calendar alone, or granted it read-only. The test
+  tenant has no such share yet, so what `/calendar` and `canEdit` answer there is unobserved.
+
+### An address is a URL path segment: validate, then encode
+
+The address is user input, and every request the client makes splices it into a path.
+Probed against a real tenant on 2026-09-22:
+
+- **Graph decodes the segment once and re-parses the path**, so percent-encoding does not
+  contain a slash: `/users/a@b.example%2FmailFolders%2Fsentitems/mailFolders/inbox` answers
+  `400 "Resource not found for the segment 'mailFolders'"`. `%252F` arrives as a literal
+  `%2F` (one decode), and `%3F`, `%23`, `%3C`, `;` all come back as data inside an
+  `ErrorInvalidUser` message.
+- **`..` segments are refused by Graph today** (`400 "The request URL must not contain '..'
+  path segments."`, every encoding tried) and `/users/me` is `400
+  TargetIdShouldNotBeMeOrWhitespace`. The predecessor of this code (PR #89) recorded
+  `/users/..%2Fme/mailFolders/inbox` answering **`200` with the signed-in user's own Inbox**.
+  The guard is Microsoft's and recent, which is exactly why the adapter does not rely on it.
+
+So `MailboxAddress::new` (behind both `MailboxPrincipal::user` and `::shared`) refuses `/`,
+`\`, whitespace, control characters and anything that is not one `local@domain`, and
+`MailboxPrincipal::root` percent-encodes the rest — `@` and `+` stay literal, as Graph's own
+documented URLs carry them, and the `#` in an Entra guest UPN (`user_partner#EXT#@tenant`)
+travels encoded as data. `MailboxPrincipal::User` holds a `MailboxAddress`, which has no
+public constructor but the checking one, so no path splices an unchecked address.
+
+### Submission sends as the mailbox it posts to
+
+`sendMail` posts to the client's principal, so a client bound to a shared mailbox sends *from*
+that mailbox whatever the draft's `From` says. A draft whose `From` names another mailbox is
+refused before the request rather than resolved silently on the server — how Exchange treats
+the mismatch is not something to rely on (and not something to probe by sending real mail).
+Sending as the shared mailbox is what the client is for.
+
+**Live-verified once (2026-09-23, `live_shared_send.rs`)**, with the one real email a run costs.
+`POST /users/{shared}/sendMail` with the MIME body answered `202`. The copy was filed in the
+**shared mailbox's** Sent Items, with `from` the shared address and the `Message-ID` preserved;
+the signed-in user's own Sent Items got no copy. So the receipt's `sent:<Message-ID>` key
+reconciles within the shared account, which is the one that syncs that folder. The message the
+recipient got carried `From:` the shared mailbox **and** `Sender:` the signed-in delegate, with
+the `Message-ID` still the one generated (read from the delivered message's source). That is
+"on behalf of" on the wire. A client that displays `Sender:` shows it as such, but the
+recipient's client in this test showed `From` alone, so a host should not promise the label.
+The delegate's Exchange permission, not the engine, decides whether `Sender:` is added.
+
+**`sender` is only an address when the recipients are selected too.** Read with
+`$select=from,sender` (or `sender` alone), the same Sent Items copy's `sender.emailAddress.address`
+was the delegate's X.500 `legacyExchangeDN` (`/O=EXCHANGELABS/…/CN=RECIPIENTS/CN=…`). Add
+`toRecipients` to the select and it was the delegate's SMTP address. `MESSAGE_SELECT` selects the
+recipients, so the normalizer gets an address; a narrower select would put a DN in
+`Envelope::sender`.
+
+- **This refuses a `From` that is an alias of the bound mailbox**, which Exchange would
+  accept: telling an alias from a mistake needs the mailbox's `proxyAddresses`, a directory
+  read. The exact workaround is to bind a client to the alias — `/users/{alias}` resolves to
+  the same mailbox, and then endpoint and header agree.
+- **A client on `/me` is unchecked**: it does not know its own address without a directory
+  read, and a delegate with *Send As* legitimately sends a shared address through their own
+  mailbox.
+
+### Delegated `mailboxSettings` is self-only (settled, do not re-litigate)
+
+`mailboxSettings` carries `userPurpose`, Graph's shared-vs-user-vs-room discriminator, and has
+**no `.Shared` scope variant**. With `MailboxSettings.ReadWrite` granted, `/me/mailboxSettings`
+answers `200` (and does carry `userPurpose`) while `/users/{shared}/mailboxSettings` answers
+`403 ErrorAccessDenied` even with Full Access — re-observed 2026-09-22, and reported upstream
+with the identical symptom in
+[OfficeDev/office-js#6057](https://github.com/OfficeDev/office-js/issues/6057). So the engine
+has no mailbox *kind* and cannot have one on this credential model; that would need an
+application permission, a different credential model and a separate decision.
+
+Graph grants Full Access all-or-nothing per mailbox and reports no folder rights, so a Graph
+folder is `MailboxAccess::owner()` (`modeling.md`). Folder-level Outlook delegation (one
+shared Inbox rather than the whole mailbox) is not reported by Graph at all — a documented
+limitation, not a silent one.
 
 ## Known limitations (documented, not bugs)
 
+- **A message Exchange cannot give back as MIME.** Exchange converts a message to its own
+  format on arrival and rebuilds the MIME for `$value` from that. When the conversion fails on
+  arrival, it keeps the message with an attachment of its own naming the cause, and every
+  `$value` for it, v1.0 and beta alike, answers `500 ErrorMimeContentConversionFailed`. The JSON
+  read of the same message and its attachments works. Seen on two meeting cancellations whose
+  MIME `method=` said `REQUEST` while the iCalendar said `CANCEL`, which RFC 6047 §2.4 forbids
+  ("The value MUST be the same (ignoring case) as the value of the "METHOD" property"); Exchange's
+  attachment read "Inbound Mime method and ICAL method mismatch". The error is permanent for that
+  message, and the only Graph error that is an item the provider can never serve
+  (`ProviderError::item_unavailable`, `error.rs`), so a host stops asking for its body instead
+  of retrying it on every pass.
 - **Editing one occurrence: the same derived id, and Graph flips its `type` to `exception`.** `PATCH /me/events/OID.<seriesMasterId>.<date>` applies to that occurrence alone — measured: `200`, and the series keeps its own subject. The `ETag` the caller read is the *series'*, so it is not sent; the occurrence's own revision is not something a base of the series carries.
 
   ⚠️ **The patch makes `id` opaque, but `occurrenceId` keeps the derived form.** Once an
@@ -377,15 +624,21 @@ shared mailboxes; verification awaits a work/school account.)
 
 ## Calendar (implemented)
 
-`GraphCalendarProvider` implements the calendar read/sync **and** write spine, bound to
-one calendar (`SyncScope::GraphCalendar`), with the calendar list under the per-account
-`SyncScope::GraphCalendarList` — the same shape as the mail folder/folder-list split.
+`GraphCalendarProvider` implements the calendar read/sync **and** write spine for every
+calendar of the mailbox: each calendar's events under a `SyncScope::GraphCalendar` of their
+own, with the calendar list under the per-account `SyncScope::GraphCalendarList`, the same
+shape as the mail folder/folder-list split. A create goes to the draft's calendar; a patch or
+delete addresses the event by its mailbox-wide id.
 Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normalize`
 (event/calendar JSON → model) + `cal_recur` (`patternedRecurrence` → `Recurrence`) +
 `cal_override` (changed/removed occurrences → `Recurrence::overrides`), `windows_zones`
 (Windows→IANA), `cal_write` (create/patch/delete), `calendar` (the provider). It advertises
 `calendars` **and** `calendar_writes(WriteGuard::Enforced)`.
 
+- **A calendar's write access is its `canEdit`.** The calendar list reports, per calendar,
+  whether the signed-in user may change its events: false on a calendar shared read-only and
+  on a subscribed one. `false` maps to `CalendarAccess::reader()`, so a host offers no event
+  there; a calendar without the field keeps the owner's access.
 - **`calendarView/delta` is the source, masters + local expansion.** Event delta is
   `GET /me/calendars/{id}/calendarView/delta?startDateTime=…&endDateTime=…` (v1.0's only
   windowed delta; `/me/events` has no v1.0 delta). It returns the series `seriesMaster`
@@ -430,9 +683,15 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   overrides off the display-zone reading would miss by a day for any series near midnight.
   Also measured: the header accepts the name Graph itself reported, IANA or Windows
   (`W. Europe Standard Time`), and an all-day series' date does not move under any zone.
-- **Time-windowed, per calendar.** The mandatory date range comes from a host-supplied
-  `CalendarWindow` (its recurrence-expansion horizon; `providers.md`); the `deltaLink`
-  encodes it, so it is applied only to the initial request.
+- **Time-windowed, per calendar.** The mandatory date range is the `window` the engine names in
+  `sync_events` (the provider advertises `windowed_events`): the host's horizon at the first
+  sync, or the union a `reach_calendar` reopens over. The provider takes no window of its own.
+  The `deltaLink` encodes the
+  range, so it applies only to the request that opens the cursor, and **a delta reports
+  changes only inside it**: an event created past the window never arrives through it
+  (measured, with an event created inside it at the same moment as the control,
+  `tests/live_calendar_window.rs`). That is why the engine reopens rather than lists a further
+  range beside the cursor; a reopened cursor reports changes across the whole union.
 - **Authoring-zone times via `Prefer: outlook.timezone`.** A plain read returns UTC,
   which expands a recurring master DST-incorrectly. The provider sends `Prefer:
   outlook.timezone="<display_zone IANA>"` (the host's home/display zone) on every
@@ -440,6 +699,16 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   the IANA name), which the adapter stores. Windows zone names (a read without the header)
   still map through the CLDR `windowsZones` table (`windows_zones`, CLDR 49); an unknown
   or `tzone://Microsoft/Custom` zone is preserved as a custom zone, never guessed.
+- **Bodies as text via `Prefer: outlook.body-content-type="text"`.** The delta carries it
+  beside the zone. Exchange then renders each body itself: whole, line by line, each link's
+  target kept as `label<url>`. Without it an HTML body (every body Outlook writes) reaches the
+  description only as `bodyPreview`, cut at 255 characters, and a notes edit written back from
+  that loses the rest. On a Teams meeting it loses the meeting: Exchange keeps
+  `isOnlineMeeting` only while the body still holds Teams' block, and a text body that keeps
+  the block keeps the meeting (measured on a work tenant, both the rich block a meeting made
+  with an HTML body gets and the line-by-line one a text body gets;
+  `tests/live_calendar_conference.rs`). The write stays `contentType: text`, so an edit
+  flattens the formatting of the notes it replaces.
 - **Recurrence mapping.** `patternedRecurrence` `pattern`+`range` → one `RecurrenceRule`:
   `daily`/`weekly`/`absoluteMonthly`(BYMONTHDAY)/`relativeMonthly`(BYDAY+`index`)/
   `absoluteYearly`/`relativeYearly` → `FREQ`+`BY*`; `range` `noEnd`/`numbered`/`endDate`
@@ -453,6 +722,22 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   move is rejected if it would change the time *form* (`has_same_form`). The raw Graph
   event JSON is preserved beside the projection in `Event::extended`
   (`"microsoft.graph/event"`), since Graph is neither iCal nor JSCalendar.
+  A meeting create adds the complete `attendees` array, sets `responseRequested: true`, and
+  uses the draft UID as `transactionId` so a retry can be recognised. Graph permits at most
+  500 attendees, which the adapter validates before sending. A roster edit replaces the
+  complete array from the preserved raw event, retaining response and unknown fields. It
+  cannot edit the organiser or one occurrence. Exchange derives the organiser from the target
+  calendar; callers use the synced `Calendar::owner`, and the write does not attempt an
+  organiser override Graph cannot express.
+  - **The ETag a create echoes is current, so guarding the next write on it is sound.** Measured
+    on both mailbox kinds a host meets, an outlook.com account and an Exchange Online tenant
+    mailbox: create an event, read it straight back, and `@odata.etag` is byte-identical. Worth
+    knowing because a `412 ErrorIrresolvableConflict` on the patch in
+    `tests/live_calendar.rs` was once put down to the echo being stale on a work mailbox. It is
+    not: that suite passes five runs running against a tenant mailbox, and again beside the
+    recurrence and survival suites, and the read-back above says the echo was never the
+    explanation. If the `412` returns, read the event back at the point of the failure and compare
+    the two ETags before suspecting the guard.
 - **Both scheduling capabilities are constants here** (issue #105).
   `Capabilities::calendar_scheduling` is `true` — the service sends the iTIP
   `REQUEST`/`REPLY`/`CANCEL` a write implies, with no opt-out a client can reach (the
@@ -496,9 +781,11 @@ Layers: `cal_fetch` (calendar list + `calendarView/delta` paging), `cal_normaliz
   another zone is correct to the instant but carries the display zone's name. A
   `seriesMaster` is re-read in its own `originalStartTimeZone` (above), so a recurring event
   expands in the zone it was written in and its DST transitions are its own.
-- **Windowed coverage.** Sync covers the `CalendarWindow` only; events outside it are not
-  synced (the `providers.md` "possibly-incomplete coverage" model). Coverage reporting is
-  a follow-up.
+- **Windowed coverage.** Sync covers the window the cursor was opened over; events outside
+  it are not synced until a host reaches them (`Engine::reach_calendar`, which reopens the
+  cursor over the union and records it). The window does not roll forward by itself: a host
+  whose horizon moves on reaches the new range, or the cursor keeps the window it opened
+  with.
 - **No alerts / `SEQUENCE`.** Graph reminders → engine `Alert`s, and iTIP `SEQUENCE`, are
   not yet mapped (the reminder rides the preserved raw). `create_event` rejects a
   floating-time start (Graph has no floating events).
@@ -693,6 +980,37 @@ a live test cannot create the thing it needs to read — the present direction i
 coverable against a contact someone set up by hand. `live_a_saved_contact_with_a_picture…`
 walks whatever the account has rather than naming them, so renaming is fine; removing the
 one with a picture is what would silently uncover the path.
+
+## Personal or organization (`GraphClient::affiliation`)
+
+One credential is either a personal Microsoft account or one an Entra tenant administers, and
+the difference decides surfaces a host offers before it reaches them: a colleague directory
+(`/users`), a shared mailbox. `GraphClient::affiliation` answers with the neutral
+`engine_core::affiliation::Affiliation`, from `GET /organization?$select=id`:
+
+- **An organization's account gets its tenant back** (`value[0].id`), as
+  `Affiliation::Organization(OrganizationId)`.
+- **A personal account is refused with `400 BadRequest`**, "This API is not supported for MSA
+  accounts". That refusal is the answer `Affiliation::Personal`, matched on the status *and* the
+  envelope's `BadRequest` code. Anything else (`401`, `403`, `429`, a `5xx`, another `400` code)
+  is an error, never a guess, so a host retries rather than storing a wrong answer.
+- **Asked at the root, never under a principal**: a shared mailbox belongs to the organization of
+  whoever opens it.
+- **`User.Read` is enough**, which every Graph account here grants.
+
+Rejected alternatives, each of which also tells the two apart on today's accounts: the access
+token's `tid` claim (Microsoft documents access tokens as opaque to clients, and a personal
+account's is not a JWT at all), the id token's `tid` (needs `openid` on every sign-in), and the
+shape of `/me`'s `id` (16 hex digits on a personal account, a GUID in a tenant; observed, not
+documented).
+
+✅ **Live-verified** (`tests/live_affiliation.rs`) against an outlook.com account and an Exchange
+Online tenant in one run, so an adapter stuck on either answer fails it; shown red with the two
+tokens swapped. Fixtures: `organization/organization.json`,
+`error/organization_msa_unsupported.json`.
+
+Google has the same split (Gmail against a Workspace domain), answered from `userinfo`'s `hd`
+([`google.md`](google.md)).
 
 ## The mailbox's sender identity (read-only)
 

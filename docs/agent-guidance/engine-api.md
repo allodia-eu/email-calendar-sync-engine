@@ -39,7 +39,11 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   addresses — see `calendar-semantics.md`); and
   write with `submit_mail` (send) / `edit_mail` (mark-read/flag, move, delete) /
   `create_calendar_event` / `patch_calendar_event` / `delete_calendar_event`
-  (+ `put_calendar_document`, the iMIP RSVP escape hatch) / `pending_op_state`.
+  (+ `put_calendar_document`, the iMIP RSVP escape hatch) / `pending_op_state`, and change
+  the folder tree with `edit_mailbox` (create, rename or move, trash, delete: a
+  `MailboxChange` carrying where the user saw the folder, checked against the server's list
+  before anything is sent), which re-reads the folder list afterwards; after a drain pass
+  lands a queued one, `reconcile_folders` is that same re-read.
   Contact hosts use `sync_address_books`, source-bound `sync_contact_cards`, or
   combined `sync_contacts`; browse via generation-bound `people_page` and
   `person`; list one account's books with `address_books` and one person's live
@@ -74,7 +78,18 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   stored events over a new window with no network, and is also the path for a display-zone
   or tzdata change. Both it and `sync_calendar` report the events they could **not**
   expand (`unexpandable`): those materialize zero occurrences and so render nowhere, and
-  the host is expected to surface that rather than lose them silently.
+  the host is expected to surface that rather than lose them silently. A calendar another
+  pass holds is **waited for**, not answered `Busy`: the holder expands only what it changes,
+  so nothing else would widen it, and a host has nothing better to do than ask again.
+- **Fetch a further range with `reach_calendar`; expanding will not.** `expand_horizon`
+  re-derives what the store holds, and on a windowed transport (Graph, Google) the store holds
+  only the window the calendar's cursor was opened over: the host's horizon at the first sync.
+  A page past it would render its repeating series and lack its one-off events.
+  `reach_calendar(provider, account, range)` makes the store hold every event in `range` and
+  keeps them current: a range inside the recorded window asks nothing, and one past it reopens
+  the cursor over the union. It answers per calendar (`CalendarReach::failures`); a failed one
+  records nothing, so asking again fetches again. A host paging past its horizon calls both, in
+  either order, in coarse steps — each reopen re-reads the whole union.
 - **A provider key resolves to one *message*, not to one row.** The store's key is
   `(scope, key)`, and two of an account's mail scopes can hold the same key: a Microsoft
   Graph move keeps the message's immutable id and Graph mail sync is per folder, so between
@@ -146,16 +161,37 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   parallel, but two of the *same* `(account, scope)` cannot both hold its lease: the
   store returns the retryable `ScopeHeld`, the sync loop surfaces it (it recovers
   only `StaleLease`), and the facade maps it to `ApiError::Busy` — a distinct,
-  retryable signal separate from `ApiError::Sync`. The facade does **not** itself
+  retryable signal separate from `ApiError::Sync`. A *sync* does **not** itself
   queue or auto-retry; a host serializes per account or retries on `Busy`. If a
   future slice wants transparent serialization, add a per-account async lock in the
-  facade — do not widen `run_scope` to swallow `ScopeHeld`.
+  facade — do not widen `run_scope` to swallow `ScopeHeld`. The calendar maintenance calls
+  are the exception, because the holder would not do their work: `expand_horizon` and
+  `reach_calendar` wait out a held scope (`store-and-sync.md` → "A held scope is waited for")
+  and never answer `Busy`.
 - **Abrupt process recovery is explicit.** A host that knows prior workers for the
   store are gone after process death can call `Engine::abandon_sync_leases` once at
   startup. It clears held scope leases and bumps their fencing tokens while
   preserving cursors, so a cold backfill resumes from its last committed checkpoint
   immediately instead of waiting for the fixed `LEASE_TTL` or clearing state. This
   is not a normal `Busy` recovery path for live in-process contention.
+  `Engine::recover_interrupted_ops` is its outbox half and is called beside it. A send the
+  dead process left in flight is retried at once when it had not yet handed its message to
+  the server, and awaits confirmation when it had; every other write retries as a retryable
+  failure (`engine_store::interrupted_outcome`, `store-and-sync.md` → "A send survives its
+  process"). Without it nothing is lost: every write path recovers an attempt once its lease
+  has lapsed, and this only saves waiting the lease out.
+- **The outbox answers for every send until the host does.** `Engine::outbox` lists what has
+  not settled and every send that settled `Failed`, payload included (`queued_draft`), so a
+  message that could not be sent stays in front of the user. A host offers three verbs on a
+  row: `retry_pending_op_now` ("Send now", and "Send again" on a failed send),
+  `cancel_pending_op` (withdraw, which is also how a failed send is dismissed) and, on a send
+  awaiting confirmation, `confirm_pending_op` with `Confirmation::Delivered` ("it was sent")
+  or `NotDelivered` ("send it again"). A send whose copy syncs into a Sent mailbox is
+  confirmed without asking.
+- **A call the runtime cancelled is not a failure.** When a host drops the engine's runtime
+  with work queued, each store call that never ran fails with `StoreError::ShuttingDown`,
+  and `ApiError::is_shutting_down()` says so, so a host reports the process ending rather
+  than a failed sync. Nothing ran and nothing was written; the next launch does the work.
 - **Re-export signature types.** Types that appear in the facade's own signatures
   (`AccountId`, `MailboxId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
   streaming vocabulary — `StreamTuning`, `SyncObserver`, `SyncCommit`, `IgnoreCommits`,
@@ -188,21 +224,30 @@ Step 6 lands in small, tested slices. Order and status:
    `ApiError::Query`.
 3. **Writes / outbox — _done_.** `Engine::submit_mail` drives `engine-sync`'s outbox
    `submit_mail` (durable op → claim → provider send → record), returning a
-   `SubmitOutcome` (sent key, `Message-ID`, op id); a failed send is recorded
+   `SubmitOutcome` (sent key, `Message-ID`, op id, what became of the Sent copy and
+   which of the draft's `sent_copy_keywords` it carries; a provider that keeps a keyword only as
+   a named category needs a `KeywordName`, re-exported here); a failed send is recorded
    `Failed` / `NeedsConfirmation` *before* surfacing as `ApiError::Sync`, so the
    outbox never blind-retries. `Engine::pending_op_state` exposes
    `StoreRead::pending_op_state` for polling an op's lifecycle (e.g. confirming an
    ambiguous send). `Engine::edit_mail` rides the same outbox for mail mutations —
    it takes a caller-minted idempotency key and a `MailEdit` (mark-read/flag, move,
-   or permanent delete) and returns a `MailEditOutcome` (resolved key + op id); a
-   failure (e.g. a stale-target `Conflict`) is recorded `Failed` before surfacing as
-   `ApiError::Sync`. `Engine::create_calendar_event` / `patch_calendar_event` /
+   or permanent delete) and returns a `MailEditSent`: `Applied(MailEditOutcome)`
+   (resolved key + op id), or `Queued` when the server refused for now and the outbox
+   will retry. Only a refusal that settles the op (e.g. a stale-target `Conflict`, or the
+   last attempt) surfaces as `ApiError::Sync`. It is `Engine::queue_mail_edit` then
+   `Engine::send_mail_edit`, which a host calls separately to show the edit first: a
+   keyword change is in every read of the message from the moment it is queued, and is
+   taken back only when refused for good (`store-and-sync.md`). `Engine::create_calendar_event` / `patch_calendar_event` /
    `delete_calendar_event` ride the same outbox for calendar mutations — a caller-minted
    idempotency key plus an `EventDraft` (the event you want), or the event **as you read
    it** plus a `PatchTarget` + `EventPatch` (what changed, and on which occurrence), or an
    `EventDeletion` — returning a `CalendarWrite` / `CalendarDelete`. These carry **intent**: the host never assembles
    iCalendar, mints an href, or touches an `ETag`, and the same call drives CalDAV and JMAP
    (`providers.md`). The write types are re-exported from `engine-api`.
+   `EventDraft::meeting` carries the organiser and required or optional invitees for a new
+   meeting. `EventPatch::invitees` carries whole-series roster upserts and removals. The
+   adapters preserve existing response state and provider fields while applying that intent.
    - **Read `Capabilities::calendar_write_guard()` before writing.** `WriteGuard::Enforced`
      (CalDAV) means a stale edit is refused — a `412` surfaces as a `Conflict`, to be
      recovered by re-syncing and re-applying, never a blind retry. `WriteGuard::Absent`
@@ -221,15 +266,18 @@ Step 6 lands in small, tested slices. Order and status:
      asks the server to store the document **only if nothing is there** (`WritePrecondition::IfAbsent`),
      so putting an invitation that arrived as mail onto the calendar is a guarded create: a
      resource that appeared in the meantime is a `Conflict`, never a silent overwrite. This
-     is the path for an inbound invitation specifically because
-     `create_calendar_event`/`EventDraft` carries neither organizer nor attendees and would
-     store a plain appointment with nothing to answer on.
+     is the path for an inbound invitation because only the received raw document preserves
+     its organiser, participant response states, sequence and extensions. `EventDraft::meeting`
+     is instead the organiser-authored path for creating a new invitation.
    - **A calendar write reconciles the store before it returns** (issue #65). A write's
      response is a *receipt*, not a document (a CalDAV `PUT` answers with an `ETag` and no
      body; a JMAP `/set` with an id and no object), so the driver alone would leave the row
      holding the **pre-write** projection, `raw_ical` and revision. Each facade write
-     therefore runs `engine_sync::reconcile_calendar_events` — an **event-scope delta**, one
-     round trip, the same primitive a sync reads through — the moment the write lands. The
+     therefore runs `engine_sync::reconcile_calendar_events` — an **event-scope delta** of the
+     calendar the write touched, one round trip, the same primitive a sync reads through —
+     the moment the write lands. A create reconciles its draft's calendar and an edit the
+     calendars of its base event; a write that names only an event id finds its calendars in
+     the store, and reconciles every listed calendar when the store does not hold the event. The
      store then holds what the **server** holds, a delete is tombstoned locally, and an edit
      that moved the event moves its occurrence rows. That is what makes "edit, re-read, edit
      again" work: the second edit's guard is the revision the *server* reported, not the
@@ -337,22 +385,48 @@ facade"*).
   there; the facade just calls it.
 - **Errors wrap, never restring.** `ApiError::Store`/`Sync` carry the underlying
   engine error unchanged so its `source()` chain (provider failure class, store
-  backend detail) stays inspectable. The one deliberate exception is `ScopeHeld`,
+  backend detail) stays inspectable. A host asks a failed write one question,
+  `ApiError::may_have_applied()`: `true` for a `ProviderError` that
+  `requires_confirmation` (the outcome is unknown) and for `SyncError::Unrecorded` (applied,
+  not recorded), `false` for every other failure, which means the write was not applied
+  (`providers.md`). For a calendar or contact write and a send it is the same answer on every
+  provider, so a host never asks which one it was. Mail and folder edits do not classify a
+  lost answer, so for them `false` does not mean "not applied". A failed read of one item asks
+  `ApiError::item_unavailable()`: `true` only for a `ProviderError::item_unavailable`, an item
+  the provider stored but can never serve, so a host may stop asking for it. Any other
+  permanent failure may be about the account or the request, and says nothing about the item.
+  The one deliberate exception is `ScopeHeld`,
   which `map_sync_error` classifies as `ApiError::Busy` (a retryable race, not a
   failure) — classification, not restringing. Add similar classifications there if
   another error class deserves a distinct host signal.
 - **Not every facade method needs the store.** `sender_identities`/`set_sender_name`
-  (`providers.md`) are the first pair that touches neither the store nor the outbox: a
-  sender name is a *host preference*, not synced PIM state, and the `From` a send carries
-  is assembled from the caller's `Draft`. What the engine owns there is the protocol.
+  (`providers.md`) touch neither the store nor the outbox: a sender name is a *host
+  preference*, not synced PIM state, and the `From` a send carries is assembled from the
+  caller's `Draft`. `calendar_user_addresses` sits beside them: it is the server's answer,
+  read when a host asks. What the engine owns there is the protocol.
   Passing a call straight to the provider is legitimate when the answer is not ours to
   keep; reach for the outbox when a side effect must survive a crash.
+  `list_shared_accounts`/`resolve_shared_account` are the second pair: which stores — shared
+  mailboxes, delegated calendars — a credential can open, and which of those domains each
+  offers (`SharedAccount::domains`), is the server's to say, and a discovered store becomes an account only
+  when the host onboards it — under an `AccountId` of its choosing, with a provider bound to
+  the returned handle through the adapter that produced it. Read
+  `Capabilities::shared_accounts()` first: `Enumerable` affords a list to pick from,
+  `ByAddress` needs the user to type an address, `Unsupported` means neither verb answers.
+  The re-exported `SharedAccount`, `SharedAccounts`, `SharedAccountId`, `StoreDomains`,
+  `SearchDomain` and `MailboxAccess` are everything a host names along the way
+  (`tests/shared_accounts.rs` imports nothing else). The seam was called "shared mailboxes"
+  until calendars joined it; it was renamed, not doubled, so a host has one onboarding flow.
 - **Reject host input at the facade, before any request.** `set_sender_name` refuses a
   name carrying a control character or longer than 128 characters, as
   `ApiError::InvalidInput`. The RFC 5322 assembler refuses the same bytes, but by then
   the user has a mailbox that cannot send and no idea why — and the error message names
   the offending codepoint rather than echoing it, since an error travels into logs and
   dialogs and would carry the injected payload with it.
+  `resolve_shared_account` applies the same rule to the address a user typed: anything that is
+  not one `local@domain` of at most 254 octets, free of whitespace and control characters, is
+  `InvalidInput` before any request. A shape check, not a grammar — an adapter may refuse more
+  (Graph refuses the path separators it re-parses) — but nothing that fails it reaches one.
 - **The clock is a wall clock, not monotonic.** `now()` is whole-second and can
   step backward (NTP); do not write code or tests that assume monotonic `now()`.
   Lease safety across a step rests on the TTL + `StaleLease` reclaim in the sync

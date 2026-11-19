@@ -95,7 +95,7 @@ struct Account {
 
 fn account_path() -> String {
     std::env::var("JMAP_ACCOUNT")
-        .unwrap_or_else(|_| format!("{}/.local/account.json", env!("CARGO_MANIFEST_DIR")))
+        .unwrap_or_else(|_| format!("{}/.local/account.json", manifest_dir()))
 }
 
 /// Reads a `--name value` flag out of `args`.
@@ -402,8 +402,19 @@ fn sweep(
                 match account.authed(client.get(url)).send() {
                     Ok(response) => {
                         let status = response.status().as_u16();
+                        // A `200` carrying a web page is not a body. Fastmail answers the
+                        // download path on its API origin that way, so a rebased template
+                        // measured the page and reported it as a fast download.
+                        let page = response
+                            .headers()
+                            .get("content-type")
+                            .and_then(|value| value.to_str().ok())
+                            .is_some_and(|kind| kind.starts_with("text/html"));
                         let len = response.bytes().map(|b| b.len()).unwrap_or(0);
-                        if status == 200 {
+                        if status == 200 && page {
+                            bad.fetch_add(1, Ordering::Relaxed);
+                            first_bad.lock().unwrap().get_or_insert(status);
+                        } else if status == 200 {
                             bytes.fetch_add(len, Ordering::Relaxed);
                         } else {
                             bad.fetch_add(1, Ordering::Relaxed);
@@ -478,4 +489,11 @@ fn cmd_bench(args: &[String]) -> Res<()> {
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
     Ok(())
+}
+
+/// This crate's directory, as the running cargo names it rather than as the compile that built this
+/// binary did: a compiler cache can hand one checkout a binary compiled in another
+/// (`.cargo/config.toml`). The compile-time value is the fallback for running it outside cargo.
+fn manifest_dir() -> String {
+    std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_owned())
 }

@@ -67,7 +67,7 @@ fn messages() -> Vec<Message> {
         .as_array()
         .unwrap()
         .iter()
-        .map(|m| message_from_json(m).unwrap())
+        .map(|m| message_from_json(m, &[]).unwrap())
         .collect()
 }
 
@@ -176,7 +176,7 @@ fn message_normalizes_tier1_fields() {
 #[test]
 fn full_message_get_carries_change_key_and_last_modified() {
     let doc: Value = serde_json::from_str(DETAIL).unwrap();
-    let msg = message_from_json(&doc).unwrap();
+    let msg = message_from_json(&doc, &[]).unwrap();
     // The full GET (unlike a delta entry) carries the changeKey + modified time.
     assert!(msg.revisions.change_key.is_some());
     assert!(msg.revisions.etag.is_some());
@@ -189,19 +189,19 @@ fn internet_message_id_brackets_are_stripped_and_empty_is_dropped() {
         "id": "m", "parentFolderId": "folder-inbox",
         "internetMessageId": "  <abc@host>  "
     });
-    let msg = message_from_json(&with).unwrap();
+    let msg = message_from_json(&with, &[]).unwrap();
     assert_eq!(msg.envelope.message_id[0].as_str(), "abc@host");
 
     // An empty/bracket-only id is dropped, not an error.
     let without = serde_json::json!({
         "id": "m", "parentFolderId": "folder-inbox", "internetMessageId": "<>"
     });
-    assert!(
-        message_from_json(&without)
+    assert_eq!(
+        message_from_json(&without, &[])
             .unwrap()
             .envelope
-            .message_id
-            .is_empty()
+            .message_id,
+        []
     );
 }
 
@@ -211,7 +211,7 @@ fn flagged_and_draft_booleans_become_keywords() {
         "id": "m", "parentFolderId": "folder-drafts",
         "isRead": true, "isDraft": true, "flag": { "flagStatus": "flagged" }
     });
-    let msg = message_from_json(&json).unwrap();
+    let msg = message_from_json(&json, &[]).unwrap();
     assert!(msg.has_system_keyword(SystemKeyword::Seen));
     assert!(msg.has_system_keyword(SystemKeyword::Draft));
     assert!(msg.has_system_keyword(SystemKeyword::Flagged));
@@ -220,16 +220,21 @@ fn flagged_and_draft_booleans_become_keywords() {
 #[test]
 fn malformed_messages_are_protocol_errors_not_panics() {
     // No id.
-    assert!(message_from_json(&serde_json::json!({ "parentFolderId": "f" })).is_err());
+    assert!(message_from_json(&serde_json::json!({ "parentFolderId": "f" }), &[]).is_err());
     // No parentFolderId → no membership.
-    assert!(message_from_json(&serde_json::json!({ "id": "m" })).is_err());
+    assert!(message_from_json(&serde_json::json!({ "id": "m" }), &[]).is_err());
     // An empty parentFolderId is an invalid id.
-    assert!(message_from_json(&serde_json::json!({ "id": "m", "parentFolderId": "" })).is_err());
+    assert!(
+        message_from_json(&serde_json::json!({ "id": "m", "parentFolderId": "" }), &[]).is_err()
+    );
     // A malformed timestamp surfaces as a protocol error, never a panic.
     assert!(
-        message_from_json(&serde_json::json!({
-            "id": "m", "parentFolderId": "folder-inbox", "receivedDateTime": "not-a-date"
-        }))
+        message_from_json(
+            &serde_json::json!({
+                "id": "m", "parentFolderId": "folder-inbox", "receivedDateTime": "not-a-date"
+            }),
+            &[]
+        )
         .is_err()
     );
 }
@@ -256,7 +261,8 @@ fn a_size_is_estimated_from_the_attachments_and_only_when_there_are_any() {
     };
 
     // 1.44 MB of attachments is 1.99 MB stored, measured — base64 plus body and headers.
-    let m = message_from_json(&with_attachments(json!([{ "size": 1_444_148 }]))).expect("message");
+    let m =
+        message_from_json(&with_attachments(json!([{ "size": 1_444_148 }])), &[]).expect("message");
     let estimate = m
         .size
         .expect("a message with attachments carries an estimate");
@@ -266,9 +272,10 @@ fn a_size_is_estimated_from_the_attachments_and_only_when_there_are_any() {
     );
 
     // Several attachments add up.
-    let split = message_from_json(&with_attachments(
-        json!([{ "size": 700_000 }, { "size": 744_148 }]),
-    ))
+    let split = message_from_json(
+        &with_attachments(json!([{ "size": 700_000 }, { "size": 744_148 }])),
+        &[],
+    )
     .expect("message");
     assert_eq!(
         split.size, m.size,
@@ -276,11 +283,56 @@ fn a_size_is_estimated_from_the_attachments_and_only_when_there_are_any() {
     );
 
     // No attachments is no opinion, never "small" — such a message is fetched whatever the cap.
-    let bare = message_from_json(&json!({
-        "id": "m1", "parentFolderId": "f1", "hasAttachments": false,
-    }))
+    let bare = message_from_json(
+        &json!({
+            "id": "m1", "parentFolderId": "f1", "hasAttachments": false,
+        }),
+        &[],
+    )
     .expect("message");
     assert_eq!(bare.size, None);
-    let empty = message_from_json(&with_attachments(json!([]))).expect("message");
+    let empty = message_from_json(&with_attachments(json!([])), &[]).expect("message");
     assert_eq!(empty.size, None);
+}
+
+#[test]
+fn the_select_keeps_the_recipients_that_make_sender_an_address() {
+    // Without them Graph answers `sender` with an X.500 DN, not an address (`MESSAGE_SELECT`).
+    assert!(MESSAGE_SELECT.contains(&"sender"));
+    assert!(MESSAGE_SELECT.contains(&"toRecipients"));
+}
+
+#[test]
+fn importance_is_read_from_its_property() {
+    let importance = |id: &str| {
+        messages()
+            .into_iter()
+            .find(|m| m.id.as_str() == id)
+            .unwrap()
+            .envelope
+            .importance
+    };
+    assert_eq!(importance("message-1"), engine_core::mail::Importance::Low);
+    assert_eq!(importance("message-2"), engine_core::mail::Importance::High);
+    assert_eq!(
+        importance("message-3"),
+        engine_core::mail::Importance::Normal
+    );
+    assert!(MESSAGE_SELECT.contains(&"importance"));
+}
+
+/// A draft created from MIME carrying `Importance: high`, read back with the sync's own `$select`:
+/// Exchange turns the header into the property, lowercased.
+#[test]
+fn a_header_set_on_the_mime_reads_back_as_the_property() {
+    let doc: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/mail/message_importance.json"
+    ))
+    .unwrap();
+    assert_eq!(doc["importance"], "high");
+    let message = message_from_json(&doc, &[]).unwrap();
+    assert_eq!(
+        message.envelope.importance,
+        engine_core::mail::Importance::High
+    );
 }

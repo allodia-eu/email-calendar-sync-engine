@@ -76,6 +76,7 @@ async fn live_body_fetch_concurrency() {
     let provider = JmapProvider::connect(JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(&harness.account, &harness.password),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect");
@@ -115,7 +116,7 @@ async fn live_body_fetch_concurrency() {
             "  {width:>2} in flight: {seconds:6.2}s  {:6.1} bodies/s  {fetched}/{} fetched{}",
             count_as_f64(fetched) / seconds,
             messages.len(),
-            failure.map_or(String::new(), |f| format!("  — first failure {f}")),
+            failure.map_or_default(|f| format!("  — first failure {f}")),
         );
     }
 }

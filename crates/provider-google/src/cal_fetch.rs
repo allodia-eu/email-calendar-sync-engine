@@ -16,18 +16,19 @@
 
 use engine_core::{
     calendar::{Calendar, Event},
-    ids::{CalendarId, ProviderKey},
+    ids::CalendarId,
     sync::SyncState,
-    time::CalendarDate,
+    time::{CalendarDate, Horizon},
 };
 use engine_provider::{PageToken, SyncKind, SyncPage};
 use serde_json::Value;
 
 use crate::{
+    cal_id,
     cal_normalize::{calendar_from_json, event_from_json},
     cal_override::{PendingOverride, pending_override},
     error::GoogleError,
-    json::{opt_str, req_str, wrap_id},
+    json::{opt_str, req_str},
     transport::{GoogleClient, encode_query_value},
 };
 
@@ -38,10 +39,18 @@ const CALENDAR_BASE: &str = "/calendar/v3";
 /// carries the `nextSyncToken`).
 const PENDING_CURSOR: &str = "google-cal-pending";
 
-/// The optional date window a calendar snapshot covers (`timeMin`/`timeMax`). A host
-/// sizes it from its recurrence-expansion horizon; unset syncs the whole calendar.
+/// What every cursor this adapter writes starts with, ahead of Google's `syncToken`. A cursor
+/// without it is read as no cursor, so its calendar is synced afresh once. Change it when a
+/// sync leaves stored events that only a fresh sync corrects.
+///
+/// - `v1;`: event ids name their calendar ([`cal_id`](crate::cal_id)). A delta on an older cursor
+///   would store each changed event a second time beside its old id.
+const CURSOR_VERSION: &str = "v1;";
+
+/// The date window a calendar snapshot covers (`timeMin`/`timeMax`), which the engine names per
+/// fetch ([`Provider::sync_events`](engine_provider::Provider::sync_events)).
 #[derive(Debug, Clone, Copy)]
-pub struct CalendarWindow {
+pub(crate) struct CalendarWindow {
     /// The inclusive lower bound (00:00:00 UTC of this date).
     pub start: CalendarDate,
     /// The exclusive upper bound (00:00:00 UTC of this date).
@@ -51,8 +60,18 @@ pub struct CalendarWindow {
 impl CalendarWindow {
     /// A window spanning `[start, end)`.
     #[must_use]
-    pub fn new(start: CalendarDate, end: CalendarDate) -> Self {
+    pub(crate) fn new(start: CalendarDate, end: CalendarDate) -> Self {
         Self { start, end }
+    }
+}
+
+impl From<Horizon> for CalendarWindow {
+    /// The whole UTC days covering `horizon` ([`Horizon::covering_dates`]): the window the
+    /// engine names in
+    /// [`Provider::sync_events`](engine_provider::Provider::sync_events).
+    fn from(horizon: Horizon) -> Self {
+        let (start, end) = horizon.covering_dates();
+        Self::new(start, end)
     }
 }
 
@@ -79,6 +98,15 @@ pub(crate) async fn calendars(client: &GoogleClient) -> Result<Vec<Calendar>, Go
     Ok(calendars)
 }
 
+/// The address the account's calendars schedule as: the id of its `primary` calendar
+/// (`calendars.get`), which Google names after the account's own address.
+pub(crate) async fn primary_calendar_address(client: &GoogleClient) -> Result<String, GoogleError> {
+    let doc = client
+        .get(&client.url(&format!("{CALENDAR_BASE}/calendars/primary")))
+        .await?;
+    Ok(req_str(&doc, "id")?.to_owned())
+}
+
 /// One page of events, plus the occurrence-level entries on it.
 ///
 /// The overrides ride beside the page rather than inside it because they cannot be applied
@@ -102,13 +130,14 @@ pub(crate) async fn events_page(
     page: Option<&PageToken>,
     window: Option<CalendarWindow>,
 ) -> Result<EventsPage, GoogleError> {
-    let kind = if cursor.is_none() {
+    let token = cursor.and_then(|cursor| cursor.as_str().strip_prefix(CURSOR_VERSION));
+    let kind = if token.is_none() {
         SyncKind::Snapshot
     } else {
         SyncKind::Delta
     };
     let doc = client
-        .get(&page_url(client, calendar, cursor, page, window))
+        .get(&page_url(client, calendar, token, page, window))
         .await?;
     // The response's top-level zone is the calendar's default, used for an endpoint that
     // omits its own timeZone.
@@ -123,11 +152,11 @@ pub(crate) async fn events_page(
         // this engine — it is an exception *of* its series — so it is collected here and
         // folded into that series once the pass is in.
         if entry.get("recurringEventId").is_some() {
-            overrides.push(pending_override(entry, default_zone)?);
+            overrides.push(pending_override(entry, calendar, default_zone)?);
             continue;
         }
         if opt_str(entry, "status") == Some("cancelled") {
-            removed.push(entry_key(entry)?);
+            removed.push(cal_id::key(calendar.key().as_str(), req_str(entry, "id")?)?);
             continue;
         }
         let event = event_from_json(entry, calendar, default_zone)?;
@@ -138,12 +167,10 @@ pub(crate) async fn events_page(
     }
 
     let next_page = opt_str(&doc, "nextPageToken").map(PageToken::new);
-    let next_cursor = match opt_str(&doc, "nextSyncToken") {
-        Some(token) => SyncState::new(token),
-        None => cursor
-            .cloned()
-            .unwrap_or_else(|| SyncState::new(PENDING_CURSOR)),
-    };
+    let next_cursor = SyncState::new(match opt_str(&doc, "nextSyncToken").or(token) {
+        Some(token) => format!("{CURSOR_VERSION}{token}"),
+        None => PENDING_CURSOR.to_owned(),
+    });
     Ok(EventsPage {
         overrides,
         page: SyncPage {
@@ -164,13 +191,15 @@ pub(crate) async fn events_page(
 fn page_url(
     client: &GoogleClient,
     calendar: &CalendarId,
-    cursor: Option<&SyncState>,
+    token: Option<&str>,
     page: Option<&PageToken>,
     window: Option<CalendarWindow>,
 ) -> String {
+    // Encoded: a subscribed calendar's id carries a `#` (a holiday calendar's does), which
+    // spliced raw would end the path and send the rest as a fragment.
     let base = format!(
         "{CALENDAR_BASE}/calendars/{}/events",
-        calendar.key().as_str()
+        encode_query_value(calendar.key().as_str())
     );
     if let Some(page) = page {
         return client.url(&format!(
@@ -178,11 +207,8 @@ fn page_url(
             encode_query_value(page.as_str())
         ));
     }
-    if let Some(cursor) = cursor {
-        return client.url(&format!(
-            "{base}?syncToken={}",
-            encode_query_value(cursor.as_str())
-        ));
+    if let Some(token) = token {
+        return client.url(&format!("{base}?syncToken={}", encode_query_value(token)));
     }
     let mut url = format!("{base}?singleEvents=false&maxResults=250");
     if let Some(window) = window {
@@ -201,11 +227,6 @@ fn array<'a>(doc: &'a Value, key: &str, what: &str) -> Result<&'a Vec<Value>, Go
     doc.get(key)
         .and_then(Value::as_array)
         .ok_or_else(|| GoogleError::protocol(format!("{what} response had no {key} array")))
-}
-
-/// The `ProviderKey` of an entry (its `id`).
-fn entry_key(entry: &Value) -> Result<ProviderKey, GoogleError> {
-    wrap_id(ProviderKey::new(req_str(entry, "id")?), "event id")
 }
 
 #[cfg(test)]

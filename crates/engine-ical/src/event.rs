@@ -12,7 +12,7 @@
 use std::collections::BTreeSet;
 
 use engine_core::{
-    calendar::{Event, EventStatus, FreeBusyStatus, Privacy},
+    calendar::{DetectionSources, Event, EventStatus, FreeBusyStatus, Privacy, add_detected},
     ids::{CalendarId, EventId, Uid},
     membership::Memberships,
     raw::RawIcal,
@@ -21,7 +21,7 @@ use engine_core::{
 
 use super::{
     component::Component,
-    party::{parse_conferences, parse_locations, parse_participants},
+    party::{parse_conferences, parse_locations, parse_participants, vendor_conference_uris},
     recurrence::parse_recurrence,
     unfold::unescape_text,
     value::{parse_calendar_date_time, parse_duration, parse_utc},
@@ -99,7 +99,15 @@ pub(crate) fn event_from_vevent(
     }
     event.participants = parse_participants(vevent);
     event.locations = parse_locations(vevent);
-    event.virtual_locations = parse_conferences(vevent);
+    event.conferences = parse_conferences(vevent);
+    add_detected(
+        &mut event.conferences,
+        &DetectionSources {
+            vendor: &vendor_conference_uris(vevent),
+            locations: &event.locations,
+            description: event.description.as_deref(),
+        },
+    );
     event.categories = category_set(vevent);
     event.color = nonempty(vevent.value("COLOR")).map(str::to_owned);
     event.created = opt_utc(vevent, "CREATED")?;
@@ -199,6 +207,8 @@ fn nonempty(value: Option<&str>) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    use engine_core::calendar::{ConferenceOrigin, ConferenceService, DetectedIn};
+
     use super::{super::component::parse_components, *};
 
     fn vevents(text: &str) -> Vec<Component> {
@@ -214,6 +224,58 @@ mod tests {
             EventId::try_from("/cal/x.ics").unwrap(),
             CalendarId::try_from("/cal/").unwrap(),
         )
+    }
+
+    #[test]
+    fn a_google_invitation_reads_its_meeting_from_the_vendor_property() {
+        let rule = "-::~:~::~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~::~:~::-";
+        let vevent = &vevents(&format!(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:g@x\r\nDTSTART:20260601T090000Z\r\n\
+             DESCRIPTION:Bring the figures.\\n\\n{rule}\\nJoin with Google Meet: \
+             https://meet.google.com/abc-defg-hij\\n\\nPlease do not edit this section.\\n{rule}\r\n\
+             X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij\r\n\
+             END:VEVENT\r\nEND:VCALENDAR\r\n"
+        ))[0];
+        let (id, cal) = ids();
+        let event = event_from_vevent(vevent, id, cal, RawIcal::new("x")).unwrap();
+        assert_eq!(event.conferences.len(), 1, "{:?}", event.conferences);
+        let meet = &event.conferences[0];
+        assert_eq!(meet.service, Some(ConferenceService::GoogleMeet));
+        assert_eq!(
+            meet.origin,
+            ConferenceOrigin::Detected {
+                place: DetectedIn::VendorProperty
+            }
+        );
+        assert_eq!(event.notes(|_| true).as_deref(), Some("Bring the figures."));
+    }
+
+    #[test]
+    fn a_teams_link_only_in_the_description_is_a_detected_conference() {
+        let rule = "_".repeat(80);
+        let vevent = &vevents(&format!(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:t@x\r\nDTSTART:20260601T090000Z\r\n\
+             DESCRIPTION:{rule}\\nMicrosoft Teams meeting\\nClick here to join the meeting\
+             <https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0>\\n{rule}\r\n\
+             END:VEVENT\r\nEND:VCALENDAR\r\n"
+        ))[0];
+        let (id, cal) = ids();
+        let event = event_from_vevent(vevent, id, cal, RawIcal::new("x")).unwrap();
+        let services: Vec<_> = event
+            .conferences
+            .iter()
+            .map(|c| (c.service.clone(), c.origin))
+            .collect();
+        assert_eq!(
+            services,
+            [(
+                Some(ConferenceService::Teams),
+                ConferenceOrigin::Detected {
+                    place: DetectedIn::Description
+                }
+            )]
+        );
+        assert_eq!(event.notes(|_| true), None);
     }
 
     #[test]

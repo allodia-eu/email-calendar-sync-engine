@@ -5,12 +5,18 @@
 //! [`Calendar`] collections. Time is the engine time model
 //! ([`crate::time::CalendarDateTime`] + [`crate::time::Duration`], end =
 //! start + duration). Recurrence is structural ([`RecurrenceRule`] +
-//! [`Recurrence`] overrides/exclusions). Participants, locations, virtual
-//! locations, and alerts complete the projection; provider-native payloads and
-//! kind-specific data are preserved beside it.
+//! [`Recurrence`] overrides/exclusions). Participants, locations,
+//! [`Conference`]s, and alerts complete the projection; provider-native payloads
+//! and kind-specific data are preserved beside it.
 
 mod alert;
 mod calendar_collection;
+mod conference;
+mod conference_block;
+mod conference_detect;
+mod conference_service;
+mod conference_text;
+mod conference_uri;
 mod event;
 mod kind;
 mod location;
@@ -23,9 +29,17 @@ mod recurrence_set;
 
 pub use alert::{Alert, AlertAction, Trigger};
 pub use calendar_collection::{Calendar, CalendarAccess};
+pub use conference::{
+    AccessCodes, Conference, ConferenceFeature, ConferenceKey, ConferenceOrigin, DetectedIn,
+    EntryKind, EntryPoint, FlatEntry, NativeState, group_flat,
+};
+pub use conference_detect::{DetectionSources, add_detected};
+pub use conference_service::ConferenceService;
+pub use conference_text::{ConferenceText, with_text_block, without_text_block};
+pub use conference_uri::{ConferenceUri, ConferenceUriError, UriScheme};
 pub use event::{Event, EventStatus, FreeBusyStatus, Privacy};
 pub use kind::EventKind;
-pub use location::{Location, RelativeTo, VirtualLocation};
+pub use location::{Location, RelativeTo};
 pub use override_build::OverrideBuilder;
 pub use participant::{Participant, ParticipantKind, ParticipantRole, ParticipationStatus};
 pub use recurrence::{Frequency, NDay, RecurrenceBound, RecurrenceRule, RecurrenceSkip, Weekday};

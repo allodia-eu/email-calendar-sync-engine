@@ -288,7 +288,7 @@ mod tests {
         assert!(!update.is_snapshot());
         assert_eq!(update.changed().len(), 1);
         assert_eq!(update.removed(), [key("b")]);
-        assert!(update.patched().is_empty());
+        assert_eq!(update.patched(), []);
     }
 
     #[test]
@@ -333,7 +333,7 @@ mod tests {
         let update: SyncUpdate<Message> = SyncUpdate::snapshot(vec![message("x")], present)
             .with_patched(vec![MailStateChange::keywords(key("x"), BTreeSet::new())]);
         assert!(update.is_snapshot());
-        assert!(update.patched().is_empty());
+        assert_eq!(update.patched(), []);
     }
 
     #[test]
@@ -341,7 +341,7 @@ mod tests {
         // `Event::Patch` is `NoPatch`, which is uninhabited: the only vector this line can be
         // written with is the empty one.
         let update: SyncUpdate<Event> = SyncUpdate::delta(vec![], vec![]).with_patched(vec![]);
-        assert!(update.patched().is_empty());
+        assert_eq!(update.patched(), []);
     }
 
     #[test]

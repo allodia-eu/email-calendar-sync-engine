@@ -17,33 +17,84 @@
 //! durability and idempotency are the caller's outbox (`engine-sync`).
 
 use engine_core::ids::ProviderKey;
-use engine_provider::{Draft, ProviderResult, SubmissionReceipt};
+use engine_provider::{Draft, HandOver, ProviderResult, SubmissionReceipt};
 use time::OffsetDateTime;
 
-use crate::transport::GraphClient;
+use crate::{
+    categories::{Categories, FIND_SCHEDULE},
+    transport::GraphClient,
+};
 
 /// Sends `draft`: assembles the RFC 5322 message, base64-encodes it, and `POST`s it to
-/// `sendMail` in MIME format.
+/// `sendMail` in MIME format, committing `hand_over` before the end of that request's body
+/// (the one request that can deliver). Once it is accepted, the filed copy is given the category of
+/// each keyword the draft asks for that `categories` has a name for (`crate::categories`);
+/// that step never fails the send.
 ///
 /// # Errors
 ///
 /// A classified [`ProviderError`](engine_provider::ProviderError): an assembly failure
 /// (a header value carrying CR/LF/NUL) is permanent; a `400 ErrorMimeContentInvalidBase64String`
 /// is permanent; `401`/`429`/`5xx` classify as auth/rate-limit/retryable.
-pub(crate) async fn send(client: &GraphClient, draft: &Draft) -> ProviderResult<SubmissionReceipt> {
+pub(crate) async fn send(
+    client: &GraphClient,
+    draft: &Draft,
+    categories: &Categories,
+    hand_over: &HandOver<'_>,
+) -> ProviderResult<SubmissionReceipt> {
+    check_from_matches_principal(client, draft)?;
     // The filed variant keeps the `Bcc` header: Graph reads every recipient (To/Cc/Bcc)
     // from the MIME to build the delivery envelope and strips `Bcc` before delivering,
     // so the Sent-Items copy records whom the sender Bcc'd while no recipient sees it.
     let mime = engine_rfc5322::assemble_filed_message(draft, OffsetDateTime::now_utc())?;
     // sendMail MIME format: the whole message as a base64 `text/plain` body.
     let body = engine_rfc5322::base64_encode(&mime).into_bytes();
+    // Once it may have reached Graph the message may have been sent, so a failure from then
+    // on needs confirming rather than retrying.
     client
-        .post(&client.url("/sendMail"), "text/plain", body)
-        .await?;
-    Ok(SubmissionReceipt::filed(
-        sent_placeholder_key(draft),
-        draft.message_id.clone(),
-    ))
+        .submit(&client.url("/sendMail"), "text/plain", body, hand_over)
+        .await
+        .map_err(crate::error::GraphError::into_submission_error)?;
+    // Recorded by the request that just went out; this only fetches the proof.
+    let handed_over = hand_over.commit().await?;
+    let kept = categories.tag_sent_copy(client, draft, FIND_SCHEDULE).await;
+    let key = sent_placeholder_key(draft);
+    Ok(
+        SubmissionReceipt::filed(key, draft.message_id.clone(), &handed_over)
+            .with_sent_copy_keywords(kept),
+    )
+}
+
+/// Refuses a draft whose `From` names another mailbox than the one this client posts to.
+///
+/// `sendMail` goes to the client's principal, so a client bound to a shared mailbox
+/// (`/users/{shared}/sendMail`) sends *from that mailbox* whatever the draft's `From`
+/// says — and a message whose header disagrees with its sender misrepresents who wrote it.
+/// How Exchange treats the mismatch is not something to rely on, so it never reaches
+/// Exchange. Sending as the shared mailbox is exactly what such a client is for; live, the
+/// delivered message carried `Sender:` naming the signed-in delegate beside the shared `From:`,
+/// "on behalf of" wherever a client displays it (`graph.md`).
+///
+/// Only a **named** principal can be checked. A client bound to `/me` does not know its own
+/// address without asking the directory, and its `From` may legitimately differ anyway —
+/// a delegate with Send As sends as a shared address through their own mailbox.
+///
+/// This refuses a `From` that is an **alias** of the bound mailbox, which Exchange itself
+/// would accept: telling an alias from a mistake needs the mailbox's `proxyAddresses`, a
+/// directory read. The exact workaround is to bind a client to the alias — `/users/{alias}`
+/// resolves to the same mailbox, and then endpoint and header agree.
+fn check_from_matches_principal(client: &GraphClient, draft: &Draft) -> ProviderResult<()> {
+    let Some(mailbox) = client.principal().address() else {
+        return Ok(());
+    };
+    if mailbox.eq_ignore_ascii_case(&draft.from.email) {
+        return Ok(());
+    }
+    Err(engine_provider::ProviderError::permanent(format!(
+        "this client sends from {mailbox:?}, not from the draft's {:?}; bind a client to \
+         the mailbox the message is from",
+        draft.from.email
+    )))
 }
 
 /// The placeholder key for the sent copy — `sent:<Message-ID>` — mirroring IMAP's
@@ -71,11 +122,51 @@ mod tests {
         )
     }
 
+    async fn send_unrecorded(
+        client: &GraphClient,
+        draft: &Draft,
+    ) -> ProviderResult<SubmissionReceipt> {
+        let hand_over = engine_provider::HandOver::new(&engine_provider::Unrecorded);
+        send(client, draft, &Categories::default(), &hand_over).await
+    }
+
+    #[tokio::test]
+    async fn a_client_bound_to_a_shared_mailbox_sends_only_as_that_mailbox() {
+        use engine_core::error::FailureClass;
+
+        use crate::MailboxPrincipal;
+
+        // The route would accept anything, so the refusal has to happen before the request:
+        // a message whose `From` does not match the mailbox it leaves from is never sent.
+        let bound = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))])
+            .with_principal(MailboxPrincipal::user("shared@example.test").unwrap());
+        let err = send_unrecorded(&bound, &draft()).await.unwrap_err();
+        assert_eq!(err.class(), FailureClass::Permanent);
+        assert!(err.detail().contains("shared@example.test"), "{err}");
+
+        // Sending *as* the bound mailbox is what it is for, in any case.
+        let mut as_shared = draft();
+        as_shared.from = EmailAddress::new("Shared@Example.Test");
+        assert!(send_unrecorded(&bound, &as_shared).await.is_ok());
+
+        // A client on `/me` has no address to compare — and a Send As delegate legitimately
+        // sends a shared address through their own mailbox — so the draft goes as given.
+        let own = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))]);
+        assert!(send_unrecorded(&own, &draft()).await.is_ok());
+    }
+
     #[tokio::test]
     async fn send_posts_to_sendmail_and_echoes_message_id() {
         // A 202-no-body route (`Value::Null`) models a successful sendMail.
         let client = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))]);
-        let receipt = send(&client, &draft()).await.unwrap();
+        let receipt = send(
+            &client,
+            &draft(),
+            &Categories::default(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap();
         // The sent copy has no server id, so the key is Message-ID-derived and the
         // Message-ID is echoed for sync-time reconciliation.
         assert_eq!(
@@ -83,6 +174,25 @@ mod tests {
             "sent:graph-send-0001@test.local"
         );
         assert_eq!(receipt.message_id.as_str(), "graph-send-0001@test.local");
+    }
+
+    /// Graph keeps a keyword only as a named category, so a draft asking for one with no
+    /// name registered is still sent and filed, and the receipt says it was not kept.
+    #[tokio::test]
+    async fn a_keyword_without_a_name_is_reported_not_kept() {
+        let client = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))]);
+        let draft =
+            draft().with_sent_copy_keyword(engine_core::mail::Keyword::new("project-x").unwrap());
+        let receipt = send(
+            &client,
+            &draft,
+            &Categories::default(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap();
+        assert!(receipt.sent_copy.is_filed());
+        assert!(receipt.sent_copy_keywords.is_empty());
     }
 
     #[tokio::test]
@@ -93,7 +203,14 @@ mod tests {
             "error": { "code": "ErrorMimeContentInvalidBase64String", "message": "bad" }
         });
         let client = fake_client_fallible(vec![("/sendMail", Err((400, body)))]);
-        let err = send(&client, &draft()).await.unwrap_err();
+        let err = send(
+            &client,
+            &draft(),
+            &Categories::default(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.class(), FailureClass::Permanent);
     }
 
@@ -105,7 +222,14 @@ mod tests {
         let client = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))]);
         let mut poisoned = draft();
         poisoned.subject = "Hi\r\nBcc: victim@evil.example".to_owned();
-        let err = send(&client, &poisoned).await.unwrap_err();
+        let err = send(
+            &client,
+            &poisoned,
+            &Categories::default(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.class(), FailureClass::Permanent);
     }
 
@@ -115,13 +239,14 @@ mod tests {
 
         use crate::{
             GraphClient,
-            test_support::{base64_decode, capturing_server, retry, tls},
+            test_support::{base64_decode, capturing_server, retry, tls, user_agent},
         };
 
         // Drive the REAL reqwest transport (via `with_base`) at a capturing server, so
         // the offline suite asserts the actual request shape the Fake can't (`AGENTS.md`).
         let (base, rx) = capturing_server("202 Accepted", "");
-        let client = GraphClient::with_base("secret-token", base, tls(), &retry()).unwrap();
+        let client =
+            GraphClient::with_base("secret-token", base, tls(), &retry(), &user_agent()).unwrap();
 
         let draft = draft()
             .with_cc(vec![EmailAddress::new("carol@test.local")])
@@ -133,7 +258,14 @@ mod tests {
                 ContentIdHeader::new("c1@test.local").unwrap(),
                 vec![1, 2, 3],
             ));
-        let receipt = send(&client, &draft).await.unwrap();
+        let receipt = send(
+            &client,
+            &draft,
+            &Categories::default(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap();
         assert_eq!(receipt.message_id.as_str(), "graph-send-0001@test.local");
 
         let request = rx

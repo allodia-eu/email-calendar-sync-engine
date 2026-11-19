@@ -50,12 +50,16 @@ use engine_core::{
     calendar::Event,
     ids::{AccountId, Uid},
     scheduling::addresses_match,
+    time::{CalendarDateTime, TimeZoneId, UtcDateTime},
 };
-use engine_provider::{CalendarWrites, EventDeletion, EventWrite};
+use engine_provider::{
+    CalendarAddress, CalendarWrites, EventDeletion, EventDraft, EventWrite, Invitee, MeetingDraft,
+    SchedulingIdentity,
+};
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials};
 use stalwart_harness::{Harness, ScratchAccount};
 
-use crate::common;
+use crate::common::{self, OnCalendar};
 
 /// How long a scenario waits for an asynchronous iTIP delivery to land.
 ///
@@ -69,11 +73,11 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) struct Parties {
     harness: Harness,
     /// The scratch account that receives the invitation (Carol).
-    attendee: CalDavProvider,
+    attendee: OnCalendar,
     attendee_account: AccountId,
     attendee_auth: ScratchAccount,
     /// The scratch account that sends it (Bob).
-    organizer: CalDavProvider,
+    organizer: OnCalendar,
     organizer_account: AccountId,
     organizer_auth: ScratchAccount,
 }
@@ -92,9 +96,9 @@ impl Parties {
 
 /// Connects both parties to the live harness, or `None` to skip (the offline gate).
 ///
-/// Each side gets a provider bound to its **own** default calendar by the adapter's real
-/// discovery, so the organizer writing "to my calendar" and the attendee reading "from
-/// mine" are the same operation against two principals.
+/// Each side drives its **own** default calendar, found by the adapter's real discovery, so the
+/// organizer writing "to my calendar" and the attendee reading "from mine" are the same operation
+/// against two principals.
 pub(crate) async fn parties(test: &str) -> Option<Parties> {
     let Some(harness) = Harness::from_env() else {
         eprintln!("skipping {test}: STALWART_HTTP_ADDR unset");
@@ -111,22 +115,31 @@ pub(crate) async fn parties(test: &str) -> Option<Parties> {
                 username: account.address.clone(),
                 password: account.password.clone(),
             },
+            engine_http::test_server::user_agent(),
         ))
         .await
         .expect("connect + discover")
     };
 
-    let [organizer_account, attendee_account] = harness.scratch.clone();
-    let organizer = connect(&organizer_account).await;
-    let attendee = connect(&attendee_account).await;
+    let [organizer_auth, attendee_auth] = harness.scratch.clone();
+    let organizer_account = AccountId::try_from("caldav-schedule-organizer").unwrap();
+    let attendee_account = AccountId::try_from("caldav-schedule-attendee").unwrap();
+    let organizer = OnCalendar::named(
+        connect(&organizer_auth).await,
+        &organizer_account,
+        "default",
+    )
+    .await;
+    let attendee =
+        OnCalendar::named(connect(&attendee_auth).await, &attendee_account, "default").await;
     Some(Parties {
-        organizer_auth: organizer_account,
-        attendee_auth: attendee_account,
-        attendee,
-        organizer,
-        attendee_account: AccountId::try_from("caldav-schedule-attendee").unwrap(),
-        organizer_account: AccountId::try_from("caldav-schedule-organizer").unwrap(),
         harness,
+        attendee,
+        attendee_account,
+        attendee_auth,
+        organizer,
+        organizer_account,
+        organizer_auth,
     })
 }
 
@@ -161,10 +174,9 @@ fn invitation_date() -> String {
 
 /// An organizer's invitation document, naming the attendee with an unanswered `RSVP`.
 ///
-/// Assembled by hand rather than through [`engine_provider::EventDraft`] for the same
-/// reason `common::write::seed` does it: a draft cannot state an `ORGANIZER`/`ATTENDEE`
-/// pair, and this is the *counterparty's* fixture, not the thing under test. The times of
-/// day are fixed; the day itself comes from [`invitation_date`], which explains why.
+/// Used for the one non-IANA time-zone fixture that [`engine_provider::EventDraft`] cannot
+/// represent. The times of day are fixed; the day itself comes from [`invitation_date`],
+/// which explains why.
 fn invitation(uid: &str, summary: &str, tzid: &str, parties: &Parties) -> String {
     let day = invitation_date();
     format!(
@@ -187,16 +199,54 @@ fn invitation(uid: &str, summary: &str, tzid: &str, parties: &Parties) -> String
 /// it there. That *is* [`engine_core::scheduling::SchedulingMode::ServerAutoSchedule`].
 async fn invite(parties: &Parties, uid: &Uid, summary: &str, tzid: &str) -> Event {
     clean_up(parties, uid).await;
-    let body = invitation(uid.as_str(), summary, tzid, parties);
-    let href = parties.organizer.event_href(uid).expect("mint event href");
-    parties
-        .organizer
-        .put_event(
-            &parties.organizer_account,
-            &EventWrite::unconditional(href, uid.clone(), engine_core::raw::RawIcal::new(body)),
+    if let Ok(zone) = TimeZoneId::iana(tzid) {
+        let day = invitation_date();
+        let at = |hour: u8| CalendarDateTime::Zoned {
+            local: format!(
+                "{}-{}-{}T{hour:02}:00:00",
+                &day[0..4],
+                &day[4..6],
+                &day[6..8]
+            )
+            .parse()
+            .unwrap(),
+            zone: zone.clone(),
+        };
+        let draft = EventDraft::new(
+            parties.organizer.calendar_id(),
+            uid.clone(),
+            summary,
+            at(10),
+            at(11),
+            UtcDateTime::new(2026, 7, 1, 8, 0, 0).unwrap(),
         )
-        .await
-        .expect("the organizer stores the invitation");
+        .meeting(MeetingDraft::new(
+            SchedulingIdentity::named(
+                CalendarAddress::parse(parties.organizer_address()).unwrap(),
+                "Bob Tester",
+            ),
+            vec![Invitee::required(SchedulingIdentity::named(
+                CalendarAddress::parse(parties.attendee_address()).unwrap(),
+                "Carol",
+            ))],
+        ));
+        parties
+            .organizer
+            .create_event(&parties.organizer_account, &draft)
+            .await
+            .expect("the organiser creates the invitation");
+    } else {
+        let body = invitation(uid.as_str(), summary, tzid, parties);
+        let href = parties.organizer.event_href(uid).expect("mint event href");
+        parties
+            .organizer
+            .put_event(
+                &parties.organizer_account,
+                &EventWrite::unconditional(href, uid.clone(), engine_core::raw::RawIcal::new(body)),
+            )
+            .await
+            .expect("the organiser stores the non-IANA invitation fixture");
+    }
 
     poll_until(
         &parties.attendee,
@@ -214,7 +264,7 @@ async fn invite(parties: &Parties, uid: &Uid, summary: &str, tzid: &str) -> Even
 /// A poll, not a sleep: the condition is the server's actual state, so a fast server is
 /// not waited on and a slow one is not raced.
 async fn poll_until(
-    provider: &CalDavProvider,
+    provider: &OnCalendar,
     account: &AccountId,
     uid: &Uid,
     what: &str,
@@ -306,7 +356,7 @@ fn inbox_hrefs_of(parties: &Parties, who: &ScratchAccount, uid: &str) -> Vec<Str
         .harness
         .dav_propfind_as(who.auth(), &Harness::scheduling_inbox_path_of(&who.address))
         .expect("PROPFIND the scheduling inbox");
-    let body = String::from_utf8_lossy(&listing.body).into_owned();
+    let body = String::from_utf8_lossy_owned(listing.body);
     body.split("<D:href>")
         .skip(1)
         .filter_map(|chunk| chunk.split("</D:href>").next())

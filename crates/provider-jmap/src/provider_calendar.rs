@@ -1,5 +1,5 @@
 //! The [`CalendarWrites`] half of the JMAP adapter: the four verbs, each one
-//! `CalendarEvent/set` call.
+//! `CalendarEvent/set` call, and the addresses those writes schedule as.
 //!
 //! Beside `provider.rs` rather than in it, because that file is at the 500-line limit and
 //! these four belong with the request builders they delegate to (`crate::calendar_write`,
@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 use engine_core::{calendar::Event, ids::AccountId};
-use engine_provider::{CalendarWrites, ProviderResult};
+use engine_provider::{CalendarUserAddresses, CalendarWrites, ProviderResult};
 
 use crate::JmapProvider;
 
@@ -20,6 +20,7 @@ impl CalendarWrites for JmapProvider {
         _account: &AccountId,
         draft: &engine_provider::EventDraft,
     ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        engine_provider::refuse_native_conference(draft.conference.as_ref())?;
         let account = self.calendar_account()?;
         Ok(crate::calendar_write::create_event(self.executor.as_ref(), &account, draft).await?)
     }
@@ -33,6 +34,12 @@ impl CalendarWrites for JmapProvider {
         base: &Event,
         edit: &engine_provider::EventEdit,
     ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        edit.refuse_conference_on_occurrence()?;
+        engine_provider::refuse_native_conference(
+            edit.patch
+                .conference_edit()
+                .and_then(engine_provider::ConferenceEdit::adds),
+        )?;
         let account = self.calendar_account()?;
         Ok(
             crate::calendar_write::patch_event(self.executor.as_ref(), &account, base, edit)
@@ -48,7 +55,7 @@ impl CalendarWrites for JmapProvider {
         base: &Event,
         rsvp: &engine_provider::EventRsvp,
     ) -> ProviderResult<engine_provider::EventWriteReceipt> {
-        crate::session::JMAP_RSVP.accept(rsvp)?;
+        crate::calendar_rsvp::JMAP_RSVP.accept(rsvp)?;
         let account = self.calendar_account()?;
         Ok(crate::calendar_rsvp::rsvp_event(self.executor.as_ref(), &account, base, rsvp).await?)
     }
@@ -63,5 +70,52 @@ impl CalendarWrites for JmapProvider {
     ) -> ProviderResult<()> {
         let (executor, account) = (self.executor.as_ref(), self.calendar_account()?);
         Ok(crate::calendar_write::delete_event(executor, &account, base, deletion).await?)
+    }
+
+    /// One `ParticipantIdentity/get` on the calendars account (`crate::participant_identity`),
+    /// narrowed to the owner's identities when the client is bound to a shared account.
+    async fn calendar_user_addresses(
+        &self,
+        _account: &AccountId,
+    ) -> ProviderResult<CalendarUserAddresses> {
+        let (executor, account) = (self.executor.as_ref(), self.calendar_account()?);
+        let answer =
+            crate::participant_identity::calendar_user_addresses(executor, &account).await?;
+        Ok(match executor.session().bound_account() {
+            None => answer,
+            Some(store) => crate::participant_identity::for_store(answer, store),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use engine_provider::{CalendarUserAddresses, CalendarWrites};
+    use serde_json::json;
+
+    use crate::provider::provider_test_support::{account, fixture, recording};
+
+    #[tokio::test]
+    async fn the_participant_identities_are_the_calendar_user_addresses() {
+        let (provider, exec) = recording(vec![fixture("participant_identity_get_response.json")]);
+        assert_eq!(
+            provider.calendar_user_addresses(&account()).await.unwrap(),
+            CalendarUserAddresses::Known(vec!["alice@test.local".to_owned()])
+        );
+        let (using, method, arguments) = exec.sole_call();
+        assert_eq!(method, "ParticipantIdentity/get");
+        assert!(using.contains(&"urn:ietf:params:jmap:calendars".to_owned()));
+        assert_eq!(arguments["accountId"], "c");
+    }
+
+    #[tokio::test]
+    async fn a_server_without_the_method_has_no_answer_rather_than_an_error() {
+        let (provider, _) = recording(vec![json!({
+            "methodResponses": [["error", { "type": "unknownMethod" }, "0"]]
+        })]);
+        assert_eq!(
+            provider.calendar_user_addresses(&account()).await.unwrap(),
+            CalendarUserAddresses::Unknown
+        );
     }
 }

@@ -23,11 +23,104 @@ async fn submit_email_resolves_context_then_sends() {
         "Step 4 submission probe",
         "Hello",
     );
-    let receipt = p.submit_email(&account(), &draft).await.unwrap();
+    let receipt = p
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap();
     assert_eq!(receipt.email_key.as_str(), "bmaaaaal");
     assert_eq!(
         receipt.message_id.as_str(),
         "step4-send-probe-0002@test.local"
+    );
+}
+
+/// Sends one draft from `from` against `context`, returning the `identityId` the
+/// submission carried — or the refusal, when it never got that far.
+async fn identity_sent_for(context: serde_json::Value, from: &str) -> Result<String, String> {
+    use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
+    use engine_provider::Draft;
+
+    let exec = FakeExecutor::new(vec![context, fixture("submit_send_response.json")]);
+    let draft = Draft::new(
+        MessageIdHeader::new("identity-probe@test.local").unwrap(),
+        EmailAddress::new(from),
+        vec![EmailAddress::new("bob@test.local")],
+        "Identity probe",
+        "Hello",
+    );
+    crate::submit::send(
+        &exec,
+        "c",
+        "c",
+        &draft,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    )
+    .await
+    .map_err(|err| err.to_string())?;
+    let requests = exec.requests.lock().unwrap();
+    Ok(
+        requests[1]["methodCalls"][1][1]["create"]["sub"]["identityId"]
+            .as_str()
+            .expect("identityId")
+            .to_owned(),
+    )
+}
+
+#[tokio::test]
+async fn the_submission_identity_is_the_one_for_the_drafts_from() {
+    // The captured `Identity/get` of alice after she joined the `support` group: two
+    // identities, the group's listed **first**. Taking the first — which this used to do —
+    // submitted `From: alice@` under `support@`, and Stalwart answered `forbiddenFrom`.
+    let context = || fixture("submit_context_shared_identities_response.json");
+    assert_eq!(
+        identity_sent_for(context(), "alice@test.local").await,
+        Ok("c".into())
+    );
+    assert_eq!(
+        identity_sent_for(context(), "support@test.local").await,
+        Ok("b".into())
+    );
+    // Neither half of an address is compared case-sensitively.
+    assert_eq!(
+        identity_sent_for(context(), "Alice@TEST.local").await,
+        Ok("c".into())
+    );
+
+    // An address no identity covers is refused before anything is created: sending it
+    // under some other identity would break RFC 8621 §6's MUST on the client's side.
+    let refused = identity_sent_for(context(), "stranger@example.test").await;
+    assert!(refused.unwrap_err().contains("may send as"));
+}
+
+#[tokio::test]
+async fn a_wildcard_identity_covers_its_domain_but_an_exact_one_wins() {
+    // RFC 8621 §6: an identity whose address is `*@domain` may send as any address there.
+    // Rewrite the captured group identity into one, keeping its place ahead of alice's.
+    let mut context = fixture("submit_context_shared_identities_response.json");
+    let identities = context["methodResponses"][1][1]["list"]
+        .as_array_mut()
+        .unwrap();
+    assert_eq!(identities[0]["email"], "support@test.local");
+    identities[0]["email"] = json!("*@test.local");
+
+    assert_eq!(
+        identity_sent_for(context.clone(), "carol@test.local").await,
+        Ok("b".into())
+    );
+    // Alice's own identity names her exactly, so it wins over the wildcard listed first.
+    assert_eq!(
+        identity_sent_for(context.clone(), "alice@test.local").await,
+        Ok("c".into())
+    );
+    // The wildcard is a domain match, not a suffix match.
+    assert!(
+        identity_sent_for(context, "carol@nottest.local")
+            .await
+            .is_err()
     );
 }
 
@@ -56,7 +149,15 @@ async fn submit_email_uploads_attachment_bytes_before_sending() {
         "application/pdf",
         vec![9, 8, 7],
     ));
-    crate::submit::send(&exec, "c", "c", &draft).await.unwrap();
+    crate::submit::send(
+        &exec,
+        "c",
+        "c",
+        &draft,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    )
+    .await
+    .unwrap();
 
     // The attachment bytes were POSTed to the resolved (account-substituted) upload URL
     // with the right media type — before the Email/set that references the blob.
@@ -100,7 +201,14 @@ async fn submit_with_attachment_but_no_upload_url_is_a_session_error() {
         "application/pdf",
         vec![1],
     ));
-    let err = p.submit_email(&account(), &draft).await.unwrap_err();
+    let err = p
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap_err();
     assert_eq!(err.class(), FailureClass::Permanent);
 }
 
@@ -160,4 +268,80 @@ async fn edit_mail_set_error_surfaces_as_a_conflict() {
         .unwrap_err();
     // Conflict → the caller re-syncs (tombstoning the gone message), then retries.
     assert_eq!(err.class(), FailureClass::Conflict);
+}
+
+#[tokio::test]
+async fn submit_email_sets_the_sent_copy_keywords_on_the_filed_copy() {
+    use engine_core::{
+        ids::MessageIdHeader,
+        mail::{EmailAddress, Keyword},
+    };
+    use engine_provider::Draft;
+
+    let exec = FakeExecutor::new(vec![
+        fixture("submit_context_response.json"),
+        fixture("submit_send_response.json"),
+        fixture("submit_keyword_update_response.json"),
+    ]);
+    let keyword = Keyword::new("project-x").unwrap();
+    let draft = Draft::new(
+        MessageIdHeader::new("step4-send-probe-0002@test.local").unwrap(),
+        EmailAddress::new("alice@test.local"),
+        vec![EmailAddress::new("bob@test.local")],
+        "Tagged",
+        "Hello",
+    )
+    .with_sent_copy_keyword(keyword.clone());
+
+    let receipt = crate::submit::send(
+        &exec,
+        "c",
+        "c",
+        &draft,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(receipt.sent_copy_keywords, [keyword].into());
+    // A third request, after the send, addressed to the email the send created.
+    let requests = exec.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    let call = &requests[2]["methodCalls"][0];
+    assert_eq!(call[0], "Email/set");
+    assert_eq!(
+        call[1]["update"]["bmaaaaal"],
+        json!({ "keywords/project-x": true })
+    );
+}
+
+#[tokio::test]
+async fn a_send_without_sent_copy_keywords_makes_no_third_request() {
+    use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
+    use engine_provider::Draft;
+
+    let exec = FakeExecutor::new(vec![
+        fixture("submit_context_response.json"),
+        fixture("submit_send_response.json"),
+    ]);
+    let draft = Draft::new(
+        MessageIdHeader::new("step4-send-probe-0002@test.local").unwrap(),
+        EmailAddress::new("alice@test.local"),
+        vec![EmailAddress::new("bob@test.local")],
+        "Untagged",
+        "Hello",
+    );
+
+    let receipt = crate::submit::send(
+        &exec,
+        "c",
+        "c",
+        &draft,
+        &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+    )
+    .await
+    .unwrap();
+
+    assert!(receipt.sent_copy_keywords.is_empty());
+    assert_eq!(exec.requests.lock().unwrap().len(), 2);
 }

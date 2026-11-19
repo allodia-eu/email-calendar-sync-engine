@@ -23,8 +23,7 @@ fn mock_server(http_responses: Vec<String>) -> String {
     std::thread::spawn(move || {
         for response in http_responses {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 8192];
-            let _ = std::io::Read::read(&mut stream, &mut buf);
+            let _ = engine_http::test_server::read_request_blocking(&mut stream);
             let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
         }
     });
@@ -88,6 +87,7 @@ async fn connect_follows_a_well_known_redirect_to_another_origin() {
     let client = JmapClient::connect(JmapConfig::new(
         apex.clone(),
         Credentials::basic("alice@example.com", "pw"),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .unwrap();
@@ -114,8 +114,12 @@ async fn a_relative_redirect_after_an_origin_change_stays_on_the_new_origin() {
 
     let recorder = Arc::new(Recorder::default());
     JmapClient::connect(
-        JmapConfig::new(apex.clone(), Credentials::basic("a", "b"))
-            .with_connect_observer(recorder.clone()),
+        JmapConfig::new(
+            apex.clone(),
+            Credentials::basic("a", "b"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_connect_observer(recorder.clone()),
     )
     .await
     .unwrap();
@@ -140,9 +144,13 @@ async fn a_redirect_loop_still_fails_rather_than_spinning() {
         .collect();
     let base = mock_server(looping);
 
-    let err = JmapClient::connect(JmapConfig::new(base, Credentials::basic("a", "b")))
-        .await
-        .unwrap_err();
+    let err = JmapClient::connect(JmapConfig::new(
+        base,
+        Credentials::basic("a", "b"),
+        engine_http::test_server::user_agent(),
+    ))
+    .await
+    .unwrap_err();
     assert!(
         err.to_string().contains("too many session redirects"),
         "unexpected error: {err}"
@@ -153,11 +161,15 @@ async fn a_redirect_loop_still_fails_rather_than_spinning() {
 #[tokio::test]
 async fn an_unresolvable_redirect_location_is_reported() {
     let base = mock_server(vec![http_redirect("302 Found", "http://[::bad")]);
-    let err = JmapClient::connect(JmapConfig::new(base, Credentials::basic("a", "b")))
-        .await
-        .unwrap_err();
+    let err = JmapClient::connect(JmapConfig::new(
+        base,
+        Credentials::basic("a", "b"),
+        engine_http::test_server::user_agent(),
+    ))
+    .await
+    .unwrap_err();
     assert!(
-        err.to_string().contains("unresolvable redirect"),
+        err.to_string().contains("not followed"),
         "unexpected error: {err}"
     );
 }

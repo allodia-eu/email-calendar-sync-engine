@@ -42,10 +42,20 @@ impl HttpResponse {
     /// `x-calendar-access`, and the classes this drives a capability off must not be
     /// guessed.
     pub(crate) fn advertises(&self, token: &str) -> bool {
-        self.dav.as_deref().is_some_and(|header| {
+        self.dav_classes()
+            .iter()
+            .any(|class| class.eq_ignore_ascii_case(token))
+    }
+
+    /// The compliance classes the `DAV` header lists, trimmed, in the server's order. Empty
+    /// when the response carries no such header.
+    pub(crate) fn dav_classes(&self) -> Vec<&str> {
+        self.dav.as_deref().map_or_default(|header| {
             header
                 .split(',')
-                .any(|class| class.trim().eq_ignore_ascii_case(token))
+                .map(str::trim)
+                .filter(|class| !class.is_empty())
+                .collect()
         })
     }
 
@@ -69,12 +79,15 @@ impl HttpResponse {
     /// For a write (`PUT`/`DELETE`): the new `ETag` (if the server sent one) on a
     /// `2xx`, or a classified error otherwise — `412` becomes a
     /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict) so a
-    /// precondition failure is refetched, not blindly retried (`error.rs`).
+    /// precondition failure is refetched, not blindly retried (`error.rs`), and a gateway's
+    /// `502`/`504` leaves the write unconfirmed (`CalDavError::after_write`).
     pub(crate) fn into_write_etag(self) -> Result<Option<String>, CalDavError> {
         if (200..300).contains(&self.status) {
             Ok(self.etag)
         } else {
-            Err(CalDavError::status(self.status, self.body).with_retry_after(self.retry_after))
+            Err(CalDavError::status(self.status, self.body)
+                .with_retry_after(self.retry_after)
+                .after_write())
         }
     }
 }

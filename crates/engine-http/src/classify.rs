@@ -66,7 +66,7 @@ impl Throttle {
 /// `send_retrying` knows whether it will hand the reply back. So an adapter is asked
 /// [`reads_body_of`](Self::reads_body_of) first, with nothing but the status, and a reply it
 /// does not claim is never buffered at all. Say yes only for the statuses that genuinely
-/// need it: `403` for Google, `400` for JMAP. Saying yes to `200` would buffer every page
+/// need it: `403` for Google, `400` for JMAP and DAV. Saying yes to `200` would buffer every page
 /// the adapter ever fetches.
 ///
 /// A reply the status alone already classifies — a `429`, or a `503` on an idempotent
@@ -87,8 +87,8 @@ pub trait ThrottleClassifier: Send + Sync {
     ///
     /// **Answering `Some` asserts the request was *refused*, not performed** — the reply is
     /// then replayed whatever the method was, exactly as a `429` is, and unlike the `503`
-    /// rule, which retries only where a replay cannot duplicate a write. Both refusals
-    /// classified here are safe on that count (a request the server declined to run), but an
+    /// rule, which retries only where a replay cannot duplicate a write. Every refusal
+    /// classified so far is safe on that count (a request the server declined to run), but an
     /// implementation that claimed a status a server can send *after* acting would turn one
     /// write into two.
     ///
@@ -103,9 +103,10 @@ pub trait ThrottleClassifier: Send + Sync {
 /// the status is the whole story, which is exactly what `send_retrying` did before
 /// classification existed.
 ///
-/// Correct for `provider-graph` and `provider-caldav`, whose servers were measured saying
-/// `429` and nothing else (`docs/agent-guidance/http-throttling.md`) — so they are on this
-/// not by omission but because it is the accurate description of what they meet.
+/// Correct for `provider-graph`, whose server was measured saying `429` and nothing else
+/// (`docs/agent-guidance/http-throttling.md`) — so it is on this not by omission but because
+/// it is the accurate description of what it meets. `provider-caldav` was too, until Stalwart
+/// was found refusing DAV requests over its concurrency cap with a `400`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StatusAlone;
 

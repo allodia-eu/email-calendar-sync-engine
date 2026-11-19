@@ -15,9 +15,9 @@ part of it.
 > `caldav.md`). It validates `provider-caldav` against a different real
 > implementation than Stalwart (two-step RFC 6764 discovery, the
 > `http://sabre.io/ns/sync/N` sync-token form) and **reuses this harness's shared
-> calendar seed** (`seed/calendar/`), so one dataset validates both servers. The
-> determinism, gating-by-env-var, and excluded-from-offline-coverage conventions
-> below apply to it too.
+> calendar seed** (`seed/calendar/`), so one dataset validates both servers. A third,
+> **Nextcloud** (`docker/nextcloud/`), imports the same seed. The determinism,
+> gating-by-env-var, and excluded-from-offline-coverage conventions below apply to both.
 >
 > The two are **not interchangeable as evidence**, and `caldav.md` ("Which server
 > proves what") is authoritative for the split. Two facts about *this* harness drive
@@ -27,6 +27,13 @@ part of it.
 > see**, so this fixture cannot produce a collection she may not write — the read-only
 > `DAV:current-user-privilege-set` case is SabreDAV's to prove, and it seeds a shared
 > calendar for exactly that.
+>
+> That second fact **no longer holds**, for mail or calendars. The shared-mailbox fixture
+> below gives her one mail store she holds every right on and one she may only read, and the
+> shared-calendar fixture gives her a writable group calendar and a read-only one of Dave's.
+> Each lives in its owner's home, and Stalwart lists both in **her** home too, beside her own
+> (`provider-caldav/tests/live_shared_calendars.rs`), so the read-only privilege case is now
+> provable on Stalwart as well as SabreDAV.
 
 ## What it is
 
@@ -45,7 +52,7 @@ part of it.
   smoke suite. It is the only job that sets `STALWART_*`, so it is the only one
   whose Stalwart tests execute.
 
-## How it bootstraps (Stalwart v0.16)
+## How it bootstraps (Stalwart v0.16 onward, v1 included)
 
 Stalwart **v0.16 replaced the old declarative-TOML configuration with a
 registry/bootstrap model**: the `--config` file is a small JSON pointer to the
@@ -53,7 +60,10 @@ data store, and everything else (listeners, directory, principals) lives in the
 store, configured through a JMAP management API. A fresh server boots into
 "bootstrap mode" (a recovery HTTP listener on 8080) and expects setup to be
 completed via that API, after which it must restart to come up as a full server.
-The older TOML approach the secondary docs describe applies to ≤0.15 only.
+The older TOML approach the secondary docs describe applies to ≤0.15 only. v1 keeps
+the model and the method names and renames fields (its `SCHEMA_CHANGES.md` in
+`stalwartlabs/stalwart-migrate` lists every one); two of them are fields the entrypoint
+touches — see "Gotchas".
 
 `entrypoint.sh` drives this deterministically, as PID 1 of the single container:
 
@@ -62,7 +72,11 @@ The older TOML approach the secondary docs describe applies to ≤0.15 only.
    wizard.
 2. If in bootstrap mode, `x:Bootstrap/set` completes setup with an internal
    directory and **no ACME / auto-TLS request** (so boot stays offline and
-   self-contained), then the server is restarted into a full server.
+   self-contained), then the server is restarted into a full server. Bootstrap mode
+   is recognised by `x:Bootstrap/get` *listing* the singleton (`"id":"singleton"`);
+   a full server answers it under `notFound`. On v1 the bootstrap also creates a real
+   `admin@test.local` account with a random password, which the harness never uses —
+   every management call authenticates as the recovery admin.
 3. Create the test accounts with `x:Account/set` (idempotent: existing accounts
    are skipped). The default domain `test.local` is auto-created at bootstrap;
    its id is looked up at runtime.
@@ -85,7 +99,7 @@ These were confirmed before/with implementation; do not relitigate without cause
   **A bump is its own PR.** The pin decides what *every* live test in this repo is
   evidence about, so it must not ride along inside a change that is really about
   something else — a provider fix and a server change landing together leave neither
-  attributable. Currently pinned: **v0.16.21**. What a bump owes:
+  attributable. Currently pinned: **v1.0.2**. What a bump owes:
 
   1. Re-resolve the **index** digest (`docker buildx imagetools inspect
      stalwartlabs/stalwart:<tag>` → the top-level `Digest:`, not a per-platform one, or
@@ -103,6 +117,68 @@ These were confirmed before/with implementation; do not relitigate without cause
      Stalwart's — `provider-jmap` had simply never sent `sendSchedulingMessages`, and two
      version bumps were taken partly in the hope of fixing a defect that did not exist
      (#102).
+
+  **The v0.16.24 → v1.0.2 bump** (through v0.16.25–27 and v1.0.0–1). v1 is a major release
+  with a new database layout and a renamed settings schema; neither touches the harness beyond
+  two field renames, because CI always bootstraps from an empty volume (no migration). Every
+  release note was read, and the JMAP Calendars and JSCalendar drafts v1 moved to (-33 and
+  jscalendarbis-22, from -28 and -19) were diffed in full against what `provider-jmap` sends
+  and reads. With the changes below, all 1455 tests in the gated Stalwart suites (smoke,
+  `provider-jmap`, `provider-imap`, `provider-caldav`, `dav-cli`) passed from a wiped volume,
+  and a warm restart re-seeded without re-bootstrapping. What changed for this repo:
+
+  - **The entrypoint**: `tlsImplicit` → `implicitTls` in the listener it creates, and
+    `serverHostname` → `defaultHostname`, which it never sends but its bootstrap-mode check
+    grepped for (see "Gotchas" — that one failed silently). The check now asks for the
+    singleton by id and stops on any answer that is neither the object nor `notFound`.
+  - **A fully read-only share now says so on its account.** Bob's share reports
+    `isReadOnly: true` and lists no `submission`, so a client bound to it offers neither
+    writes nor sending; the all-writable group share is unchanged. The two tests built as
+    tripwires for exactly this (`smoke.rs`, `live_shared.rs`) fired, and now pin both
+    directions; `session_shared_accounts.json` was re-captured. The per-folder rights design
+    stands: a share mixing writable and read-only folders still says `false` (`modeling.md`).
+  - **JSCalendar `version` and `organizerCalendarAddress`.** v1 returns `"version": "2.0"` on
+    every event and now infers `organizerCalendarAddress` on a create that names an owner
+    participant (`jmap.md`). The adapter already sent both, so nothing it does changed.
+  - **Limits it now states**: `maxMailboxesPerEmail` 100, `maxCalendarsPerEvent` 10,
+    `maxAddressBooksPerCard` 10 (all `null` before). Nothing the engine does approaches them.
+
+  Read and found not to touch a request the engine sends: the slimmer `*/set` create
+  responses (v1.0.1; the adapter reads only `id`), `onSuccessUpdateEmail` by submission id
+  (v0.16.26; the adapter uses a creation reference), inline-attachment placement in
+  `Email/set` (v1.0.2; the adapter sends its own `multipart/related`), the `EmailDelivery`
+  and `EmailPush` fixes (the watcher reads `Email` state), `SEARCH RETURN MIN/MAX`, the
+  untagged `NO` to a rejected app-password login (v0.16.25; no live test logs in with a wrong
+  credential), and the iTIP `PRIORITY`/`SEQUENCE` fixes (the CalDAV RSVP edits the stored
+  object in place). New in v1 and not used by the engine: JMAP and IMAP `METADATA`, indexing
+  of attachment contents (a `text` search may now match more; the engine passes the query
+  through), OAuth scopes, OpenPGP/S/MIME encryption.
+
+  **Found while testing, and not caused by the bump** — each reproduced on v0.16.24 with the
+  same procedure, so neither was fixed in the bump; both were fixed straight after it:
+
+  - Stalwart answers a **DAV** request over its concurrency cap with `400` and JMAP's
+    `urn:ietf:params:jmap:error:limit` / `maxConcurrentRequests` body (5 of 144 `PROPFIND`s
+    in 24-wide bursts on v0.16.24; on v1.0.2, 2 of 16 simultaneous `PUT`s, and 34 of 48).
+    `provider-caldav` classed that `400` `Permanent`, so `live_caldav`'s 22 concurrent tests,
+    each its own client, met it now and then as a flake. It now waits the refusal out
+    (`DavThrottles`; `live_concurrency_refusal.rs` proves it), and `http-throttling.md` states
+    the ceiling (#332).
+  - `/healthz/live` counts against `Http.rateLimitAnonymous` (100/minute on both pins), and
+    every live test polls it through `Harness::wait_until_ready`. Back-to-back runs of one
+    suite exhausted it and the poll timed out after 30 s ("harness ready: Timeout(30s)") — 4 of
+    5 consecutive `live_caldav` runs on v0.16.24. A single CI run stays under it. The
+    entrypoint now raises the limit ("And so is the anonymous HTTP limit", below; #333).
+
+  **The v0.16.21 → v0.16.24 bump.** The whole gated suite passed unchanged from a wiped
+  volume. One fix lands on a request the engine sends: before v0.16.24, an `Email/set` whose
+  patch carries a full `mailboxIds` equal to the current membership together with a keyword
+  change left the message at IMAP UID 0. That is the JMAP report patch whenever the message
+  already sits in the destination; reproduced on v0.16.22 and written up under `jmap.md` →
+  reporting. No live test covers it, because the suite never reports a message already in its
+  destination. Nothing else in v0.16.22–v0.16.24 touches a request the engine sends: it uses
+  no `PushSubscription`, no `Email/import`, and reads neither `useDefaultAlerts` nor
+  `baseEventId`.
 
   **The v0.16.15 → v0.16.21 bump, recorded so it is not re-investigated.** All 754 gated
   tests passed unchanged on both pins, so nothing the engine sends today behaves
@@ -179,8 +255,10 @@ and the cross-compile build.
 | Account | Holds | Used for |
 | --- | --- | --- |
 | `alice@test.local` | **the whole shared seed** (mail, calendar, contacts) | every read/sync/write suite; several assert its exact mailbox and calendar counts |
-| `bob@test.local` | nothing | scratch: the SMTP recipient in the submission tests, the **organizer** in the scheduling suite, and the dated mail the mailbox-window suites plant (`Harness::plant_dated_email_as`) and remove again |
+| `bob@test.local` | nothing | scratch: the SMTP recipient in the submission tests, the **organizer** in the scheduling suite, the **grantor** of the read-only share below, and the dated mail the mailbox-window suites plant (`Harness::plant_dated_email_as`) and remove again |
 | `carol@test.local` | nothing | scratch: the **attendee** in the scheduling suite |
+| `dave@test.local` | one calendar, `Dave Shared`, with one event | the **calendar-only** grantor: shares that calendar with Alice read-only, and no mail |
+| `support@test.local` | `12-shared.eml` in its INBOX, `support-rota.ics` in its calendar | a **group** principal — a mailbox with no credentials of its own, which Alice belongs to |
 
 `Harness::scratch` exposes the two scratch accounts as a pair. They exist because
 some server behaviour cannot be observed without writing to a mailbox: RFC 6638
@@ -194,6 +272,68 @@ assertion on the seeded one.
 Mail older than a sync window cannot be seeded by `APPEND` (the seeder stamps the moment of
 seeding), so a depth test plants it in a scratch account over JMAP with the `receivedAt` it
 needs, which Stalwart also serves as the IMAP `INTERNALDATE`, and removes it when it ends.
+
+### The shared-mailbox fixture: two shares, deliberately unequal
+
+Alice can open two stores besides her own, and they differ in **rights**, because that
+contrast is the point:
+
+- **`support@test.local`** is a `Group` principal (`x:Account/set` with `"@type":"Group"`, and
+  Alice added through `memberGroupIds` on *her* principal) — the vendor-neutral analogue of a
+  Microsoft 365 shared mailbox. Alice holds **every** right on its folders (`rliteswkxpa`), and
+  its INBOX holds one seeded message found in none of hers.
+- **Bob grants Alice `lr`** on his INBOX, with an IMAP `SETACL` in `seed.sh` — nobody but its
+  owner can. Alice holds **read** alone. Bob's INBOX takes the scheduling suite's mail, so it is
+  asserted on only for its **rights**, never its contents.
+
+Both appear in Alice's JMAP session as `accounts` entries with `isPersonal: false` (and give her
+JMAP account a second `Identity`, the group's, listed **first**), and in her IMAP `LIST` under
+the `Shared Folders` prefix her `NAMESPACE` puts in RFC 2342's *Other Users'* position. The
+finding the fixture pins, in both directions: since v1 Stalwart reports `isReadOnly: true` for
+Bob's account, whose one mailbox grants read alone, and `false` for the group's (v0.16 said
+`false` for **both**, so nothing above the folder told them apart). v1 also lists no
+`submission` on Bob's account. The flag is still no substitute for per-folder rights: a share
+mixing a writable and a read-only folder says `false` (observed by hand on v1.0.2; no fixture
+carries that shape). The smoke suite and `provider-jmap`'s `live_shared.rs` assert both values,
+so if Stalwart changes its mind again the rationale in `modeling.md` is revisited rather than
+silently outliving its evidence.
+
+`MYRIGHTS` on the `\Noselect` containers (`Shared Folders`, `Shared Folders/support@test.local`)
+answers `NO Mailbox does not exist.` — they are path components, not mailboxes — and pipelined
+`MYRIGHTS` complete out of order (`imap-smtp.md`). The Dovecot harness carries the same two
+shares with the same owners, so the IMAP contract runs against both (`docker/dovecot/README.md`).
+
+### The shared-calendar fixture: what a store holds is not what it claims
+
+The stores Alice can reach besides her own differ in **what** they hold, because a client
+cannot learn that from the session:
+
+| Store | Mail | Calendars |
+| --- | --- | --- |
+| `support@` (group) | every right | its calendar, every right, `support-rota.ics` |
+| bob | `lr` on his INBOX | none — his calendar home answers `403` |
+| dave | none | `Dave Shared`, read-only (JMAP `shareWith` set as dave in `seed.sh`), `dave-shared.ics` |
+| carol | none | none — not in Alice's session at all |
+
+What `smoke_shared_stores.rs` pins, both directions each:
+
+- **JMAP `accountCapabilities` overclaims.** Bob's, dave's and the group's accounts all list
+  mail *and* calendars. Bob's refuses `Calendar/get` and dave's refuses `Mailbox/get`, each
+  `accountNotSupportedByMethod`. So the only way to learn what a shared account holds is to
+  ask its methods (`docs/spec-deviations.md`).
+- **`ParticipantIdentity/get` answers for the user, not the account.** On dave's and the
+  group's accounts it returns Alice's two identities and never dave's. On bob's it refuses.
+- **A shared calendar arrives unsubscribed** (`isSubscribed: false`) and carries the rights it
+  was shared with in `myRights`. Dave's default calendar is not shared, and is not seen.
+- **Over CalDAV, Alice's principal names her home alone.** `calendar-proxy-read-for` /
+  `-write-for` answer `404` and `group-membership` is empty although she is in the group.
+  `principal-collection-set` is `/dav/pal/`, and a Depth-1 `PROPFIND` there lists every
+  principal she holds *any* share from (bob for his INBOX included, carol not). Their homes
+  answer `403` for bob and carol and `207` for dave and the group. A shared home lists only
+  the collections shared from it, each naming its owner in `DAV:owner`.
+
+The SabreDAV fixture carries the same two stores as calendar-proxy delegations, which
+Stalwart does not implement (`docker/sabredav/README.md`).
 
 ## Rate limiters are disarmed on purpose
 
@@ -231,6 +371,26 @@ in the Stalwart docs). The object name is `MtaInboundThrottle`; guessing at
 configurable". The full object registry is the Stalwart docs' `ref/object` index —
 consult it rather than probing.
 
+### And so is the anonymous HTTP limit
+
+The entrypoint also raises `x:Http`'s **`rateLimitAnonymous`** (100 requests/minute per client
+IP as shipped) and logs `relaxed the anonymous HTTP rate limit`. Every live run spends it, in two
+ways measured on v1.0.2:
+
+- the readiness poll — `Harness::wait_until_ready`, one `GET /healthz/live` per test;
+- the first request of every DAV connection, which `provider-caldav` sends without the
+  credential until the server asks for it (`CredentialScope`, `caldav.md`). Stalwart answers it
+  `401`, and that counts: 60 of them left 40 of the 100. Authenticated requests do not.
+
+One `live_caldav` run fits in the budget; back-to-back runs did not, and once it ran out every
+poll drew `429` (`Retry-After` up to a minute) until the wait timed out with
+`harness ready: Timeout(30s)` — 4 of 5 consecutive runs on v0.16.24 (#333). Polling once per test
+binary would only have moved the failure to the DAV connects, so the fix is the limit. Verified:
+five back-to-back `live_caldav` runs, where the fourth used to fail. `rateLimitAuthenticated`
+(1000/minute) is left as shipped. The smoke test `anonymous_requests_are_not_rationed` sends 150
+unauthenticated requests and fails on a harness started before the change, so a stale container
+says so rather than flaking.
+
 ## The seed dataset — and the invariant each fixture protects
 
 One shared dataset, loaded into `alice@test.local`. Fixtures carry content the
@@ -254,6 +414,7 @@ sequence numbers are deterministic) rather than by searching.
 | `09-jmap-sent.eml`       | `JmapSent` (**APPEND**ed)    | Its own object, and a recipient address used nowhere else in the seed, so the sent-observation assertion cannot be satisfied by another fixture. |
 | `10-report-junk.eml`     | `Reported` (**APPEND**ed)    | The junk/not-junk report tests' own message, on both the JMAP and IMAP side. |
 | `11-report-phishing.eml` | `Reported` (**APPEND**ed)    | A **second** message so the phishing test starts from one carrying neither `$junk` nor `$phishing`. |
+| `12-shared.eml`          | the **`support@` group mailbox's** INBOX | A shared store's sync returns *its* mail and not the credential's: this message is in none of Alice's folders. The group account collects a Sent copy per send-as-group run, so it is asserted on by `Message-ID`, never by count. |
 
 Folders `Archive` and `Projects` exercise non-INBOX mailboxes, and `Archive/Nested` plus
 `Archive/Nested/Deeper` make the list a **tree**: two levels, because one proves only that a
@@ -284,16 +445,36 @@ Two rules that produced this shape, both learned by breaking them:
   report suite's phishing test failed on the runner, and only on the runner, while both
   tests passed locally under `--test-threads=1`.
 
-### Calendar (`seed/calendar/`, via CalDAV into Alice's default calendar)
+### Calendar (`seed/calendar/`, via CalDAV into Alice's `default` and `work` calendars)
 
 | Fixture                  | Invariant it protects |
 | ------------------------ | --------------------- |
 | `one-off.ics`            | A single zoned event with an embedded `VTIMEZONE`; every event materializes occurrences. |
 | `recurring-weekly.ics`   | `RRULE` + `EXDATE` (excluded instance) + `RECURRENCE-ID` (a moved instance): recurrence with exceptions/overrides. |
-| `meeting-attendees.ics`  | `ORGANIZER` + `ATTENDEE` with `ROLE`/`PARTSTAT`/`RSVP`: participants (and the inbound iTIP/iMIP target later). |
-| `virtual-location.ics`   | RFC 7986 `CONFERENCE` (a virtual location / conference link). |
+| `meeting-attendees.ics`  | `ORGANIZER` + `ATTENDEE` with `ROLE`/`PARTSTAT`/`RSVP`: participants (and the inbound iTIP/iMIP target later). Shaped as a Google invitation: `X-GOOGLE-CONFERENCE` and Google's meeting block in the description, read as one detected conference and notes without the block. |
+| `virtual-location.ics`   | RFC 7986 `CONFERENCE`: a join link and two dial-in numbers, one with a PIN after its pause, read as one conference. |
 | `all-day.ics`            | `DTSTART;VALUE=DATE`: zoneless, no DST, never zone-attached. |
 | `floating.ics`           | Floating wall-clock time (no `TZID`, no `Z`): resolves through the observer's zone. |
+
+A **second calendar**, `work` (display name *Work*), is created with `MKCALENDAR` and holds
+`seed/calendar/work/`. Every account a calendar suite reads therefore has more than one
+calendar, so one provider serving them all, each under a scope of its own, is exercised on
+every run rather than assumed. SabreDAV and Nextcloud seed the same pair.
+
+| Fixture                  | Invariant it protects |
+| ------------------------ | --------------------- |
+| `work/planning.ics`      | A zoned event in the second calendar: it syncs under that calendar's scope and names that calendar, never the first. |
+| `work/offsite.ics`       | An all-day event in the second calendar, so the pair is not one shape twice. |
+
+Two more calendar fixtures live in `seed/calendar/shared/` and go into stores that are not
+Alice's (see "The shared-calendar fixture" above). SabreDAV and Nextcloud import only the top
+level and `work/`, so they are not in either server's copy of Alice's calendars; SabreDAV's
+`delegation.php` puts them into its delegating principals' homes instead.
+
+| Fixture                  | Invariant it protects |
+| ------------------------ | --------------------- |
+| `shared/dave-shared.ics` | In dave's `Dave Shared` calendar: a store reached for its calendar alone syncs *its* events. |
+| `shared/support-rota.ics`| In the group's calendar: a writable shared store's events, in none of Alice's calendars. |
 
 These map directly onto the requirements in `providers.md` (Stalwart Test Spine)
 and `calendar-semantics.md` (time model, recurrence subset, iTIP/iMIP).
@@ -335,7 +516,7 @@ run. Non-negotiable:
 See `docker/stalwart/README.md` for the exact commands, host-port table, and
 account list. In short: `docker compose up -d --wait` (self-bootstraps + seeds,
 healthy when ready), export `STALWART_*`, and
-`cargo test -p stalwart-harness --test smoke`.
+`cargo test -p stalwart-harness --test smoke --test smoke_shared_stores`.
 
 ## Gotchas observed against the live server
 
@@ -343,6 +524,15 @@ healthy when ready), export `STALWART_*`, and
   (`--config` parses JSON `DataStore`). Configuration is the `x:Bootstrap/set` /
   `x:Account/set` / `x:NetworkListener/*` registry methods (the `x:` prefix marks
   registry methods; first-class objects like `Principal` are unprefixed).
+- **v1 renamed two fields the entrypoint uses, and they fail differently.**
+  `NetworkListener.tlsImplicit` became `implicitTls`, and the old name is refused
+  loudly (`invalidPatch`, "Invalid key for object"). `Bootstrap.serverHostname` became
+  `defaultHostname`, and that one failed *silently*: the bootstrap-mode check grepped for
+  the field's name, so a fresh v1 server read as already bootstrapped, setup was skipped,
+  and the entrypoint died later on "could not resolve default domain id". The check now
+  matches the singleton's id, which no rename can move. Singleton settings objects
+  (`x:Http`, `x:Jmap`, …) answer `ids: null` with an empty list (observed on v1.0.2);
+  ask for `ids: ["singleton"]`.
 - **`SEARCH HEADER Message-ID` does not match** in Stalwart; the seeder uses
   append-order sequence numbers and the smoke suite searches by `SUBJECT`.
 - **The JMAP session is at `/jmap/session`** (`/.well-known/jmap` 307-redirects

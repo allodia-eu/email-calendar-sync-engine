@@ -31,11 +31,12 @@
 //!
 //! # Built-ins, and the line they do not cross
 //!
-//! Two profiles need no file because they are **this repository's own fixtures**:
-//! `stalwart` (the auto-scheduling harness) and `sabredav` (the no-scheduling fixture). Their
-//! addresses come from `STALWART_HTTP_ADDR` / `SABREDAV_HTTP_ADDR` when set — the same
-//! variables the live tests read — and otherwise from the ports `docker/*/docker-compose.yml`
-//! publishes.
+//! Some profiles need no file because they are **this repository's own fixtures**:
+//! `stalwart` (the auto-scheduling harness), `sabredav` (the no-scheduling fixture) and
+//! `nextcloud` (pointed at its seeded `harness` calendar, since its home has no `default`). Their
+//! addresses come from `STALWART_HTTP_ADDR` / `SABREDAV_HTTP_ADDR` / `NEXTCLOUD_HTTP_ADDR` when
+//! set, the same variables the live tests read, and otherwise from the ports
+//! `docker/*/docker-compose.yml` publishes.
 //!
 //! **Nothing else is built in.** The product core runs *its own* Stalwart harness, on its own
 //! ports, as a deliberately separate compose project — but that is the core's fixture, not
@@ -45,7 +46,7 @@
 
 use std::{collections::BTreeMap, fmt, fs, path::PathBuf};
 
-/// A resolved server: where it is, who we are, and which collection to bind.
+/// A resolved server: where it is, who we are, and which calendar the event commands use.
 #[derive(Debug, Clone)]
 pub(crate) struct Profile {
     /// Where the profile came from, for the banner — a file path, a built-in name, or flags.
@@ -56,8 +57,10 @@ pub(crate) struct Profile {
     pub(crate) user: String,
     /// The password.
     pub(crate) pass: String,
-    /// The collection to bind, when the account's is not called `default`.
+    /// The calendar the event commands use, when it is not the one called `default`.
     pub(crate) calendar: Option<String>,
+    /// Where discovery starts instead of the well-known path: a principal a host stored.
+    pub(crate) start: Option<String>,
 }
 
 /// A profile could not be resolved, with a message naming what to fix.
@@ -94,21 +97,30 @@ fn fixture(var: &str, fallback: &str) -> String {
 
 /// The profiles this repository ships, because they are its own docker fixtures.
 fn built_in(name: &str) -> Option<Profile> {
-    let (url, user, pass) = match name {
+    let (url, user, pass, calendar) = match name {
         "stalwart" => (
             fixture("STALWART_HTTP_ADDR", "127.0.0.1:18080"),
             "carol@test.local",
             "harness-carol-pw",
+            None,
         ),
         "stalwart-organizer" => (
             fixture("STALWART_HTTP_ADDR", "127.0.0.1:18080"),
             "bob@test.local",
             "harness-bob-pw",
+            None,
         ),
         "sabredav" => (
             fixture("SABREDAV_HTTP_ADDR", "127.0.0.1:18081"),
             "alice@test.local",
             "sabredav-alice-pw",
+            None,
+        ),
+        "nextcloud" => (
+            fixture("NEXTCLOUD_HTTP_ADDR", "127.0.0.1:18082"),
+            "alice",
+            "nextcloud-alice-pw",
+            Some("harness"),
         ),
         _ => return None,
     };
@@ -117,12 +129,13 @@ fn built_in(name: &str) -> Option<Profile> {
         url,
         user: user.to_owned(),
         pass: pass.to_owned(),
-        calendar: None,
+        calendar: calendar.map(str::to_owned),
+        start: None,
     })
 }
 
 /// The built-in profile names, for `profiles` and for an error message that can suggest one.
-pub(crate) const BUILT_INS: [&str; 3] = ["stalwart", "stalwart-organizer", "sabredav"];
+pub(crate) const BUILT_INS: [&str; 4] = ["stalwart", "stalwart-organizer", "sabredav", "nextcloud"];
 
 /// `KEY=value` lines. Comments, blanks, `export ` and surrounding quotes are tolerated;
 /// nothing is interpolated and nothing is executed — a credentials file is a few lines, and a
@@ -140,9 +153,8 @@ fn parse(text: &str) -> BTreeMap<String, String> {
         };
         let value = value.trim();
         let value = value
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+            .strip_circumfix('"', '"')
+            .or_else(|| value.strip_circumfix('\'', '\''))
             .unwrap_or(value);
         values.insert(key.trim().to_owned(), value.to_owned());
     }
@@ -202,6 +214,7 @@ pub(crate) fn load(name: &str) -> Result<Profile, ProfileError> {
         user: require("USER")?,
         pass: require("PASS")?,
         calendar: values.get("CALENDAR").cloned(),
+        start: None,
     })
 }
 

@@ -35,6 +35,12 @@ Stalwart harness advertises `https://mail.test.local/jmap/`, which nothing can r
 `--trust-advertised` to take the document literally, which is correct for a provider that
 genuinely serves its API from another origin.
 
+⚠️ **Fastmail needs `--trust-advertised`.** It serves blobs from an origin of its own, and a
+`downloadUrl` rebased onto `api.fastmail.com` answers `200` with an HTML page. Such a run once
+reported 46 to 114 "bodies" a second that were the page; real downloads there run at about 25 a
+second per account. `bench` now counts a `text/html` answer as a failure, so the mistake shows as
+failures rather than as a fast server.
+
 ## Usage
 
 Run from the repo root:
