@@ -103,7 +103,17 @@ impl Categories {
                 None,
                 serde_json::to_vec(&Value::Object(body)).map_err(GraphError::from)?,
             )
-            .await?;
+            .await
+            .map_err(|err| match err {
+                // `ErrorIrresolvableConflict`, sent with no `If-Match` asked for: the message
+                // changed after the categories above were read. Exchange answers it for a Sent
+                // copy it is still writing a moment after the copy appears (live), so another
+                // attempt reads them again rather than settling the edit.
+                GraphError::Status { status: 412, .. } => {
+                    ProviderError::retryable("the message changed while its categories were set")
+                }
+                other => other.into(),
+            })?;
         ProviderKey::new(id).map_err(|err| ProviderError::permanent(err.to_string()))
     }
 

@@ -210,9 +210,11 @@ advertise `sent_copy_keywords` (`crate::categories`).
   `internetMessageId` the MIME carried (`$filter=internetMessageId eq '<…>'`; a live mailbox shows
   it within about three seconds), answers **retryable** while it is not there, so the outbox tries
   again on its own backoff, and gives it the category with a `PATCH {categories}` that keeps any
-  the person set. The edit resolves to the copy's own id. The same `SetKeywords` sets or clears a
-  named keyword on any synced message, beside `$seen`/`$flagged` in one `PATCH`; a keyword without
-  a registered name is still refused.
+  the person set. That `PATCH` can meet `412 ErrorIrresolvableConflict` though it sends no
+  `If-Match`: Exchange is still writing the copy a moment after it appears (live). The categories
+  it read are then stale, so that is retryable too. The edit resolves to the copy's own id. The
+  same `SetKeywords` sets or clears a named keyword on any synced message, beside
+  `$seen`/`$flagged` in one `PATCH`; a keyword without a registered name is still refused.
 - **One category per keyword, whatever the device's language.** Before its first tag an adapter
   asks Sent Items for a message already carrying any of the keyword's names
   (`categories/any(c:c eq '…') or …`) and settles on the name it finds, creating the category

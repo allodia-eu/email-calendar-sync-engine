@@ -45,6 +45,7 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/message_reported.json` | `POST {beta}/messages/{id}/reportMessage` `{ReportAction,IsMessageMoveRequested}` | the report echo — a **`reportMessageCommandResult`**, not the `message` object the docs describe (see Finding 17) |
 | `error/report_bad_action.json` | the same call with `ReportAction: unknownFutureValue` | the `400 RequestBodyRead` for a `reportAction` outside the three that exist |
 | `error/bad_request.json` / `unauthorized.json` | a 400 and a 401 | `error` envelope → `FailureClass` mapping |
+| `error/irresolvable_conflict.json` | `PATCH /me/messages/{id}` `{categories}` on a Sent copy found by its `internetMessageId` a moment after the send, with no `If-Match` | the `412 ErrorIrresolvableConflict` Exchange answers while it is still writing the copy: the categories edit retries rather than settling. Nothing identifies the account |
 | `mail/shared_mailbox_probe.json` | `GET /users/{shared}/mailFolders/inbox?$select=id` | the shared-mailbox probe's success shape — a **work/school** tenant, so the address is scrubbed to `shared@example.test` (percent-encoded in `@odata.context`, as Graph writes it) |
 | `mail/own_inbox_probe.json` | `GET /me/mailFolders/inbox?$select=id` | the id the own-mailbox check compares against; Graph names the user in `@odata.context` by **object id**, not address, so that is scrubbed too |
 | `error/shared_mailbox_invalid_user.json` | the probe, for an address not in the tenant | `404 ErrorInvalidUser` |

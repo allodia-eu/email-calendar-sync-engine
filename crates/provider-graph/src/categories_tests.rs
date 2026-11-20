@@ -226,6 +226,23 @@ async fn a_refused_patch_is_the_edit_s_failure() {
     assert_ne!(err.class(), FailureClass::Retryable);
 }
 
+/// Exchange's answer to a `PATCH` on a message that changed since it was read, as a live
+/// mailbox gave it for a Sent copy it was still writing a moment after the copy appeared.
+const IRRESOLVABLE_CONFLICT: &str =
+    include_str!("../tests/fixtures/error/irresolvable_conflict.json");
+
+/// The categories were read from a version of the message that has since moved on, so the edit
+/// is tried again, reading them afresh, rather than settled as a conflict.
+#[tokio::test]
+async fn a_message_that_changed_under_the_patch_is_retried() {
+    let conflict = Err((412, captured(IRRESOLVABLE_CONFLICT)));
+    let (client, _) = client(none(), found(&[]), none(), conflict);
+    let err = edit_mail(&client, &Categories::new(names()), &tag(placeholder()))
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), FailureClass::Retryable, "{err}");
+}
+
 /// A keyword the host gave no name is refused before any request, as it always was: Graph has
 /// nowhere to keep it, and a silent no-op would read as done.
 #[tokio::test]
