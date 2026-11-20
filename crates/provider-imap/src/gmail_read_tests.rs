@@ -89,6 +89,24 @@ async fn a_search_joins_every_criterion_it_was_given() {
 }
 
 #[tokio::test]
+async fn a_search_for_one_label_between_two_days_names_both() {
+    let (mut connection, recorded) = logged_in(&["* SEARCH 4\r\na2 OK SEARCH completed\r\n"]).await;
+    let query = GmailQuery {
+        since: time::Date::from_calendar_date(2020, time::Month::April, 1).ok(),
+        before: time::Date::from_calendar_date(2026, time::Month::April, 1).ok(),
+        label: Some("\\Sent".to_owned()),
+        ..GmailQuery::default()
+    };
+    assert_eq!(search(&mut connection, &query).await.unwrap(), vec![4]);
+    assert!(
+        written(&recorded)
+            .contains(r#"a2 UID SEARCH SINCE 1-Apr-2020 BEFORE 1-Apr-2026 X-GM-LABELS "\\Sent""#),
+        "{}",
+        written(&recorded)
+    );
+}
+
+#[tokio::test]
 async fn a_search_within_no_uids_asks_the_server_nothing() {
     let (mut connection, recorded) = logged_in(&[]).await;
     let query = GmailQuery {

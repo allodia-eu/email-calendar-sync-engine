@@ -12,7 +12,7 @@
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey},
     mail::{MailStateChange, Mailbox, Message},
-    sync::{SyncScope, SyncState, SyncUpdate, SyncWindow},
+    sync::{MailboxWindows, SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider,
@@ -107,7 +107,7 @@ impl Provider for FolderProvider {
         &'a self,
         _account: &'a AccountId,
         _cursor: Option<&'a SyncState>,
-        _window: SyncWindow,
+        _window: MailboxWindows,
         _fetch_batch: usize,
         _chunk_size: usize,
     ) -> EmailStream<'a> {

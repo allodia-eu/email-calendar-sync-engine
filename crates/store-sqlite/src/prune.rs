@@ -16,6 +16,10 @@
 //! is kept: an undated message is not provably out of window, and a prune must not
 //! over-delete.
 //!
+//! A mailbox the host holds further back ([`MailboxWindows::deepen`]) keeps its older mail: a
+//! message is kept when the window of any mailbox it is filed in admits it, the same rule a sync
+//! admits it by, so a depth-reduction prune never deletes what a deeper pass fetched.
+//!
 //! Like [`forget_account`](crate::SqliteStore::forget_account) it is not lease-gated —
 //! the store's single connection serializes it atomically against any in-flight sync,
 //! and it advances no cursor, so a later delta sync resumes unaffected. It reuses the
@@ -27,12 +31,12 @@
 
 use engine_core::{
     ids::AccountId,
-    sync::{SearchDomain, SyncWindow},
+    sync::{MailboxWindows, SearchDomain},
 };
 use engine_store::{Clock, PruneReport, Result};
 use rusqlite::{Connection, Transaction};
 
-use crate::{SqliteStore, convert, scope_ops};
+use crate::{SqliteStore, convert, mail_ops, scope_ops};
 
 impl<C: Clock> SqliteStore<C> {
     /// Removes `account`'s locally-stored mail whose date falls **before** `window`'s
@@ -42,8 +46,13 @@ impl<C: Clock> SqliteStore<C> {
     /// holds even without a provider round trip, producing the same local state a
     /// narrower-window re-snapshot would (`store-and-sync.md`).
     ///
-    /// An unbounded window (`SyncWindow::full`) has no floor, so nothing is outside it
-    /// and this is a no-op. Each removed message takes its derived search/thread/
+    /// `window` is a plain [`SyncWindow`](engine_core::sync::SyncWindow) for the whole
+    /// account, or [`MailboxWindows`] when some mailboxes are held further back: a message
+    /// filed in one of those is kept while that mailbox's window admits it. Pass the same
+    /// windows the account syncs under.
+    ///
+    /// An unbounded account window (`SyncWindow::full`) has no floor, so nothing is outside
+    /// it and this is a no-op. Each removed message takes its derived search/thread/
     /// occurrence rows with it (the same tombstone a snapshot reconciliation applies);
     /// the lease-free cached body and raw-source blob are left to eviction/`vacuum`. No
     /// sync cursor is touched, so the next network sync resumes normally.
@@ -54,17 +63,14 @@ impl<C: Clock> SqliteStore<C> {
     pub async fn prune_account_mail_outside_window(
         &self,
         account: &AccountId,
-        window: SyncWindow,
+        window: impl Into<MailboxWindows>,
     ) -> Result<PruneReport> {
-        let Some(floor) = window.floor() else {
+        let windows = window.into();
+        if !windows.account().is_bounded() {
             return Ok(PruneReport::default());
-        };
-        // The stored `date_utc` is `YYYY-MM-DDT…Z`; compare its 10-char UTC date prefix
-        // against the floor's canonical `YYYY-MM-DD`, so the check is date-granular and
-        // immune to any sub-second component the timestamp might carry.
-        let floor = floor.to_string();
+        }
         let account = account.clone();
-        self.call(move |conn| prune_account_mail(conn, &account, &floor))
+        self.call(move |conn| prune_account_mail(conn, &account, &windows))
             .await
     }
 }
@@ -75,8 +81,15 @@ impl<C: Clock> SqliteStore<C> {
 fn prune_account_mail(
     conn: &mut Connection,
     account: &AccountId,
-    floor: &str,
+    windows: &MailboxWindows,
 ) -> Result<PruneReport> {
+    let Some(floor) = windows.account().floor() else {
+        return Ok(PruneReport::default());
+    };
+    // The stored `date_utc` is `YYYY-MM-DDT…Z`; compare its 10-char UTC date prefix
+    // against the floor's canonical `YYYY-MM-DD`, so the check is date-granular and
+    // immune to any sub-second component the timestamp might carry.
+    let floor = floor.to_string();
     let tx = conn.transaction().map_err(convert::backend)?;
     let mut messages_removed = 0;
     for scope in scope_ops::account_scopes(&tx, account)? {
@@ -84,7 +97,7 @@ fn prune_account_mail(
             continue;
         }
         let scope_key = convert::scope_key(&scope);
-        for key in out_of_window_keys(&tx, &scope_key, floor)? {
+        for key in out_of_window_keys(&tx, &scope_key, &floor, windows)? {
             if scope_ops::tombstone(&tx, &scope_key, &key)? {
                 messages_removed += 1;
             }
@@ -94,22 +107,47 @@ fn prune_account_mail(
     Ok(PruneReport { messages_removed })
 }
 
-/// The provider keys of a scope's mail dated strictly before `floor` (a `YYYY-MM-DD`
-/// UTC date). Rows with a `NULL` `date_utc` are excluded — an undated message is not
-/// provably out of window, so it is kept. Collected up front so the read statement is
-/// released before the tombstone deletes run against the same transaction.
-fn out_of_window_keys(tx: &Transaction<'_>, scope_key: &str, floor: &str) -> Result<Vec<String>> {
+/// The provider keys of a scope's mail dated strictly before the account's `floor` (a
+/// `YYYY-MM-DD` UTC date) that no deeper mailbox window holds. Rows with a `NULL` `date_utc`
+/// are excluded: an undated message is not provably out of window, so it is kept. Collected
+/// up front so the read statement is released before the tombstone deletes run against the
+/// same transaction.
+fn out_of_window_keys(
+    tx: &Transaction<'_>,
+    scope_key: &str,
+    floor: &str,
+    windows: &MailboxWindows,
+) -> Result<Vec<String>> {
     let mut stmt = tx
         .prepare(
-            "SELECT provider_key FROM message
-             WHERE scope_key = ?1 AND date_utc IS NOT NULL AND substr(date_utc, 1, 10) < ?2",
+            "SELECT m.provider_key, m.date_utc,
+                    (SELECT group_concat(b.value, char(10)) FROM membership b
+                      WHERE b.scope_key = m.scope_key AND b.provider_key = m.provider_key
+                        AND b.kind = 'mailbox')
+               FROM message m
+              WHERE m.scope_key = ?1 AND m.date_utc IS NOT NULL
+                AND substr(m.date_utc, 1, 10) < ?2",
         )
         .map_err(convert::backend)?;
     let rows = stmt
-        .query_map((scope_key, floor), |r| r.get::<_, String>(0))
+        .query_map((scope_key, floor), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(convert::backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(convert::backend)?;
-    rows.collect::<rusqlite::Result<Vec<String>>>()
-        .map_err(convert::backend)
+    let mut keys = Vec::new();
+    for (key, date, mailboxes) in rows {
+        let date = convert::parse_instant(&date)?;
+        if !windows.admits(&mail_ops::mailboxes(mailboxes.as_deref()), Some(date)) {
+            keys.push(key);
+        }
+    }
+    Ok(keys)
 }
 
 #[cfg(test)]

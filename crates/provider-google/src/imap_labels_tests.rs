@@ -28,6 +28,18 @@ fn state(labels: &[&str], flags: &[&str]) -> GmailState {
 }
 
 #[test]
+fn a_label_is_named_back_as_imap_names_it() {
+    assert_eq!(imap_label_name("SENT", &ids()).as_deref(), Some("\\Sent"));
+    assert_eq!(imap_label_name("INBOX", &ids()).as_deref(), Some("\\Inbox"));
+    assert_eq!(
+        imap_label_name("Label_7", &ids()).as_deref(),
+        Some("Reis/été")
+    );
+    assert_eq!(imap_label_name("Label_404", &ids()), None);
+    assert_eq!(imap_label_name("ALL_MAIL", &ids()), None);
+}
+
+#[test]
 fn imap_says_in_three_places_what_the_api_says_in_one() {
     let got = label_ids(
         &state(

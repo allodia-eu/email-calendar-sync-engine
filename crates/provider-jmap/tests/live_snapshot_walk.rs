@@ -251,7 +251,7 @@ async fn a_first_sync_misses_nothing_when_another_device_deletes_mid_way() {
     mailbox.wait_until("sorted the new messages first", |listed| listed == created);
     let account = engine_core::ids::AccountId::try_from("live").unwrap();
 
-    let mut stream = provider.stream_email(&account, None, SyncWindow::full(), PAGE, 0);
+    let mut stream = provider.stream_email(&account, None, SyncWindow::full().into(), PAGE, 0);
     let first = stream
         .next()
         .await
@@ -326,7 +326,7 @@ async fn a_message_the_server_sorts_late_is_not_lost() {
     let mut raced = None;
     for second in 0..ATTEMPTS {
         let late = mailbox.create_newest(second);
-        let mut stream = provider.stream_email(&account, None, SyncWindow::full(), PAGE, 0);
+        let mut stream = provider.stream_email(&account, None, SyncWindow::full().into(), PAGE, 0);
         let first = stream
             .next()
             .await

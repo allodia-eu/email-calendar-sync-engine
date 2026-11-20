@@ -9,9 +9,9 @@ use core::{future::Future, pin::Pin};
 
 use async_trait::async_trait;
 use engine_core::{
-    ids::ProviderKey,
+    ids::{MailboxId, ProviderKey},
     sync::{ObjectKind, SyncObject, SyncScope, SyncState},
-    time::{ExpansionWindow, Horizon},
+    time::{ExpansionWindow, Horizon, UtcDateTime},
     version::CollectionTag,
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
@@ -212,6 +212,14 @@ impl<S: StoreRead> StoreRead for BeforeClaim<S> {
         limit: usize,
     ) -> Result<Vec<MailListRow>> {
         self.inner.list_mail(accounts, select, limit).await
+    }
+
+    async fn oldest_in_mailbox(
+        &self,
+        account: &AccountId,
+        mailbox: &MailboxId,
+    ) -> Result<Option<UtcDateTime>> {
+        self.inner.oldest_in_mailbox(account, mailbox).await
     }
 
     async fn scope_occurrences(
