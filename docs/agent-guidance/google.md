@@ -182,8 +182,15 @@ part way; `reconcile;h=…` is a backfill finished and not yet reconciled.
   bounds everything the account does at once rather than one page's fan-out at a time — a
   body warm overlapping a backfill used to be able to exceed it. A `SyncWindow` floor windows
   the enumeration to `q: after:<epoch>`. A label the host holds further back (`MailboxWindows`)
-  is not expressed in that query: the adapter receives the account's window
-  (`store-and-sync.md`, known gap).
+  is a listing of its own, after the account's: `labelIds=<label>` with
+  `q: after:<its floor> before:<the account's>` (`window_listing.rs`), so only that label's
+  older mail is fetched. The backfill cursor names the listing it is in
+  (`backfill;h=…;l=<label>;p=…`), and the reconcile lists every listing. Observed: an
+  unknown `labelIds` lists nothing rather than failing, and `after:` and `before:` both
+  include a message dated exactly on their epoch, so the boundary is listed twice rather
+  than missed. The IMAP pass searches each listing in every folder, a label by the name
+  `X-GM-LABELS` gives it with `SINCE` and `BEFORE`, and Spam and Trash as their own folders
+  (`store-and-sync.md`).
 
   It is **additive** and checkpointed after every page with the token of the next, because at
   20 units a message a large mailbox takes many passes (about 270 messages a minute under the

@@ -453,11 +453,14 @@ and the two are different jobs:
   snapshot/backfill: IMAP `UID SEARCH SINCE`, JMAP an `Email/query` `after`, Graph a
   `receivedDateTime ge` `$filter`, Gmail `q: after:`. **No delta can carry one** — a
   `deltaLink`, a `startHistoryId` and `Email/changes` all take a cursor, not a query.
-- **Where a pass resumes.** The orchestrator stores each email cursor with the floor it was
-  fetched under (`engine_sync::window_cursor`), the floor of the window that scope fetches
-  under (a deepened folder's own, below), and a pass asking for an earlier floor starts
-  the folder over, since the cursor knows nothing of the mail between the two. A later floor
-  resumes: a host computes the floor from today, so it moves on every day.
+- **Where a pass resumes.** The orchestrator stores each email cursor with the depth it was
+  fetched under (`engine_sync::window_cursor`): a folder-bound scope's folder floor, an
+  account-wide scope's account floor and the floor of every mailbox held further back
+  (below). A pass asking for an earlier floor, for the account or for any such mailbox,
+  starts the scope over, since the cursor knows nothing of the mail between the two. A later
+  floor resumes: a host computes the floor from today, so it moves on every day. The record
+  is what starts the scope over; clearing the cursors (`clear_mail_cursors`) is what stops a
+  pass already running under the old window, at its next commit, rather than after it ends.
 - **What a `PassMode::Additive` delta stores.** The orchestrator drops any incoming message
   the window does not admit (`SyncWindow::admits`) before the apply. A delta's "new arrival"
   is new to *us*, not recent: IMAP has no in-place edit, so filing a three-year-old message
@@ -486,8 +489,17 @@ rather than widening every mailbox. An override only deepens: a mailbox's window
 of the account's and its own. One rule decides, everywhere depth is decided: **a message is
 inside when the window of any mailbox it is filed in admits it** (`MailboxWindows::admits`).
 
-- **What is fetched.** A folder-bound scope (IMAP, Graph) fetches under its own folder's
-  window (`window_for`), so no adapter changes: each already takes the window per call.
+- **What is fetched.** `Provider::stream_email` takes the `MailboxWindows`, and a snapshot
+  or backfill fetches what any mailbox's window admits and no more. A folder-bound scope
+  (IMAP, Graph) fetches under its own folder's window (`window_for`). An account-wide scope
+  fetches the account's window and, beside it, each deepened mailbox's own
+  (`MailboxWindows::deepened`): JMAP joins `{after}` and `{inMailbox, after}` with an `OR`
+  in its one `Email/query`; Gmail lists the account and then each deepened label alone
+  (`labelIds`, `q: after: before:` over the API; `X-GM-LABELS` with `SINCE`/`BEFORE` in each
+  folder over IMAP, Spam and Trash being folders of their own). Deepening Sent never fetches
+  the account's older mail as a whole. A mailbox the server does not have is not fetched
+  further back: Gmail lists an unknown `labelIds` as empty, and the IMAP path has no name to
+  search it by.
 - **What an additive chunk stores.** Judged per message, by its own mailboxes. This is what
   keeps a deeper pass's mail: a fresh IMAP backfill commits its older groups as *additive*
   chunks before its completing reconcile, so judging them by the account window would drop the
@@ -496,20 +508,15 @@ inside when the window of any mailbox it is filed in admits it** (`MailboxWindow
   so a depth-reduction prune never deletes what a deeper pass fetched.
 - **Recipient coverage** records the **account** window: it claims how far back every
   mailbox's recipients were observed, which a deeper Sent does not make true.
-- **The deeper pass starts on its own.** A folder-bound scope stamps its cursor with the floor
-  of its own folder's window (`window_cursor`, above), so the next pass after a mailbox is
-  deepened asks for an earlier floor and starts that folder over, while every other folder
-  resumes. A host does not clear the mail cursors to deepen a mailbox; an account-wide scope
-  fetches under the account window either way (below).
-
-⚠️ **Known gap: an account-wide mail scope (JMAP, Gmail) fetches under the account window.**
-One enumeration serves every mailbox and `Provider::stream_email` takes a single `SyncWindow`,
-so the adapter cannot be told that one mailbox reaches further back. On those providers a
-deepened mailbox's older mail is not fetched, and a re-snapshot's reconcile tombstones what a
-delta admitted under the override. Deltas and the prune already apply the rule per message;
-closing the gap means handing the adapter the per-mailbox windows (a JMAP `Email/query`
-`OR` of `after` and `inMailbox`, a Gmail query per deepened label), which changes the
-`Provider` trait.
+- **The deeper pass starts on its own.** Every cursor records the depth it was fetched under
+  (`window_cursor`, above), so the next pass after a mailbox is deepened starts over the one
+  scope that fetches it: that folder on IMAP and Graph, while every other folder resumes; the
+  account's one scope on JMAP and Gmail, whose snapshot or backfill then fetches the account's
+  window again beside the deepened mailbox's older mail. That is the price of one
+  enumeration serving every mailbox, and it is the same price widening the account pays. A
+  host does not clear the mail cursors to deepen a mailbox; a pass already running finishes
+  under the windows it began with, and the next one starts over. Holding a mailbox less far back,
+  or no longer at all, resumes; what the narrower window no longer wants stays until a prune.
 
 **Change events (`SyncObserver` / `SyncCommit`).** After every committed chunk the
 orchestrator calls the caller's `SyncObserver::committed` with a `SyncCommit { scope,
