@@ -102,6 +102,11 @@ pub struct GmailQuery {
     pub from_uid: Option<u32>,
     /// Only messages that arrived on or after this day (`SINCE`).
     pub since: Option<time::Date>,
+    /// Only messages that arrived before this day (`BEFORE`).
+    pub before: Option<time::Date>,
+    /// Only messages carrying this label (`X-GM-LABELS`), named as IMAP names it: a system
+    /// label with a backslash (`\Sent`), one of the user's by its name.
+    pub label: Option<String>,
     /// Only messages Gmail's own search matches (`X-GM-RAW`), e.g. `category:social`.
     pub raw: Option<String>,
 }

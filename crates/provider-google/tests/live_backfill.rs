@@ -64,7 +64,7 @@ async fn live_a_backfill_stopped_after_a_page_resumes_at_its_token() {
 
     // The first pass, dropped at its first checkpoint.
     let mut first = Vec::new();
-    let mut stream = provider.stream_email(&account, None, SyncWindow::full(), 0, 0);
+    let mut stream = provider.stream_email(&account, None, SyncWindow::full().into(), 0, 0);
     let checkpoint: SyncState = loop {
         let chunk = stream
             .next()
@@ -87,7 +87,7 @@ async fn live_a_backfill_stopped_after_a_page_resumes_at_its_token() {
 
     // The second pass, from that checkpoint, to the end of the window.
     let rest: Vec<EmailChunk> = provider
-        .stream_email(&account, Some(&checkpoint), SyncWindow::full(), 0, 0)
+        .stream_email(&account, Some(&checkpoint), SyncWindow::full().into(), 0, 0)
         .map(|chunk| chunk.expect("a chunk"))
         .collect()
         .await;

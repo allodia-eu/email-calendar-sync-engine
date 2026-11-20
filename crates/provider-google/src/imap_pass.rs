@@ -7,7 +7,8 @@
 //!
 //! - **Snapshot** (no cursor of this mode, or a folder renumbered, appeared or gone): every message
 //!   in the window, newest first, as one reconcile, so whatever the store holds that the server no
-//!   longer has is removed at the end.
+//!   longer has is removed at the end. The window is the account's listing and each label held
+//!   further back (`crate::window_listing`), searched in each folder and joined.
 //! - **Delta**: the messages that arrived (a UID at or above the last `UIDNEXT`), and the state of
 //!   every older one changed since the last mod-sequence (`CHANGEDSINCE`). Gmail offers no
 //!   `QRESYNC`, so nothing says what was removed; the counts do instead. A folder holding fewer
@@ -15,17 +16,23 @@
 //!   the ids in the window. A message moved between the three keeps its Gmail id, so it is listed
 //!   where it now is and survives the reconcile as the move it was.
 
-use engine_core::{ids::ProviderKey, mail::Message, sync::SyncState, time::CalendarDate};
+use engine_core::{
+    ids::ProviderKey,
+    mail::Message,
+    sync::{MailboxWindows, SyncState},
+    time::CalendarDate,
+};
 use engine_provider::{EmailChunk, EmailStream, PassMode, ProviderResult, split_page};
 use futures_util::{StreamExt, future::try_join_all, stream};
 use provider_imap::{GmailFolder, GmailFolderState, GmailQuery};
 
 use crate::{
     imap_cursor::{FolderMark, ImapCursor, index},
-    imap_labels::{LabelIds, key_of, message_of, state_change_of},
+    imap_labels::{LabelIds, imap_label_name, key_of, message_of, state_change_of},
     imap_mail::ImapMail,
     named_labels::{Labels, NamedLabels},
     transport::GoogleClient,
+    window_listing::{Listing, listings},
 };
 
 /// UIDs read per metadata request, newest first.
@@ -42,11 +49,11 @@ pub(crate) fn stream<'a>(
     client: &'a GoogleClient,
     labels: &'a Labels,
     cursor: Option<&SyncState>,
-    floor: Option<CalendarDate>,
+    window: &MailboxWindows,
     chunk_size: usize,
 ) -> EmailStream<'a> {
     let previous = cursor.and_then(ImapCursor::read);
-    let since = floor.and_then(day_of);
+    let listed = listings(window);
     Box::pin(async_stream::try_stream! {
         let named = labels.resolved(client).await?;
         let ids = LabelIds::read(client).await?;
@@ -56,7 +63,7 @@ pub(crate) fn stream<'a>(
             now[index(folder)] = state;
         }
         let next = ImapCursor(now.map(|state| state.map(FolderMark::from)));
-        let reading = Reading { imap, ids: &ids, named: &named, since };
+        let reading = Reading { imap, ids: &ids, named: &named, listed: &listed };
 
         match previous.filter(|previous| same_folders(previous, &next)) {
             None => {
@@ -150,16 +157,21 @@ struct Reading<'a> {
     imap: &'a dyn ImapMail,
     ids: &'a LabelIds,
     named: &'a NamedLabels,
-    since: Option<time::Date>,
+    listed: &'a [Listing],
 }
 
 impl Reading<'_> {
-    /// The sync window.
-    fn window(&self) -> GmailQuery {
-        GmailQuery {
-            since: self.since,
-            ..GmailQuery::default()
+    /// The UIDs in the window: every listing searched in `folder`, joined, ascending.
+    async fn search_window(&self, folder: GmailFolder, validity: u32) -> ProviderResult<Vec<u32>> {
+        let mut uids = Vec::new();
+        for listing in self.listed {
+            if let Some(query) = query_in(listing, folder, self.ids) {
+                uids.extend(self.imap.search(folder, validity, &query).await?);
+            }
         }
+        uids.sort_unstable();
+        uids.dedup();
+        Ok(uids)
     }
 
     /// The UIDs in the window; nothing for a folder that holds nothing.
@@ -171,9 +183,7 @@ impl Reading<'_> {
         if state.exists == 0 {
             return Ok(Vec::new());
         }
-        self.imap
-            .search(folder, state.uid_validity, &self.window())
-            .await
+        self.search_window(folder, state.uid_validity).await
     }
 
     /// The messages `uids` name, as the API pass would write them.
@@ -200,7 +210,7 @@ impl Reading<'_> {
         folder: GmailFolder,
         validity: u32,
     ) -> ProviderResult<Vec<ProviderKey>> {
-        let uids = self.imap.search(folder, validity, &self.window()).await?;
+        let uids = self.search_window(folder, validity).await?;
         let mut keys = Vec::with_capacity(uids.len());
         for (_, gmail_id) in self.imap.ids(folder, validity, &uids).await? {
             keys.push(key_of(gmail_id)?);
@@ -227,7 +237,28 @@ fn same_folders(previous: &ImapCursor, next: &ImapCursor) -> bool {
     })
 }
 
-/// A sync window's first day as IMAP's `SINCE` takes it.
+/// What `listing` asks of `folder`, or `None` when the folder holds none of it. Spam and Trash
+/// are folders of their own over IMAP, so a listing of either is that folder whole; any other
+/// label is searched by the name IMAP gives it, in every folder, as the API lists it with spam
+/// and trash included. A label the account does not have is searched nowhere.
+fn query_in(listing: &Listing, folder: GmailFolder, ids: &LabelIds) -> Option<GmailQuery> {
+    let days = GmailQuery {
+        since: listing.after.and_then(day_of),
+        before: listing.before.and_then(day_of),
+        ..GmailQuery::default()
+    };
+    match listing.label.as_deref() {
+        None => Some(days),
+        Some("SPAM") => (folder == GmailFolder::Spam).then_some(days),
+        Some("TRASH") => (folder == GmailFolder::Trash).then_some(days),
+        Some(label) => Some(GmailQuery {
+            label: Some(imap_label_name(label, ids)?),
+            ..days
+        }),
+    }
+}
+
+/// A sync window's day as IMAP's `SINCE` and `BEFORE` take it.
 fn day_of(date: CalendarDate) -> Option<time::Date> {
     let month = time::Month::try_from(date.month()).ok()?;
     time::Date::from_calendar_date(date.year(), month, date.day()).ok()

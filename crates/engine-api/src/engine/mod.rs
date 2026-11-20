@@ -27,6 +27,7 @@ mod contact_reads;
 mod contacts;
 mod forget;
 mod identities;
+mod mailbox_reads;
 mod mailbox_writes;
 mod reads;
 mod shared_accounts;
@@ -37,6 +38,7 @@ pub use calendar_writes::{CalendarDelete, CalendarWrite, Reconciled};
 pub use contacts::{
     ContactDelete, ContactReconciled, ContactWrite, PeoplePage, PeopleQuery, RecipientSuggestions,
 };
+pub use mailbox_reads::MailboxSpan;
 pub use mailbox_writes::MailboxWrite;
 pub use writes::queued_draft;
 

@@ -5,6 +5,8 @@
 //!   checkpointed with the token of the next, and a delta from the cursor's historyId before every
 //!   page but a fresh backfill's first, so mail arriving during a backfill of hours is not held
 //!   back until it ends. Additive throughout: nothing is tombstoned, so a pass may stop anywhere.
+//!   The window is the account's listing and then each label held further back
+//!   (`crate::window_listing`), one after the other, and the cursor names the one it is in.
 //! - **Reconcile** (every page fetched): the window's ids listed and nothing else, so the store
 //!   tombstones what the server no longer has. A listing costs 5 units for up to 500 ids and a
 //!   message 20 (`crate::quota`), so this costs a fraction of the backfill, and it is a pass of its
@@ -13,7 +15,11 @@
 //! A backfill is how a first sync runs, and how a sync restarts once Gmail has aged the stored
 //! historyId out of its window.
 
-use engine_core::{error::FailureClass, ids::ProviderKey, sync::SyncState, time::CalendarDate};
+use engine_core::{
+    error::FailureClass,
+    ids::ProviderKey,
+    sync::{MailboxWindows, SyncState},
+};
 use engine_provider::{EmailChunk, EmailStream, PageToken, PassMode, split_page};
 use serde_json::Value;
 
@@ -24,6 +30,7 @@ use crate::{
     json::{opt_str, req_str},
     named_labels::Labels,
     transport::GoogleClient,
+    window_listing::{Listing, listings},
 };
 
 /// Ids per listing in the reconcile: Gmail's largest page, at the same 5 units as any other.
@@ -34,13 +41,31 @@ pub(crate) fn stream<'a>(
     client: &'a GoogleClient,
     labels: &'a Labels,
     cursor: Option<&SyncState>,
-    floor: Option<CalendarDate>,
+    window: &MailboxWindows,
     chunk_size: usize,
 ) -> EmailStream<'a> {
+    let listed = listings(window);
     match cursor.and_then(GmailCursor::read) {
-        Some(GmailCursor::Reconcile { history }) => reconcile(client, history, floor),
-        start => additive(client, labels, start, floor, chunk_size),
+        Some(GmailCursor::Reconcile { history }) => reconcile(client, history, listed),
+        start => additive(client, labels, start, listed, chunk_size),
     }
+}
+
+/// Where a backfill stands: the listing it is in, by its index in the window's, and the page
+/// that listing goes on from (`None` is its first).
+type Position = (usize, Option<PageToken>);
+
+/// Where a backfill stored as in `label` at `page` goes on, among `listed`. A listing the window
+/// no longer holds (a label no longer held further back) is passed over for the next one in
+/// order, and `None` is a backfill with no listing left.
+fn position(listed: &[Listing], label: Option<&str>, page: Option<PageToken>) -> Option<Position> {
+    if let Some(at) = listed.iter().position(|l| l.label.as_deref() == label) {
+        return Some((at, page));
+    }
+    let at = listed
+        .iter()
+        .position(|l| l.label.as_deref().is_some_and(|l| Some(l) > label))?;
+    Some((at, None))
 }
 
 /// A delta, or a backfill carried on from where `start` left it.
@@ -48,18 +73,24 @@ fn additive<'a>(
     client: &'a GoogleClient,
     labels: &'a Labels,
     start: Option<GmailCursor>,
-    floor: Option<CalendarDate>,
+    listed: Vec<Listing>,
     chunk_size: usize,
 ) -> EmailStream<'a> {
     Box::pin(async_stream::try_stream! {
         let named = labels.resolved(client).await?;
-        // `backfill` is the page the listing goes on from, `Some(None)` its first, and `None`
+        // `backfill` is where the listing goes on from, `Some((0, None))` its start, and `None`
         // for a pass that is a delta and nothing more. A historyId captured a moment ago has
         // nothing to report yet, so the first page of a fresh backfill skips its delta.
         let (mut history, mut backfill, mut skip_delta) = match start {
             Some(GmailCursor::Delta { history }) => (history, None, false),
-            Some(GmailCursor::Backfill { history, page }) => (history, Some(page), false),
-            _ => (fetch::current_history_id(client).await?, Some(None), true),
+            Some(GmailCursor::Backfill { history, label, page }) => {
+                let Some(at) = position(&listed, label.as_deref(), page) else {
+                    yield checkpoint(&GmailCursor::Reconcile { history });
+                    return;
+                };
+                (history, Some(at), false)
+            }
+            _ => (fetch::current_history_id(client).await?, Some((0, None)), true),
         };
         loop {
             let caught_up_from = history.clone();
@@ -81,7 +112,7 @@ fn additive<'a>(
                             && err.failure_class() == FailureClass::NeedsResync =>
                     {
                         history = fetch::current_history_id(client).await?;
-                        backfill = Some(None);
+                        backfill = Some((0, None));
                         break;
                     }
                     Err(err) => Err(err)?,
@@ -109,13 +140,15 @@ fn additive<'a>(
             }
             skip_delta = false;
 
-            let Some(page) = backfill.clone() else {
+            let Some((at, page)) = backfill.clone() else {
                 yield checkpoint(&GmailCursor::Delta { history });
                 break;
             };
+            let listing = &listed[at];
             if history != caught_up_from {
                 yield checkpoint(&GmailCursor::Backfill {
                     history: history.clone(),
+                    label: listing.label.clone(),
                     page: page.clone(),
                 });
             }
@@ -124,12 +157,12 @@ fn additive<'a>(
                 messages,
                 next_page: next,
                 stopped,
-            } = match fetch::listed_page(client, page.as_ref(), floor, &named).await {
+            } = match fetch::listed_page(client, page.as_ref(), listing, &named).await {
                 Ok(listed) => listed,
                 // A token Gmail can no longer read; one it merely does not recognise answers
                 // the first page by itself (`invalid_page_token.json`).
                 Err(GoogleError::Status { status: 400, .. }) if page.is_some() => {
-                    backfill = Some(None);
+                    backfill = Some((at, None));
                     continue;
                 }
                 Err(err) => Err(err)?,
@@ -150,12 +183,17 @@ fn additive<'a>(
             if let Some(err) = stopped {
                 Err(err)?;
             }
-            if let Some(next) = next {
+            // The next page of this listing, else the first of the next listing, else the end.
+            let next = next
+                .map(|next| (at, Some(next)))
+                .or_else(|| (at + 1 < listed.len()).then_some((at + 1, None)));
+            if let Some((at, page)) = next {
                 yield checkpoint(&GmailCursor::Backfill {
                     history: history.clone(),
-                    page: Some(next.clone()),
+                    label: listed[at].label.clone(),
+                    page: page.clone(),
                 });
-                backfill = Some(Some(next));
+                backfill = Some((at, page));
             } else {
                 yield checkpoint(&GmailCursor::Reconcile { history });
                 break;
@@ -164,26 +202,25 @@ fn additive<'a>(
     })
 }
 
-/// The window's ids, listed and not fetched, ending on `history`.
-fn reconcile(
-    client: &GoogleClient,
-    history: SyncState,
-    floor: Option<CalendarDate>,
-) -> EmailStream<'_> {
+/// The window's ids, every listing's, listed and not fetched, ending on `history`.
+fn reconcile(client: &GoogleClient, history: SyncState, listed: Vec<Listing>) -> EmailStream<'_> {
     Box::pin(async_stream::try_stream! {
-        let mut page: Option<PageToken> = None;
-        loop {
-            let doc = client
-                .get(&fetch::list_url(client, page.as_ref(), floor, RECONCILE_PAGE))
-                .await?;
-            let present = listed_ids(&doc)?;
-            if let Some(next) = opt_str(&doc, "nextPageToken") {
+        let last = listed.len() - 1;
+        for (at, listing) in listed.iter().enumerate() {
+            let mut page: Option<PageToken> = None;
+            loop {
+                let url = fetch::list_url(client, page.as_ref(), listing, RECONCILE_PAGE);
+                let doc = client.get(&url).await?;
+                let present = listed_ids(&doc)?;
+                let next = opt_str(&doc, "nextPageToken");
+                if next.is_none() && at == last {
+                    let done = GmailCursor::Delta { history: history.clone() }.state();
+                    yield EmailChunk::reconcile_last(Vec::new(), present, None, done);
+                    break;
+                }
                 yield EmailChunk::reconcile_page(Vec::new(), present, None);
+                let Some(next) = next else { break };
                 page = Some(PageToken::new(next));
-            } else {
-                let done = GmailCursor::Delta { history }.state();
-                yield EmailChunk::reconcile_last(Vec::new(), present, None, done);
-                break;
             }
         }
     })

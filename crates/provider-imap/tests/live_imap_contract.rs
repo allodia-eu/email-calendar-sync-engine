@@ -230,7 +230,7 @@ async fn one_mailbox_has_one_identity_on_either_dialect() {
 /// Every message one pass over INBOX streams, under `window`.
 async fn streamed(provider: &imap_live::LiveProvider, window: SyncWindow) -> usize {
     let account = AccountId::try_from("live-contract").unwrap();
-    let mut stream = provider.stream_email(&account, None, window, 50, 20);
+    let mut stream = provider.stream_email(&account, None, window.into(), 50, 20);
     let mut total = 0;
     while let Some(chunk) = stream.next().await {
         total += chunk.expect("a streamed chunk").changed.len();

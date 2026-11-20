@@ -94,7 +94,7 @@ async fn streamed(provider: &GmailProvider, unique: u128) -> Message {
     let account = account();
     for _ in 0..10 {
         let mut chunks =
-            provider.stream_email(&account, None, SyncWindow::since(yesterday()), 0, 0);
+            provider.stream_email(&account, None, SyncWindow::since(yesterday()).into(), 0, 0);
         while let Some(chunk) = chunks.next().await {
             let chunk = chunk.expect("a pass that completes");
             if let Some(found) = chunk

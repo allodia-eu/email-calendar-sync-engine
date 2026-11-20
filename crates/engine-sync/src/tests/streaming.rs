@@ -101,7 +101,7 @@ impl Provider for ChunkedMail {
         &'a self,
         account: &'a AccountId,
         _cursor: Option<&'a SyncState>,
-        _window: SyncWindow,
+        _window: engine_core::sync::MailboxWindows,
         _fetch_batch: usize,
         _chunk_size: usize,
     ) -> EmailStream<'a> {

@@ -14,7 +14,7 @@ use engine_core::{
     ids::{AccountId, ProviderKey},
     mail::{Keyword, Mailbox, Message},
     raw::RawMime,
-    sync::{SyncScope, SyncState, SyncUpdate, SyncWindow},
+    sync::{MailboxWindows, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::CalendarDate,
 };
 use engine_provider::{
@@ -236,33 +236,27 @@ impl Provider for GmailProvider {
         &'a self,
         _account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        window: SyncWindow,
+        window: MailboxWindows,
         // Gmail pages `messages.list`/`history.list` by server-controlled `pageToken`, so
         // the fetch-batch knob has no lever here; each server page is drained whole.
         _fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
-        // A sync-depth window bounds the *backfill* via `q: after:<floor>`. A delta
-        // cannot carry one (`history.list` takes a `startHistoryId`, not a query), so a
-        // relabelled old message is reported whatever its date; the engine drops it on
-        // apply (`SyncWindow::admits`), which is where the delta's bound holds for every
-        // adapter.
+        // A sync-depth window bounds the *backfill*: the account's listing and one per label
+        // held further back (`crate::window_listing`). A delta cannot carry one (`history.list`
+        // takes a `startHistoryId`, not a query), so a relabelled old message is reported
+        // whatever its date; the engine judges it on apply (`MailboxWindows::admits`), which is
+        // where the delta's bound holds for every adapter.
         match &self.imap {
             Some(imap) => crate::imap_pass::stream(
                 imap.as_ref(),
                 &self.client,
                 &self.labels,
                 cursor,
-                window.floor(),
+                &window,
                 chunk_size,
             ),
-            None => crate::pass::stream(
-                &self.client,
-                &self.labels,
-                cursor,
-                window.floor(),
-                chunk_size,
-            ),
+            None => crate::pass::stream(&self.client, &self.labels, cursor, &window, chunk_size),
         }
     }
 

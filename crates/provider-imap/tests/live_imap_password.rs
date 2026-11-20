@@ -86,7 +86,7 @@ async fn pass_within(
     window: SyncWindow,
 ) -> Vec<EmailChunk> {
     let account = account();
-    let mut stream = provider.stream_email(&account, cursor, window, 200, 0);
+    let mut stream = provider.stream_email(&account, cursor, window.into(), 200, 0);
     let mut chunks = Vec::new();
     while let Some(chunk) = stream.next().await {
         chunks.push(chunk.expect("the pass must complete"));

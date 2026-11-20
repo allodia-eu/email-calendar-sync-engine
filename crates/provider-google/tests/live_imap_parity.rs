@@ -73,7 +73,7 @@ async fn sync_messages(provider: &GmailProvider) -> (Written, Vec<Message>) {
     let account = AccountId::try_from("live").unwrap();
     let mut written = Written::new();
     let mut messages = Vec::new();
-    let mut chunks = provider.stream_email(&account, None, SyncWindow::full(), 0, 0);
+    let mut chunks = provider.stream_email(&account, None, SyncWindow::full().into(), 0, 0);
     while let Some(chunk) = chunks.next().await {
         for message in chunk.expect("a pass that completes").changed {
             written.insert(message.id.key().as_str().to_owned(), facts(&message));

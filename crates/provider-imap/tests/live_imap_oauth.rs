@@ -129,7 +129,7 @@ async fn an_access_token_authenticates_and_the_session_works() {
     );
 
     // And a metadata fetch, which is the first thing a host actually does.
-    let mut stream = provider.stream_email(&account, None, SyncWindow::full(), 5, 5);
+    let mut stream = provider.stream_email(&account, None, SyncWindow::full().into(), 5, 5);
     if let Some(chunk) = stream.next().await {
         let chunk = chunk.expect("a page of mail over the authenticated session");
         println!("fetched a first page over the OAuth session: {chunk:?}");

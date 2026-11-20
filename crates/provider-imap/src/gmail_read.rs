@@ -117,6 +117,12 @@ where
     if let Some(since) = query.since {
         criteria.push(format!("SINCE {}", format_imap_date(since)));
     }
+    if let Some(before) = query.before {
+        criteria.push(format!("BEFORE {}", format_imap_date(before)));
+    }
+    if let Some(label) = &query.label {
+        criteria.push(format!("X-GM-LABELS {}", quote(label)));
+    }
     if let Some(raw) = &query.raw {
         criteria.push(format!("X-GM-RAW {}", quote(raw)));
     }

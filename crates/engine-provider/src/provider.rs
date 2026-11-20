@@ -7,7 +7,7 @@ use engine_core::{
     ids::{AccountId, ProviderKey},
     mail::{Keyword, Mailbox, Message},
     raw::RawMime,
-    sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
+    sync::{JmapDataType, MailboxWindows, SyncScope, SyncState, SyncWindow},
 };
 
 use crate::{
@@ -93,6 +93,16 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
     /// incremental [`EmailChunk`]s — the paged primitive every mail adapter
     /// implements.
     ///
+    /// `window` is the account's sync window with any mailbox held further back
+    /// ([`MailboxWindows`]). A snapshot or backfill fetches what the window of any mailbox a
+    /// message is filed in admits, and no more: a folder-bound adapter (IMAP, Graph) fetches
+    /// under its own folder's [`window_for`](MailboxWindows::window_for), and one whose scope is
+    /// the whole account (JMAP, Gmail) fetches the account's window and, beside it, each
+    /// [`deepened`](MailboxWindows::deepened) mailbox's own, never the account's older mail as
+    /// a whole. A delta takes no date filter on any protocol; the orchestrator judges its
+    /// arrivals with [`MailboxWindows::admits`]. A mailbox the server does not have is not
+    /// fetched further back.
+    ///
     /// The two knobs it separates (`store-and-sync.md`):
     /// - `fetch_batch` bounds each **network round trip** (an IMAP `UID FETCH` window, a JMAP
     ///   `Email/get` page, a Graph `$top`); `0` means the adapter's protocol maximum.
@@ -111,7 +121,7 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
         &'a self,
         account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        window: SyncWindow,
+        window: MailboxWindows,
         fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
@@ -143,7 +153,7 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
         crate::stream::drain_email(self.stream_email(
             account,
             cursor,
-            self.default_sync_window(),
+            self.default_sync_window().into(),
             DEFAULT_DRAIN_PAGE,
             0,
         ))

@@ -13,7 +13,7 @@ use engine_core::{
     ids::{AccountId, CalendarId, ContactId, ProviderKey},
     mail::{Keyword, Mailbox, Message},
     raw::RawMime,
-    sync::{SyncScope, SyncState, SyncWindow},
+    sync::{MailboxWindows, SyncScope, SyncState, SyncWindow},
     time::Horizon,
 };
 
@@ -69,7 +69,7 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         &'a self,
         account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        window: SyncWindow,
+        window: MailboxWindows,
         fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {

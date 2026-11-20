@@ -230,7 +230,14 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `Email/changes` takes no filter, so a delta carries an old message moved into scope; the
   engine drops it on apply (`SyncWindow::admits`, `store-and-sync.md`), which is where the
   bound holds for every adapter. `default_sync_window` (the full history) backs the
-  whole-scope `sync_email` drain.
+  whole-scope `sync_email` drain. A mailbox the host holds further back (`MailboxWindows`)
+  adds an `inMailbox` condition with its own `after` (none for its whole history), joined to
+  the account's `after` by an `OR` `FilterOperator` (RFC 8620 §5.5, `email_window.rs`), so
+  the one `Email` scope fetches that mailbox's older mail and no other's
+  (`store-and-sync.md`). A mailbox the server does not have matches nothing: Stalwart answers
+  an unknown `inMailbox` with the other conditions' ids, not an error (observed).
+  `tests/live_mailbox_window.rs` deepens Sent after a first pass and sees its older mail
+  arrive on the next.
 - **Delta vs snapshot.** First sync (no cursor) is a snapshot; thereafter a delta,
   recovering to a snapshot on a `cannotCalculateChanges` method error (mapped to
   `FailureClass::NeedsResync`) — recovery happens on the first page, so a recovered
