@@ -240,6 +240,15 @@ what sending it would have delivered. Graph files it into Drafts and sets `isDra
 itself: nothing in the request names a folder, which is live-verified rather than
 assumed (`tests/live_drafts.rs`). Graph advertises `mail_drafts`.
 
+- **A draft's keywords are named categories**, as a Sent copy's are, and Graph advertises
+  `draft_keywords` once a `KeywordName` is registered. After the save the stored draft is given
+  the category of each keyword the save asks for and has none of another registered keyword's
+  names, keeping the person's own, in one `PATCH {categories}`, sent only when that changes
+  anything. The save's own answer (the create's, or the rewrite's `PATCH`) says which categories
+  the draft holds; one that does not is read again. A rewrite in place keeps the message and its
+  categories (live), which is why a keyword the save no longer asks for has to be taken off. A
+  refused `PATCH` leaves the draft saved and the keyword out of `DraftReceipt::keywords`.
+
 - **Importance is the message's `importance` property**, in `MESSAGE_SELECT`. Exchange reads it
   from a message's MIME by the rule `Importance::from_headers` copies, observed for thirty header
   shapes in `tests/fixtures/mail/importance_header_shapes.json` and checked against the engine's

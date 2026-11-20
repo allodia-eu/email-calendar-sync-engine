@@ -736,7 +736,9 @@ credential.
 - **`put_draft` / `delete_draft` (no SMTP).** A draft is `APPEND`ed into the account's
   Drafts folder (resolved by `\Drafts` SPECIAL-USE, else creating `Drafts`) flagged
   `\Draft \Seen`, so keeping a draft works against any IMAP server even where SMTP
-  submission cannot. Unlike Sent placement an `APPEND` failure surfaces: saving the
+  submission cannot. The keywords `put_draft` is given ride the same `APPEND`, by the rule a
+  Sent copy's follow (`place.rs`): asked for only where a `SELECT` of Drafts shows `\*` in
+  `PERMANENTFLAGS`, reported in `DraftReceipt::keywords` either way. Unlike Sent placement an `APPEND` failure surfaces: saving the
   draft is the whole op. `ImapProvider::save_draft` remains as the first-save
   convenience the example and the live suite use, and is the same code path.
 - **A re-save is `APPEND` then `UID STORE +FLAGS (\Deleted)` + `UID EXPUNGE`, in that

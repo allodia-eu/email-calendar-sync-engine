@@ -316,6 +316,13 @@ per user per minute, about 270 messages a minute, and IMAP bills nothing per mes
   than the key `put_draft` returned. That is safe only because the two draft verbs are the
   sole consumers of that key: nothing else addresses a message by it. Keying by the
   message id instead would have forced create-and-delete here too, for no gain.
+- **A draft's keywords are hidden named labels on the message under it**, as a Sent copy's
+  are, and the adapter advertises `draft_keywords` once a `KeywordName` is registered. The save
+  answers with that message's id, and one `messages.modify` labels it. Google's guide says a
+  draft's message takes no label; live, the label is put on and the draft carries it, and the
+  next `drafts.update` replaces the message and the label with it, so **every save labels the new
+  message again**. A save asking for none costs no request, and a refused modify leaves the draft
+  saved and the keyword out of `DraftReceipt::keywords`.
 - ⚠️ **Gmail rewrites the `Message-ID` on `drafts.create`, not only on send.** A draft
   written with `<local@test.local>` comes back as `<CALRU+…@mail.gmail.com>`
   (live-verified). This is the same behaviour as the send finding above, and it has a

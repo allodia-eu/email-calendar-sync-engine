@@ -15,17 +15,17 @@ use async_trait::async_trait;
 use engine_core::{
     error::FailureClass,
     ids::{AccountId, MailboxId, ProviderKey},
-    mail::{Mailbox, Message},
+    mail::{Keyword, Mailbox, Message},
     raw::RawMime,
     sync::{SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::CalendarDate,
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, IdentityControls,
-    KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites,
-    PageToken, PassMode, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
-    ScopeSync, SenderIdentity, SharedAccount, SharedAccounts, SubmissionReceipt, SyncKind,
-    split_page,
+    CalendarWrites, Capabilities, ConnectionInfo, Draft, DraftReceipt, EmailChunk, EmailStream,
+    IdentityControls, KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt,
+    MailboxWrites, PageToken, PassMode, Provider, ProviderResult, ReportControls, ReportEvidence,
+    ReportVerdicts, ScopeSync, SenderIdentity, SharedAccount, SharedAccounts, SubmissionReceipt,
+    SyncKind, split_page,
 };
 
 use crate::{categories::Categories, fetch, transport::GraphClient};
@@ -128,14 +128,16 @@ impl GraphProvider {
     /// name, the adapter advertises
     /// [`sent_copy_keywords`](Capabilities::sent_copy_keywords), kept after the send rather
     /// than within it ([`sent_copy_keywords_deferred`](Capabilities::sent_copy_keywords_deferred)),
-    /// and a [`MailEdit::SetKeywords`] can set or clear such a keyword on any message.
+    /// and a [`MailEdit::SetKeywords`] can set or clear such a keyword on any message. A stored
+    /// draft keeps them the same way ([`draft_keywords`](Capabilities::draft_keywords)).
     #[must_use]
     pub fn with_keyword_names(mut self, names: Vec<KeywordName>) -> Self {
         if !names.is_empty() {
             self.capabilities = self
                 .capabilities
                 .with_sent_copy_keywords()
-                .with_sent_copy_keywords_deferred();
+                .with_sent_copy_keywords_deferred()
+                .with_draft_keywords();
         }
         self.categories = Categories::new(names);
         self
@@ -351,16 +353,20 @@ impl Provider for GraphProvider {
     /// Applies a [`MailEdit`] to an already-synced message: mark-read/flag (a `PATCH` of
     /// `isRead`/`flag`), move (`POST …/move`), or permanent delete (`POST …/permanentDelete`).
     ///
-    /// Stores a draft (`POST /me/messages` in MIME format), removing the message it
-    /// supersedes. Graph has no MIME update, so a re-save creates and deletes, and the
-    /// key moves (`crate::drafts`).
+    /// Stores a draft (`POST /me/messages` in MIME format, or a `PATCH` of the stored one;
+    /// `crate::drafts`), then sets its keywords as categories (`crate::categories`).
     async fn put_draft(
         &self,
         _account: &AccountId,
         draft: &Draft,
         replacing: Option<&ProviderKey>,
-    ) -> ProviderResult<ProviderKey> {
-        crate::drafts::put_draft(&self.client, draft, replacing).await
+        keywords: &BTreeSet<Keyword>,
+    ) -> ProviderResult<DraftReceipt> {
+        let (key, held) = crate::drafts::put_draft(&self.client, draft, replacing).await?;
+        let kept = (self.categories)
+            .keep_on_draft(&self.client, &key, held, keywords)
+            .await;
+        Ok(DraftReceipt::stored(key).with_keywords(kept))
     }
 
     /// Removes a stored draft (`DELETE /me/messages/{id}`), reporting one that is already

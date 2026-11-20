@@ -293,6 +293,9 @@ fn capabilities<S>(connection: &Connection<S>, smtp: bool) -> Capabilities {
         // Storing a draft is an `APPEND`, so it needs nothing submission needs: an account with
         // no SMTP transport configured can still keep drafts.
         .with_mail_drafts()
+        // On the draft's own `APPEND`; a Drafts folder that allows no new keywords gets the
+        // draft without them, and the receipt says so (`crate::place`).
+        .with_draft_keywords()
         // `CREATE`/`RENAME`/`DELETE` are base protocol on both dialects.
         .with_mailbox_writes();
     if smtp {

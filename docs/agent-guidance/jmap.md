@@ -268,8 +268,8 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `?` that raises a `Permanent` error for the whole page (issue #38).
 - **Drafts.** `put_draft` is the first half of submission and nothing else: the same
   `Email/set` create, into the mailbox carrying the Drafts **role**, with
-  `keywords: { "$draft": true, "$seen": true }` — just no `EmailSubmission/set` after
-  it. One `build_draft` serves both, so a saved draft and a sent one cannot drift apart
+  `keywords: { "$draft": true, "$seen": true }` plus the keywords `put_draft` is given —
+  just no `EmailSubmission/set` after it. One `build_draft` serves both, so a saved draft and a sent one cannot drift apart
   in shape, and a saved draft keeps its Cc, Bcc and threading headers for the resume.
 - ⚠️ **There is no way to edit a stored draft, and this was measured rather than assumed.**
   RFC 8621 §4.6 makes `keywords` and `mailboxIds` the only mutable `Email` properties, and

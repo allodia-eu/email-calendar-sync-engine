@@ -225,7 +225,8 @@ impl Session {
             // mail can keep one. Whether it *has* a Drafts mailbox is a per-account fact
             // no capability carries, so the save resolves the role and says so if there
             // is none (`crate::drafts`).
-            capabilities = capabilities.with_mail_drafts();
+            // A draft's keywords are part of that create (`crate::drafts`).
+            capabilities = capabilities.with_mail_drafts().with_draft_keywords();
             // Reporting rides the same gate: the report *is* the IANA-registered keyword
             // (`$junk`/`$notjunk`/`$phishing`), and RFC 8621 §4.1.1 makes keywords part of
             // the mail capability, so anything that can write mail can carry all three.

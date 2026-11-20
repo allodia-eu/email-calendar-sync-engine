@@ -1,18 +1,20 @@
 //! The [`Provider`] trait: the one seam every adapter implements.
 
+use std::collections::BTreeSet;
+
 use async_trait::async_trait;
 use engine_core::{
     calendar::Event,
     ids::{AccountId, CalendarId, ProviderKey},
-    mail::{Mailbox, Message},
+    mail::{Keyword, Mailbox, Message},
     raw::RawMime,
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
     time::Horizon,
 };
 
 use crate::{
-    CalendarListing, CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream,
-    HandOver, MailEdit, MailEditReceipt, MailboxWrites, MessageReport, ProviderError,
+    CalendarListing, CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, DraftReceipt,
+    EmailStream, HandOver, MailEdit, MailEditReceipt, MailboxWrites, MessageReport, ProviderError,
     ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SharedAccount,
     SourceStream, SubmissionReceipt, error::unsupported, sync::jmap_scope,
 };
@@ -204,9 +206,11 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
         ))
     }
 
-    /// Stores `draft` in the account's Drafts folder, returning the key of the stored
-    /// message. `replacing` names the draft this one supersedes: the same composition,
-    /// saved again.
+    /// Stores `draft` in the account's Drafts folder, carrying `keywords`, and answers with
+    /// the key of the stored message and which of `keywords` it carries ([`DraftReceipt`]).
+    /// `replacing` names the draft this one supersedes: the same composition, saved again.
+    /// `keywords` is the whole set the stored draft should carry, so a re-save without one
+    /// takes it off.
     ///
     /// **The returned key is the one to keep, and it need not be `replacing`.** A
     /// transport whose stored messages are immutable writes a new one and removes the
@@ -235,8 +239,9 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
         account: &AccountId,
         draft: &Draft,
         replacing: Option<&ProviderKey>,
-    ) -> ProviderResult<ProviderKey> {
-        let _ = (account, draft, replacing);
+        keywords: &BTreeSet<Keyword>,
+    ) -> ProviderResult<DraftReceipt> {
+        let _ = (account, draft, replacing, keywords);
         Err(unsupported("mail drafts"))
     }
 

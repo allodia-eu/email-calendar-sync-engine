@@ -109,8 +109,10 @@ async fn live_jmap_replacing_a_draft_leaves_exactly_one() {
             &account(),
             &draft(message_id, "First version", &harness.account),
             None,
+            &std::collections::BTreeSet::new(),
         )
         .await
+        .map(|stored| stored.key)
         .expect("first save");
     assert_eq!(
         drafts_carrying(&provider, message_id).await,
@@ -122,8 +124,10 @@ async fn live_jmap_replacing_a_draft_leaves_exactly_one() {
             &account(),
             &draft(message_id, "Second version", &harness.account),
             Some(&first),
+            &std::collections::BTreeSet::new(),
         )
         .await
+        .map(|stored| stored.key)
         .expect("second save");
 
     // One `Email/set` carried both halves, and the server applied them in the order the
@@ -172,8 +176,10 @@ async fn live_jmap_a_saved_draft_lands_in_the_drafts_mailbox() {
             &account(),
             &draft(message_id, "Filed by role", &harness.account),
             None,
+            &std::collections::BTreeSet::new(),
         )
         .await
+        .map(|stored| stored.key)
         .expect("save");
 
     // Filed by the mailbox carrying the Drafts *role*, not by a folder named "Drafts":
@@ -235,8 +241,14 @@ async fn live_jmap_a_resaved_attachment_is_not_sent_again() {
     };
 
     let first = provider
-        .put_draft(&account(), &attached("Blob v1"), None)
+        .put_draft(
+            &account(),
+            &attached("Blob v1"),
+            None,
+            &std::collections::BTreeSet::new(),
+        )
         .await
+        .map(|stored| stored.key)
         .expect("first save");
     assert!(
         has_attachment(&provider, &first).await,
@@ -244,8 +256,14 @@ async fn live_jmap_a_resaved_attachment_is_not_sent_again() {
     );
 
     let second = provider
-        .put_draft(&account(), &attached("Blob v2"), Some(&first))
+        .put_draft(
+            &account(),
+            &attached("Blob v2"),
+            Some(&first),
+            &std::collections::BTreeSet::new(),
+        )
         .await
+        .map(|stored| stored.key)
         .expect("second save");
 
     // An `Email` is immutable, so the replacement is a new object — but the bytes are
@@ -299,6 +317,7 @@ async fn live_jmap_a_draft_saved_through_the_outbox_settles_and_is_on_the_server
         core::time::Duration::from_secs(30),
         &draft(message_id, "Through the outbox", &harness.account),
         None,
+        &std::collections::BTreeSet::new(),
     )
     .await
     .expect("save through the outbox");

@@ -45,6 +45,7 @@ mod connection;
 mod contact;
 mod content_id;
 mod deadline;
+mod draft_receipt;
 mod error;
 mod hand_over;
 mod identity;
@@ -85,6 +86,7 @@ pub use contact::{
     ContactsProvider,
 };
 pub use deadline::Deadlines;
+pub use draft_receipt::DraftReceipt;
 pub use error::{ProviderError, ProviderResult};
 pub use hand_over::{HandOver, HandOverLog, HandedOver, Unrecorded};
 pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};

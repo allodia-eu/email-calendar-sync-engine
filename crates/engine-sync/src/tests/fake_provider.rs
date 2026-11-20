@@ -99,7 +99,8 @@ impl Provider for FakeMail {
         _account: &AccountId,
         draft: &Draft,
         replacing: Option<&ProviderKey>,
-    ) -> ProviderResult<ProviderKey> {
+        keywords: &BTreeSet<Keyword>,
+    ) -> ProviderResult<DraftReceipt> {
         {
             let mut left = self.failing_drafts.lock().unwrap();
             if *left > 0 {
@@ -109,11 +110,17 @@ impl Provider for FakeMail {
         }
         let mut puts = self.draft_puts.lock().unwrap();
         let _ = replacing;
-        puts.push(draft.message_id.as_str().to_owned());
+        puts.push((draft.message_id.as_str().to_owned(), keywords.clone()));
         // A new key per save, so a test can see that the caller has to keep what comes
         // back rather than the key it passed in.
-        ProviderKey::new(format!("draft-{}", puts.len()))
-            .map_err(|e| ProviderError::permanent(e.to_string()))
+        let key = ProviderKey::new(format!("draft-{}", puts.len()))
+            .map_err(|e| ProviderError::permanent(e.to_string()))?;
+        let kept = if self.caps.draft_keywords() {
+            keywords.clone()
+        } else {
+            BTreeSet::new()
+        };
+        Ok(DraftReceipt::stored(key).with_keywords(kept))
     }
 
     async fn delete_draft(&self, _account: &AccountId, draft: &ProviderKey) -> ProviderResult<()> {

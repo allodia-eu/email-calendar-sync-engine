@@ -12,16 +12,16 @@ use std::{collections::BTreeSet, sync::Arc};
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ProviderKey},
-    mail::{Mailbox, Message},
+    mail::{Keyword, Mailbox, Message},
     raw::RawMime,
     sync::{SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::CalendarDate,
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailStream, IdentityControls,
-    KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites,
-    Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts, ScopeSync,
-    SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
+    CalendarWrites, Capabilities, ConnectionInfo, Draft, DraftReceipt, EmailStream,
+    IdentityControls, KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt,
+    MailboxWrites, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
+    ScopeSync, SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
 };
 use futures_util::StreamExt;
 use provider_imap::GmailMail;
@@ -154,12 +154,17 @@ impl GmailProvider {
     /// Gmail stores no free-form keyword, so a keyword a draft asks for on its filed copy
     /// ([`Draft::sent_copy_keywords`]) is kept only when it has a name here. A label under any
     /// of a keyword's names is then read as that keyword: it leaves the label list and every
-    /// message's memberships, and the message carries the keyword instead. With at least one
-    /// name, the adapter advertises [`sent_copy_keywords`](Capabilities::sent_copy_keywords).
+    /// message's memberships, and the message carries the keyword instead. The same holds for
+    /// a stored draft's keywords. With at least one name, the adapter advertises
+    /// [`sent_copy_keywords`](Capabilities::sent_copy_keywords) and
+    /// [`draft_keywords`](Capabilities::draft_keywords).
     #[must_use]
     pub fn with_keyword_names(mut self, names: Vec<KeywordName>) -> Self {
         if !names.is_empty() {
-            self.capabilities = self.capabilities.with_sent_copy_keywords();
+            self.capabilities = self
+                .capabilities
+                .with_sent_copy_keywords()
+                .with_draft_keywords();
         }
         self.labels = Labels::new(names);
         self
@@ -327,14 +332,23 @@ impl Provider for GmailProvider {
     /// Applies a [`MailEdit`] via `messages.modify`/`trash`/`delete` (`mutate`). The
     /// outbox owns durability/idempotency; this performs only the provider call.
     /// Stores a draft in `users.drafts`, replacing the one named by `replacing` in place.
-    /// The key is Gmail's **draft** id, which survives the replacement (`crate::drafts`).
+    /// The key is Gmail's **draft** id, which survives the replacement (`crate::drafts`). The
+    /// message under it is new on every save, so its keywords' labels go on again each time.
     async fn put_draft(
         &self,
         _account: &AccountId,
         draft: &engine_provider::Draft,
         replacing: Option<&ProviderKey>,
-    ) -> ProviderResult<ProviderKey> {
-        crate::drafts::put_draft(&self.client, draft, replacing).await
+        keywords: &BTreeSet<Keyword>,
+    ) -> ProviderResult<DraftReceipt> {
+        let (key, message) = crate::drafts::put_draft(&self.client, draft, replacing).await?;
+        let kept = match message {
+            Some(message) if !keywords.is_empty() => {
+                self.labels.tag(&self.client, &message, keywords).await
+            }
+            _ => BTreeSet::new(),
+        };
+        Ok(DraftReceipt::stored(key).with_keywords(kept))
     }
 
     /// Removes a stored draft (`drafts.delete`), reporting one that is already gone as

@@ -322,11 +322,11 @@ impl Provider for JmapProvider {
         _account: &AccountId,
         draft: &engine_provider::Draft,
         replacing: Option<&engine_core::ids::ProviderKey>,
-    ) -> ProviderResult<engine_core::ids::ProviderKey> {
-        // One `Email/set` carries the create and the destroy, so the replacement exists
-        // before the copy it supersedes goes (`crate::drafts`).
-        let account = self.mail_account()?;
-        Ok(crate::drafts::put_draft(self.executor.as_ref(), &account, draft, replacing).await?)
+        keywords: &std::collections::BTreeSet<engine_core::mail::Keyword>,
+    ) -> ProviderResult<engine_provider::DraftReceipt> {
+        // One `Email/set` creates the new copy before it destroys the old (`crate::drafts`).
+        let (account, executor) = (self.mail_account()?, self.executor.as_ref());
+        Ok(crate::drafts::put_draft(executor, &account, draft, replacing, keywords).await?)
     }
 
     async fn delete_draft(

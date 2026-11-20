@@ -18,14 +18,15 @@ use std::{
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey, SharedAccountId},
-    mail::{Mailbox, Message},
+    mail::{Keyword, Mailbox, Message},
     sync::{SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::CalendarDate,
 };
 use engine_provider::{
-    CalendarWrites, ConnectionInfo, Draft, EmailStream, MailEdit, MailEditReceipt, MailboxEdit,
-    MailboxEditReceipt, MailboxWrites, MessageReport, Provider, ProviderError, ProviderResult,
-    ReportReceipt, ScopeSync, SharedAccount, SharedAccounts, SourceStream, SubmissionReceipt,
+    CalendarWrites, ConnectionInfo, Draft, DraftReceipt, EmailStream, MailEdit, MailEditReceipt,
+    MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport, Provider, ProviderError,
+    ProviderResult, ReportReceipt, ScopeSync, SharedAccount, SharedAccounts, SourceStream,
+    SubmissionReceipt,
 };
 use futures_util::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -303,8 +304,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
         self.refile(draft).await
     }
 
-    /// Stores a draft in the account's `\\Drafts` folder (`APPEND`), removing the copy it
-    /// supersedes.
+    /// Stores a draft in the account's `\\Drafts` folder (`APPEND`, carrying the keywords the
+    /// folder keeps), removing the copy it supersedes.
     ///
     /// A thin borrow-and-call, like [`Provider::edit_mail`]: the ordering rule that decides
     /// whether a partial failure duplicates a draft or loses one lives in `crate::drafts`,
@@ -314,10 +315,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
         _account: &AccountId,
         draft: &Draft,
         replacing: Option<&ProviderKey>,
-    ) -> ProviderResult<ProviderKey> {
+        keywords: &BTreeSet<Keyword>,
+    ) -> ProviderResult<DraftReceipt> {
         let mut connection = self.session().await?;
         let result = match self.store_on(&mut connection).await {
-            Ok(store) => crate::drafts::put_draft(&mut connection, &store, draft, replacing).await,
+            Ok(store) => {
+                crate::drafts::put_draft(&mut connection, &store, draft, replacing, keywords).await
+            }
             Err(err) => Err(err),
         };
         connection.settle(result)

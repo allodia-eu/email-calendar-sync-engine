@@ -145,7 +145,7 @@ pub use engine_http::{InvalidUserAgent, UserAgent};
 pub use engine_provider::{
     AttachedConference, CalendarAddress, CalendarUserAddresses, CalendarWrites, Capabilities,
     ConferenceEdit, ContactDestination, ContactPhoto, ContactsProvider, ContentIdHeader,
-    DeleteTarget, Draft, DraftAttachment, DraftAttachmentDisposition, DraftCalendar,
+    DeleteTarget, Draft, DraftAttachment, DraftAttachmentDisposition, DraftCalendar, DraftReceipt,
     DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
     EventWriteReceipt, IdentityControls, InvitationError, Invitee, InviteePatch, InviteeRole,
     JitsiMeetings, JitsiServerError, KeywordName, MailEdit, MailEditReceipt, MailboxEdit,

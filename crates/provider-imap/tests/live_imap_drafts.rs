@@ -125,8 +125,10 @@ async fn live_imap_replacing_a_draft_leaves_exactly_one() {
             &account,
             &draft(message_id, "First version", &harness.account),
             None,
+            &std::collections::BTreeSet::new(),
         )
         .await
+        .map(|stored| stored.key)
         .expect("first save");
     assert_eq!(
         copies_of(&harness, &folder, message_id).await,
@@ -140,8 +142,10 @@ async fn live_imap_replacing_a_draft_leaves_exactly_one() {
             &account,
             &draft(message_id, "Second version", &harness.account),
             Some(&first),
+            &std::collections::BTreeSet::new(),
         )
         .await
+        .map(|stored| stored.key)
         .expect("second save");
     assert_ne!(first, second, "a replaced IMAP draft is a new message");
 

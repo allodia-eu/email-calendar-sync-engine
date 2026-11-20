@@ -1020,6 +1020,11 @@ one event never race on either provider.
   is not the one that went in (`providers.md`). A host that drops the report stores a
   second draft beside the first.
 
+- **A draft save carries its keywords in its payload** (`DraftPut::keywords`, defaulted so an
+  older payload still reads), so a save queued offline stores them when it drains, and the
+  op's name hashes them with the text: a save that changes only a keyword is a write of its
+  own. Only the inline save reports what was kept (`PutDraftOutcome::keywords`); a drained one
+  is read from the next sync, as a Sent copy's keywords are.
 - **A queued draft save supersedes the one before it.** A draft is saved *repeatedly*, so
   five saves with no network must not become five rounds of store-and-remove against a
   folder the user is watching. `put_draft_mail` withdraws an unsettled save already queued

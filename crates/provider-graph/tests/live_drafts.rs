@@ -141,8 +141,14 @@ async fn live_graph_replacing_a_draft_leaves_exactly_one() {
     );
 
     let first = drafts
-        .put_draft(&account(), &draft(message_id, "First version"), None)
+        .put_draft(
+            &account(),
+            &draft(message_id, "First version"),
+            None,
+            &std::collections::BTreeSet::new(),
+        )
         .await
+        .map(|stored| stored.key)
         .expect("first save");
     println!("graph draft key: {}", first.as_str());
     assert_eq!(
@@ -155,8 +161,10 @@ async fn live_graph_replacing_a_draft_leaves_exactly_one() {
             &account(),
             &draft(message_id, "Second version"),
             Some(&first),
+            &std::collections::BTreeSet::new(),
         )
         .await
+        .map(|stored| stored.key)
         .expect("second save");
 
     // The whole point of the in-place rewrite: a text edit keeps the id, so the draft
@@ -206,8 +214,14 @@ async fn live_graph_a_saved_draft_is_filed_as_a_draft() {
             .as_nanos()
     );
     let key = drafts
-        .put_draft(&account(), &draft(message_id, "Filed as a draft"), None)
+        .put_draft(
+            &account(),
+            &draft(message_id, "Filed as a draft"),
+            None,
+            &std::collections::BTreeSet::new(),
+        )
         .await
+        .map(|stored| stored.key)
         .expect("save");
 
     // `POST /me/messages` files into Drafts by Graph's own default, with the draft
@@ -263,12 +277,24 @@ async fn live_graph_a_rewritten_draft_keeps_its_message_id() {
     );
 
     let first = drafts
-        .put_draft(&account(), &draft(message_id, "Header v1"), None)
+        .put_draft(
+            &account(),
+            &draft(message_id, "Header v1"),
+            None,
+            &std::collections::BTreeSet::new(),
+        )
         .await
+        .map(|stored| stored.key)
         .expect("first save");
     let second = drafts
-        .put_draft(&account(), &draft(message_id, "Header v2"), Some(&first))
+        .put_draft(
+            &account(),
+            &draft(message_id, "Header v2"),
+            Some(&first),
+            &std::collections::BTreeSet::new(),
+        )
         .await
+        .map(|stored| stored.key)
         .expect("rewrite");
     assert_eq!(first, second);
 
@@ -318,8 +344,14 @@ async fn live_graph_an_attachment_change_keeps_the_draft() {
     );
 
     let first = drafts
-        .put_draft(&account(), &draft(message_id, "Attach v1"), None)
+        .put_draft(
+            &account(),
+            &draft(message_id, "Attach v1"),
+            None,
+            &std::collections::BTreeSet::new(),
+        )
         .await
+        .map(|stored| stored.key)
         .expect("first save");
 
     // Gain an attachment.
@@ -330,8 +362,14 @@ async fn live_graph_an_attachment_change_keeps_the_draft() {
         b"hello".to_vec(),
     )];
     let second = drafts
-        .put_draft(&account(), &with_file, Some(&first))
+        .put_draft(
+            &account(),
+            &with_file,
+            Some(&first),
+            &std::collections::BTreeSet::new(),
+        )
         .await
+        .map(|stored| stored.key)
         .expect("save with an attachment");
 
     // An attachment is a resource of its own, so gaining one does not cost a new
@@ -344,8 +382,14 @@ async fn live_graph_an_attachment_change_keeps_the_draft() {
 
     // And lose it again.
     let third = drafts
-        .put_draft(&account(), &draft(message_id, "Attach v3"), Some(&second))
+        .put_draft(
+            &account(),
+            &draft(message_id, "Attach v3"),
+            Some(&second),
+            &std::collections::BTreeSet::new(),
+        )
         .await
+        .map(|stored| stored.key)
         .expect("save without the attachment");
     assert_eq!(first, third, "losing an attachment kept the draft");
     assert!(
@@ -391,8 +435,10 @@ async fn live_graph_an_html_draft_is_stored_as_html_by_both_paths() {
             &account(),
             &rich("HTML v1", "<p><strong>one</strong></p>"),
             None,
+            &std::collections::BTreeSet::new(),
         )
         .await
+        .map(|stored| stored.key)
         .expect("first save");
     let body = stored_body(&drafts, &created).await;
     assert!(
@@ -406,8 +452,10 @@ async fn live_graph_an_html_draft_is_stored_as_html_by_both_paths() {
             &account(),
             &rich("HTML v2", "<p><em>two</em></p>"),
             Some(&created),
+            &std::collections::BTreeSet::new(),
         )
         .await
+        .map(|stored| stored.key)
         .expect("rewrite");
     let body = stored_body(&drafts, &rewritten).await;
     assert!(

@@ -1,9 +1,11 @@
 //! Offline tests for storing and removing a draft, driven over a mock stream.
 
+use std::collections::BTreeSet;
+
 use engine_core::{
     error::FailureClass,
     ids::{MessageIdHeader, ProviderKey},
-    mail::EmailAddress,
+    mail::{EmailAddress, Keyword},
 };
 use engine_provider::Draft;
 
@@ -56,9 +58,16 @@ async fn saving_again_appends_the_new_copy_then_removes_the_old() {
     .await;
 
     let old = ProviderKey::new("imap:v70:u4@Drafts").unwrap();
-    let key = put_draft(&mut connection, &own(), &draft(), Some(&old))
-        .await
-        .unwrap();
+    let key = put_draft(
+        &mut connection,
+        &own(),
+        &draft(),
+        Some(&old),
+        &BTreeSet::new(),
+    )
+    .await
+    .unwrap()
+    .key;
 
     // The key moves: IMAP messages are immutable, so the new version is a new message.
     assert_eq!(key.as_str(), "imap:v70:u9@Drafts");
@@ -91,9 +100,10 @@ async fn a_first_save_appends_without_removing_anything() {
     ]))
     .await;
 
-    let key = put_draft(&mut connection, &own(), &draft(), None)
+    let key = put_draft(&mut connection, &own(), &draft(), None, &BTreeSet::new())
         .await
-        .unwrap();
+        .unwrap()
+        .key;
 
     assert_eq!(key.as_str(), "imap:v70:u9@Drafts");
     assert!(!written(&recorded).contains("UID STORE"));
@@ -114,9 +124,16 @@ async fn a_new_copy_that_cannot_replace_the_old_is_still_saved() {
     .await;
 
     let old = ProviderKey::new("imap:v70:u4@Drafts").unwrap();
-    let key = put_draft(&mut connection, &own(), &draft(), Some(&old))
-        .await
-        .unwrap();
+    let key = put_draft(
+        &mut connection,
+        &own(),
+        &draft(),
+        Some(&old),
+        &BTreeSet::new(),
+    )
+    .await
+    .unwrap()
+    .key;
 
     assert_eq!(key.as_str(), "imap:v70:u9@Drafts");
 }
@@ -187,4 +204,65 @@ async fn removing_a_draft_whose_folder_was_recreated_is_a_conflict() {
         .unwrap_err();
 
     assert_eq!(err.class(), FailureClass::Conflict);
+}
+
+const DRAFTS_SELECT_ALLOWING_KEYWORDS: &str = "* OK [PERMANENTFLAGS (\\Deleted \\Seen \\Answered \\Flagged \\Draft \\*)] All allowed\r\n\
+     * 0 EXISTS\r\na3 OK [UIDVALIDITY 70] SELECT completed\r\n";
+const DRAFTS_SELECT_REFUSING_KEYWORDS: &str = "* OK [PERMANENTFLAGS (\\Deleted \\Seen \\Answered \\Flagged \\Draft)] Limited\r\n\
+     * 0 EXISTS\r\na3 OK [UIDVALIDITY 70] SELECT completed\r\n";
+
+fn project_x() -> BTreeSet<Keyword> {
+    BTreeSet::from([Keyword::new("project-x").unwrap()])
+}
+
+#[tokio::test]
+async fn a_draft_s_keywords_ride_its_append_where_the_folder_keeps_them() {
+    let (mut connection, recorded) = connected(script(&[
+        GREETING,
+        LOGIN_OK,
+        DRAFTS_LIST,
+        DRAFTS_SELECT_ALLOWING_KEYWORDS,
+        "+ OK send literal\r\n",
+        "a4 OK [APPENDUID 70 9] APPEND completed\r\n",
+    ]))
+    .await;
+
+    let receipt = put_draft(&mut connection, &own(), &draft(), None, &project_x())
+        .await
+        .unwrap();
+
+    assert_eq!(receipt.key.as_str(), "imap:v70:u9@Drafts");
+    assert_eq!(receipt.keywords, project_x());
+    let sent = written(&recorded);
+    assert!(
+        sent.contains("APPEND \"Drafts\" (\\Draft \\Seen project-x)"),
+        "{sent}"
+    );
+}
+
+#[tokio::test]
+async fn a_folder_that_allows_no_new_keyword_gets_the_draft_without_them() {
+    // Without `\*` the server would accept the flag with a plain OK and keep nothing, so it
+    // is not asked for, and the receipt says it was not kept. The draft is still saved.
+    let (mut connection, recorded) = connected(script(&[
+        GREETING,
+        LOGIN_OK,
+        DRAFTS_LIST,
+        DRAFTS_SELECT_REFUSING_KEYWORDS,
+        "+ OK send literal\r\n",
+        "a4 OK [APPENDUID 70 9] APPEND completed\r\n",
+    ]))
+    .await;
+
+    let receipt = put_draft(&mut connection, &own(), &draft(), None, &project_x())
+        .await
+        .unwrap();
+
+    assert_eq!(receipt.key.as_str(), "imap:v70:u9@Drafts");
+    assert_eq!(receipt.keywords, BTreeSet::new());
+    assert!(
+        written(&recorded).contains("APPEND \"Drafts\" (\\Draft \\Seen)"),
+        "{}",
+        written(&recorded)
+    );
 }

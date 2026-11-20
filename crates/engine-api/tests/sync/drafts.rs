@@ -1,6 +1,8 @@
 //! Keeping a draft on the server through the facade: the key a host must hold on to, and
 //! what a save made with no network leaves behind for a later drain.
 
+use std::collections::BTreeSet;
+
 use engine_api::{ApiError, DrainOutcome, Engine, PendingOpKind, PendingOpState};
 
 use super::*;
@@ -19,7 +21,7 @@ async fn a_save_returns_the_key_to_hold_and_the_re_save_moves_it() {
     let draft = draft("compose-1@test.local", "Quarterly report");
 
     let first = engine
-        .put_draft(&provider, &account(), &draft, None)
+        .put_draft(&provider, &account(), &draft, None, &BTreeSet::new())
         .await
         .unwrap();
     assert_eq!(first.key, ProviderKey::new("draft-1").unwrap());
@@ -30,7 +32,13 @@ async fn a_save_returns_the_key_to_hold_and_the_re_save_moves_it() {
 
     // The autosave 30 seconds later names the copy it supersedes.
     let second = engine
-        .put_draft(&provider, &account(), &draft, Some(&first.key))
+        .put_draft(
+            &provider,
+            &account(),
+            &draft,
+            Some(&first.key),
+            &BTreeSet::new(),
+        )
         .await
         .unwrap();
     assert_eq!(second.key, ProviderKey::new("draft-2").unwrap());
@@ -71,6 +79,7 @@ async fn a_save_with_no_network_is_kept_and_the_drain_reports_its_key() {
             &account(),
             &draft("compose-offline@test.local", "Quarterly report"),
             None,
+            &BTreeSet::new(),
         )
         .await
         .unwrap_err();
@@ -135,4 +144,30 @@ async fn a_discard_with_no_network_is_kept_and_drains() {
     let report = engine.drain_outbox(&healthy, &account()).await.unwrap();
     assert_eq!(report.delivered(), 1);
     assert_eq!(engine.outbox(&account()).await.unwrap(), []);
+}
+
+/// The keywords a host asks for reach the provider, and the outcome says which the stored
+/// draft carries.
+#[tokio::test]
+async fn a_save_carries_its_keywords_and_reports_them_kept() {
+    let engine = Engine::open_in_memory().unwrap();
+    let provider = SubmittingProvider {
+        inner: FakeProvider::new(),
+        fail: false,
+        unfiled: false,
+    };
+    let keywords = BTreeSet::from([engine_core::mail::Keyword::new("project-x").unwrap()]);
+
+    let saved = engine
+        .put_draft(
+            &provider,
+            &account(),
+            &draft("compose-kw@test.local", "Quarterly report"),
+            None,
+            &keywords,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(saved.keywords, keywords);
 }
