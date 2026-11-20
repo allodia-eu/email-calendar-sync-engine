@@ -169,7 +169,8 @@ async fn a_first_sync_streams_a_resumable_backfill() {
     let provider = connected_provider(script(&[GREETING, LOGIN_OK, select, fetch])).await;
 
     let account = account();
-    let mut stream = Box::pin(provider.stream_email(&account, None, SyncWindow::full(), 50, 0));
+    let mut stream =
+        Box::pin(provider.stream_email(&account, None, SyncWindow::full().into(), 50, 0));
     let mut chunks: Vec<EmailChunk> = Vec::new();
     while let Some(item) = stream.next().await {
         chunks.push(item.unwrap());

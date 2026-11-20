@@ -149,12 +149,9 @@ where
         sent,
     } = *pass;
     let scope = provider.email_scope(account);
-    // A folder-bound scope fetches under its own mailbox's window. An account-wide one (JMAP,
-    // Gmail) is one enumeration serving every mailbox, and the adapter takes a single window,
-    // so it fetches under the account's; its deltas are still admitted per mailbox below.
-    let window = folder_of(&scope).map_or(tuning.window.account(), |mailbox| {
-        tuning.window.window_for(mailbox)
-    });
+    // The depth this scope fetches under, and records with its cursor: a folder-bound scope's
+    // is its own folder's window, an account-wide one's every mailbox's (`window_cursor`).
+    let depth = depth_of(&scope, &tuning.window);
     let mut reclaims = 0u32;
     // Set when a commit was refused as stale: the cursor this pass had left, and what it applied.
     let mut fenced: Option<(Option<SyncState>, RunningApplied)> = None;
@@ -182,8 +179,9 @@ where
         // The cursor each pass resumes the *provider* fetch from; the store advances
         // it per additive checkpoint, or only on the final reconcile chunk.
         let mut left = claim.state.clone();
-        // The floor is the one this folder fetches under, so deepening a mailbox starts it over.
-        let pass_cursor = window_cursor::resume(claim.state, window);
+        // A cursor fetched shallower than this scope's depth starts the scope over, so deepening
+        // a mailbox fetches it on the next pass.
+        let pass_cursor = window_cursor::resume(claim.state, &depth);
         let mut present: BTreeSet<ProviderKey> = BTreeSet::new();
         // A message a chunk sends again (an IMAP backfill's settled attachment flag) is written,
         // but counted once, so progress never runs past its total.
@@ -193,7 +191,7 @@ where
         let mut stream = provider.stream_email(
             account,
             pass_cursor.as_ref(),
-            window,
+            depth.clone(),
             tuning.fetch_batch,
             tuning.chunk_size,
         );
@@ -224,7 +222,7 @@ where
             let is_reconcile_final = chunk.is_reconcile_final();
             let projected = Instant::now();
             let (update, advance_to) = build_update(chunk, &tuning.window, &mut present);
-            let advance_to = advance_to.map(|cursor| window_cursor::stamp(cursor, window));
+            let advance_to = advance_to.map(|cursor| window_cursor::stamp(cursor, &depth));
             let mut derived = derive_messages(changed_of(&update));
             for change in update.patched() {
                 derived.push_state_change(project_state_change(change));
@@ -394,6 +392,15 @@ fn admitted(changed: Vec<Message>, window: &MailboxWindows) -> Vec<Message> {
             )
         })
         .collect()
+}
+
+/// The depth `scope` fetches under: its own folder's window where it is bound to one, else
+/// the account's with every mailbox held further back.
+fn depth_of(scope: &SyncScope, windows: &MailboxWindows) -> MailboxWindows {
+    folder_of(scope).map_or_else(
+        || windows.clone(),
+        |mailbox| MailboxWindows::new(windows.window_for(mailbox)),
+    )
 }
 
 /// The one mailbox a mail scope is bound to, where the protocol syncs mail per folder (IMAP,

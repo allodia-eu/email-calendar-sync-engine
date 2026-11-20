@@ -144,6 +144,19 @@ impl MailboxWindows {
             .map_or(self.account, |own| self.account.wider(*own))
     }
 
+    /// The mailboxes that reach further back than the account, each with the window it syncs
+    /// under, in mailbox order. An override that reaches no further than the account's window is
+    /// left out, so every one is when the account's window is the full history.
+    ///
+    /// This is what an adapter whose mail scope is the whole account fetches beyond the
+    /// account's window.
+    pub fn deepened(&self) -> impl Iterator<Item = (&MailboxId, SyncWindow)> + '_ {
+        self.deeper.iter().filter_map(|(mailbox, own)| {
+            let window = self.account.wider(*own);
+            (window != self.account).then_some((mailbox, window))
+        })
+    }
+
     /// Whether a message filed in `mailboxes` and dated `date` belongs inside: the window of any
     /// mailbox it is filed in admits it, by the rules of [`SyncWindow::admits`]. Undated mail is
     /// admitted, as it is there.
@@ -207,6 +220,31 @@ mod tests {
         // And an unbounded override holds that mailbox over its whole history.
         let everything = MailboxWindows::new(account).deepen(mailbox("sent"), SyncWindow::full());
         assert_eq!(everything.window_for(&mailbox("sent")), SyncWindow::full());
+    }
+
+    #[test]
+    fn only_a_mailbox_reaching_past_the_account_is_deepened() {
+        let account = SyncWindow::since(date(2026, 4, 1));
+        let windows = MailboxWindows::new(account)
+            .deepen(mailbox("sent"), SyncWindow::since(date(2024, 4, 1)))
+            .deepen(mailbox("archive"), SyncWindow::full())
+            .deepen(mailbox("inbox"), SyncWindow::since(date(2026, 6, 1)))
+            .deepen(mailbox("drafts"), account);
+        let deepened: Vec<(&str, SyncWindow)> = windows
+            .deepened()
+            .map(|(mailbox, window)| (mailbox.as_str(), window))
+            .collect();
+        assert_eq!(
+            deepened,
+            [
+                ("archive", SyncWindow::full()),
+                ("sent", SyncWindow::since(date(2024, 4, 1))),
+            ]
+        );
+
+        let unbounded = MailboxWindows::new(SyncWindow::full())
+            .deepen(mailbox("sent"), SyncWindow::since(date(2024, 4, 1)));
+        assert_eq!(unbounded.deepened().count(), 0);
     }
 
     #[test]

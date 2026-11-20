@@ -110,6 +110,18 @@ pub(crate) fn label_ids(state: &GmailState, folder: GmailFolder, ids: &LabelIds)
     labels.into_iter().collect()
 }
 
+/// The name IMAP's `X-GM-LABELS` gives the label the API calls `id`: a system label's with a
+/// backslash, one of the user's by its name. `None` for a label the account does not have.
+pub(crate) fn imap_label_name(id: &str, ids: &LabelIds) -> Option<String> {
+    if let Some((name, _)) = SYSTEM.iter().find(|(_, system)| *system == id) {
+        return Some((*name).to_owned());
+    }
+    ids.0
+        .iter()
+        .find(|(name, label)| *label == id && !name.starts_with('\\'))
+        .map(|(name, _)| name.clone())
+}
+
 /// The key the API gives a message: its Gmail id in hex.
 pub(crate) fn key_of(gmail_id: u64) -> Result<ProviderKey, GoogleError> {
     ProviderKey::new(format!("{gmail_id:x}"))

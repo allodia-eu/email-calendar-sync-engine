@@ -62,6 +62,7 @@ mod mail_edit;
 mod mail_sync;
 mod mailbox_edit;
 mod mailbox_windows;
+mod mailbox_windows_account;
 mod queued_edits;
 mod reconcile_state;
 mod sent_copy;

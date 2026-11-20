@@ -66,10 +66,11 @@ impl Provider for Folder {
         &'a self,
         _account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        window: SyncWindow,
+        window: MailboxWindows,
         _fetch_batch: usize,
         _chunk_size: usize,
     ) -> EmailStream<'a> {
+        let window = window.window_for(&self.name);
         self.asked.lock().unwrap().push((self.name.clone(), window));
         if cursor.is_some() {
             let done = EmailChunk::additive(Vec::new(), Vec::new(), None, SyncState::new("done"));
@@ -283,8 +284,8 @@ async fn coverage_records_the_account_window_not_a_deepened_mailboxs() {
 
 #[tokio::test]
 async fn an_account_wide_delta_keeps_an_old_arrival_only_in_the_deepened_mailbox() {
-    // JMAP- and Gmail-shaped: one scope for the whole account, so the fetch cannot be told which
-    // mailbox is deeper, but each arrival still carries the mailboxes it is filed in.
+    // JMAP- and Gmail-shaped: one scope for the whole account. A delta takes no date filter on
+    // any protocol, so each arrival is judged by the mailboxes it is filed in.
     let provider = FakeMail::new(
         vec![
             mailbox("INBOX", "Inbox", Some(MailboxRole::Inbox)),

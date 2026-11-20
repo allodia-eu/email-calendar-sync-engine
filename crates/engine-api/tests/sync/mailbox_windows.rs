@@ -71,6 +71,64 @@ async fn a_depth_reduction_prune_keeps_what_a_deeper_mailbox_holds() {
 }
 
 #[tokio::test]
+async fn deepening_a_mailbox_of_an_account_wide_scope_reaches_back_on_the_next_pass() {
+    // JMAP- and Gmail-shaped: one email scope for the whole account. The host changes nothing
+    // but the windows it syncs under; no cursor is cleared.
+    let engine = Engine::open_in_memory().unwrap();
+    let provider = FakeProvider {
+        windowed: true,
+        ..provider()
+    };
+    let at = |text: &str| text.parse::<UtcDateTime>().unwrap();
+    let sent_span = async |engine: &Engine| {
+        engine
+            .mail_in_mailbox_between(
+                &account(),
+                &sent(),
+                at("2020-01-01T00:00:00Z"),
+                at("2027-01-01T00:00:00Z"),
+                10,
+            )
+            .await
+            .unwrap()
+    };
+
+    let account_only = MailboxWindows::new(since(2026, 1, 1));
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain().within(account_only),
+            &quiet(),
+        )
+        .await;
+    assert_eq!(keys(&engine).await, vec!["sent-new"]);
+    assert_eq!(
+        sent_span(&engine).await.oldest,
+        Some(at("2026-05-01T09:00:00Z"))
+    );
+
+    let deepened = MailboxWindows::new(since(2026, 1, 1)).deepen(sent(), since(2025, 1, 1));
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            plain().within(deepened),
+            &quiet(),
+        )
+        .await;
+
+    assert_eq!(
+        keys(&engine).await,
+        vec!["sent-new", "sent-old"],
+        "Sent reaches back to its own floor; the Inbox and older Sent mail stay out"
+    );
+    let span = sent_span(&engine).await;
+    assert_eq!(span.messages.len(), 2);
+    assert_eq!(span.oldest, Some(at("2025-02-01T09:00:00Z")));
+}
+
+#[tokio::test]
 async fn a_mailbox_span_returns_its_messages_newest_first_and_how_far_back_it_reaches() {
     let engine = Engine::open_in_memory().unwrap();
     engine

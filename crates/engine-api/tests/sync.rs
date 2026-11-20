@@ -72,6 +72,9 @@ struct FakeProvider {
     removed_on_resync: Vec<ProviderKey>,
     added_on_resync: Vec<Message>,
     state_on_resync: Vec<MailStateChange>,
+    /// Whether a snapshot holds only what the window admits, as a server's own filter would;
+    /// otherwise it holds every message, so a test can see the engine take it as it is.
+    windowed: bool,
 }
 
 impl FakeProvider {
@@ -92,6 +95,7 @@ impl FakeProvider {
             removed_on_resync: Vec::new(),
             added_on_resync: Vec::new(),
             state_on_resync: Vec::new(),
+            windowed: false,
         }
     }
 
@@ -181,7 +185,7 @@ impl Provider for FakeProvider {
         &'a self,
         _account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        _window: SyncWindow,
+        window: engine_core::sync::MailboxWindows,
         _fetch_batch: usize,
         _chunk_size: usize,
     ) -> EmailStream<'a> {
@@ -197,14 +201,15 @@ impl Provider for FakeProvider {
             )
             .with_patched(self.state_on_resync.clone())
         } else {
-            let present: Vec<ProviderKey> =
-                self.messages.iter().map(|m| m.id.key().clone()).collect();
-            EmailChunk::reconcile_last(
-                self.messages.clone(),
-                present,
-                Some(self.messages.len()),
-                SyncState::new("email-1"),
-            )
+            let messages: Vec<Message> = self
+                .messages
+                .iter()
+                .filter(|m| !self.windowed || window.admits(m.mailboxes.iter(), m.received_at))
+                .cloned()
+                .collect();
+            let present: Vec<ProviderKey> = messages.iter().map(|m| m.id.key().clone()).collect();
+            let total = messages.len();
+            EmailChunk::reconcile_last(messages, present, Some(total), SyncState::new("email-1"))
         };
         Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }
@@ -301,7 +306,7 @@ impl Provider for GateProvider {
         &'a self,
         account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        window: SyncWindow,
+        window: engine_core::sync::MailboxWindows,
         fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
@@ -366,7 +371,7 @@ impl Provider for ReconcilingProvider {
         &'a self,
         _account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        _window: SyncWindow,
+        _window: engine_core::sync::MailboxWindows,
         _fetch_batch: usize,
         _chunk_size: usize,
     ) -> EmailStream<'a> {
