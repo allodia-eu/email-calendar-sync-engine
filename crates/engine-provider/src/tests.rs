@@ -75,6 +75,8 @@ impl Provider for FakeJmap {
     }
 }
 
+impl CalendarSync for FakeJmap {}
+
 impl crate::MailboxWrites for FakeJmap {}
 impl CalendarWrites for FakeJmap {}
 
@@ -185,6 +187,8 @@ impl Provider for BareProvider {
         self.info
     }
 }
+
+impl CalendarSync for BareProvider {}
 
 impl crate::MailboxWrites for BareProvider {}
 impl CalendarWrites for BareProvider {}

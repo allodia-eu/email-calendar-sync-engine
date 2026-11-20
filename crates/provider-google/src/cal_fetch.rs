@@ -48,7 +48,7 @@ const PENDING_CURSOR: &str = "google-cal-pending";
 const CURSOR_VERSION: &str = "v1;";
 
 /// The date window a calendar snapshot covers (`timeMin`/`timeMax`), which the engine names per
-/// fetch ([`Provider::sync_events`](engine_provider::Provider::sync_events)).
+/// fetch ([`CalendarSync::sync_events`](engine_provider::CalendarSync::sync_events)).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CalendarWindow {
     /// The inclusive lower bound (00:00:00 UTC of this date).
@@ -68,7 +68,7 @@ impl CalendarWindow {
 impl From<Horizon> for CalendarWindow {
     /// The whole UTC days covering `horizon` ([`Horizon::covering_dates`]): the window the
     /// engine names in
-    /// [`Provider::sync_events`](engine_provider::Provider::sync_events).
+    /// [`CalendarSync::sync_events`](engine_provider::CalendarSync::sync_events).
     fn from(horizon: Horizon) -> Self {
         let (start, end) = horizon.covering_dates();
         Self::new(start, end)

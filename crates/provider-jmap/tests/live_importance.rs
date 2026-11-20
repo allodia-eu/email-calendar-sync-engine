@@ -156,8 +156,10 @@ async fn a_drafts_importance_reads_back() {
                     importance,
                 ),
                 None,
+                &std::collections::BTreeSet::new(),
             )
             .await
+            .map(|stored| stored.key)
             .expect("save");
         let stored = find(&carol, &message_id).await.expect("the saved draft");
         assert_eq!(stored.envelope.importance, importance);

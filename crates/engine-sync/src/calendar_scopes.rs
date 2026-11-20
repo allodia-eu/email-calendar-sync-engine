@@ -108,7 +108,7 @@ struct Resolved {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EventFetch {
     /// The window the provider opens any cursor it must open over
-    /// ([`Provider::sync_events`]); a transport that fetches a calendar whole ignores it.
+    /// ([`CalendarSync::sync_events`]); a transport that fetches a calendar whole ignores it.
     window: Horizon,
     /// Whether the transport fetches inside a window
     /// ([`windowed_events`](engine_provider::Capabilities::windowed_events)), so the window a

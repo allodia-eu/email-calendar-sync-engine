@@ -16,6 +16,9 @@
 //! and a draft that has been deleted from another device, where there is nothing to
 //! rewrite and nothing to purge. Then the key **moves**, which is why the caller keeps
 //! whatever key comes back rather than assuming.
+//!
+//! What the stored message answers with carries its categories, which is where its keywords are
+//! kept (`crate::categories`), so the caller can set them without reading the message again.
 
 use engine_core::ids::ProviderKey;
 use engine_provider::{Draft, ProviderResult};
@@ -23,9 +26,9 @@ use time::OffsetDateTime;
 
 use crate::{error::GraphError, transport::GraphClient};
 
-/// Stores `draft` in the account's Drafts folder and returns its key: the key
-/// `replacing` named when the stored message could be rewritten in place, else the new
-/// message's id.
+/// Stores `draft` in the account's Drafts folder and returns its key (the key `replacing`
+/// named when the stored message could be rewritten in place, else the new message's id) and
+/// the categories the stored message carries, when the answer said.
 ///
 /// # Errors
 ///
@@ -36,12 +39,11 @@ pub(crate) async fn put_draft(
     client: &GraphClient,
     draft: &Draft,
     replacing: Option<&ProviderKey>,
-) -> ProviderResult<ProviderKey> {
+) -> ProviderResult<(ProviderKey, Option<Vec<String>>)> {
     if let Some(existing) = replacing
-        && let Some(unchanged) =
-            crate::drafts_patch::patch_in_place(client, draft, existing).await?
+        && let Some(patched) = crate::drafts_patch::patch_in_place(client, draft, existing).await?
     {
-        return Ok(unchanged);
+        return Ok(patched);
     }
 
     // The stored draft keeps its `Bcc` header, so resuming it restores every recipient;
@@ -62,7 +64,7 @@ pub(crate) async fn put_draft(
         // Best effort by design (see the module note).
         let _ = remove(client, superseded).await;
     }
-    Ok(key)
+    Ok((key, crate::categories::held_categories(created.as_ref())))
 }
 
 /// Removes a stored draft, reporting one that is already gone as done.

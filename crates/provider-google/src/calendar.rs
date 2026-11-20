@@ -3,7 +3,7 @@
 //!
 //! The calendar list syncs under the per-account [`SyncScope::GoogleCalendarList`], and each
 //! calendar's events under a [`SyncScope::GoogleCalendar`] of its own
-//! ([`event_scope`](Provider::event_scope)), through that calendar's `events.list`. Google
+//! ([`event_scope`](CalendarSync::event_scope)), through that calendar's `events.list`. Google
 //! addresses an event inside its calendar, so a write reaches the calendar the draft or the
 //! stored event names. Unlike Graph, the time window is **optional**, and Google is
 //! IANA-native (no display-zone request header).
@@ -19,9 +19,10 @@ use engine_core::{
     time::Horizon,
 };
 use engine_provider::{
-    CalendarListing, CalendarUserAddresses, CalendarWrites, Capabilities, ConnectionInfo,
-    EventDeletion, EventDraft, EventEdit, EventRsvp, EventWriteReceipt, OverrideSurvival,
-    PageToken, Provider, ProviderResult, RsvpControls, ScopeSync, SyncKind, WriteGuard,
+    CalendarListing, CalendarSync, CalendarUserAddresses, CalendarWrites, Capabilities,
+    ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWriteReceipt,
+    OverrideSurvival, PageToken, Provider, ProviderResult, RsvpControls, ScopeSync, SyncKind,
+    WriteGuard,
 };
 
 /// What a Google RSVP can and cannot control.
@@ -61,7 +62,7 @@ const CALENDAR_LIST_CURSOR: &str = "google-calendars";
 /// A Google Calendar read/sync/write provider for every calendar of one account.
 ///
 /// Construct one with [`GoogleCalendarProvider::new`] from a connected [`GoogleClient`]. A
-/// snapshot covers the window the engine names in [`Provider::sync_events`] (Google's
+/// snapshot covers the window the engine names in [`CalendarSync::sync_events`] (Google's
 /// `timeMin`/`timeMax`, optional to Google and always set here).
 pub struct GoogleCalendarProvider {
     client: GoogleClient,
@@ -111,7 +112,10 @@ impl Provider for GoogleCalendarProvider {
             ..ConnectionInfo::new(self.capabilities)
         }
     }
+}
 
+#[async_trait]
+impl CalendarSync for GoogleCalendarProvider {
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
         SyncScope::GoogleCalendarList {
             account: account.clone(),

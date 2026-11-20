@@ -181,7 +181,9 @@ mod tests {
         membership::Memberships,
         raw::RawMime,
     };
-    use engine_provider::{CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult};
+    use engine_provider::{
+        CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult,
+    };
     use engine_store::{ManualClock, MessageBodyStore, MessageSourceCache};
     use store_sqlite::SqliteStore;
 
@@ -220,6 +222,8 @@ mod tests {
             Ok(RawMime::new(self.body.clone()))
         }
     }
+
+    impl CalendarSync for CountingProvider {}
 
     impl engine_provider::MailboxWrites for CountingProvider {}
     impl CalendarWrites for CountingProvider {}
@@ -331,6 +335,8 @@ mod tests {
                 ConnectionInfo::new(self.caps)
             }
         }
+
+        impl CalendarSync for Unsupported {}
 
         impl engine_provider::MailboxWrites for Unsupported {}
         impl CalendarWrites for Unsupported {}
@@ -477,6 +483,8 @@ mod tests {
                 ConnectionInfo::new(self.caps)
             }
         }
+
+        impl CalendarSync for Unsupported {}
 
         impl engine_provider::MailboxWrites for Unsupported {}
         impl CalendarWrites for Unsupported {}

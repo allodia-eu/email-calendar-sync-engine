@@ -3,16 +3,22 @@
 //! [`delete_draft`](super::Provider::delete_draft)). A sibling of `provider.rs` so it
 //! stays under the line limit.
 
+use std::collections::BTreeSet;
+
 use engine_core::{
     error::FailureClass,
     ids::{AccountId, MessageIdHeader, ProviderKey},
-    mail::EmailAddress,
+    mail::{EmailAddress, Keyword},
 };
 
 use crate::{
-    Capabilities, ConnectionInfo, Draft, Provider, ProviderResult,
+    Capabilities, ConnectionInfo, Draft, DraftReceipt, Provider, ProviderResult,
     tests::{FakeJmap, account},
 };
+
+fn none() -> BTreeSet<Keyword> {
+    BTreeSet::new()
+}
 
 fn draft() -> Draft {
     Draft::new(
@@ -39,11 +45,11 @@ async fn storing_a_draft_defaults_to_unsupported() {
     let key = ProviderKey::new("imap:v1:u7@Drafts").unwrap();
     for err in [
         mail_only()
-            .put_draft(&account(), &draft(), None)
+            .put_draft(&account(), &draft(), None, &none())
             .await
             .unwrap_err(),
         boxed
-            .put_draft(&account(), &draft(), Some(&key))
+            .put_draft(&account(), &draft(), Some(&key), &none())
             .await
             .unwrap_err(),
         mail_only()
@@ -56,7 +62,8 @@ async fn storing_a_draft_defaults_to_unsupported() {
     }
 }
 
-/// An adapter that can store a draft, answering with a key naming what it was asked.
+/// An adapter that can store a draft, answering with a key naming what it was asked and
+/// keeping every keyword.
 /// The point is the **boxed** path: `Box<dyn Provider>` forwards each verb explicitly,
 /// so a verb nobody forwarded silently falls through to the rejecting default above.
 /// Two adapters that both reject cannot tell those apart, so this one succeeds.
@@ -76,12 +83,13 @@ impl Provider for FakeDrafts {
         _account: &AccountId,
         _draft: &Draft,
         replacing: Option<&ProviderKey>,
-    ) -> ProviderResult<ProviderKey> {
+        keywords: &BTreeSet<Keyword>,
+    ) -> ProviderResult<DraftReceipt> {
         let placed = match replacing {
             Some(old) => format!("stored:replacing:{}", old.as_str()),
             None => "stored:fresh".to_owned(),
         };
-        Ok(ProviderKey::new(placed).unwrap())
+        Ok(DraftReceipt::stored(ProviderKey::new(placed).unwrap()).with_keywords(keywords.clone()))
     }
 
     async fn delete_draft(&self, _account: &AccountId, draft: &ProviderKey) -> ProviderResult<()> {
@@ -90,25 +98,27 @@ impl Provider for FakeDrafts {
     }
 }
 
+impl crate::CalendarSync for FakeDrafts {}
+
 #[tokio::test]
 async fn a_boxed_adapter_reaches_its_own_draft_verbs() {
     let boxed: Box<dyn Provider> = Box::new(FakeDrafts);
     let key = ProviderKey::new("imap:v1:u7@Drafts").unwrap();
 
     assert!(boxed.connection_info().capabilities.mail_drafts());
+    let keywords = BTreeSet::from([Keyword::new("project-x").unwrap()]);
+    let fresh = boxed
+        .put_draft(&account(), &draft(), None, &keywords)
+        .await
+        .unwrap();
+    assert_eq!(fresh.key.as_str(), "stored:fresh");
+    assert_eq!(fresh.keywords, keywords, "the keywords reach the adapter");
     assert_eq!(
         boxed
-            .put_draft(&account(), &draft(), None)
+            .put_draft(&account(), &draft(), Some(&key), &none())
             .await
             .unwrap()
-            .as_str(),
-        "stored:fresh"
-    );
-    assert_eq!(
-        boxed
-            .put_draft(&account(), &draft(), Some(&key))
-            .await
-            .unwrap()
+            .key
             .as_str(),
         "stored:replacing:imap:v1:u7@Drafts"
     );

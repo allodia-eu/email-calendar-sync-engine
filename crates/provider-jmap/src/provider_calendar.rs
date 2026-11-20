@@ -1,15 +1,69 @@
-//! The [`CalendarWrites`] half of the JMAP adapter: the four verbs, each one
-//! `CalendarEvent/set` call, and the addresses those writes schedule as.
+//! The calendar halves of the JMAP adapter: [`CalendarSync`], fetching the calendars and
+//! their events, and [`CalendarWrites`], the four verbs, each one `CalendarEvent/set` call,
+//! and the addresses those writes schedule as.
 //!
-//! Beside `provider.rs` rather than in it, because that file is at the 500-line limit and
-//! these four belong with the request builders they delegate to (`crate::calendar_write`,
-//! `crate::calendar_rsvp`) rather than with the mail spine.
+//! Beside `provider.rs` rather than in it, because these belong with the request builders
+//! they delegate to (`crate::fetch_scope`, `crate::calendar_write`, `crate::calendar_rsvp`)
+//! rather than with the mail spine.
 
 use async_trait::async_trait;
-use engine_core::{calendar::Event, ids::AccountId};
-use engine_provider::{CalendarUserAddresses, CalendarWrites, ProviderResult};
+use engine_core::{
+    calendar::Event,
+    ids::{AccountId, CalendarId},
+    sync::SyncState,
+    time::Horizon,
+};
+use engine_provider::{
+    CalendarListing, CalendarSync, CalendarUserAddresses, CalendarWrites, ProviderResult, ScopeSync,
+};
 
-use crate::JmapProvider;
+use crate::{
+    JmapProvider,
+    calendar::{calendar_from_json, event_from_json},
+    fetch::MemberFetch,
+    fetch_scope,
+    request::capability,
+};
+
+#[async_trait]
+impl CalendarSync for JmapProvider {
+    async fn sync_calendars(
+        &self,
+        _account: &AccountId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<CalendarListing> {
+        let account = self.calendar_account()?;
+        Ok(fetch_scope::container_sync(
+            self.executor.as_ref(),
+            &account,
+            &[capability::CORE, capability::CALENDARS],
+            "Calendar",
+            cursor,
+            calendar_from_json,
+        )
+        .await?
+        .into())
+    }
+
+    /// Every calendar's events under the account-wide `CalendarEvent` state, whichever asks.
+    async fn sync_events(
+        &self,
+        _account: &AccountId,
+        _calendar: &CalendarId,
+        cursor: Option<&SyncState>,
+        _window: Horizon,
+    ) -> ProviderResult<ScopeSync<Event>> {
+        let account = self.calendar_account()?;
+        let fetch = MemberFetch {
+            executor: self.executor.as_ref(),
+            account: &account,
+            using: &[capability::CORE, capability::CALENDARS],
+            type_name: "CalendarEvent",
+            properties: None,
+        };
+        Ok(fetch_scope::member_sync(&fetch, cursor, event_from_json).await?)
+    }
+}
 
 #[async_trait]
 impl CalendarWrites for JmapProvider {

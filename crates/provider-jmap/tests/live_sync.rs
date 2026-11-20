@@ -20,7 +20,7 @@ use engine_core::{
     sync::SyncScope,
     time::TimeZoneId,
 };
-use engine_provider::Provider;
+use engine_provider::{CalendarSync, Provider};
 use engine_recurrence::Horizon;
 use engine_search::MailQuery;
 use engine_store::{MailSelector, ManualClock, StoreRead, WorkerId};

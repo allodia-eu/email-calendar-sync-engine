@@ -146,7 +146,12 @@ async fn live_a_jmap_concurrency_refusal_is_waited_out_rather_than_returned() {
             |(client, provider)| {
                 (0..PER_CLIENT).map(move |n| {
                     let draft = draft(rounds * 1_000 + client * PER_CLIENT + n);
-                    async move { provider.put_draft(&account(), &draft, None).await }
+                    async move {
+                        provider
+                            .put_draft(&account(), &draft, None, &std::collections::BTreeSet::new())
+                            .await
+                            .map(|stored| stored.key)
+                    }
                 })
             },
         ))

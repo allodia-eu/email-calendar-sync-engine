@@ -3,7 +3,7 @@
 //! them anything.
 
 use engine_core::{calendar::Event, ids::AccountId};
-use engine_provider::Provider;
+use engine_provider::CalendarSync;
 use engine_store::{ManualClock, StoreRead};
 use engine_sync::CalendarSyncReport;
 use provider_caldav::CalDavProvider;

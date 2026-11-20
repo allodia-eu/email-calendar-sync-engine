@@ -150,7 +150,7 @@ Consequences that the orchestrator must not paper over:
   (`http-throttling.md`). Conflating them breaks in both directions: an IMAP folder holds its
   own socket, so its ceiling is per connection, while every Graph folder shares the mailbox's.
 - **A calendar provider serves every calendar of its account, and the engine owns the
-  fan-out.** `Provider::event_scope(account, calendar)` names the scope a calendar's events
+  fan-out.** `CalendarSync::event_scope(account, calendar)` names the scope a calendar's events
   sync under: one per calendar where the event delta is per collection (CalDAV, Graph,
   Google), one shared by every calendar where it is account-wide (JMAP). `sync_calendar`
   syncs the calendar list, groups the listed calendars by scope, and syncs each scope once,
@@ -628,9 +628,9 @@ window the scope's cursor was opened over and, outside it, only what happened to
 one-off events.
 
 So the engine, not the host's adapter construction, names the window: a windowed scope is
-fetched with the window as an argument of `Provider::sync_events`, which opens any cursor it must
-open (none yet, or one the server expired) over it; a transport that fetches whole ignores it, and
-an adapter takes no window at construction. That window is recorded **with the
+fetched with the window as an argument of `CalendarSync::sync_events`, which opens any cursor it
+must open (none yet, or one the server expired) over it; a transport that fetches whole ignores
+it, and an adapter takes no window at construction. That window is recorded **with the
 cursor**, in the same commit (`ApplyBatch::fetch_window`, `StoreRead::fetch_window`, schema
 v23), so the two cannot disagree: a snapshot records the window it was opened over, and a delta
 records nothing and keeps it. The first sync opens over the expansion window (the host's horizon
@@ -1063,6 +1063,11 @@ one event never race on either provider.
   is not the one that went in (`providers.md`). A host that drops the report stores a
   second draft beside the first.
 
+- **A draft save carries its keywords in its payload** (`DraftPut::keywords`, defaulted so an
+  older payload still reads), so a save queued offline stores them when it drains, and the
+  op's name hashes them with the text: a save that changes only a keyword is a write of its
+  own. Only the inline save reports what was kept (`PutDraftOutcome::keywords`); a drained one
+  is read from the next sync, as a Sent copy's keywords are.
 - **A queued draft save supersedes the one before it.** A draft is saved *repeatedly*, so
   five saves with no network must not become five rounds of store-and-remove against a
   folder the user is watching. `put_draft_mail` withdraws an unsettled save already queued

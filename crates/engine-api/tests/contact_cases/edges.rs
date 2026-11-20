@@ -11,6 +11,8 @@ impl Provider for OtherDestination {
     }
 }
 
+impl CalendarSync for OtherDestination {}
+
 impl engine_provider::MailboxWrites for OtherDestination {}
 impl CalendarWrites for OtherDestination {}
 

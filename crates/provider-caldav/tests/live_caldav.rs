@@ -23,7 +23,7 @@ use engine_core::{
     sync::{SyncScope, SyncUpdate},
     time::TimeZoneId,
 };
-use engine_provider::Provider;
+use engine_provider::CalendarSync;
 use engine_recurrence::Horizon;
 use engine_store::{ManualClock, StoreRead, WorkerId};
 use engine_sync::sync_calendar;

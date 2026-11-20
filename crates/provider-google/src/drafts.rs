@@ -8,6 +8,9 @@
 //!
 //! The key is opaque to a caller and is only ever handed back to these two verbs, so the
 //! difference does not reach one.
+//!
+//! A draft's keywords are labels on that message (`crate::named_labels`), put on after the
+//! save by the message id the save answers with.
 
 use engine_core::ids::ProviderKey;
 use engine_provider::{Draft, ProviderResult};
@@ -20,7 +23,8 @@ use crate::{base64url, error::GoogleError, transport::GoogleClient};
 const DRAFTS: &str = "/gmail/v1/users/me/drafts";
 
 /// Stores `draft`, replacing the content of the draft named by `replacing` when there is
-/// one, and returns the draft's id.
+/// one, and returns the draft's id and the id of the message now under it, when the answer
+/// carried one.
 ///
 /// # Errors
 ///
@@ -30,7 +34,7 @@ pub(crate) async fn put_draft(
     client: &GoogleClient,
     draft: &Draft,
     replacing: Option<&ProviderKey>,
-) -> ProviderResult<ProviderKey> {
+) -> ProviderResult<(ProviderKey, Option<String>)> {
     // The stored draft keeps its `Bcc` header, so resuming it restores every recipient;
     // it is stored in the mailbox and never delivered from here.
     let mime = engine_rfc5322::assemble_draft_message(draft, OffsetDateTime::now_utc())?;
@@ -57,7 +61,12 @@ pub(crate) async fn put_draft(
                 .await?
         }
     };
-    Ok(stored_key(stored.as_ref())?)
+    let message = stored
+        .as_ref()
+        .and_then(|s| s.pointer("/message/id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    Ok((stored_key(stored.as_ref())?, message))
 }
 
 /// Removes a stored draft, reporting one that is already gone as done.

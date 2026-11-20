@@ -15,7 +15,7 @@ use engine_core::{
     sync::{MailboxWindows, SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider,
+    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider,
     ProviderResult, ScopeSync,
 };
 
@@ -116,6 +116,8 @@ impl Provider for FolderProvider {
         ))
     }
 }
+
+impl CalendarSync for FolderProvider {}
 
 impl engine_provider::MailboxWrites for FolderProvider {}
 impl CalendarWrites for FolderProvider {}

@@ -26,7 +26,7 @@ use engine_core::{
     ids::{AccountId, ProviderKey},
     write::{PendingOpKind, PendingOutcome},
 };
-use engine_provider::{Draft, MailEdit, MessageReport, Provider, SentCopy};
+use engine_provider::{Draft, DraftReceipt, MailEdit, MessageReport, Provider, SentCopy};
 use engine_store::{
     LeaseRequest, LeasedPendingOp, PendingOpClaim, PendingOpRow, PendingOpState, Store, StoreError,
     StoreRead, WorkerId,
@@ -263,10 +263,15 @@ where
                 return Ok(Ran::bare(undecodable("draft put")));
             };
             match provider
-                .put_draft(account, &request.draft, request.replacing.as_ref())
+                .put_draft(
+                    account,
+                    &request.draft,
+                    request.replacing.as_ref(),
+                    &request.keywords,
+                )
                 .await
             {
-                Ok(key) => {
+                Ok(DraftReceipt { key, .. }) => {
                     store
                         .mark_pending_op(
                             &leased.lease,

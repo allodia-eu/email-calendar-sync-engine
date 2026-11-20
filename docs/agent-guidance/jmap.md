@@ -27,7 +27,8 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   implements just the domains it serves — mail providers override `sync_mailboxes`
   + the **streaming** `stream_email` (plus `default_sync_window`,
   `mailbox_scope`/`email_scope`); a calendar-only provider (`provider-caldav`)
-  overrides `sync_calendars`/`sync_events` and leaves the mail methods at their
+  overrides `sync_calendars`/`sync_events` (on the `CalendarSync` supertrait, with the
+  calendar scopes) and leaves the mail methods at their
   unsupported defaults. `sync_email` is a drain over `stream_email` (one streaming
   method gets both incremental streaming and whole-fetch); `submit_email` defaults to
   unsupported. `SyncPage`/`PageToken`/`SyncKind` survive as provider-**internal**
@@ -275,8 +276,8 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `?` that raises a `Permanent` error for the whole page (issue #38).
 - **Drafts.** `put_draft` is the first half of submission and nothing else: the same
   `Email/set` create, into the mailbox carrying the Drafts **role**, with
-  `keywords: { "$draft": true, "$seen": true }` — just no `EmailSubmission/set` after
-  it. One `build_draft` serves both, so a saved draft and a sent one cannot drift apart
+  `keywords: { "$draft": true, "$seen": true }` plus the keywords `put_draft` is given —
+  just no `EmailSubmission/set` after it. One `build_draft` serves both, so a saved draft and a sent one cannot drift apart
   in shape, and a saved draft keeps its Cc, Bcc and threading headers for the resume.
 - ⚠️ **There is no way to edit a stored draft, and this was measured rather than assumed.**
   RFC 8621 §4.6 makes `keywords` and `mailboxIds` the only mutable `Email` properties, and

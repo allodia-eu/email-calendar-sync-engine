@@ -31,8 +31,8 @@ use engine_core::{
     sync::SearchDomain,
 };
 use engine_provider::{
-    CalendarAddress, CalendarWrites, EventDraft, EventEdit, EventPatch, EventRsvp, Invitee,
-    MeetingDraft, MeetingRequest, MeetingService, NewConference, PatchTarget, Provider,
+    CalendarAddress, CalendarSync, CalendarWrites, EventDraft, EventEdit, EventPatch, EventRsvp,
+    Invitee, MeetingDraft, MeetingRequest, MeetingService, NewConference, PatchTarget, Provider,
     RsvpResponse, SchedulingIdentity, SharedAccounts,
 };
 use provider_graph::{MailboxPrincipal, TeamsMeetings};

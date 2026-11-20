@@ -3,7 +3,7 @@
 //! driven offline by the shared `provider_test_support` harness.
 
 use engine_core::sync::{SyncUpdate, SyncWindow};
-use engine_provider::{EmailChunk, EmailStream};
+use engine_provider::{CalendarSync, EmailChunk, EmailStream};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 

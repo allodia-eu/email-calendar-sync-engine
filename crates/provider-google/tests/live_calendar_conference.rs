@@ -22,7 +22,7 @@ use engine_core::{
     },
     sync::SyncUpdate,
 };
-use engine_provider::Provider;
+use engine_provider::CalendarSync;
 
 const EVENTS: &str = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 

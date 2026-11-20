@@ -25,7 +25,7 @@ use engine_core::{
     error::FailureClass,
     sync::SyncUpdate,
 };
-use engine_provider::{CalendarWrites, EventEdit, EventPatch, PatchTarget, Provider};
+use engine_provider::{CalendarSync, CalendarWrites, EventEdit, EventPatch, PatchTarget};
 
 const GRAPH: &str = "https://graph.microsoft.com/v1.0";
 

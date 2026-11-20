@@ -4,24 +4,26 @@
 //! through the `engine-sync`/`engine-api` functions that are generic over
 //! `P: Provider` / `P: ContactsProvider`.
 
+use std::collections::BTreeSet;
+
 use async_trait::async_trait;
 use engine_core::{
     calendar::Event,
     contact::{AddressBook, ContactCard, ContactDraft, ContactPatch, ContactResource},
     ids::{AccountId, CalendarId, ContactId, ProviderKey},
-    mail::{Mailbox, Message},
+    mail::{Keyword, Mailbox, Message},
     raw::RawMime,
     sync::{MailboxWindows, SyncScope, SyncState, SyncWindow},
     time::Horizon,
 };
 
 use crate::{
-    CalendarListing, CalendarUserAddresses, CalendarWrites, ConnectionInfo, ContactDestination,
-    ContactPhoto, ContactSourceSync, ContactWriteReceipt, ContactsProvider, Draft, EmailStream,
-    EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt, HandOver,
-    MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport,
-    Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
-    SharedAccount, SourceStream, SubmissionReceipt,
+    CalendarListing, CalendarSync, CalendarUserAddresses, CalendarWrites, ConnectionInfo,
+    ContactDestination, ContactPhoto, ContactSourceSync, ContactWriteReceipt, ContactsProvider,
+    Draft, DraftReceipt, EmailStream, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite,
+    EventWriteReceipt, HandOver, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt,
+    MailboxWrites, MessageReport, Provider, ProviderResult, ReportReceipt, ScopeSync,
+    SenderIdentity, SenderIdentityId, SharedAccount, SourceStream, SubmissionReceipt,
 };
 
 /// A boxed provider is itself a [`Provider`], delegating every method to the box's
@@ -104,8 +106,11 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         account: &AccountId,
         draft: &Draft,
         replacing: Option<&ProviderKey>,
-    ) -> ProviderResult<ProviderKey> {
-        (**self).put_draft(account, draft, replacing).await
+        keywords: &BTreeSet<Keyword>,
+    ) -> ProviderResult<DraftReceipt> {
+        (**self)
+            .put_draft(account, draft, replacing, keywords)
+            .await
     }
 
     async fn delete_draft(&self, account: &AccountId, draft: &ProviderKey) -> ProviderResult<()> {
@@ -164,7 +169,12 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
     async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
         (**self).resolve_shared_account(address).await
     }
+}
 
+/// The calendar-sync half, delegated for the same reason and under the same `?Sized` bound
+/// as the [`Provider`] impl above.
+#[async_trait]
+impl<P: CalendarSync + ?Sized> CalendarSync for Box<P> {
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
         (**self).calendar_scope(account)
     }

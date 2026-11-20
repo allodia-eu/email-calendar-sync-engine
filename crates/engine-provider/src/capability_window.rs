@@ -5,8 +5,9 @@ use crate::Capabilities;
 
 impl Capabilities {
     /// Marks the transport's event fetch as **windowed**: a snapshot lists only the events inside
-    /// the date window the engine names in [`Provider::sync_events`](crate::Provider::sync_events),
-    /// so the stored calendar is complete only inside the window its cursor was opened over.
+    /// the date window the engine names in
+    /// [`CalendarSync::sync_events`](crate::CalendarSync::sync_events), so the stored calendar is
+    /// complete only inside the window its cursor was opened over.
     ///
     /// Graph's `calendarView/delta` takes a mandatory range and its `deltaLink` reports changes
     /// only inside it; Google's `events.list` takes `timeMin`/`timeMax` for the snapshot its

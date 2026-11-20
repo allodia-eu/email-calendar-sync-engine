@@ -1,0 +1,45 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('00000000feedface')/messages/$entity",
+  "@odata.etag": "W/\"etag-1\"",
+  "id": "message-1",
+  "createdDateTime": "2026-11-20T11:52:31Z",
+  "lastModifiedDateTime": "2026-11-20T11:52:32Z",
+  "changeKey": "change-key-1",
+  "categories": [
+    "Engine draft probe"
+  ],
+  "receivedDateTime": "2026-11-20T11:52:32Z",
+  "sentDateTime": "2026-11-20T11:52:32Z",
+  "hasAttachments": false,
+  "internetMessageId": "<internet-message-id-1@example.test>",
+  "subject": "Fixture: draft with a category, saved again",
+  "bodyPreview": "Body placeholder.",
+  "importance": "normal",
+  "parentFolderId": "folder-drafts",
+  "conversationId": "conversation-1",
+  "conversationIndex": "conversation-index-1",
+  "isDeliveryReceiptRequested": false,
+  "isReadReceiptRequested": false,
+  "isRead": true,
+  "isDraft": true,
+  "webLink": "https://outlook.example.test/message-1",
+  "inferenceClassification": "focused",
+  "body": {
+    "contentType": "text",
+    "content": "Body placeholder."
+  },
+  "toRecipients": [
+    {
+      "emailAddress": {
+        "name": "Test User",
+        "address": "testuser@example.test"
+      }
+    }
+  ],
+  "ccRecipients": [],
+  "bccRecipients": [],
+  "replyTo": [],
+  "flag": {
+    "flagStatus": "notFlagged"
+  }
+}

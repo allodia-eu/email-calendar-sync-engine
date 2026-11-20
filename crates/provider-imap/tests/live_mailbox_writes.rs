@@ -286,9 +286,10 @@ async fn a_trashed_folder_lands_in_trash_with_its_mail_and_a_delete_removes_it_f
             "Body",
         );
         let key = provider
-            .put_draft(&account(), &draft, None)
+            .put_draft(&account(), &draft, None, &std::collections::BTreeSet::new())
             .await
-            .unwrap_or_else(|err| panic!("store a draft on {label}: {err}"));
+            .unwrap_or_else(|err| panic!("store a draft on {label}: {err}"))
+            .key;
         provider
             .edit_mail(&account(), &MailEdit::move_to(key, inner.clone()))
             .await

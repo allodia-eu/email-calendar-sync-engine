@@ -3,7 +3,7 @@
 //! `StaleLease` restart, and resume-from-checkpoint after a killed cold sync. Uses
 //! the shared fakes and helpers from the parent module via `use super::*`.
 
-use engine_provider::{CalendarWrites, EmailChunk};
+use engine_provider::{CalendarSync, CalendarWrites, EmailChunk};
 use engine_store::{ApplyBatch, DerivedWrite, MailSelector};
 
 use super::*;
@@ -158,6 +158,8 @@ impl Provider for ChunkedMail {
         })
     }
 }
+
+impl CalendarSync for ChunkedMail {}
 
 impl engine_provider::MailboxWrites for ChunkedMail {}
 impl CalendarWrites for ChunkedMail {}

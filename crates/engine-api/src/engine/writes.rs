@@ -3,8 +3,11 @@
 //! pending-op state poll every write (mail and calendar alike) is observed through. The
 //! calendar writes live in `calendar_writes`, which additionally reconciles the store.
 
+use std::collections::BTreeSet;
+
 use engine_core::{
     ids::{AccountId, ProviderKey},
+    mail::Keyword,
     write::{PendingOpId, PendingOpKind},
 };
 use engine_provider::{Draft, MailEdit, MessageReport, Provider};
@@ -50,7 +53,11 @@ impl Engine {
             .map_err(map_sync_error)
     }
 
-    /// Stores `draft` on the server through the outbox, superseding `replacing`.
+    /// Stores `draft` on the server through the outbox, superseding `replacing` and carrying
+    /// `keywords`: the whole set the stored draft should carry, so a re-save without a keyword
+    /// takes it off. [`PutDraftOutcome::keywords`] says which it carries; a provider that
+    /// keeps a keyword only as a named label or category needs a
+    /// [`KeywordName`](engine_provider::KeywordName) for it, as for a Sent copy.
     ///
     /// **Keep the key that comes back and pass it as `replacing` next time.** It is not
     /// necessarily the one that went in: three of the four adapters write a new message
@@ -72,6 +79,7 @@ impl Engine {
         account: &AccountId,
         draft: &Draft,
         replacing: Option<&ProviderKey>,
+        keywords: &BTreeSet<Keyword>,
     ) -> Result<PutDraftOutcome, ApiError> {
         put_draft_mail(
             provider,
@@ -81,6 +89,7 @@ impl Engine {
             LEASE_TTL,
             draft,
             replacing,
+            keywords,
         )
         .await
         .map_err(map_sync_error)

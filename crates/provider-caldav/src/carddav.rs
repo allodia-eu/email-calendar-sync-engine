@@ -12,9 +12,9 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectObserver, ConnectStep, ConnectionInfo, ContactDestination,
-    ContactPhoto, ContactSourceSync, ContactUnavailable, ContactWriteReceipt, ContactsProvider,
-    IgnoreConnectSteps, Provider, ProviderResult, ScopeSync, WriteGuard,
+    CalendarSync, CalendarWrites, Capabilities, ConnectObserver, ConnectStep, ConnectionInfo,
+    ContactDestination, ContactPhoto, ContactSourceSync, ContactUnavailable, ContactWriteReceipt,
+    ContactsProvider, IgnoreConnectSteps, Provider, ProviderResult, ScopeSync, WriteGuard,
 };
 
 use crate::{
@@ -210,6 +210,8 @@ impl Provider for CardDavProvider {
         }
     }
 }
+
+impl CalendarSync for CardDavProvider {}
 
 impl engine_provider::MailboxWrites for CardDavProvider {}
 impl CalendarWrites for CardDavProvider {}

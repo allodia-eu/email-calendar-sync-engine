@@ -86,8 +86,9 @@ async fn live_gmail_a_drafts_importance_reads_back() {
         .with_importance(importance);
         keys.push(
             provider
-                .put_draft(&account(), &draft, None)
+                .put_draft(&account(), &draft, None, &std::collections::BTreeSet::new())
                 .await
+                .map(|stored| stored.key)
                 .expect("save"),
         );
     }

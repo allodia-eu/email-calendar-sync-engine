@@ -97,7 +97,9 @@ mod tests {
         raw::RawMime,
         scheduling::{ScheduleMethod, addresses_match},
     };
-    use engine_provider::{CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult};
+    use engine_provider::{
+        CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult,
+    };
 
     use crate::Engine;
 
@@ -143,6 +145,8 @@ mod tests {
             Ok(RawMime::new(self.raw.clone()))
         }
     }
+
+    impl CalendarSync for SourceProvider {}
 
     impl engine_provider::MailboxWrites for SourceProvider {}
     impl CalendarWrites for SourceProvider {}

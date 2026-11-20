@@ -6,7 +6,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use engine_core::sync::{SyncState, SyncUpdate};
-use engine_provider::{ContactSourceSync, ContactsProvider, Provider};
+use engine_provider::{CalendarSync, ContactSourceSync, ContactsProvider, Provider};
 
 use super::{
     JmapProvider,

@@ -8,7 +8,7 @@ mod common;
 
 use common::*;
 use engine_core::sync::SyncUpdate;
-use engine_provider::{CalendarWrites, Provider};
+use engine_provider::{CalendarSync, CalendarWrites};
 #[tokio::test]
 async fn live_calendars_list() {
     let Some(token) = token() else {

@@ -103,6 +103,8 @@ impl Provider for Folder {
     }
 }
 
+impl CalendarSync for Folder {}
+
 impl CalendarWrites for Folder {}
 impl engine_provider::MailboxWrites for Folder {}
 

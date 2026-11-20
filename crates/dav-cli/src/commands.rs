@@ -20,7 +20,7 @@ use engine_core::{
 };
 use engine_ical::{Document, Edit, Edits, LineEdit};
 use engine_provider::{
-    CalendarWrites, EventRsvp, EventWrite, Provider, ReplyDelivery, RsvpResponse,
+    CalendarSync, CalendarWrites, EventRsvp, EventWrite, Provider, ReplyDelivery, RsvpResponse,
 };
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials, imip, schedule_status};
 

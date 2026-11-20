@@ -14,7 +14,7 @@ use engine_core::{
     sync::SyncState,
     time::{CalendarDateTime, Horizon, LocalDateTime, TimeZoneId},
 };
-use engine_provider::{CalendarWrites, Provider, ProviderResult, ScopeSync};
+use engine_provider::{CalendarSync, CalendarWrites, ProviderResult, ScopeSync};
 use provider_google::{GoogleCalendarProvider, GoogleClient};
 
 pub(crate) fn account() -> AccountId {
@@ -41,7 +41,7 @@ pub(crate) fn whole_calendar() -> Horizon {
 }
 
 /// A provider bound to the window a live test reads its calendar over, which the engine names
-/// per fetch ([`Provider::sync_events`]). Everything but the fetch derefs to the provider.
+/// per fetch ([`CalendarSync::sync_events`]). Everything but the fetch derefs to the provider.
 pub(crate) struct Windowed {
     pub(crate) provider: GoogleCalendarProvider,
     pub(crate) window: Horizon,
@@ -55,7 +55,7 @@ impl Windowed {
         calendar: &CalendarId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
-        Provider::sync_events(&self.provider, account, calendar, cursor, self.window).await
+        CalendarSync::sync_events(&self.provider, account, calendar, cursor, self.window).await
     }
 }
 

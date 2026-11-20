@@ -79,6 +79,8 @@ impl Provider for Account {
     }
 }
 
+impl CalendarSync for Account {}
+
 impl CalendarWrites for Account {}
 impl engine_provider::MailboxWrites for Account {}
 

@@ -23,7 +23,7 @@ use engine_core::{
     time::Horizon,
 };
 use engine_provider::{
-    CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget, Provider,
+    CalendarSync, CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget,
 };
 use provider_google::GoogleCalendarProvider;
 

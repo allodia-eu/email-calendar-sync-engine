@@ -142,8 +142,11 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   `P: Provider`. A host that picks a concrete adapter at runtime can hold a
   `Box<dyn Provider>` and still call them: `engine-provider` provides a blanket
   `impl<P: Provider + ?Sized> Provider for Box<P>` that delegates every method to the
-  box's contents — kept there, not special-cased in `engine-api`. `ContactsProvider`
-  has the same blanket impl, and needs it for the same reason.)
+  box's contents — kept there, not special-cased in `engine-api`. `Provider`'s
+  supertraits (`CalendarSync`, `CalendarWrites`, `MailboxWrites`) and `ContactsProvider`
+  have the same blanket impl, and need it for the same reason. A host that wraps an
+  adapter in a `Provider` of its own implements each supertrait too, forwarding to the
+  inner adapter, or the wrapper answers with the rejecting defaults.)
 - **Host-config is hardcoded in this slice, by design (deferred seams).** An
   `Engine` stamps a fixed `WorkerId` (`"engine-api"`), uses a fixed `LEASE_TTL`
   (5 min — a generous safety bound, not a deadline; the sync loop re-claims and
@@ -225,8 +228,9 @@ Step 6 lands in small, tested slices. Order and status:
 3. **Writes / outbox — _done_.** `Engine::submit_mail` drives `engine-sync`'s outbox
    `submit_mail` (durable op → claim → provider send → record), returning a
    `SubmitOutcome` (sent key, `Message-ID`, op id, what became of the Sent copy and
-   which of the draft's `sent_copy_keywords` it carries; a provider that keeps a keyword only as
-   a named category needs a `KeywordName`, re-exported here, and one that keeps them after the
+   which of the draft's `sent_copy_keywords` it carries; `Engine::put_draft` takes the keywords a
+   stored draft should carry and its `PutDraftOutcome` says which it does; a provider that keeps a
+   keyword only as a named category needs a `KeywordName`, re-exported here, and one that keeps them after the
    send (`Capabilities::sent_copy_keywords_deferred`) reports none and has the outbox record a
    `MailEdit::SetKeywords` a later `drain_outbox` applies); a failed send is recorded
    `Failed` / `NeedsConfirmation` *before* surfacing as `ApiError::Sync`, so the

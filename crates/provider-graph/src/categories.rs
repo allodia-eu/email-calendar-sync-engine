@@ -15,6 +15,10 @@
 //! there yet is a retryable failure, so the outbox tries again on its own schedule. A live
 //! mailbox has shown the copy within about three seconds.
 //!
+//! A stored draft carries its keywords the same way, set after each save
+//! ([`Categories::keep_on_draft`]). A re-save in place keeps the message and its categories
+//! (live), so a keyword the save no longer asks for is taken off as well.
+//!
 //! **One category per keyword, whatever the device's language.** Before the first tag the Sent
 //! Items folder is asked for a message already carrying any of the keyword's names, and the name
 //! it carries is the one used from then on; only when none does is the category created under
@@ -22,7 +26,10 @@
 //! question directly, but reading it takes the `MailboxSettings.Read` scope, which a mail client
 //! otherwise has no use for.
 
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Mutex,
+};
 
 use engine_core::{ids::ProviderKey, mail::Keyword};
 use engine_provider::{KeywordName, ProviderError, ProviderResult};
@@ -117,6 +124,59 @@ impl Categories {
         ProviderKey::new(id).map_err(|err| ProviderError::permanent(err.to_string()))
     }
 
+    /// Makes the stored draft `key` carry the category of each of `wanted` that has a
+    /// registered name, and no name of any other registered keyword, keeping the person's own
+    /// categories. `held` is what the save answered the draft carries, read again when the
+    /// answer did not say. Returns the keywords the draft carries; nothing here fails the save.
+    pub(crate) async fn keep_on_draft(
+        &self,
+        client: &GraphClient,
+        key: &ProviderKey,
+        held: Option<Vec<String>>,
+        wanted: &BTreeSet<Keyword>,
+    ) -> BTreeSet<Keyword> {
+        if self.names.is_empty() {
+            return BTreeSet::new();
+        }
+        let url = client.url(&format!("/messages/{}", key.as_str()));
+        let held = match held {
+            Some(held) => held,
+            None => match client.get(&format!("{url}?$select=categories")).await {
+                Ok(doc) => categories(&doc),
+                Err(_) => return BTreeSet::new(),
+            },
+        };
+        let (named, unwanted): (Vec<&KeywordName>, Vec<&KeywordName>) = self
+            .names
+            .iter()
+            .partition(|named| wanted.contains(named.keyword()));
+        let mut target: Vec<String> = held
+            .iter()
+            .filter(|category| !unwanted.iter().any(|named| named.is_named(category)))
+            .cloned()
+            .collect();
+        for named in &named {
+            if !target.iter().any(|held| named.is_named(held)) {
+                target.push(self.category_for(client, named).await);
+            }
+        }
+        let carried = |categories: &[String]| -> BTreeSet<Keyword> {
+            named
+                .iter()
+                .filter(|named| categories.iter().any(|held| named.is_named(held)))
+                .map(|named| named.keyword().clone())
+                .collect()
+        };
+        if target == held {
+            return carried(&held);
+        }
+        let body = json!({ "categories": target }).to_string().into_bytes();
+        match client.patch(&url, "application/json", None, body).await {
+            Ok(_) => carried(&target),
+            Err(_) => carried(&held),
+        }
+    }
+
     /// The category name `named` goes by in this mailbox: one a sent message already carries,
     /// else the name to create it under. Settled once found; a lookup that fails settles
     /// nothing, so the next tag asks again.
@@ -189,6 +249,13 @@ fn first(doc: &Value) -> Option<&Value> {
     doc.get("value").and_then(Value::as_array)?.first()
 }
 
+/// A message's `categories`, or `None` when `message` does not say.
+pub(crate) fn held_categories(message: Option<&Value>) -> Option<Vec<String>> {
+    message
+        .filter(|message| message.get("categories").is_some())
+        .map(categories)
+}
+
 /// A message's `categories`.
 fn categories(message: &Value) -> Vec<String> {
     message
@@ -237,3 +304,7 @@ pub(crate) fn encode(value: &str) -> String {
 #[cfg(test)]
 #[path = "categories_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "categories_draft_tests.rs"]
+mod draft_tests;

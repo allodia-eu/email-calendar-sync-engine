@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use engine_core::{ids::AccountId, sync::SyncUpdate};
 use engine_provider::{
-    CalendarUserAddresses, CalendarWrites, IgnoreConnectSteps, Provider, SharedAccounts,
+    CalendarSync, CalendarUserAddresses, CalendarWrites, IgnoreConnectSteps, Provider,
+    SharedAccounts,
 };
 
 use crate::{

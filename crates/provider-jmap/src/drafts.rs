@@ -10,9 +10,17 @@
 //! message exists before the old one goes, and a caller cannot observe a window with
 //! neither. That is a stronger promise than IMAP can make, where the two are separate
 //! commands.
+//!
+//! **A draft's keywords are part of its create**, beside `$draft` and `$seen`. Every save
+//! creates a new message, so each one carries exactly the keywords that save asked for.
 
-use engine_core::{ids::ProviderKey, mail::MailboxRole};
-use engine_provider::Draft;
+use std::collections::BTreeSet;
+
+use engine_core::{
+    ids::ProviderKey,
+    mail::{Keyword, MailboxRole},
+};
+use engine_provider::{Draft, DraftReceipt};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -24,8 +32,9 @@ use crate::{
     sync_ops::objects,
 };
 
-/// Stores `draft` in the account's Drafts mailbox, destroying the message named by
-/// `replacing`, and returns the new message's id.
+/// Stores `draft` in the account's Drafts mailbox carrying `keywords`, destroying the message
+/// named by `replacing`, and returns the new message's id and the keywords it carries: all of
+/// them, since a create the server accepted holds every keyword it was given.
 ///
 /// # Errors
 ///
@@ -38,7 +47,8 @@ pub(crate) async fn put_draft(
     mail_account: &str,
     draft: &Draft,
     replacing: Option<&ProviderKey>,
-) -> Result<ProviderKey, JmapError> {
+    keywords: &BTreeSet<Keyword>,
+) -> Result<DraftReceipt, JmapError> {
     let drafts = drafts_mailbox(executor, mail_account).await?;
     // Attachment bytes first: the draft references each by the server-assigned `blobId`,
     // which cannot be known before the upload (RFC 8620 §6.1). A re-save reuses the blob
@@ -48,7 +58,11 @@ pub(crate) async fn put_draft(
 
     let mut req = Request::new([capability::CORE, capability::MAIL]);
     let mut create = Map::new();
-    create.insert("draft".to_owned(), build_draft(&drafts, draft, &blob_ids));
+    let mut stored = build_draft(&drafts, draft, &blob_ids);
+    for keyword in keywords {
+        stored["keywords"][keyword.as_str()] = Value::Bool(true);
+    }
+    create.insert("draft".to_owned(), stored);
     let mut arguments = json!({ "accountId": mail_account, "create": create });
     if let Some(superseded) = replacing {
         arguments["destroy"] = json!([superseded.as_str()]);
@@ -58,7 +72,9 @@ pub(crate) async fn put_draft(
     let resp = executor.execute(&req).await?;
     let result = resp.result(&set)?;
     let id = created_id(result, "draft").ok_or_else(|| set_error(result, "draft", "Email/set"))?;
-    ProviderKey::new(id).map_err(|e| JmapError::protocol(format!("bad created email id: {e}")))
+    let key = ProviderKey::new(id)
+        .map_err(|e| JmapError::protocol(format!("bad created email id: {e}")))?;
+    Ok(DraftReceipt::stored(key).with_keywords(keywords.clone()))
 }
 
 /// Destroys a stored draft, reporting one that is already gone as done.
