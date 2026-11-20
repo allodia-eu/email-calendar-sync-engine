@@ -88,14 +88,14 @@ pub async fn fetch_message_scheduling<P, S>(
     store: &S,
     account: &AccountId,
     message: &Message,
-) -> Result<Option<(engine_mime::CalendarPart, Vec<String>)>, SyncError>
+) -> Result<Option<(engine_mime::CalendarPart, engine_mime::MessageRecipients)>, SyncError>
 where
     P: Provider,
     S: MessageSourceCache,
 {
     with_raw_source(provider, store, account, message, |raw| {
         engine_mime::extract_calendar_part(raw)
-            .map(|part| (part, engine_mime::extract_delivery_recipients(raw)))
+            .map(|part| (part, engine_mime::extract_recipients(raw)))
     })
     .await
 }

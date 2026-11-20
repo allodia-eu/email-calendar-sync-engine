@@ -30,7 +30,7 @@ use mail_parser::{ContentType, MessageParser, PartKind};
 // The mail side of the mail↔calendar bridge: the iMIP `text/calendar` payload, and the
 // addresses the message was delivered to (which is how an invitation to an alias is
 // recognized with no configuration).
-pub use scheduling::{CalendarPart, extract_calendar_part, extract_delivery_recipients};
+pub use scheduling::{CalendarPart, MessageRecipients, extract_calendar_part, extract_recipients};
 pub use structure::is_single_text_body;
 
 /// Renders `html` as text: tags removed, entities decoded, white space collapsed, and what

@@ -279,10 +279,14 @@ parties).
 **Reading an invitation out of mail: what really arrives.** The read is
 `Engine::message_scheduling` — it finds the `text/calendar` part in the MIME tree,
 decodes it (base64, quoted-printable and declared charsets all occur), parses it
-with the one hardened parser, and returns it alongside the addresses the message
-was **delivered to** (the MTA `Delivered-To`/`X-Original-To`/`Envelope-To` headers
-first, then `To:`/`Cc:`) — which is what makes an invitation to an alias work with
-no configuration. A payload that will not parse yields `None`, never an error; the
+with the one hardened parser, and returns it alongside two lists that are trusted
+differently: the addresses the message was **delivered to** (`delivered_to`: the MTA
+`Delivered-To`/`X-Original-To`/`Envelope-To` headers, each naming this mailbox), which
+is what makes an invitation to an alias work with no configuration, and the addresses
+it was **addressed to** (`addressed_to`: `To:`/`Cc:`). An organiser addresses an
+invitation to every attendee, so an `addressed_to` match says only that the user is
+*one of* them; a host that answered as the first attendee found there would answer as
+a colleague. A payload that will not parse yields `None`, never an error; the
 mail is still readable. Two things a real server-authored invitation taught us
 (fixture: `engine-api/tests/fixtures/stalwart-invitation.eml`):
 

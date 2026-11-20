@@ -32,14 +32,21 @@ pub struct InboundScheduling {
     /// `METHOD:PUBLISH` means "here is a calendar file", which is why a published `.ics`
     /// keeps its attachment chip and offers no RSVP.
     pub from_inline_body: bool,
-    /// The addresses this message was delivered to — the MTA delivery headers
-    /// (`Delivered-To`/`X-Original-To`/`Envelope-To`) first, then `To:`/`Cc:`.
+    /// The addresses the final MTA recorded delivering this copy to (`Delivered-To`, then
+    /// `X-Original-To`, then `Envelope-To`): each one is **this mailbox**.
     ///
-    /// This is how an invitation sent to an **alias** is recognized with no configuration at
-    /// all: the message was delivered to this mailbox, so an `ATTENDEE` matching one of these
-    /// is the user, even when the account's primary address is different. Compare with
-    /// [`addresses_match`](engine_core::scheduling::addresses_match) — never with `==`.
-    pub delivery_recipients: Vec<String>,
+    /// This is how an invitation sent to an **alias** is recognised with no configuration at
+    /// all: an `ATTENDEE` matching one of these is the user, even when the account's primary
+    /// address is different. Empty on mail that made no MTA hop, such as an invitation sent
+    /// inside one Exchange tenant. Compare with
+    /// [`addresses_match`](engine_core::scheduling::addresses_match), never with `==`.
+    pub delivered_to: Vec<String>,
+    /// The addresses the sender wrote in `To:` and `Cc:`, in that order.
+    ///
+    /// Each names **someone** the message went to, not necessarily this mailbox: an organiser
+    /// addresses an invitation to every attendee, so an `ATTENDEE` matching one of these is the
+    /// user only when nothing more specific says which attendee this mailbox is.
+    pub addressed_to: Vec<String>,
 }
 
 impl Engine {
@@ -49,7 +56,7 @@ impl Engine {
     /// quoted-printable, and the declared charset all appear in the wild), and parses it with
     /// the engine's single hardened iCalendar parser. Cache-first on the raw RFC 5322 source,
     /// so a message whose body was already read costs **no** extra provider fetch — and the
-    /// delivery recipients come out of the same pass.
+    /// recipients come out of the same pass.
     ///
     /// `Ok(None)` covers both "not an invitation" and "carried something that would not
     /// parse": a malformed calendar part is not an error a user can act on, and it must never
@@ -71,7 +78,7 @@ impl Engine {
         let found = fetch_message_scheduling(provider, &self.store, account, message)
             .await
             .map_err(map_sync_error)?;
-        let Some((part, delivery_recipients)) = found else {
+        let Some((part, recipients)) = found else {
             return Ok(None);
         };
         // A body that does not parse is not an invitation, and not a failure of this read:
@@ -83,7 +90,8 @@ impl Engine {
             message: scheduling,
             media_type: part.media_type().to_owned(),
             from_inline_body: part.from_inline_body(),
-            delivery_recipients,
+            delivered_to: recipients.delivered_to,
+            addressed_to: recipients.addressed_to,
         }))
     }
 }
@@ -192,10 +200,8 @@ mod tests {
         // all — `To:` names a list — but `Delivered-To` names the alias that is also the
         // ATTENDEE, so the invitation is recognizably *for me*.
         let found = scheduling_of(OUTLOOK_INVITE).await.expect("an invitation");
-        assert_eq!(
-            found.delivery_recipients.first().unwrap(),
-            "info@test.local"
-        );
+        assert_eq!(found.delivered_to, ["info@test.local"]);
+        assert_eq!(found.addressed_to, ["everyone@test.local"]);
 
         let attendee_addresses: Vec<&str> = found
             .message
@@ -206,10 +212,10 @@ mod tests {
             .collect();
         assert!(
             attendee_addresses.iter().any(|attendee| found
-                .delivery_recipients
+                .delivered_to
                 .iter()
                 .any(|mine| addresses_match(attendee, mine))),
-            "an ATTENDEE must match a delivery recipient: {attendee_addresses:?}"
+            "an ATTENDEE must match the address it was delivered to: {attendee_addresses:?}"
         );
     }
 

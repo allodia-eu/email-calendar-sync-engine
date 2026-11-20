@@ -138,13 +138,13 @@ async fn the_attendee_folded_across_a_line_break_still_matches_the_delivery_addr
     // And the two-condition gate closes: the MTA's own `Delivered-To` names this mailbox,
     // and an ATTENDEE matches it.
     assert_eq!(
-        found.delivery_recipients.first().map(String::as_str),
+        found.delivered_to.first().map(String::as_str),
         Some("carol@test.local"),
-        "Delivered-To is the header the MTA wrote, and it comes first"
+        "Delivered-To is the header the MTA wrote"
     );
     assert!(attendees.iter().any(|attendee| {
         found
-            .delivery_recipients
+            .delivered_to
             .iter()
             .any(|mine| addresses_match(attendee, mine))
     }));
