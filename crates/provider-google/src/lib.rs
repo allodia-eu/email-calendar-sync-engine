@@ -64,6 +64,7 @@ mod report;
 mod submit;
 mod throttle;
 mod transport;
+mod window_listing;
 
 #[cfg(test)]
 mod contact_fixture_tests;

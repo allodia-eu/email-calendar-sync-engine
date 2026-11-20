@@ -17,7 +17,7 @@ use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey},
     mail::{Mailbox, Message},
     raw::RawMime,
-    sync::{SyncScope, SyncState, SyncUpdate, SyncWindow},
+    sync::{MailboxWindows, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::CalendarDate,
 };
 use engine_provider::{
@@ -225,7 +225,7 @@ impl Provider for GraphProvider {
         &'a self,
         _account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        window: SyncWindow,
+        window: MailboxWindows,
         // Graph consumer `messages/delta` page size is server-controlled (`graph.md`),
         // so the fetch-batch knob has no lever here; each server page is drained whole.
         _fetch_batch: usize,
@@ -235,8 +235,9 @@ impl Provider for GraphProvider {
         // delta cannot carry one (the `deltaLink` is opaque), so a message moved into the
         // folder is reported however old it is; the engine drops it on apply
         // (`SyncWindow::admits`), which is where the delta's bound holds for every adapter.
-        // The snapshot's bound is this `$filter`, and is not re-checked there.
-        let floor = window.floor();
+        // The snapshot's bound is this `$filter`, and is not re-checked there. The bound folder
+        // fetches under its own window.
+        let floor = window.window_for(&self.folder).floor();
         Box::pin(async_stream::try_stream! {
             // Each Graph page is fetched whole over HTTP and re-chunked for incremental
             // commit; intermediate chunks hold the cursor and a final marker advances it

@@ -29,10 +29,22 @@ fn every_form_round_trips_through_the_store() {
         },
         GmailCursor::Backfill {
             history: history("40656"),
+            label: None,
             page: None,
         },
         GmailCursor::Backfill {
             history: history("40656"),
+            label: None,
+            page: Some(PageToken::new("09876543210123456789")),
+        },
+        GmailCursor::Backfill {
+            history: history("40656"),
+            label: Some("SENT".to_owned()),
+            page: None,
+        },
+        GmailCursor::Backfill {
+            history: history("40656"),
+            label: Some("Label_12".to_owned()),
             page: Some(PageToken::new("09876543210123456789")),
         },
         GmailCursor::Reconcile {
@@ -50,16 +62,46 @@ fn every_form_round_trips_through_the_store() {
 #[test]
 fn a_page_token_is_kept_whole_whatever_it_contains() {
     // Google documents the token as opaque, so nothing in it may be read as a separator.
-    let cursor = GmailCursor::Backfill {
-        history: history("7"),
-        page: Some(PageToken::new("a;b=c;h=9")),
-    };
-    assert_eq!(GmailCursor::read(&cursor.state()), Some(cursor));
+    for label in [None, Some("SENT".to_owned())] {
+        let cursor = GmailCursor::Backfill {
+            history: history("7"),
+            label,
+            page: Some(PageToken::new("a;b=c;h=9;l=x;p=y")),
+        };
+        assert_eq!(GmailCursor::read(&cursor.state()), Some(cursor));
+    }
+}
+
+#[test]
+fn a_backfill_written_before_labels_were_listed_alone_is_the_accounts_listing() {
+    assert_eq!(
+        GmailCursor::read(&SyncState::new("backfill;h=7;p=page-2")),
+        Some(GmailCursor::Backfill {
+            history: history("7"),
+            label: None,
+            page: Some(PageToken::new("page-2")),
+        })
+    );
+    assert_eq!(
+        GmailCursor::state(&GmailCursor::Backfill {
+            history: history("7"),
+            label: Some("SENT".to_owned()),
+            page: Some(PageToken::new("page-2")),
+        })
+        .as_str(),
+        "backfill;h=7;l=SENT;p=page-2"
+    );
 }
 
 #[test]
 fn a_cursor_this_build_cannot_read_starts_the_backfill_over() {
-    for unreadable in ["backfill;p=1", "reconcile;", "backfill;h=;p=", ""] {
+    for unreadable in [
+        "backfill;p=1",
+        "reconcile;",
+        "backfill;h=;p=",
+        "backfill;h=7;l=;p=",
+        "",
+    ] {
         assert_eq!(
             GmailCursor::read(&SyncState::new(unreadable)),
             None,

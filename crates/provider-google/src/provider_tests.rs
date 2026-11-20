@@ -192,7 +192,7 @@ async fn a_page_refused_partway_still_hands_on_what_it_fetched() {
     ]));
     let account = account();
     let items: Vec<_> = provider
-        .stream_email(&account, None, SyncWindow::full(), 0, 0)
+        .stream_email(&account, None, SyncWindow::full().into(), 0, 0)
         .collect()
         .await;
 

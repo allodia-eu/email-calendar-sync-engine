@@ -15,7 +15,7 @@ use engine_core::{
     ids::{AccountId, AddressBookId, CalendarId},
     mail::{Mailbox, Message},
     raw::RawMime,
-    sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
+    sync::{JmapDataType, MailboxWindows, SyncScope, SyncState},
 };
 use engine_provider::{
     CalendarListing, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HandOver,
@@ -27,6 +27,7 @@ use serde_json::json;
 use crate::{
     JmapClient, JmapConfig,
     calendar::{calendar_from_json, event_from_json},
+    email_window::email_filter,
     error::JmapError,
     executor::Executor,
     fetch,
@@ -202,20 +203,13 @@ impl Provider for JmapProvider {
         &'a self,
         _account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        window: SyncWindow,
+        window: MailboxWindows,
         fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
         // Newest-first, so a fresh sync surfaces recent mail before it finishes.
         let sort = json!([{ "property": "receivedAt", "isAscending": false }]);
-        // A sync-depth window bounds a snapshot via `receivedAt` (RFC 8621 §4.4.1). A
-        // delta carries no filter — `Email/changes` takes none — so an old message moved
-        // into scope is reported as a change; the engine drops it on apply
-        // (`SyncWindow::admits`), which is where the delta's bound holds for every adapter.
-        // The snapshot's bound is this filter, and is not re-checked there.
-        let filter = window
-            .floor()
-            .map(|date| json!({ "after": format!("{date}T00:00:00Z") }));
+        let filter = email_filter(&window);
         Box::pin(async_stream::try_stream! {
             let account = self.mail_account()?;
             let fetch = MemberFetch {

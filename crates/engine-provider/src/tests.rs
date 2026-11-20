@@ -55,7 +55,7 @@ impl Provider for FakeJmap {
         &'a self,
         _account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        _window: SyncWindow,
+        _window: engine_core::sync::MailboxWindows,
         _fetch_batch: usize,
         _chunk_size: usize,
     ) -> EmailStream<'a> {
@@ -130,7 +130,7 @@ async fn email_stream_primitive_drives_the_drain_default() {
     // The streaming primitive: a first pass (no cursor) is a one-chunk reconciling
     // snapshot that carries the ids it covers, its progress total, and the cursor.
     let chunks: Vec<_> = provider
-        .stream_email(&account(), None, SyncWindow::full(), 50, 0)
+        .stream_email(&account(), None, SyncWindow::full().into(), 50, 0)
         .collect()
         .await;
     assert_eq!(chunks.len(), 1);
@@ -214,7 +214,7 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
     assert_eq!(over.mailbox_scope(&account()), mailbox_scope);
     assert!(over.sync_mailboxes(&account(), None).await.is_ok());
     let chunks: Vec<_> = over
-        .stream_email(&account(), None, SyncWindow::full(), 50, 0)
+        .stream_email(&account(), None, SyncWindow::full().into(), 50, 0)
         .collect()
         .await;
     let chunk = chunks.into_iter().next().unwrap().unwrap();
@@ -252,7 +252,7 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
     // The bare stream default yields a single classified `Err`, so a
     // capability-checking caller never relies on it.
     let stream_first = bare
-        .stream_email(&account(), None, SyncWindow::full(), 0, 0)
+        .stream_email(&account(), None, SyncWindow::full().into(), 0, 0)
         .next()
         .await
         .unwrap()

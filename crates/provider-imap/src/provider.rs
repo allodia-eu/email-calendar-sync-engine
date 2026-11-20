@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey, SharedAccountId},
     mail::{Mailbox, Message},
-    sync::{SyncScope, SyncState, SyncUpdate, SyncWindow},
+    sync::{MailboxWindows, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::CalendarDate,
 };
 use engine_provider::{
@@ -215,13 +215,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
         &'a self,
         _account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        window: SyncWindow,
+        window: MailboxWindows,
         fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
-        // An unbounded caller window falls back to the construction cutoff
-        // (`with_since`), so a provider built with a depth still windows its streamed
-        // backfill; an explicit per-sync window overrides it.
+        // The bound mailbox fetches under its own window. An unbounded one falls back to the
+        // construction cutoff (`with_since`), so a provider built with a depth still windows
+        // its streamed backfill; an explicit per-sync window overrides it.
+        let window = window.window_for(&self.mailbox);
         let window = if window.is_bounded() {
             window
         } else {

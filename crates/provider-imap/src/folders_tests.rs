@@ -342,7 +342,7 @@ async fn first_streamed(folder: &str, server: &[&str]) -> (engine_provider::Prov
     let account = account();
     let err = {
         let window = engine_core::sync::SyncWindow::full();
-        let mut stream = provider.stream_email(&account, None, window, 0, 0);
+        let mut stream = provider.stream_email(&account, None, window.into(), 0, 0);
         stream.next().await.unwrap().unwrap_err()
     };
     (err, written(&recorded))

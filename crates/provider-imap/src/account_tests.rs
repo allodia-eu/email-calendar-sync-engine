@@ -185,7 +185,7 @@ async fn a_pass_that_fails_mid_stream_does_not_park_its_connection() {
     let inbox = account.provider(mailbox("INBOX"));
 
     let items: Vec<_> = inbox
-        .stream_email(&account_id(), None, SyncWindow::full(), 50, 0)
+        .stream_email(&account_id(), None, SyncWindow::full().into(), 50, 0)
         .collect()
         .await;
     assert!(

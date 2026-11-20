@@ -255,7 +255,7 @@ and the cross-compile build.
 | Account | Holds | Used for |
 | --- | --- | --- |
 | `alice@test.local` | **the whole shared seed** (mail, calendar, contacts) | every read/sync/write suite; several assert its exact mailbox and calendar counts |
-| `bob@test.local` | nothing | scratch: the SMTP recipient in the submission tests, the **organizer** in the scheduling suite, and the **grantor** of the read-only share below |
+| `bob@test.local` | nothing | scratch: the SMTP recipient in the submission tests, the **organizer** in the scheduling suite, the **grantor** of the read-only share below, and the dated mail the mailbox-window suites plant (`Harness::plant_dated_email_as`) and remove again |
 | `carol@test.local` | nothing | scratch: the **attendee** in the scheduling suite |
 | `dave@test.local` | one calendar, `Dave Shared`, with one event | the **calendar-only** grantor: shares that calendar with Alice read-only, and no mail |
 | `support@test.local` | `12-shared.eml` in its INBOX, `support-rota.ics` in its calendar | a **group** principal — a mailbox with no credentials of its own, which Alice belongs to |
@@ -268,6 +268,10 @@ exchange through Alice would push her INBOX permanently over the exact count the
 mail suites assert, so the whole two-party exchange happens between Bob and Carol,
 where nothing counts what is delivered. Prefer a scratch account over relaxing an
 assertion on the seeded one.
+
+Mail older than a sync window cannot be seeded by `APPEND` (the seeder stamps the moment of
+seeding), so a depth test plants it in a scratch account over JMAP with the `receivedAt` it
+needs, which Stalwart also serves as the IMAP `INTERNALDATE`, and removes it when it ends.
 
 ### The shared-mailbox fixture: two shares, deliberately unequal
 

@@ -220,7 +220,8 @@ is authoritative for the `provider-caldav` calendar client.
   reset), so fetching a page whole before re-chunking is fine, and previews *are*
   hydrated there.
 - **Sync-depth window (per sync).** The sync-depth floor is now a **per-sync
-  argument** — `stream_email(…, window, …)` takes a `SyncWindow { since }` — so a host
+  argument** — `stream_email(…, window, …)` takes a `MailboxWindows`, of which the bound
+  mailbox fetches under its own `window_for` — so a host
   changes depth without reconnecting the provider; `ImapConfig::with_since(date)`
   survives only as the `default_sync_window` the whole-scope `sync_email` drain fetches
   under. Either way it bounds a **snapshot/backfill** to mail delivered on or after

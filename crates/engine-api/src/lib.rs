@@ -46,7 +46,8 @@ mod scheduling;
 
 pub use engine::{
     CalendarDelete, CalendarWrite, ContactDelete, ContactReconciled, ContactWrite, Engine,
-    MailboxWrite, PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled, queued_draft,
+    MailboxSpan, MailboxWrite, PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled,
+    queued_draft,
 };
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
@@ -110,8 +111,10 @@ pub use engine_core::{
     // scheduling payload needs to be able to name it.
     raw::RawIcal,
     recipient::{RecipientCoverage, RecipientInteraction, RecipientSuggestion},
-    // `SearchDomain` names what `Engine::forget_account_domain` forgets.
-    sync::{SearchDomain, SyncScope, SyncWindow},
+    // `MailboxWindows` is what `StreamTuning::within` and the local prune take when a mailbox
+    // is held further back than its account; `SearchDomain` names what
+    // `Engine::forget_account_domain` forgets.
+    sync::{MailboxWindows, SearchDomain, SyncScope, SyncWindow},
     // `CalendarDateTime` is the type of `Event::start` and `Event::recurrence_id`, and `Duration`
     // the type of `Event::duration` — both public fields on a type this facade returns.
     time::{

@@ -42,6 +42,7 @@ use crate::{
         message_from_json, nest_labels,
     },
     transport::{GoogleClient, encode_query_value},
+    window_listing::Listing,
 };
 
 /// The Gmail user-scoped API root (`/gmail/v1/users/me`).
@@ -211,18 +212,18 @@ pub(crate) struct ListedPage {
     pub(crate) stopped: Option<GoogleError>,
 }
 
-/// Fetches one listed page: a `messages.list` page whose ids are fetched full, concurrently.
-/// `floor` (the sync-window date floor) windows the enumeration to `after:<floor>`.
+/// Fetches one listed page: a `messages.list` page of `listing` whose ids are fetched full,
+/// concurrently.
 ///
 /// A get that fails partway leaves the page short rather than empty: it holds what was fetched
 /// ahead of the failure, which comes back beside it in [`ListedPage::stopped`].
 pub(crate) async fn listed_page(
     client: &GoogleClient,
     page: Option<&PageToken>,
-    floor: Option<CalendarDate>,
+    listing: &Listing,
     named: &NamedLabels,
 ) -> Result<ListedPage, GoogleError> {
-    let doc = client.get(&list_url(client, page, floor, 100)).await?;
+    let doc = client.get(&list_url(client, page, listing, 100)).await?;
 
     // `messages` is absent on an empty mailbox / final empty page — treat as no rows.
     let entries = doc.get("messages").and_then(Value::as_array);
@@ -432,8 +433,9 @@ fn string_array(value: Option<&Value>) -> Option<Vec<String>> {
     )
 }
 
-/// The `messages.list` URL for `size` ids a page: a continuation `pageToken`, else the first
-/// page, optionally windowed by an `after:<epoch>` floor.
+/// The `messages.list` URL for `size` ids a page of `listing`: a continuation `pageToken`, else
+/// the first page, one label alone (`labelIds`) where the listing names one, and its days as
+/// `after:<epoch>` and `before:<epoch>`.
 ///
 /// `includeSpamTrash` is not optional here. `messages.list` omits both by default while
 /// `history.list` reports their label changes regardless — it takes no such flag — so
@@ -443,7 +445,7 @@ fn string_array(value: Option<&Value>) -> Option<Vec<String>> {
 pub(crate) fn list_url(
     client: &GoogleClient,
     page: Option<&PageToken>,
-    floor: Option<CalendarDate>,
+    listing: &Listing,
     size: u16,
 ) -> String {
     use std::fmt::Write as _;
@@ -451,8 +453,15 @@ pub(crate) fn list_url(
     if let Some(page) = page {
         let _ = write!(url, "&pageToken={}", encode_query_value(page.as_str()));
     }
-    if let Some(epoch) = floor.and_then(midnight_epoch) {
-        let _ = write!(url, "&q=after:{epoch}");
+    if let Some(label) = &listing.label {
+        let _ = write!(url, "&labelIds={}", encode_query_value(label));
+    }
+    let days: Vec<String> = [("after", listing.after), ("before", listing.before)]
+        .into_iter()
+        .filter_map(|(bound, day)| Some(format!("{bound}:{}", midnight_epoch(day?)?)))
+        .collect();
+    if !days.is_empty() {
+        let _ = write!(url, "&q={}", days.join("%20"));
     }
     client.url(&url)
 }
@@ -470,7 +479,7 @@ fn history_url(client: &GoogleClient, cursor: &SyncState, page: Option<&PageToke
     client.url(&url)
 }
 
-/// The Unix-epoch seconds for `date` at 00:00:00 UTC (the `q: after:` window bound).
+/// The Unix-epoch seconds for `date` at 00:00:00 UTC (a `q: after:` or `before:` bound).
 fn midnight_epoch(date: CalendarDate) -> Option<i64> {
     let month = time::Month::try_from(date.month()).ok()?;
     let day = time::Date::from_calendar_date(date.year(), month, date.day()).ok()?;

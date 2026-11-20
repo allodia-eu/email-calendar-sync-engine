@@ -13,6 +13,15 @@ use crate::{
     },
 };
 
+/// The account's own listing, from `after` on.
+fn whole(after: Option<CalendarDate>) -> Listing {
+    Listing {
+        label: None,
+        after,
+        before: None,
+    }
+}
+
 const LABELS: &str = include_str!("../tests/fixtures/mail/labels.json");
 const PROFILE: &str = include_str!("../tests/fixtures/mail/profile.json");
 const LIST: &str = include_str!("../tests/fixtures/mail/messages_list.json");
@@ -79,7 +88,7 @@ async fn a_listed_page_fetches_each_listed_message_full() {
     let mut routes = vec![("/messages?maxResults", json(LIST))];
     routes.extend(message_routes());
     let client = fake_client(routes);
-    let page = listed_page(&client, None, None, &NamedLabels::default())
+    let page = listed_page(&client, None, &whole(None), &NamedLabels::default())
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 3);
@@ -91,10 +100,34 @@ async fn a_listed_page_fetches_each_listed_message_full() {
 async fn snapshot_windows_by_after_epoch_only_when_a_floor_is_set() {
     let client = fake_client(vec![]);
     let floor = CalendarDate::new(2026, 4, 1).unwrap();
-    let windowed = list_url(&client, None, Some(floor), 100);
+    let windowed = list_url(&client, None, &whole(Some(floor)), 100);
     // Midnight 2026-04-01 UTC = 1775001600.
     assert!(windowed.contains("&q=after:1775001600"), "{windowed}");
-    assert!(!list_url(&client, None, None, 100).contains("q=after"));
+    assert!(!list_url(&client, None, &whole(None), 100).contains("q=after"));
+}
+
+#[tokio::test]
+async fn a_label_held_further_back_is_listed_alone_between_its_floor_and_the_accounts() {
+    let client = fake_client(vec![]);
+    let deeper = Listing {
+        label: Some("Label_1".to_owned()),
+        after: Some(CalendarDate::new(2020, 4, 1).unwrap()),
+        before: Some(CalendarDate::new(2026, 4, 1).unwrap()),
+    };
+    let url = list_url(&client, None, &deeper, 100);
+    // Midnight 2020-04-01 UTC = 1585699200.
+    assert!(url.contains("&labelIds=Label_1"), "{url}");
+    assert!(
+        url.contains("&q=after:1585699200%20before:1775001600"),
+        "{url}"
+    );
+    let whole_history = Listing {
+        after: None,
+        ..deeper
+    };
+    let url = list_url(&client, None, &whole_history, 100);
+    assert!(url.contains("&q=before:1775001600"), "{url}");
+    assert!(!url.contains("after:"), "{url}");
 }
 
 #[tokio::test]
@@ -106,7 +139,7 @@ async fn a_junk_message_is_fetched_and_filed_in_spam() {
         ("/messages?maxResults", json(LIST_JUNK)),
         ("/messages/message-junk", json(META_JUNK)),
     ]);
-    let page = listed_page(&client, None, None, &NamedLabels::default())
+    let page = listed_page(&client, None, &whole(None), &NamedLabels::default())
         .await
         .unwrap();
 
@@ -128,9 +161,9 @@ async fn every_snapshot_page_asks_for_spam_and_trash() {
     let floor = CalendarDate::new(2026, 4, 1).unwrap();
     let token = PageToken::new("NEXT_PAGE");
     for url in [
-        list_url(&client, None, None, 100),
-        list_url(&client, None, Some(floor), 100),
-        list_url(&client, Some(&token), Some(floor), 100),
+        list_url(&client, None, &whole(None), 100),
+        list_url(&client, None, &whole(Some(floor)), 100),
+        list_url(&client, Some(&token), &whole(Some(floor)), 100),
     ] {
         assert!(url.contains("&includeSpamTrash=true"), "{url}");
     }
@@ -140,7 +173,7 @@ async fn every_snapshot_page_asks_for_spam_and_trash() {
 async fn page_urls_continue_from_a_page_token() {
     let client = fake_client(vec![]);
     let token = PageToken::new("NEXT_PAGE");
-    assert!(list_url(&client, Some(&token), None, 100).contains("&pageToken=NEXT_PAGE"));
+    assert!(list_url(&client, Some(&token), &whole(None), 100).contains("&pageToken=NEXT_PAGE"));
     assert!(
         history_url(&client, &SyncState::new("42"), Some(&token)).contains("&pageToken=NEXT_PAGE")
     );
@@ -160,7 +193,7 @@ async fn snapshot_skips_a_message_that_404s_between_list_and_get() {
             Err((404, json(r#"{"error":{"code":404}}"#))),
         ),
     ]);
-    let page = listed_page(&client, None, None, &NamedLabels::default())
+    let page = listed_page(&client, None, &whole(None), &NamedLabels::default())
         .await
         .unwrap();
     // Only the two fetchable messages survive, and a deleted one is no failure.
@@ -203,7 +236,7 @@ async fn a_snapshot_page_fetches_its_messages_concurrently() {
     // rows reach the list only after the last fetch has returned.
     let (routes, _) = wide_page(60);
     let (client, probe) = probe_client(as_routes(&routes));
-    let page = listed_page(&client, None, None, &NamedLabels::default())
+    let page = listed_page(&client, None, &whole(None), &NamedLabels::default())
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 60);
@@ -221,7 +254,7 @@ async fn a_page_smaller_than_the_window_never_exceeds_its_own_size() {
     // The window is a ceiling, not a target: a page of three does not open twenty requests.
     let (routes, _) = wide_page(3);
     let (client, probe) = probe_client(as_routes(&routes));
-    listed_page(&client, None, None, &NamedLabels::default())
+    listed_page(&client, None, &whole(None), &NamedLabels::default())
         .await
         .unwrap();
     assert_eq!(probe.peak(), 3);
@@ -232,7 +265,7 @@ async fn concurrent_fetches_still_land_in_the_order_the_server_listed_them() {
     // Fetches complete in whatever order they finish; the page must not inherit that order.
     let (routes, ids) = wide_page(40);
     let (client, _) = probe_client(as_routes(&routes));
-    let page = listed_page(&client, None, None, &NamedLabels::default())
+    let page = listed_page(&client, None, &whole(None), &NamedLabels::default())
         .await
         .unwrap();
     let got: Vec<&str> = page.messages.iter().map(|m| m.id.key().as_str()).collect();
