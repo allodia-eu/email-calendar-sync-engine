@@ -1,7 +1,7 @@
 # JMAP offline fixtures
 
-Real JMAP JSON **captured from the deterministic Stalwart v0.16 harness**
-(`docker/stalwart/`, account `alice@test.local`) and committed so the
+Real JMAP JSON **captured from the deterministic Stalwart harness** (v0.16, unless a row
+says it was re-captured on v1) (`docker/stalwart/`, account `alice@test.local`) and committed so the
 parse/normalize and orchestration tests run offline with no Docker. They are the
 ground truth the normalizers and the generic fetch orchestration are tested
 against; the live integration tests re-verify the same invariants against the
@@ -23,11 +23,18 @@ tests driven through a fake executor.
 | ------- | ------------- | -------- |
 | `mailbox_get.json` | `Mailbox/get` result | Mailbox normalization: roles (`inbox`/`sent`/`trash`) and the roleless custom `Archive`/`Projects`. |
 | `email_get.json` | `Email/get` result (all 9 seed emails) | Email normalization: the COPY as one multi-membership object, the duplicate-`Message-ID` pair as two distinct objects, missing `Message-ID`, keywords, the move. |
-| `mailbox_snapshot_response.json` | `[Mailbox/get]` response | Container snapshot orchestration. |
+| `email_get_importance.json` | `Email/get` result (`EMAIL_PROPERTIES`) for five messages appended to a scratch mailbox, captured on v1 | The importance headers as `header:…:asText` properties: `Importance: High` with `X-Priority` beside it, `X-Priority` alone, neither, `Importance` twice (answered with the last, as RFC 8621 §4.1.3 says), and `X-MSMail-Priority` alone; a missing header answers `null`. The mailbox was deleted after the capture. |
+| `mailbox_snapshot_response.json` | `[Mailbox/query, Mailbox/get]` response | A one-page queried snapshot. |
 | `email_snapshot_response.json` | `[Email/query, Email/get(#ids)]` response | Member snapshot via result back-reference. |
 | `email_changes_response.json` | `[Email/changes, Email/get(#created), Email/get(#updated)]` response | Empty-delta orchestration (the changes→get back-reference path). |
 | `submit_context_response.json` | `[Mailbox/get, Identity/get]` response | Resolving the Drafts/Sent mailboxes + submission identity before a send. |
 | `submit_send_response.json` | `[Email/set, EmailSubmission/set]` response | Submission: the created email key, plus the implicit `Email/set` from `onSuccessUpdateEmail` (two responses share call id `1`). |
+| `submit_context_shared_identities_response.json` | `[Mailbox/get, Identity/get]` response, alice **after** joining the `support` group | Two submission identities, the *group's* listed first. Taking the first submitted `From: alice@` under `support@` and Stalwart answered `forbiddenFrom`; the identity is matched to the draft's `From`. |
+| `session_shared_accounts.json` | `GET /jmap/session` as alice, verbatim (re-captured on Stalwart v1.0.2 with the shared-calendar fixture) | Shared-account discovery: four `accounts` entries (her own `c`, bob's read-only INBOX share `d`, dave's calendar-only share `f`, the `support` group `g`). Every shared one lists mail *and* calendars in `accountCapabilities` (STALWART-1). Bob's and dave's report `isReadOnly: true` and list no `submission`, `sieve`, `vacationresponse`, `quota` or `emailpush`; the group share reports `false` and keeps them all. |
+| `shared_accounts_probe_response.json` | `Mailbox/get` + `Calendar/get` with `ids: []` for `d`, `f`, `g`, as the adapter batches them | What each store really holds: bob's calendars and dave's mail answer `accountNotSupportedByMethod`; the group answers both. |
+| `participant_identity_shared_response.json` | `ParticipantIdentity/get` on the group's account `g` | The identities are the *user's* on any account (alice and the group), so a bound client narrows them to the owner's. |
+| `calendar_get_shared_read_only.json` | `Calendar/get` on dave's account `f` | A shared calendar's `myRights`: read and free/busy, nothing else; `isSubscribed: false`. |
+| `mailbox_snapshot_shared_read_only_response.json` | `[Mailbox/query, Mailbox/get]` response with bob's shared `accountId` | Per-folder rights: one Inbox whose `myRights` grants `mayReadItems` and nothing else. Its counts are whatever the scheduling suite had delivered; nothing asserts them. The `Mailbox/get` half is observed; the `Mailbox/query` half is written around it, since a snapshot became query + get after the capture. |
 | `submit_keyword_update_response.json` | `[Email/set]` update response (`live_sent_copy_keywords`; the account and email ids replaced by `submit_send_response.json`'s) | Setting a send's `sent_copy_keywords` on its filed copy: an applied update answers `updated` with the id mapped to `null`. |
 | `email_set_report_response.json` | `[Email/set]` response for a report | One `Email/set` carrying **both** the `keywords/$junk` patch and the `mailboxIds` move — the report and its filing cannot land half-applied. Replayed through the fake executor, so its call id is the adapter's `0` rather than the capturing probe's. |
 | `email_set_report_notfound_response.json` | `[Email/set]` response for an unknown id | The `notFound` `SetError` a stale report target produces → `Conflict`. |
@@ -37,6 +44,8 @@ tests driven through a fake executor.
 | `calendarevent_get_rule_parts.json` | `CalendarEvent/get` result for a `BYSETPOS` series PUT over CalDAV | That a real server really sends `bySetPosition`, so the rule parts deciding *which dates* a series generates are read rather than dropped. Its own capture rather than a seventh seed event, because the file above is asserted on wholesale as "all 6". |
 | `calendar_snapshot_response.json` | `[Calendar/get]` response | Calendar container snapshot orchestration. |
 | `event_snapshot_response.json` | `[CalendarEvent/query, CalendarEvent/get(#ids)]` response | Event member snapshot orchestration. |
+| `participant_identity_get_response.json` | `[ParticipantIdentity/get]` response | The addresses the calendar account schedules as, read as its calendar user addresses. |
+| `participant_identity_organiser_get_response.json` | `[ParticipantIdentity/get]` response | Meeting creation resolves the organiser's account identity by calendar address before writing participants. |
 
 ## Re-capturing
 

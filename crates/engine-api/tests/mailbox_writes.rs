@@ -120,5 +120,5 @@ async fn a_name_no_transport_accepts_is_invalid_input() {
         .expect_err("refused");
 
     assert!(matches!(err, ApiError::InvalidInput(_)), "{err:?}");
-    assert!(engine.outbox(&account()).await.unwrap().is_empty());
+    assert_eq!(engine.outbox(&account()).await.unwrap(), []);
 }

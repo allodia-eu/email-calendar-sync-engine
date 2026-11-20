@@ -43,9 +43,54 @@ pub(crate) enum Extension {
     SpecialUse,
     /// `QRESYNC` (RFC 7162) — a mailbox delta can reconcile flags and expunges.
     Qresync,
+    /// `NAMESPACE` (RFC 2342) — the server says which part of the mailbox tree is the
+    /// credential's own and which is someone else's.
+    Namespace,
+    /// `ACL` (RFC 4314) — the server can say what the credential may do in a mailbox
+    /// (`MYRIGHTS`), and is how one user grants another access at all.
+    Acl,
+    /// `LIST-MYRIGHTS` (RFC 8440) — a folder list can carry those rights, as `LIST-STATUS`
+    /// carries the unread counts.
+    ListMyrights,
+    /// `UIDONLY` (RFC 9586) — messages are addressed by UID alone. Yahoo documents its
+    /// default mode as showing a folder above `MESSAGELIMIT` only in part, and UID mode as the
+    /// whole of it.
+    UidOnly,
+    /// `PARTIAL` (RFC 9394) — a `FETCH` can ask for the first `n` messages of a set, which
+    /// pages a mailbox by message count rather than by UID.
+    Partial,
+    /// `CONDSTORE` (RFC 7162) — a message carries a mod-sequence, and a `FETCH` can ask for
+    /// only the messages changed since one. Unlike `QRESYNC` it needs no `ENABLE`: a
+    /// `SELECT (CONDSTORE)` or a `CHANGEDSINCE` modifier turns it on (RFC 7162 §3.1).
+    Condstore,
+    /// `X-GM-EXT-1` — Gmail's: every message carries its Gmail id (`X-GM-MSGID`), its
+    /// conversation (`X-GM-THRID`) and its labels (`X-GM-LABELS`), the same in every folder it
+    /// appears in, and `X-GM-RAW` searches with Gmail's own syntax.
+    XGmExt1,
+    /// `XYMHIGHESTMODSEQ` — Yahoo's: `SELECT` and `STATUS` report a per-folder
+    /// `HIGHESTMODSEQ` without CONDSTORE, and it moves on every change to the folder (an
+    /// arrival, a flag, a removal). So an unchanged value means an unchanged folder.
+    XymHighestModseq,
 }
 
 impl Extension {
+    /// Every extension, in declaration order — what the `ENABLE` argument list and the
+    /// connect trace iterate, so a new one cannot be added here and forgotten there.
+    pub(crate) const ALL: [Self; 12] = [
+        Self::Idle,
+        Self::ListStatus,
+        Self::SpecialUse,
+        Self::Qresync,
+        Self::Namespace,
+        Self::Acl,
+        Self::ListMyrights,
+        Self::UidOnly,
+        Self::Partial,
+        Self::Condstore,
+        Self::XGmExt1,
+        Self::XymHighestModseq,
+    ];
+
     /// The capability atom a server advertises this under.
     pub(crate) const fn atom(self) -> &'static str {
         match self {
@@ -53,6 +98,14 @@ impl Extension {
             Self::ListStatus => "LIST-STATUS",
             Self::SpecialUse => "SPECIAL-USE",
             Self::Qresync => "QRESYNC",
+            Self::Namespace => "NAMESPACE",
+            Self::Acl => "ACL",
+            Self::ListMyrights => "LIST-MYRIGHTS",
+            Self::UidOnly => "UIDONLY",
+            Self::Partial => "PARTIAL",
+            Self::Condstore => "CONDSTORE",
+            Self::XGmExt1 => "X-GM-EXT-1",
+            Self::XymHighestModseq => "XYMHIGHESTMODSEQ",
         }
     }
 
@@ -60,11 +113,19 @@ impl Extension {
     /// 2–3), so a rev2 session has it without the server advertising it separately.
     ///
     /// `QRESYNC` is **not** folded in — rev2 took only its `CLOSED` response code (item 9),
-    /// leaving the extension itself to RFC 7162 and to its own `ENABLE`.
+    /// leaving the extension itself to RFC 7162 and to its own `ENABLE`. Nor are `ACL` and
+    /// `LIST-MYRIGHTS`, which Appendix E does not mention; `NAMESPACE` is, in item 2.
     pub(crate) const fn folded_into_rev2(self) -> bool {
         match self {
-            Self::Idle | Self::ListStatus | Self::SpecialUse => true,
-            Self::Qresync => false,
+            Self::Idle | Self::ListStatus | Self::SpecialUse | Self::Namespace => true,
+            Self::Qresync
+            | Self::Acl
+            | Self::ListMyrights
+            | Self::UidOnly
+            | Self::Partial
+            | Self::Condstore
+            | Self::XGmExt1
+            | Self::XymHighestModseq => false,
         }
     }
 
@@ -73,8 +134,17 @@ impl Extension {
     /// announcement; one changes what the server sends unbidden, and so does the dialect.
     pub(crate) const fn needs_enable(self) -> bool {
         match self {
-            Self::Qresync => true,
-            Self::Idle | Self::ListStatus | Self::SpecialUse => false,
+            Self::Qresync | Self::UidOnly => true,
+            Self::Idle
+            | Self::ListStatus
+            | Self::SpecialUse
+            | Self::Namespace
+            | Self::Acl
+            | Self::ListMyrights
+            | Self::Partial
+            | Self::Condstore
+            | Self::XGmExt1
+            | Self::XymHighestModseq => false,
         }
     }
 }
@@ -114,15 +184,10 @@ impl Negotiated {
             arguments.push(IMAP4REV2);
         }
         arguments.extend(
-            [
-                Extension::Idle,
-                Extension::ListStatus,
-                Extension::SpecialUse,
-                Extension::Qresync,
-            ]
-            .into_iter()
-            .filter(|ext| ext.needs_enable() && self.advertises(ext.atom()))
-            .map(Extension::atom),
+            Extension::ALL
+                .into_iter()
+                .filter(|ext| ext.needs_enable() && self.advertises(ext.atom()))
+                .map(Extension::atom),
         );
         arguments
     }
@@ -148,6 +213,23 @@ impl Negotiated {
             return self.enabled.contains(&ext.atom().to_lowercase());
         }
         self.advertises(ext.atom()) || (self.rev2() && ext.folded_into_rev2())
+    }
+
+    /// The most messages one command may touch (RFC 9738 `MESSAGELIMIT=<n>`), if the server
+    /// stated a limit.
+    pub(crate) fn message_limit(&self) -> Option<usize> {
+        self.advertised
+            .iter()
+            .find_map(|atom| atom.strip_prefix("messagelimit=")?.parse().ok())
+    }
+
+    /// `requested` UIDs per `FETCH` (`0` for no cap), lowered to the server's message limit
+    /// where it states one, since a server may refuse a set naming more.
+    pub(crate) fn within_message_limit(&self, requested: usize) -> usize {
+        match self.message_limit() {
+            Some(limit) if limit > 0 && (requested == 0 || requested > limit) => limit,
+            _ => requested,
+        }
     }
 
     /// Whether a `LIST` has to ask for the SPECIAL-USE attributes with a return option.
@@ -186,16 +268,11 @@ impl Negotiated {
     /// extensions folded into the base protocol, which is exactly the difference a
     /// support session is trying to see.
     pub(crate) fn available_extensions(&self) -> Vec<&'static str> {
-        [
-            Extension::Idle,
-            Extension::ListStatus,
-            Extension::SpecialUse,
-            Extension::Qresync,
-        ]
-        .into_iter()
-        .filter(|ext| self.has(*ext))
-        .map(Extension::atom)
-        .collect()
+        Extension::ALL
+            .into_iter()
+            .filter(|ext| self.has(*ext))
+            .map(Extension::atom)
+            .collect()
     }
 
     /// Whether mailbox names on this session's wire are modified UTF-7 (RFC 3501 §5.1.3)

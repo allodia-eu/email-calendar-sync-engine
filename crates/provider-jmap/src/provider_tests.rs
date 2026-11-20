@@ -82,7 +82,7 @@ async fn mailbox_first_sync_snapshots_all_collections() {
     };
     assert_eq!(objects.len(), 7);
     assert_eq!(present.len(), 7);
-    assert!(!sync.next_cursor.as_str().is_empty());
+    assert_ne!(sync.next_cursor.as_str(), "");
 }
 
 #[tokio::test]
@@ -100,17 +100,28 @@ async fn email_first_sync_is_a_complete_snapshot() {
 
 /// A synthetic `Email/query`+`Email/get` page response (one minimal email per id),
 /// so snapshot paging can be driven offline without a multi-page fixture.
-fn email_query_page(ids: &[&str], total: usize) -> Value {
+fn email_query_page(ids: &[&str], position: usize, total: usize) -> Value {
     let list: Vec<Value> = ids
         .iter()
         .map(|id| json!({ "id": id, "mailboxIds": { "a": true } }))
         .collect();
     json!({
         "methodResponses": [
-            ["Email/query", { "accountId": "c", "queryState": "q", "position": 0, "ids": ids, "total": total }, "0"],
+            ["Email/query", { "accountId": "c", "queryState": "q", "position": position, "ids": ids, "total": total }, "0"],
             ["Email/get", { "accountId": "c", "state": "sX", "list": list, "notFound": [] }, "1"]
         ]
     })
+}
+
+/// A synthetic ids-only `Email/query` response: one page of the listing that closes a walk of
+/// more than one page.
+fn email_listing_page(ids: &[&str], position: usize, total: Option<usize>) -> Value {
+    let mut query =
+        json!({ "accountId": "c", "queryState": "q", "position": position, "ids": ids });
+    if let Some(total) = total {
+        query["total"] = json!(total);
+    }
+    json!({ "methodResponses": [["Email/query", query, "0"]] })
 }
 
 #[tokio::test]
@@ -118,8 +129,10 @@ async fn email_snapshot_pages_chain_until_exhausted() {
     // Three emails over two internal pages of two (fetch_batch = 2): the stream drains
     // both and yields a reconciling pass whose present set covers all three.
     let p = provider(vec![
-        email_query_page(&["e1", "e2"], 3),
-        email_query_page(&["e3"], 3),
+        email_query_page(&["e1", "e2"], 0, 3),
+        email_query_page(&["e3"], 2, 3),
+        email_listing_page(&["e1", "e2"], 0, Some(3)),
+        email_listing_page(&["e3"], 2, Some(3)),
     ]);
 
     let chunks = drain(p.stream_email(&account(), None, SyncWindow::full(), 2, 0)).await;
@@ -147,7 +160,12 @@ async fn email_snapshot_without_total_pages_until_a_short_page() {
             ]
         })
     };
-    let p = provider(vec![page(&["e1", "e2"]), page(&["e3"])]);
+    let p = provider(vec![
+        page(&["e1", "e2"]),
+        page(&["e3"]),
+        email_listing_page(&["e1", "e2"], 0, None),
+        email_listing_page(&["e3"], 0, None),
+    ]);
 
     let chunks = drain(p.stream_email(&account(), None, SyncWindow::full(), 2, 0)).await;
     assert_eq!(chunks[0].total, None, "no total advertised");
@@ -206,8 +224,8 @@ async fn email_delta_with_cursor_uses_changes_then_get() {
     else {
         panic!("expected delta");
     };
-    assert!(changed.is_empty());
-    assert!(removed.is_empty());
+    assert_eq!(changed.as_slice(), []);
+    assert_eq!(removed.as_slice(), []);
     assert_eq!(sync.next_cursor.as_str(), "sb2");
 }
 
@@ -234,7 +252,8 @@ async fn calendar_first_sync_snapshots_collections_and_events() {
     let calendars = provider(vec![fixture("calendar_snapshot_response.json")])
         .sync_calendars(&account(), None)
         .await
-        .unwrap();
+        .unwrap()
+        .sync;
     assert!(calendars.is_snapshot());
     let SyncUpdate::Snapshot { objects, present } = &calendars.update else {
         panic!("expected snapshot");
@@ -243,7 +262,7 @@ async fn calendar_first_sync_snapshots_collections_and_events() {
     assert_eq!(present.len(), 1);
 
     let events = provider(vec![fixture("event_snapshot_response.json")])
-        .sync_events(&account(), None)
+        .sync_events(&account(), &any_calendar(), None, whole())
         .await
         .unwrap();
     assert!(events.is_snapshot());
@@ -307,7 +326,11 @@ async fn permanent_fetch_errors_propagate() {
     assert!(p.sync_mailboxes(&account(), None).await.is_err());
     assert!(p.sync_email(&account(), None).await.is_err());
     assert!(p.sync_calendars(&account(), None).await.is_err());
-    assert!(p.sync_events(&account(), None).await.is_err());
+    assert!(
+        p.sync_events(&account(), &any_calendar(), None, whole())
+            .await
+            .is_err()
+    );
     let draft = Draft::new(
         engine_core::ids::MessageIdHeader::new("m@h").unwrap(),
         engine_core::mail::EmailAddress::new("a@h"),
@@ -315,7 +338,15 @@ async fn permanent_fetch_errors_propagate() {
         "s",
         "b",
     );
-    assert!(p.submit_email(&account(), &draft).await.is_err());
+    assert!(
+        p.submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded)
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -331,7 +362,11 @@ async fn missing_account_ids_surface_as_errors() {
     assert!(bare.sync_mailboxes(&account(), None).await.is_err());
     assert!(bare.sync_email(&account(), None).await.is_err());
     assert!(bare.sync_calendars(&account(), None).await.is_err());
-    assert!(bare.sync_events(&account(), None).await.is_err());
+    assert!(
+        bare.sync_events(&account(), &any_calendar(), None, whole())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -355,7 +390,7 @@ async fn capabilities_and_scopes_come_from_the_session() {
         }
     );
     assert_eq!(
-        p.event_scope(&account()),
+        p.event_scope(&account(), &any_calendar()),
         SyncScope::JmapType {
             account: account(),
             data_type: JmapDataType::CalendarEvent,
@@ -384,4 +419,18 @@ fn a_batch_carries_many_sources_only_where_the_account_answers_blob_get() {
         with.connection_info().sources_per_request,
         crate::blob_batch::SOURCES_PER_REQUEST
     );
+}
+
+/// JMAP's event state is account-wide, so which calendar asks for it does not matter.
+fn any_calendar() -> engine_core::ids::CalendarId {
+    engine_core::ids::CalendarId::try_from("any").unwrap()
+}
+
+/// The window an event fetch names: JMAP reads the account whole and ignores it.
+fn whole() -> engine_core::time::Horizon {
+    engine_core::time::Horizon::new(
+        "2000-01-01T00:00:00Z".parse().unwrap(),
+        "2100-01-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap()
 }

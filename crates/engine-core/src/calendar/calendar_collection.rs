@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::Alert;
+use super::{Alert, ConferenceService};
 use crate::{
     extended::ExtendedProperties, ids::CalendarId, time::TimeZoneId, version::RevisionTokens,
 };
@@ -114,6 +114,13 @@ pub struct Calendar {
     pub default_alerts_without_time: Vec<Alert>,
     /// The caller's access rights.
     pub access: CalendarAccess,
+    /// The services whose meetings this calendar's server makes itself when an event asks for
+    /// one (Teams on an Exchange calendar, Meet on a Google one), in the server's order; empty
+    /// where it makes none (`calendar-semantics.md`, "Conferences"). A retired service a
+    /// server still names is left out. It is the server's answer whatever [`Self::access`]
+    /// says, so a calendar the caller cannot write may still list one.
+    #[serde(default)]
+    pub native_conferences: Vec<ConferenceService>,
     /// Per-object revision tokens, if the provider supplies any.
     pub revisions: RevisionTokens,
     /// Preserved provider-defined extended properties.
@@ -138,6 +145,7 @@ impl Calendar {
             default_alerts_with_time: Vec::new(),
             default_alerts_without_time: Vec::new(),
             access: CalendarAccess::owner(),
+            native_conferences: Vec::new(),
             revisions: RevisionTokens::none(),
             extended: ExtendedProperties::new(),
         }
@@ -175,7 +183,16 @@ mod tests {
         cal.access = CalendarAccess::reader();
         cal.owner = Some("boss@example.com".into());
         cal.time_zone = Some(TimeZoneId::iana("Europe/Amsterdam").unwrap());
+        cal.native_conferences = vec![ConferenceService::Teams];
         let json = serde_json::to_string(&cal).unwrap();
         assert_eq!(serde_json::from_str::<Calendar>(&json).unwrap(), cal);
+    }
+
+    #[test]
+    fn a_calendar_stored_before_native_conferences_reads_with_none() {
+        let mut stored = serde_json::to_value(Calendar::new(id(), "Work")).unwrap();
+        stored.as_object_mut().unwrap().remove("native_conferences");
+        let cal: Calendar = serde_json::from_value(stored).unwrap();
+        assert_eq!(cal.native_conferences, []);
     }
 }

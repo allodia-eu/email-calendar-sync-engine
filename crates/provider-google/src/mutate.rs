@@ -10,10 +10,10 @@
 //! - [`MailEdit::MoveTo`] → the neutral "ends up in exactly the destination" contract (matching
 //!   JMAP's `mailboxIds` replacement). Because Gmail is multi-membership and `modify` takes deltas,
 //!   the current place labels are fetched and all of them (bar the destination, the keyword-state
-//!   labels, and the system labels `modify` cannot touch) are removed while the destination is
-//!   added. A move to `TRASH` uses the dedicated `messages.trash` (the idiomatic, single-call
-//!   trash), and a move to the synthetic All-Mail id is the **archive** — Gmail has no Archive
-//!   label, so it removes the place labels and adds none.
+//!   labels, the unfiled labels such as an inbox category, and the system labels `modify` cannot
+//!   touch) are removed while the destination is added. A move to `TRASH` uses the dedicated
+//!   `messages.trash` (the idiomatic, single-call trash), and a move to the synthetic All-Mail id
+//!   is the **archive** — Gmail has no Archive label, so it removes the place labels and adds none.
 //! - [`MailEdit::Delete`] → `messages.delete`, a **permanent** delete past Trash, which the full
 //!   `mail.google.com` scope enables.
 
@@ -26,7 +26,10 @@ use engine_core::{
 use engine_provider::{MailEdit, MailEditReceipt, ProviderError, ProviderResult};
 
 use crate::{
-    error::GoogleError, fetch, named_labels::NamedLabels, normalize::ALL_MAIL_ID,
+    error::GoogleError,
+    fetch,
+    named_labels::NamedLabels,
+    normalize::{ALL_MAIL_ID, is_unfiled_label},
     transport::GoogleClient,
 };
 
@@ -102,6 +105,7 @@ async fn move_to(
         .filter(|current| {
             current != label
                 && !UNTOUCHABLE_ON_MOVE.contains(&current.as_str())
+                && !is_unfiled_label(current)
                 && !named.contains(current)
         })
         .collect();

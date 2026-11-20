@@ -18,7 +18,7 @@
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ThreadId},
-    mail::{EmailAddress, Mailbox, MailboxRole, Message, ThreadRef},
+    mail::{EmailAddress, Importance, Mailbox, MailboxRole, Message, ThreadRef},
     membership::Memberships,
 };
 use engine_provider::KeywordName;
@@ -86,6 +86,12 @@ fn estimated_size(value: &Value) -> Option<u64> {
     (total > 0).then(|| total.saturating_mul(4) / 3 + BODY_ALLOWANCE)
 }
 
+/// The message properties every sync reads.
+///
+/// **Keep the recipients in it.** Graph resolves `sender` to an SMTP address only when the
+/// recipients are selected alongside it: live, a message sent on behalf of a shared mailbox read
+/// back with `sender` but no `toRecipients` named the delegate by X.500 `legacyExchangeDN`, which
+/// the normalizer would store in `Envelope::sender` as though it were an address (`graph.md`).
 pub(crate) const MESSAGE_SELECT: &[&str] = &[
     "id",
     "internetMessageId",
@@ -107,6 +113,7 @@ pub(crate) const MESSAGE_SELECT: &[&str] = &[
     "categories",
     "bodyPreview",
     "changeKey",
+    "importance",
 ];
 
 /// The well-known mail-folder aliases that map to a normalized [`MailboxRole`].
@@ -218,6 +225,10 @@ pub(crate) fn message_from_json(
     envelope.to = recipients(value, "toRecipients");
     envelope.cc = recipients(value, "ccRecipients");
     envelope.bcc = recipients(value, "bccRecipients");
+    // Exchange folds a received message's `Importance` and `X-Priority` into this one property.
+    envelope.importance = opt_str(value, "importance")
+        .and_then(Importance::parse)
+        .unwrap_or_default();
     if let Some(header) = message_id_header(value)? {
         envelope.message_id = vec![header];
     }
@@ -274,3 +285,7 @@ fn message_id_header(value: &Value) -> Result<Option<MessageIdHeader>, GraphErro
 #[cfg(test)]
 #[path = "normalize_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "importance_shapes_tests.rs"]
+mod importance_shapes_tests;

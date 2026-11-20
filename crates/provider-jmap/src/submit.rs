@@ -18,13 +18,13 @@ use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
     mail::{EmailAddress, Keyword, Mailbox, MailboxRole},
 };
-use engine_provider::{Draft, SubmissionReceipt};
+use engine_provider::{Draft, HandOver, HandedOver, ProviderResult, SubmissionReceipt};
 use serde_json::{Map, Value, json};
 
 use crate::{
     error::JmapError,
     executor::Executor,
-    mail::mailbox_from_json,
+    mail::{IMPORTANCE_HEADER, X_PRIORITY_HEADER, mailbox_from_json},
     mutate::keyword_pointer,
     request::{Request, capability},
     submit_body::body,
@@ -40,13 +40,20 @@ struct SubmitContext {
 
 /// Sends `draft`: resolves context, uploads any attachment blobs, then creates +
 /// submits + files it.
+///
+/// The request that submits is the point of no return, and the only one: the context read
+/// and the attachment uploads before it send nothing, so `hand_over` is committed before the
+/// end of its body and nowhere earlier. Once it may have reached the server, the message may
+/// have been sent, so a failure there needs confirming rather than retrying
+/// ([`JmapError::into_submission_error`]), and so does an answer that cannot be read.
 pub(crate) async fn send(
     executor: &dyn Executor,
     mail_account: &str,
     submission_account: &str,
     draft: &Draft,
-) -> Result<SubmissionReceipt, JmapError> {
-    let context = resolve_context(executor, mail_account, submission_account).await?;
+    hand_over: &HandOver<'_>,
+) -> ProviderResult<SubmissionReceipt> {
+    let context = resolve_context(executor, mail_account, submission_account, &draft.from).await?;
     // Attachment bytes must be uploaded first: the draft references each by the
     // server-assigned `blobId` (RFC 8620 §6.1), which can only be known after upload.
     let blob_ids = upload_attachments(executor, mail_account, draft).await?;
@@ -73,12 +80,18 @@ pub(crate) async fn send(
         }),
     );
 
-    let resp = executor.execute(&req).await?;
-    let receipt = parse_receipt(
-        resp.result(&email_set)?,
-        resp.result(&submission_set)?,
+    let resp =
+        (executor.submit(&req, hand_over).await).map_err(JmapError::into_submission_error)?;
+    // Recorded by the request that just went out; this only fetches the proof.
+    let handed_over = hand_over.commit().await?;
+    let receipt = answer(
+        &resp,
+        &email_set,
+        &submission_set,
         &draft.message_id,
-    )?;
+        &handed_over,
+    )
+    .map_err(JmapError::into_answer_error)?;
     let kept = tag_sent_copy(executor, mail_account, receipt.email_key.as_str(), draft).await;
     Ok(receipt.with_sent_copy_keywords(kept))
 }
@@ -114,11 +127,13 @@ pub(crate) async fn upload_attachments(
     Ok(blob_ids)
 }
 
-/// Reads the Drafts/Sent mailbox ids and the submission identity id in one request.
+/// Reads the Drafts/Sent mailbox ids and the id of the identity that sends as `from`, in
+/// one request.
 async fn resolve_context(
     executor: &dyn Executor,
     mail_account: &str,
     submission_account: &str,
+    from: &EmailAddress,
 ) -> Result<SubmitContext, JmapError> {
     let mut req = Request::new([capability::CORE, capability::MAIL, capability::SUBMISSION]);
     let mailboxes = req.invoke("Mailbox/get", json!({ "accountId": mail_account }));
@@ -129,7 +144,7 @@ async fn resolve_context(
     Ok(SubmitContext {
         drafts: role_id(&mailbox_list, &MailboxRole::Drafts)?,
         sent: role_id(&mailbox_list, &MailboxRole::Sent)?,
-        identity: first_identity(resp.result(&identities)?)?,
+        identity: identity_for(resp.result(&identities)?, from)?,
     })
 }
 
@@ -142,16 +157,53 @@ pub(crate) fn role_id(mailboxes: &[Mailbox], role: &MailboxRole) -> Result<Strin
         .ok_or_else(|| JmapError::session(format!("account has no {role} mailbox")))
 }
 
-/// The first identity id (the default From identity).
-fn first_identity(result: &Value) -> Result<String, JmapError> {
-    result
+/// The id of the identity that sends as `from` (RFC 8621 §6).
+///
+/// **Not the first identity.** An account holds one identity per address it may send as,
+/// and a user who belongs to a shared mailbox gets that mailbox's too — which Stalwart lists
+/// *ahead of* the user's own. Taking the first submitted `From: alice@` under the
+/// `support@` identity, and the server refused it with `forbiddenFrom`.
+///
+/// An identity's `email` is the address the client MUST put in `From` when sending as it,
+/// except that a `*@domain` identity covers every address in that domain. So the exact
+/// address wins, then a wildcard covering it, and neither half of the comparison is
+/// case-sensitive in practice (RFC 5321 §2.3.11 for the domain). A `From` no identity
+/// covers is refused here, before anything is created: sending it under some other
+/// identity would be the client breaking the RFC's MUST, not the server's decision.
+fn identity_for(result: &Value, from: &EmailAddress) -> Result<String, JmapError> {
+    let identities: Vec<(&str, &str)> = result
         .get("list")
         .and_then(Value::as_array)
-        .and_then(|list| list.first())
-        .and_then(|identity| identity.get("id"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| JmapError::session("account has no submission identity"))
+        .into_iter()
+        .flatten()
+        .filter_map(|identity| {
+            Some((
+                identity.get("id").and_then(Value::as_str)?,
+                identity.get("email").and_then(Value::as_str)?,
+            ))
+        })
+        .collect();
+    if identities.is_empty() {
+        return Err(JmapError::session("account has no submission identity"));
+    }
+    let from_domain = from.email.rsplit_once('@').map(|(_, domain)| domain);
+    identities
+        .iter()
+        .find(|(_, email)| email.eq_ignore_ascii_case(&from.email))
+        .or_else(|| {
+            identities.iter().find(|(_, email)| {
+                email.strip_prefix("*@").is_some_and(|domain| {
+                    from_domain.is_some_and(|own| own.eq_ignore_ascii_case(domain))
+                })
+            })
+        })
+        .map(|(id, _)| (*id).to_owned())
+        .ok_or_else(|| {
+            JmapError::Refused(format!(
+                "no identity on this account may send as {:?}",
+                from.email
+            ))
+        })
 }
 
 /// Builds the `Email/set` create object for the draft, referencing the uploaded
@@ -186,6 +238,11 @@ pub(crate) fn build_draft(drafts_mailbox: &str, draft: &Draft, blob_ids: &[Strin
             .iter()
             .map(MessageIdHeader::as_str)
             .collect();
+    }
+    // Normal is stated by carrying neither header, as on every other transport.
+    if let Some(x_priority) = draft.importance.x_priority() {
+        create[IMPORTANCE_HEADER] = json!(draft.importance.as_str());
+        create[X_PRIORITY_HEADER] = json!(x_priority);
     }
     create
 }
@@ -271,7 +328,7 @@ fn keyword_update(mail_account: &str, email_id: &str, draft: &Draft) -> Option<V
 /// The keywords the filed copy carries after [`keyword_update`]: every one when the server
 /// applied the update, none when it refused it or answered without reporting it applied.
 fn kept_keywords(result: Result<&Value, JmapError>, draft: &Draft) -> BTreeSet<Keyword> {
-    let applied = result.ok().is_some_and(|result| {
+    let applied = result.is_ok_and(|result| {
         result
             .get("updated")
             .and_then(Value::as_object)
@@ -296,12 +353,29 @@ fn address(addr: &EmailAddress) -> Value {
     }
 }
 
+/// Reads the submission's answer into a receipt.
+fn answer(
+    resp: &crate::request::Response,
+    email_set: &str,
+    submission_set: &str,
+    message_id: &MessageIdHeader,
+    handed_over: &HandedOver,
+) -> Result<SubmissionReceipt, JmapError> {
+    parse_receipt(
+        resp.result(email_set)?,
+        resp.result(submission_set)?,
+        message_id,
+        handed_over,
+    )
+}
+
 /// Extracts the sent email's key, mapping a `SetError` on either create into a
 /// classified [`JmapError`].
 fn parse_receipt(
     email_result: &Value,
     submission_result: &Value,
     message_id: &MessageIdHeader,
+    handed_over: &HandedOver,
 ) -> Result<SubmissionReceipt, JmapError> {
     let email_id = created_id(email_result, "draft")
         .ok_or_else(|| set_error(email_result, "draft", "Email/set"))?;
@@ -317,7 +391,11 @@ fn parse_receipt(
     // and is not read here, so it would pass as `Filed`. Unlike a lost IMAP `APPEND` the
     // message is still in the account and still syncs, which is why it has not forced the
     // extra plumbing.
-    Ok(SubmissionReceipt::filed(key, message_id.clone()))
+    Ok(SubmissionReceipt::filed(
+        key,
+        message_id.clone(),
+        handed_over,
+    ))
 }
 
 /// The id of an object created under `creation_id`, if the create succeeded.

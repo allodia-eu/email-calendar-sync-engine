@@ -21,9 +21,11 @@ mod calendar;
 mod contact;
 mod drafts;
 mod drain;
+mod drain_report;
 mod mail;
 mod mailbox;
 mod mailbox_plan;
+mod submit;
 
 use core::time::Duration;
 
@@ -36,16 +38,19 @@ pub use drafts::{DraftPut, PutDraftOutcome, delete_draft_mail, put_draft_mail};
 pub use drain::{DrainOutcome, DrainReport, DrainedOp, drain_outbox};
 use engine_core::{
     ids::AccountId,
-    write::{PendingOp, PendingOutcome},
+    write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use engine_store::{
-    ClaimRejection, LeaseRequest, LeasedPendingOp, PendingOpClaim, Store, WorkerId,
+    ClaimRejection, LeaseRequest, LeasedPendingOp, OpLease, PendingOpClaim, Store, StoreError,
+    WorkerId,
 };
 pub use mail::{
-    MailEditOutcome, ReportOutcome, SubmitOutcome, edit_mail, report_message, submit_mail,
+    MailEditOutcome, MailEditSent, ReportOutcome, edit_mail, mail_edit_op, queue_mail_edit,
+    report_message, send_mail_edit,
 };
 pub use mailbox::{MailboxEditOutcome, edit_mailbox};
 pub use mailbox_plan::{MailboxChange, MailboxNameError, MailboxPlace, validate_mailbox_name};
+pub use submit::{SubmitOutcome, submit_mail};
 // Tokio's own `Instant`, so the wait's bound holds under a paused test clock too.
 use tokio::time::Instant;
 
@@ -86,31 +91,80 @@ async fn enqueue_and_claim<S: Store>(
     op: PendingOp,
 ) -> Result<LeasedPendingOp, SyncError> {
     let op_id = store.enqueue_pending_op(account.clone(), op).await?;
+    claim_waiting(store, account, worker, ttl, op_id)
+        .await?
+        .map_err(|reason| {
+            SyncError::Outbox(format!(
+                "enqueued op {op_id:?} was not claimable: {reason:?}"
+            ))
+        })
+}
+
+/// Claims op `op_id` by id, waiting out a resource another op holds for up to
+/// [`RESOURCE_WAIT`]; any other refusal, or a resource still held past it, is returned for the
+/// caller to act on.
+async fn claim_waiting<S: Store>(
+    store: &S,
+    account: &AccountId,
+    worker: WorkerId,
+    ttl: Duration,
+    op_id: PendingOpId,
+) -> Result<Result<LeasedPendingOp, ClaimRejection>, SyncError> {
     let deadline = Instant::now() + RESOURCE_WAIT;
     loop {
         let req = LeaseRequest::new(worker.clone(), ttl);
         match store.claim_pending_op(account.clone(), op_id, req).await? {
-            PendingOpClaim::Leased(leased) => return Ok(*leased),
+            PendingOpClaim::Leased(leased) => return Ok(Ok(*leased)),
             PendingOpClaim::Refused(ClaimRejection::Busy) if Instant::now() < deadline => {
                 tokio::time::sleep(RESOURCE_POLL).await;
             }
-            PendingOpClaim::Refused(reason) => {
-                return Err(SyncError::Outbox(format!(
-                    "enqueued op {op_id:?} was not claimable: {reason:?}"
-                )));
+            PendingOpClaim::Refused(reason) => return Ok(Err(reason)),
+        }
+    }
+}
+
+/// Runs `work` while renewing `lease` every third of `ttl`, and stops renewing when it
+/// returns.
+///
+/// An attempt can outlast any fixed lease: a large upload on a slow line, a server that takes
+/// minutes to accept a message. Without renewal its lease lapses mid-attempt and another
+/// worker (a second drain, another process on the same store) recovers the op under it. A
+/// renewal refused as stale means that happened anyway (the process was suspended past its
+/// lease, say), and the attempt carries on: the hand-over record decides what it may still do,
+/// and the store refuses what it may not. A renewal that fails for any other reason is tried
+/// again at the next tick, which is still well inside the lease.
+pub(crate) async fn holding<S: Store, F: Future>(
+    store: &S,
+    lease: &OpLease,
+    ttl: Duration,
+    work: F,
+) -> F::Output {
+    let renew = async {
+        let every = ttl / 3;
+        loop {
+            tokio::time::sleep(every).await;
+            if let Err(StoreError::StaleLease) = store.renew_pending_op_lease(lease, ttl).await {
+                return core::future::pending::<core::convert::Infallible>().await;
             }
         }
+    };
+    tokio::select! {
+        biased;
+        done = work => done,
+        never = renew => match never {},
     }
 }
 
 /// Records a failed write outcome with its classification and backoff hint.
 ///
-/// Every calendar write is safe to retry — `PUT`/`DELETE` are idempotent HTTP methods (RFC
-/// 7231 §4.2.2), a JMAP `/set` addresses the object by id, and the revision guard makes a
-/// retry self-correcting — so, unlike an SMTP send whose post-`DATA` ack can be lost
-/// ambiguously, a failed calendar write has no `NeedsConfirmation` case: every failure is a
-/// plain classified `Failed`. The mail *edit* path shares this for the same reason
-/// (`imap-smtp.md`); only [`submit_mail`] branches.
+/// A calendar or contact write whose outcome is unknown
+/// ([`requires_confirmation`](engine_provider::ProviderError::requires_confirmation): its
+/// answer was lost after the server may have applied it) is recorded `Failed` like any other
+/// non-retryable class, so it settles rather than parking for a retry: a replayed create on a
+/// transport that assigns the id would make the object twice. It is not `NeedsConfirmation`,
+/// the state a send waits in for the user; the caller learns the outcome is unknown from the
+/// error, and the next sync shows what the server holds. Only [`submit_mail`] parks an
+/// ambiguous outcome.
 async fn record_failure<S: Store>(
     store: &S,
     leased: &LeasedPendingOp,
@@ -126,4 +180,37 @@ async fn record_failure<S: Store>(
         )
         .await?;
     Ok(())
+}
+
+/// Records a calendar or contact write the provider applied, as having resolved to
+/// `provider_key`.
+///
+/// A failure to record it is [`SyncError::Unrecorded`], never [`SyncError::Store`]: the change
+/// is on the server, and a store error would tell the caller it was not. The op is left to
+/// recovery, which finds it as an interrupted attempt.
+async fn write_applied<S: Store>(
+    store: &S,
+    leased: &LeasedPendingOp,
+    provider_key: engine_core::ids::ProviderKey,
+) -> Result<(), SyncError> {
+    store
+        .mark_pending_op(&leased.lease, PendingOutcome::Succeeded { provider_key })
+        .await
+        .map_err(SyncError::Unrecorded)
+}
+
+/// Records a calendar or contact write's failure, and returns what the caller is told: the
+/// provider's failure, whether or not recording it succeeded.
+///
+/// A store error in its place would lose what the caller acts on (a conflict to refetch
+/// after, an instant to wait for, credentials to renew), and for a write whose outcome is
+/// unknown it would say nothing was applied. A failed record leaves the op to recovery, which
+/// finds it as an interrupted attempt.
+async fn write_failed<S: Store>(
+    store: &S,
+    leased: &LeasedPendingOp,
+    err: engine_provider::ProviderError,
+) -> SyncError {
+    let _ = record_failure(store, leased, &err).await;
+    SyncError::Provider(err)
 }

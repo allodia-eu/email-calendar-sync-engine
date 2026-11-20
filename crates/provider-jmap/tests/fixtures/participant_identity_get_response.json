@@ -1,0 +1,1 @@
+{"methodResponses":[["ParticipantIdentity/get",{"accountId":"c","list":[{"id":"a","name":"Alice Tester","calendarAddress":"mailto:alice@test.local","isDefault":true}],"notFound":[]},"0"]],"sessionState":"96828364"}

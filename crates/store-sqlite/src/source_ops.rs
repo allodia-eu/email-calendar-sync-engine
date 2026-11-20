@@ -22,7 +22,11 @@ use engine_store::{
 };
 use rusqlite::{Connection, Transaction};
 
-use crate::{SqliteStore, blob, convert::instant_to_text, mail_ops, sql};
+use crate::{
+    SqliteStore, blob,
+    convert::{self, instant_to_text},
+    mail_ops, sql,
+};
 
 #[async_trait]
 impl<C: Clock> MessageSourceCache for SqliteStore<C> {
@@ -119,6 +123,60 @@ impl<C: Clock> MessageSourceCache for SqliteStore<C> {
         Ok(Self::block(move || blob::read_source(&root, &hash))
             .await?
             .map(RawMime::new))
+    }
+
+    async fn set_mail_has_attachment(
+        &self,
+        account: &AccountId,
+        key: &ProviderKey,
+        has_attachment: bool,
+    ) -> Result<()> {
+        let account = account.as_str().to_owned();
+        let key = key.as_str().to_owned();
+        self.call(move |conn| {
+            let tx = conn.transaction().map_err(convert::backend)?;
+            // The recorded answer is what `derived_ops::upsert_message` prefers over a sync's
+            // guess; the row is set now so the list reads it without waiting for one. Keyed by
+            // account, like the body caches: every folder holding the key shares the answer.
+            sql::execute(
+                &tx,
+                "INSERT INTO source_attachment (account, provider_key, has_attachment)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(account, provider_key) DO UPDATE SET
+                     has_attachment = excluded.has_attachment
+                  WHERE has_attachment != excluded.has_attachment",
+                (account.as_str(), key.as_str(), i64::from(has_attachment)),
+            )?;
+            // Rows already answered are left alone, so a repeat read (every attachment listing
+            // reaches here) rewrites nothing.
+            sql::execute(
+                &tx,
+                "UPDATE message SET has_attachment = ?3
+                  WHERE account = ?1 AND provider_key = ?2 AND has_attachment != ?3",
+                (account.as_str(), key.as_str(), i64::from(has_attachment)),
+            )?;
+            tx.commit().map_err(convert::backend)
+        })
+        .await
+    }
+
+    async fn mail_has_attachment(
+        &self,
+        account: &AccountId,
+        key: &ProviderKey,
+    ) -> Result<Option<bool>> {
+        let account = account.as_str().to_owned();
+        let key = key.as_str().to_owned();
+        self.read(move |conn| {
+            sql::query_opt(
+                conn,
+                "SELECT has_attachment FROM source_attachment
+                  WHERE account = ?1 AND provider_key = ?2",
+                (account.as_str(), key.as_str()),
+                |row| row.get::<_, i64>(0).map(|value| value != 0),
+            )
+        })
+        .await
     }
 }
 
@@ -256,11 +314,12 @@ fn select_body(conn: &Connection, account: &str, key: &str) -> Result<Option<Mes
     }))
 }
 
-/// Drops the two lease-free content caches for a removed message: the extracted body
-/// text (`message_body`, whose FTS5 shadow follows through its trigger) and the
-/// raw-source metadata (`message_source`). They are the bulk of what an account
-/// occupies on disk, so mail leaving the store takes them with it rather than leaving
-/// them to grow without bound. The blob the source row named is content-addressed and
+/// Drops the lease-free content caches for a removed message: the extracted body
+/// text (`message_body`, whose FTS5 shadow follows through its trigger), the
+/// raw-source metadata (`message_source`) and the attachment answer read from that source
+/// (`source_attachment`). The first two are the bulk of what an account occupies on disk,
+/// so mail leaving the store takes them with it rather than leaving them to grow without
+/// bound. The blob the source row named is content-addressed and
 /// shared, so it is reclaimed by the blob sweep rather than here.
 ///
 /// The caches are keyed by `(account, provider_key)` while a tombstone is per scope, so
@@ -269,11 +328,11 @@ fn select_body(conn: &Connection, account: &str, key: &str) -> Result<Option<Mes
 /// folder's scope until it reconciles. The caller has already deleted the `message` row
 /// for this scope (`derived_ops::delete_derived_rows`), so the guard sees only the others.
 ///
-/// Both statements are keyed index lookups and match nothing for a calendar or contact
-/// object, so the non-mail scopes pay two probes rather than a branch here on a domain
+/// Every statement is a keyed index lookup and matches nothing for a calendar or contact
+/// object, so the non-mail scopes pay a probe per table rather than a branch here on a domain
 /// this function would have to re-derive from the scope key.
 pub(crate) fn drop_cached_content(tx: &Transaction<'_>, scope_key: &str, key: &str) -> Result<()> {
-    for table in ["message_body", "message_source"] {
+    for table in ["message_body", "message_source", "source_attachment"] {
         sql::execute(
             tx,
             &format!(

@@ -59,7 +59,9 @@ case "$cmd" in
     docker compose exec -T stalwart sh -c 'cat /var/log/stalwart/* 2>/dev/null' || true
     ;;
   smoke)
-    (cd "$REPO_ROOT" && cargo test -p stalwart-harness --test smoke -- --nocapture)
+    # Every smoke binary: `smoke` (connectivity + seed) and `smoke_shared_stores` (what the
+    # stores shared with the seeded account answer).
+    (cd "$REPO_ROOT" && cargo test -p stalwart-harness --test smoke --test smoke_shared_stores -- --nocapture)
     ;;
   test)
     [ "$#" -ge 1 ] || { echo "error: 'test' needs a crate name" >&2; exit 2; }

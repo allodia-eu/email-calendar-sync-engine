@@ -20,9 +20,8 @@ use engine_core::{
     raw::RawIcal,
 };
 use engine_provider::{CalendarWrites, EventDeletion, EventWrite, Provider};
-use provider_caldav::CalDavProvider;
 
-use super::{fetch, pre_clean};
+use super::{OnCalendar, fetch, pre_clean};
 
 /// The `UID` of the invitation this scenario stores and removes again.
 const INVITATION_UID: &str = "caldav-imip-store@test.local";
@@ -33,7 +32,7 @@ const INVITATION_UID: &str = "caldav-imip-store@test.local";
 /// `expected` is supplied by the caller because the two harness servers genuinely differ,
 /// and that difference is the evidence: a capability that came out the same on both would
 /// not be discovering anything.
-pub(crate) fn scheduling_is_discovered_from_the_server(provider: &CalDavProvider, expected: bool) {
+pub(crate) fn scheduling_is_discovered_from_the_server(provider: &OnCalendar, expected: bool) {
     let caps = provider.connection_info().capabilities;
     assert_eq!(
         caps.calendar_scheduling(),
@@ -69,7 +68,7 @@ pub(crate) fn scheduling_is_discovered_from_the_server(provider: &CalDavProvider
 /// organizer writes, and an unconditional `PUT` would erase it along with whatever the
 /// server had already recorded about delivery.
 pub(crate) async fn storing_an_invitation_is_a_guarded_create(
-    provider: &CalDavProvider,
+    provider: &OnCalendar,
     account: &AccountId,
 ) {
     let uid = Uid::new(INVITATION_UID).unwrap();

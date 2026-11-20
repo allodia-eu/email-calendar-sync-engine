@@ -50,6 +50,7 @@ pim-sync-engine/
 │   ├── engine-search/           # Query AST, ranking, filters, RRF.
 │   ├── engine-recurrence/       # Deterministic recurrence -> occurrence expansion (bundled tzdb).
 │   ├── engine-mime/             # MIME/RFC 5322 body extraction (mail-parser) -> MessageBody (implemented).
+│   ├── engine-html/             # Mail HTML sanitiser, strict-CSP reading document, link-scheme policy (implemented).
 │   ├── engine-index/            # Text extraction, chunks, embedding seam.
 │   ├── engine-cli/              # Headless ingestion/search/maintenance harness (CLI host).
 │   ├── crypto-keystore/         # Platform credential/key abstraction.
@@ -80,6 +81,7 @@ pim-sync-engine/
 - Search and threading are per-account by default; cross-account unified views are host-composed presentation, not storage-level joins.
 - Calendar normalization uses JSCalendar-shaped projections and supports floating times, all-day events, embedded timezones, recurrence rules, recurrence overrides, exclusions, and cross-DST expansion.
 - Calendars carry access rights, subscription, owner, default reminders, and color, not only event membership.
+- Mail collections carry the caller's access rights too — per collection, because no protocol answers "may I write here?" above it.
 - Events carry a kind (default plus provider kinds such as working-location, focus-time, out-of-office); the model preserves kind-specific payload.
 - Provider-native raw data is preserved beside normalized projections.
 - Provider extended properties and extensions are preserved as normalized, namespaced data, distinct from raw payloads and first-class fields.
@@ -123,8 +125,9 @@ Every write is a durable pending operation before any provider side effect:
 - Pending operations may depend on earlier operations. Offline create-then-edit flows use local ids and dependency ordering until provider ids are known.
 - SMTP sends generate a stable MIME message and Message-ID before submission.
 - SMTP recipient handling records pre-DATA partial acceptance/rejection before any DATA phase.
-- Ambiguous post-DATA SMTP failures enter `NeedsConfirmation`; the engine never blindly retries a possibly delivered message.
-- `NeedsConfirmation` resolves through sync reconciliation, generated Message-ID lookup, or explicit user/host confirmation.
+- Ambiguous submissions (an SMTP failure after `DATA`, an HTTP submission that failed once it may have reached the server, a timeout at either) enter `NeedsConfirmation`; the engine never blindly retries a possibly delivered message (`deadlines.md`).
+- `NeedsConfirmation` resolves through sync reconciliation (its copy in a Sent mailbox), or explicit user/host confirmation (`Store::confirm_pending_op`).
+- A send is never lost and never delivered twice whatever ends the process mid-attempt: it records its hand-over before the point of no return, and recovery turns on that record (`store-and-sync.md` → "A send survives its process").
 - Sent-folder placement reconciles by generated Message-ID where the provider does not submit and file atomically.
 - JMAP submission uses `EmailSubmission/set` and `onSuccessUpdateEmail` when available.
 - CalDAV writes use ETags and `If-Match`; conflicts refetch before merge.
@@ -133,7 +136,7 @@ Every write is a durable pending operation before any provider side effect:
 ## Security And Privacy
 
 Mail and calendar data are hostile input and sensitive data:
-- HTML email is sanitized before rendering.
+- HTML email is sanitized before rendering, by every host with the one sanitiser in `engine-html` (`html.md`); the body fetch itself returns it unsanitized (`mime.md`).
 - Remote images are blocked by default and fetched through host policy.
 - MIME parsing is fuzz-tested.
 - iCalendar and JMAP JSON parsing are fuzz-tested.

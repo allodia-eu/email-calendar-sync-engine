@@ -12,6 +12,9 @@
 //! - [`ChangeKey`] — Microsoft Graph `changeKey`.
 //! - [`ModSeq`] — IMAP CONDSTORE per-message mod-sequence (RFC 7162), present only when the
 //!   optional capability is enabled.
+//! - [`CollectionTag`] — a whole collection's marker (WebDAV `sync-token` or CalendarServer
+//!   `getctag`); it moves when any member does, so it revises the collection's contents rather than
+//!   one object.
 //!
 //! JMAP objects carry **no** per-object token; their concurrency comes from the
 //! account-and-type `state` cursor instead, so a JMAP object has empty
@@ -58,6 +61,15 @@ string_token! {
 string_token! {
     /// A Microsoft Graph `changeKey` revision token.
     ChangeKey
+}
+
+string_token! {
+    /// The marker a collection listing carries for the collection's **contents**: a WebDAV
+    /// `DAV:sync-token` property (RFC 6578 §4) or, where a server has none, a CalendarServer
+    /// `getctag`. It moves whenever a member is added, changed or removed, so two equal tags
+    /// read from the same server mean the members are as they were, and the collection need
+    /// not be asked for them.
+    CollectionTag
 }
 
 /// An IMAP CONDSTORE per-message mod-sequence (RFC 7162). A monotonic counter

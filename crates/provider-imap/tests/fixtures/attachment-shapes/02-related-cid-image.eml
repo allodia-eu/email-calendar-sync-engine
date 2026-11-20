@@ -1,0 +1,19 @@
+From: sender@test.local
+To: alice@test.local
+Subject: shape
+Date: Mon, 2 Nov 2026 10:00:00 +0000
+Message-ID: <02-related-cid-image@test.local>
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="r"
+
+--r
+Content-Type: text/html; charset=utf-8
+
+<p>body html</p>
+--r
+Content-Type: image/png
+Content-ID: <logo@test.local>
+Content-Transfer-Encoding: base64
+
+aGVsbG8=
+--r--

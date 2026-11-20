@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/allodia-eu/email-calendar-sync-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/allodia-eu/email-calendar-sync-engine/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/allodia-eu/email-calendar-sync-engine/graph/badge.svg?token=43R3X4R59A)](https://codecov.io/gh/allodia-eu/email-calendar-sync-engine)
-![Rust 1.96+](https://img.shields.io/badge/rust-1.96%2B-orange.svg)
+![Rust 1.99+](https://img.shields.io/badge/rust-1.99%2B-orange.svg)
 
 A standalone **Rust engine for personal information management (PIM)**: local-first mail,
 calendar, and contact sync, search, indexing, and durable writes. Designed to be embedded by
@@ -83,14 +83,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use engine_tls::TlsClientConfig;
+use engine_http::UserAgent;
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 
 // The bundled Mozilla roots (the engine default). For bundled ∪ OS store, custom roots, or
 // the platform verifier, build one from a policy: engine_tls::client_config(&TlsPolicy::…)?
 let tls = TlsClientConfig::bundled();
+// The host's application, named in every request's `User-Agent`.
+let agent = UserAgent::new("example-mail", "1.4.0")?;
 let config = JmapConfig::new(
     "https://jmap.example.com",
     Credentials::basic("alice@example.com", "app-password"),
+    agent,
 )
 .with_tls(tls);
 
@@ -194,7 +198,7 @@ flowchart TD
         SYNC["<b>engine-sync</b><br/>streaming sync loop +<br/>crash-safe write outbox"]
         SEARCH["<b>engine-search</b><br/>query DSL → ranked,<br/>coverage-aware results"]
         MODEL["<b>engine-core</b><br/>normalized domains:<br/>Message · Thread · Mailbox<br/>Event · Calendar<br/>ContactCard · Person"]
-        FORMATS["format layers<br/><b>engine-mime</b> · <b>engine-ical</b><br/><b>engine-rfc5322</b> · <b>engine-recurrence</b><br/>parse in · assemble out<br/>expand recurrences"]
+        FORMATS["format layers<br/><b>engine-mime</b> · <b>engine-html</b> · <b>engine-ical</b><br/><b>engine-rfc5322</b> · <b>engine-recurrence</b><br/>parse in · assemble out<br/>expand recurrences"]
         STORE["<b>engine-store</b> trait<br/>→ <b>store-sqlite</b><br/>local-first SQLite<br/>FTS index · raw blobs<br/>offline reads &amp; search"]
 
         API --> SYNC
@@ -280,10 +284,13 @@ sequenceDiagram
 
 Every UI-visible write (send, flag, move, delete, calendar create/update/delete/RSVP, contact
 create/patch/delete) becomes a pending op in the store's outbox **first**, then a fenced worker
-performs the provider side effect and records the outcome. An ambiguous outcome — an SMTP
-connection lost after `DATA` — parks as `NeedsConfirmation` and is never blind-retried, so the
-engine cannot double-send mail. The states below are `PendingOpState`, which a host can read back
-for any op via `Engine::pending_op_state`.
+performs the provider side effect and records the outcome. A send records, just before the first
+byte that could deliver it, that it is handing the message over; a send cut off before that is
+simply sent again, and one cut off after it, like an SMTP connection lost after `DATA`, parks as
+`NeedsConfirmation` and is never blind-retried, so the engine neither loses nor double-sends
+mail. A host calls `Engine::recover_interrupted_ops` at start-up so it need not wait out the
+last process's leases. The states below are `PendingOpState`, which a host can read back for any
+op via `Engine::pending_op_state`.
 
 ```mermaid
 stateDiagram-v2
@@ -292,15 +299,24 @@ stateDiagram-v2
     Pending --> InFlight: fenced worker claims it
     InFlight --> Succeeded: provider confirms
     InFlight --> Failed: provider rejects
-    InFlight --> NeedsConfirmation: ambiguous (SMTP lost after DATA)
+    InFlight --> Pending: retryable failure, or the process ended before the hand-over
+    InFlight --> NeedsConfirmation: answer lost after the hand-over, or the process ended after it
+    NeedsConfirmation --> Succeeded: its copy syncs back in Sent, or the host confirms it
+    NeedsConfirmation --> Pending: the host says it was not delivered
+    Failed --> Pending: the host sends a failed send again
+    Failed --> Cancelled: the host withdraws a failed send
+    Pending --> Cancelled: the host withdraws it
     Succeeded --> [*]
-    Failed --> [*]
+    Cancelled --> [*]
     note right of NeedsConfirmation
         parked, never blind-retried —
-        awaits a sync, a Message-ID
-        lookup, or the host's decision
+        resolved by its copy in Sent,
+        or the host's decision
     end note
 ```
+
+For the same story drawn step by step (each stage of a send, and what happens if the process or
+the connection stops right there), see [`docs/outbox-and-sending.md`](docs/outbox-and-sending.md).
 
 ## Workspace layout
 
@@ -317,6 +333,7 @@ stateDiagram-v2
 │   ├── engine-search/            # Query DSL and executor
 │   ├── engine-recurrence/        # Recurrence expansion
 │   ├── engine-mime/              # Inbound MIME body extraction
+│   ├── engine-html/              # Mail HTML sanitiser and reading document
 │   ├── engine-rfc5322/           # Outbound RFC 5322 / MIME assembly
 │   ├── engine-ical/              # iCalendar parse, build, and patch
 │   ├── engine-tls/               # Shared TLS trust policy
@@ -327,7 +344,7 @@ stateDiagram-v2
 │   ├── provider-google/          # Gmail + Google Calendar + People adapter
 │   ├── engine-cli/               # Headless debugging / fixture harness
 │   └── stalwart-harness/         # Docker-based protocol test harness
-├── docker/                       # Stalwart and SabreDAV test servers
+├── docker/                       # Stalwart, SabreDAV and Nextcloud test servers
 ├── tools/                        # OAuth helpers for the Graph and Google live tests
 ├── fuzz/                         # cargo-fuzz targets for the hostile-input parsers
 ├── scripts/ci/                   # The gate CI runs, runnable locally

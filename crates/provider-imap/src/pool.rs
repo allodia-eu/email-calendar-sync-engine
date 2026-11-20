@@ -30,7 +30,9 @@
 //!   is one: a body read there skips its `EXAMINE` (`crate::transport_select`), which is half the
 //!   round trips of a warm that reads a folder's bodies one after another. Every other caller
 //!   `SELECT`s anyway, because the `SELECT` response *is* the data it needs (`UIDVALIDITY`,
-//!   `UIDNEXT`, `HIGHESTMODSEQ`), so a preference would save it nothing.
+//!   `UIDNEXT`, `HIGHESTMODSEQ`), so a preference would save it nothing. A pass that can share its
+//!   work borrows extra workers with `try_acquire_for`, which lends only a free permit and never
+//!   waits, so that sharing cannot keep another caller waiting.
 //! * **Watches** are not. A connection in `IDLE` is blocked mid-command: to reuse it you must send
 //!   `DONE`, await the tagged completion, work, and re-`IDLE`, which means a window where the
 //!   mailbox is not being watched at all. So a watch takes a connection *out* of the pool for its
@@ -67,8 +69,10 @@
 //! `NO`, which is how Dovecot and Gmail say it, `NO [LIMIT]`, or a `BYE` at the greeting), the
 //! ceiling also drops by that connection, so the pool stops asking for a session it was just
 //! refused: a `NO` to a credential other sessions are logged in with right now is no verdict on
-//! the credential. [`ImapPool::invalidate`] restores it, since a new network is a new address and
-//! Dovecot counts per address. A dial that failed without an answer lowers nothing.
+//! the credential. A refused token reaches the pool only after the dial renewed it once
+//! (`crate::dial`), so an expired token never lowers the ceiling. [`ImapPool::invalidate`] restores
+//! it, since a new network is a new address and Dovecot counts per address. A dial that failed
+//! without an answer lowers nothing.
 
 use std::{
     collections::VecDeque,
@@ -79,7 +83,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use engine_provider::{ProviderError, ProviderResult};
 use futures_util::future::BoxFuture;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -87,7 +90,10 @@ use tokio::{
 };
 
 pub(crate) use crate::pool_lease::{PooledConnection, WatchLease};
-use crate::{error::ImapError, pool_lease::ReleaseWatch, transport::Connection};
+use crate::{
+    error::{ImapError, opens_with_temporary_code},
+    transport::Connection,
+};
 
 /// The most connections one account may hold open at once, across workers and watches.
 ///
@@ -193,13 +199,6 @@ impl<S> ImapPool<S> {
             validate_after,
             generation: AtomicU64::new(0),
         })
-    }
-
-    /// The pool's configured ceiling — every connection this account may hold, workers and
-    /// watches, before any server refusal lowered it.
-    #[cfg(test)]
-    pub(crate) fn max_connections(&self) -> usize {
-        self.max_connections
     }
 
     /// The ceiling in force now.
@@ -323,11 +322,13 @@ impl<S> ImapPool<S> {
 
 /// Whether a failed dial was the server declining a session, rather than a path that failed.
 /// Only an answer lowers the ceiling: a network that is down says nothing about the server.
+/// A temporary `NO` counts, being what a sign-in refused without judging the credential
+/// becomes ([`ImapError::refused_sign_in`]); a lasting one reached during a dial does not.
 fn refuses_sessions(err: &ImapError) -> bool {
     matches!(
         err,
         ImapError::Auth(_) | ImapError::RateLimited(_) | ImapError::Bye(_)
-    )
+    ) || matches!(err, ImapError::No(detail) if opens_with_temporary_code(detail))
 }
 
 /// The two operations that actually touch a connection, so they carry the stream bound the
@@ -430,49 +431,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapPool<S> {
         }
         Ok(((self.dial)().await?, generation))
     }
-
-    /// Takes a connection out of the pool for a watch to own, spending one permit for its whole
-    /// lifetime.
-    ///
-    /// A parked connection is reused when there is one: the watcher's `EXAMINE` reads whatever
-    /// untagged backlog it carries before the first `IDLE`, so it starts as clean as a fresh
-    /// dial, and dialling beside a parked connection would put one socket over the budget.
-    ///
-    /// # Errors
-    ///
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState) when the
-    /// reservation would leave the workers below their floor — the host must watch fewer
-    /// folders, or poll. The classified dial failure otherwise.
-    pub(crate) async fn reserve_watch(
-        self: &Arc<Self>,
-    ) -> ProviderResult<(Connection<S>, WatchLease)> {
-        {
-            let mut watches = self.watches.lock().expect("pool watch counter poisoned");
-            let ceiling = self.ceiling();
-            // Refuse the reservation that would take the last worker: with a budget of 5 this
-            // allows 4 watches and always keeps 1 free to sync. The host's own limit on watched
-            // folders is normally stricter — this is the floor that makes over-reserving
-            // impossible, not the policy that makes it sensible.
-            if *watches + MIN_WORKER_CONNECTIONS >= ceiling {
-                return Err(ProviderError::invalid_state(format!(
-                    "cannot watch another folder: {} of this account's {ceiling} connections are \
-                     already reserved for push, and at least {MIN_WORKER_CONNECTIONS} must stay \
-                     free to sync",
-                    *watches,
-                )));
-            }
-            *watches += 1;
-        }
-        // From here the slot is ours, so every exit must return it. The lease exists before the
-        // dial for exactly that reason: if the dial fails, dropping it releases the slot.
-        let permit = Arc::clone(&self.permits)
-            .acquire_owned()
-            .await
-            .expect("pool semaphore is never closed");
-        let lease = WatchLease::new(Arc::clone(self) as Arc<dyn ReleaseWatch>, permit);
-        let (connection, _generation) = self.take_or_dial(None, false).await?;
-        Ok((connection, lease))
-    }
 }
 
 /// Whether a resting connection is still usable, proved with the cheapest round trip in the
@@ -496,3 +454,9 @@ mod tests;
 #[cfg(test)]
 #[path = "pool_refusal_tests.rs"]
 mod refusal_tests;
+
+#[path = "pool_spare.rs"]
+mod spare;
+
+#[path = "pool_watch.rs"]
+mod watch;

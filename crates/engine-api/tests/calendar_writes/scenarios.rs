@@ -190,7 +190,12 @@ async fn a_write_whose_reconcile_cannot_run_is_still_a_write() {
     let engine = Arc::new(engine);
     let holder = {
         let engine = Arc::clone(&engine);
-        tokio::spawn(async move { engine.reconcile_calendar_events(&blocker, &account()).await })
+        tokio::spawn(async move {
+            let work = CalendarId::try_from("work").unwrap();
+            engine
+                .reconcile_calendar_events(&blocker, &account(), &work)
+                .await
+        })
     };
     wait.await.unwrap();
 
@@ -262,8 +267,9 @@ async fn an_invitation_from_mail_is_stored_as_a_guarded_create() {
     // that does no RFC 6638 scheduling, so an invitation arrives as an iMIP message and
     // nothing puts it on the calendar. The host does — with the invitation's own VEVENT,
     // so its ORGANIZER, ATTENDEE, UID and SEQUENCE survive and there is something to
-    // answer on afterwards. `create_calendar_event` cannot: an `EventDraft` carries no
-    // organizer and no attendees, so it would store a plain appointment.
+    // answer on afterwards. This uses the whole-document verb because the received
+    // invitation is already the authoritative iTIP document, including its revision and
+    // response state; rebuilding it from a draft would discard data.
     let server = CalendarServer::holding(seeded_event());
     let (engine, _) = synced(&server).await;
 

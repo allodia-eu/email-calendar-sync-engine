@@ -18,7 +18,7 @@
 
 use async_trait::async_trait;
 use engine_http::RetryConfig;
-use engine_provider::{HttpVersion, TlsVersion};
+use engine_provider::{HandOver, HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
 
@@ -32,6 +32,9 @@ pub(crate) const GOOGLE_BASE: &str = "https://www.googleapis.com";
 /// `www.googleapis.com/people/v1/…` answer an HTML `404`, so contact calls must be
 /// rooted here instead.
 pub(crate) const PEOPLE_BASE: &str = "https://people.googleapis.com";
+
+/// The Meet REST API root, where `spaces.create` is served.
+pub(crate) const MEET_BASE: &str = "https://meet.googleapis.com";
 
 /// An authenticated request against a Google API.
 ///
@@ -62,6 +65,23 @@ pub(crate) trait GoogleTransport: Send + Sync {
         content_type: &str,
         body: Vec<u8>,
     ) -> Result<Option<Value>, GoogleError>;
+
+    /// [`post`](Self::post) for the one request that submits a message (`messages.send`): its reply
+    /// waits the submission bound, and its failure after it may have reached the server
+    /// leaves the send ambiguous (`crate::submit`). A fake has no wait to make, so it posts.
+    async fn submit(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+        hand_over: &HandOver<'_>,
+    ) -> Result<Option<Value>, GoogleError> {
+        hand_over
+            .commit()
+            .await
+            .map_err(|err| engine_http::SendError::withheld(err.detail().to_owned()))?;
+        self.post(url, content_type, body).await
+    }
 
     /// `PUT`s `body` with `content_type` to `url`, returning the parsed JSON response.
     /// Gmail's `drafts.update` is the one caller: it **replaces** a draft's content while
@@ -164,13 +184,14 @@ impl GoogleClient {
     ///
     /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`) and `retry` its
     /// throttling policy (`docs/agent-guidance/http-throttling.md`), both shared with the
-    /// account's other providers.
+    /// account's other providers; `user_agent` names the host's application in every request.
     pub fn connect(
         token: impl Into<String>,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
     ) -> Result<Self, GoogleError> {
-        let transport = Box::new(HttpTransport::new(token.into(), tls, retry)?);
+        let transport = Box::new(HttpTransport::new(token.into(), tls, retry, user_agent)?);
         Ok(Self::with_transport(transport, GOOGLE_BASE.to_owned()))
     }
 
@@ -188,9 +209,10 @@ impl GoogleClient {
         base: impl Into<String>,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
     ) -> Result<Self, GoogleError> {
         Ok(Self::with_transport(
-            Box::new(HttpTransport::new(token.into(), tls, retry)?),
+            Box::new(HttpTransport::new(token.into(), tls, retry, user_agent)?),
             base.into(),
         ))
     }
@@ -207,13 +229,23 @@ impl GoogleClient {
 
     /// Builds an absolute **People API** URL from an API-relative path (`/v1/people/…`).
     ///
-    /// People is the one Google API this client speaks that is not served from
-    /// [`GOOGLE_BASE`] (see [`PEOPLE_BASE`]), so contact paths are rooted separately. A
-    /// client built with a custom base — a replay server or a proxy — still wins, so the
-    /// offline tests and any host-supplied origin keep working unchanged.
+    /// People is not served from [`GOOGLE_BASE`] (see [`PEOPLE_BASE`]), so contact paths are
+    /// rooted separately. A client built with a custom base — a replay server or a proxy —
+    /// still wins, so the offline tests and any host-supplied origin keep working unchanged.
     pub(crate) fn people_url(&self, path: &str) -> String {
+        self.url_at(PEOPLE_BASE, path)
+    }
+
+    /// Builds an absolute **Meet API** URL from an API-relative path (`/v2/spaces`). Meet has
+    /// a host of its own ([`MEET_BASE`]), and a client built with a custom base keeps it.
+    pub(crate) fn meet_url(&self, path: &str) -> String {
+        self.url_at(MEET_BASE, path)
+    }
+
+    /// `path` at `host`, an API's own host, unless this client was built with a custom base.
+    fn url_at(&self, host: &str, path: &str) -> String {
         if self.base == GOOGLE_BASE {
-            format!("{PEOPLE_BASE}{path}")
+            format!("{host}{path}")
         } else {
             format!("{}{path}", self.base)
         }
@@ -256,6 +288,23 @@ impl GoogleClient {
         body: Vec<u8>,
     ) -> Result<Option<Value>, GoogleError> {
         self.transport.post(url, content_type, body).await
+    }
+
+    /// [`post`](Self::post) for the request that submits a message (`messages.send`).
+    ///
+    /// # Errors
+    ///
+    /// As [`post`](Self::post).
+    pub(crate) async fn submit(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+        hand_over: &HandOver<'_>,
+    ) -> Result<Option<Value>, GoogleError> {
+        self.transport
+            .submit(url, content_type, body, hand_over)
+            .await
     }
 
     /// Authenticated `PUT`. Returns the replaced object's JSON.
@@ -326,6 +375,7 @@ mod tests {
             "super-secret-token",
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         assert_eq!(
@@ -338,6 +388,7 @@ mod tests {
             "http://127.0.0.1:9",
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         assert_eq!(
@@ -346,6 +397,25 @@ mod tests {
         );
         // The Debug rendering must not leak the bearer token.
         assert!(!format!("{client:?}").contains("super-secret-token"));
+    }
+
+    /// Gmail bills a user's calls against 6,000 units a minute, and the account's gate is the
+    /// one place every provider and every core of that account spends through, so the client
+    /// states its pace there as it connects.
+    #[test]
+    fn connecting_holds_the_account_to_gmails_quota() {
+        let retry = crate::test_support::retry();
+        GoogleClient::connect(
+            "t",
+            crate::test_support::tls(),
+            &retry,
+            &crate::test_support::user_agent(),
+        )
+        .unwrap();
+        assert_eq!(
+            retry.gate().pace(),
+            Some((crate::quota::UNITS_PER_MINUTE, crate::quota::WINDOW))
+        );
     }
 
     /// People is the one API not served from [`GOOGLE_BASE`]: a contact path rooted
@@ -357,11 +427,16 @@ mod tests {
             "t",
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         assert_eq!(
             client.people_url("/v1/people/me/connections"),
             format!("{PEOPLE_BASE}/v1/people/me/connections")
+        );
+        assert_eq!(
+            client.meet_url("/v2/spaces"),
+            format!("{MEET_BASE}/v2/spaces")
         );
         // Gmail and Calendar are unaffected — they stay on the universal host.
         assert_eq!(
@@ -374,11 +449,16 @@ mod tests {
             "http://127.0.0.1:9",
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         assert_eq!(
             custom.people_url("/v1/people/me/connections"),
             "http://127.0.0.1:9/v1/people/me/connections"
+        );
+        assert_eq!(
+            custom.meet_url("/v2/spaces"),
+            "http://127.0.0.1:9/v2/spaces"
         );
     }
 }

@@ -27,6 +27,7 @@ async fn connect(harness: &Harness, who: &ScratchAccount) -> JmapProvider {
     JmapProvider::connect(JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(&who.address, &who.password),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect")
@@ -106,7 +107,11 @@ async fn the_filed_copy_carries_the_keywords_and_the_delivered_one_does_not() {
     .with_sent_copy_keyword(keyword.clone());
 
     let receipt = carol
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("submit");
     assert!(

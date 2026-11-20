@@ -13,7 +13,9 @@ use super::*;
 use crate::{
     GraphClient,
     categories::Categories,
-    test_support::{capturing_server, fake_client, fake_client_fallible, json, retry, tls},
+    test_support::{
+        capturing_server, fake_client, fake_client_fallible, json, retry, tls, user_agent,
+    },
 };
 
 const PATCHED: &str = include_str!("../tests/fixtures/mail/message_patched.json");
@@ -142,7 +144,7 @@ async fn writes_send_the_expected_request_shapes_over_the_real_transport() {
 
     // 1. SetKeywords → PATCH /me/messages/{id} with { isRead, flag }.
     let (base, rx) = capturing_server("200 OK", PATCHED);
-    let client = GraphClient::with_base("tok", base, tls(), &retry()).unwrap();
+    let client = GraphClient::with_base("tok", base, tls(), &retry(), &user_agent()).unwrap();
     let edit = MailEdit::SetKeywords {
         target: target(),
         add: set(&[SystemKeyword::Seen, SystemKeyword::Flagged]),
@@ -163,7 +165,7 @@ async fn writes_send_the_expected_request_shapes_over_the_real_transport() {
 
     // 2. MoveTo → POST /me/messages/{id}/move with { destinationId }.
     let (base, rx) = capturing_server("201 Created", MOVED);
-    let client = GraphClient::with_base("tok", base, tls(), &retry()).unwrap();
+    let client = GraphClient::with_base("tok", base, tls(), &retry(), &user_agent()).unwrap();
     let edit = MailEdit::move_to(target(), MailboxId::try_from("folder-archive").unwrap());
     edit_mail(&client, &Categories::default(), &edit)
         .await
@@ -179,7 +181,7 @@ async fn writes_send_the_expected_request_shapes_over_the_real_transport() {
 
     // 3. Delete → POST /me/messages/{id}/permanentDelete (empty body).
     let (base, rx) = capturing_server("204 No Content", "");
-    let client = GraphClient::with_base("tok", base, tls(), &retry()).unwrap();
+    let client = GraphClient::with_base("tok", base, tls(), &retry(), &user_agent()).unwrap();
     edit_mail(&client, &Categories::default(), &MailEdit::delete(target()))
         .await
         .unwrap();

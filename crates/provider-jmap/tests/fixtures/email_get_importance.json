@@ -1,0 +1,217 @@
+{
+  "accountId": "c",
+  "state": "soq",
+  "list": [
+    {
+      "id": "gmaaaabt",
+      "blobId": "carurmfzkwnzedky2xzxrpmisbdbylmx702v9ir3vcfehknjz1vekaqagm",
+      "threadId": "bt",
+      "mailboxIds": {
+        "v": true
+      },
+      "keywords": {
+        "$hasnoattachment": true,
+        "$seen": true
+      },
+      "size": 318,
+      "receivedAt": "2026-11-18T10:13:32Z",
+      "sentAt": "2026-01-12T09:00:00Z",
+      "subject": "Fixture: high importance",
+      "from": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "importance-high@test.local"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "Importance fixture.\n",
+      "header:Importance:asText": "High",
+      "header:X-MSMail-Priority:asText": null,
+      "header:X-Priority:asText": "1 (Highest)"
+    },
+    {
+      "id": "gqaaaabu",
+      "blobId": "ccy1y3hk0n12aehvfz0xopgrgrtfrtzlo0evtokdqg2w7raogb2fsaqagq",
+      "threadId": "bu",
+      "mailboxIds": {
+        "v": true
+      },
+      "keywords": {
+        "$hasnoattachment": true,
+        "$seen": true
+      },
+      "size": 317,
+      "receivedAt": "2026-11-18T10:13:32Z",
+      "sentAt": "2026-01-12T09:00:00Z",
+      "subject": "Fixture: low importance in X-Priority alone",
+      "from": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "importance-low@test.local"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "Importance fixture.\n",
+      "header:Importance:asText": null,
+      "header:X-MSMail-Priority:asText": null,
+      "header:X-Priority:asText": "5 (Lowest)"
+    },
+    {
+      "id": "guaaaabv",
+      "blobId": "ccvlqyldy7vxzglhstrycdl9qein1pudjp7csemi2txtypckukvsqaqagu",
+      "threadId": "bv",
+      "mailboxIds": {
+        "v": true
+      },
+      "keywords": {
+        "$hasnoattachment": true,
+        "$seen": true
+      },
+      "size": 282,
+      "receivedAt": "2026-11-18T10:13:32Z",
+      "sentAt": "2026-01-12T09:00:00Z",
+      "subject": "Fixture: no importance stated",
+      "from": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "importance-normal@test.local"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "Importance fixture.\n",
+      "header:Importance:asText": null,
+      "header:X-MSMail-Priority:asText": null,
+      "header:X-Priority:asText": null
+    },
+    {
+      "id": "gyaaaabw",
+      "blobId": "cclelkdij022jdljhjriqbzw1o9nwqckz3iyi9d7jcroudtpb0irmaqagy",
+      "threadId": "bw",
+      "mailboxIds": {
+        "v": true
+      },
+      "keywords": {
+        "$hasnoattachment": true,
+        "$seen": true
+      },
+      "size": 327,
+      "receivedAt": "2026-11-18T10:13:32Z",
+      "sentAt": "2026-01-12T09:00:00Z",
+      "subject": "Fixture: Importance twice, low then high",
+      "from": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "importance-twice@test.local"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "Importance fixture.\n",
+      "header:Importance:asText": "high",
+      "header:X-MSMail-Priority:asText": null,
+      "header:X-Priority:asText": null
+    },
+    {
+      "id": "g2aaaabx",
+      "blobId": "ca7xafhwmqkzfx3w0pnvt2vey90e0om1ym929lqjktrr3urra39xsaqag2",
+      "threadId": "bx",
+      "mailboxIds": {
+        "v": true
+      },
+      "keywords": {
+        "$hasnoattachment": true,
+        "$seen": true
+      },
+      "size": 327,
+      "receivedAt": "2026-11-18T10:13:32Z",
+      "sentAt": "2026-01-12T09:00:00Z",
+      "subject": "Fixture: low importance in X-MSMail-Priority alone",
+      "from": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "sender": null,
+      "replyTo": null,
+      "to": [
+        {
+          "name": "Alice Tester",
+          "email": "alice@test.local"
+        }
+      ],
+      "cc": null,
+      "bcc": null,
+      "messageId": [
+        "importance-msmail@test.local"
+      ],
+      "inReplyTo": null,
+      "references": null,
+      "hasAttachment": false,
+      "preview": "Importance fixture.\n",
+      "header:Importance:asText": null,
+      "header:X-MSMail-Priority:asText": "Low",
+      "header:X-Priority:asText": null
+    }
+  ],
+  "notFound": []
+}

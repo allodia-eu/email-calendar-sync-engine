@@ -1,7 +1,8 @@
 //! Gated live provider-level checks against the Stalwart harness: session
-//! discovery, mail/calendar fetch, and submission through the real HTTP client.
+//! discovery, mail fetch, and submission through the real HTTP client.
 //! Skips with no `STALWART_HTTP_ADDR`, so the offline suite stays green. The
-//! full sync-loop-through-store integration is in `live_sync.rs`.
+//! calendar fetch is in `live_calendar_fetch.rs`, and the full
+//! sync-loop-through-store integration in `live_sync.rs`.
 
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ fn config(harness: &Harness) -> JmapConfig {
     JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(&harness.account, &harness.password),
+        engine_http::test_server::user_agent(),
     )
 }
 
@@ -65,6 +67,7 @@ async fn live_session_discovery() {
     let client = JmapClient::connect(JmapConfig::new(
         format!("http://{}", harness.http_addr),
         Credentials::basic(&harness.account, &harness.password),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("connect");
@@ -175,41 +178,6 @@ async fn live_message_source() {
 }
 
 #[tokio::test]
-async fn live_calendar_fetch() {
-    let Some(harness) = Harness::from_env() else {
-        eprintln!("skipping live_calendar_fetch: STALWART_HTTP_ADDR unset");
-        return;
-    };
-    harness
-        .wait_until_ready(std::time::Duration::from_secs(30))
-        .expect("ready");
-    let provider = connect(&harness).await;
-
-    assert!(
-        provider
-            .sync_calendars(&account(), None)
-            .await
-            .unwrap()
-            .is_snapshot()
-    );
-    let events = provider.sync_events(&account(), None).await.unwrap();
-    let SyncUpdate::Snapshot { objects, .. } = &events.update else {
-        panic!("expected snapshot");
-    };
-    let uids: std::collections::BTreeSet<&str> = objects.iter().map(|e| e.uid.as_str()).collect();
-    for uid in [
-        "oneoff-2001@test.local",
-        "weekly-2002@test.local",
-        "meeting-2003@test.local",
-        "virtual-2004@test.local",
-        "allday-2005@test.local",
-        "floating-2006@test.local",
-    ] {
-        assert!(uids.contains(uid), "seed event uid missing: {uid}");
-    }
-}
-
-#[tokio::test]
 async fn live_submit_email() {
     let Some(harness) = Harness::from_env() else {
         eprintln!("skipping live_submit_email: STALWART_HTTP_ADDR unset");
@@ -228,10 +196,14 @@ async fn live_submit_email() {
         "Sent by the step-4 live submission test.",
     );
     let receipt = provider
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("submit");
-    assert!(!receipt.email_key.as_str().is_empty());
+    assert_ne!(receipt.email_key.as_str(), "");
     assert_eq!(receipt.message_id.as_str(), "step4-live-send@test.local");
 }
 
@@ -260,7 +232,11 @@ async fn live_submit_email_with_attachment() {
         b"jmap-attachment-live-body".to_vec(),
     ));
     provider
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("submit with attachment");
 
@@ -314,7 +290,11 @@ async fn live_edit_mail_keyword_move_and_delete() {
         "A throwaway message the edit_mail live test mutates.",
     );
     provider
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("submit probe");
 
@@ -398,7 +378,11 @@ async fn live_watch_sees_a_change_over_event_source() {
         "Wakes the EventSource watcher.",
     );
     provider
-        .submit_email(&account(), &draft)
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("submit");
 

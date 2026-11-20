@@ -40,7 +40,11 @@ Capture any provider-specific assumption in tests or fixtures. If a provider beh
 - Events may have multiple calendar memberships where a provider supports it; one-calendar membership remains the common case.
 - A message splits into an **immutable half and a mutable half**, and they are stored apart. Its
   content never changes once the server holds it — editing a draft mints a *new* provider object
-  on every protocol we speak — so `MailContent` is written once and is the normalized payload.
+  on IMAP, JMAP and Gmail — so `MailContent` is the normalized payload, and a sync that reports the
+  same key again carries the same bytes. Exchange is the exception: a draft's re-save rewrites its
+  subject, body and importance under the same id, and Outlook lets a recipient change a received
+  message's importance. Graph reports either as a changed message, and the store rewrites the
+  payload whole, as it does for any changed object; it is never a state change (`graph.md`).
   Everything that moves without those bytes moving is `MailState`: keywords, a derived thread, and
   the revision tokens and `last_modified` that bump when state changes. That half lives in the
   `message` row and the `membership` junction, and a `Message` read back out of storage is
@@ -57,16 +61,36 @@ Capture any provider-specific assumption in tests or fixtures. If a provider beh
 - Keywords (user-settable state such as read/flagged) and membership (collection placement) are distinct axes. A provider's flag/label namespace partitions across both, plus role: JMAP keywords and IMAP flags are keywords; mailboxes/folders and most labels are membership; some Gmail system labels are keywords (`UNREAD`, `STARRED`, `IMPORTANT`), not membership, and so is a Gmail label a host named after a keyword (`KeywordName`).
 - Collections carry a normalized role (inbox, sent, drafts, trash, junk, archive, all) mapped from provider roles — JMAP `role`, IMAP SPECIAL-USE, Gmail system labels, Graph well-known names — distinct from id and display name.
 - A mail collection carries the **server's** unread count (`Mailbox::unread_count`), not a derived one: the store holds only the synced window, so counting stored rows answers a different question than a folder badge asks. It is a first-class field rather than an extended property because all four mail transports report it — JMAP `unreadEmails`, IMAP `STATUS (UNSEEN)`, Gmail `messagesUnread`, Graph `unreadItemCount`. It counts **messages**; only JMAP offers the conversation form, so that one cannot be modelled portably. `None` means unreported and must never be read as zero.
+- A mail collection carries the **caller's access rights** (`Mailbox::access: MailboxAccess`), as a calendar does. They are a first-class field because both mail protocols that share mailboxes standardise them (JMAP `MailboxRights`, RFC 8621 §2; IMAP ACL, RFC 4314) and because there is **no usable answer above the collection**: live against Stalwart v1.0.2, a JMAP account shared with one writable and one read-only folder reports `accounts.<id>.isReadOnly: false`, so "may I write here?" asked of the account gets the wrong answer for the second folder. (v0.16 was worse: it reported `false` even for a share whose only mailbox grants `lr`. v1 reports `true` for that one, so the flag now says "nothing here is writable" correctly and still cannot say *which* folders are.)
+  - The rights are kept separate rather than collapsed to read/write, because servers hand out arbitrary subsets: a shared mailbox commonly lets each reader keep their own `$seen` without changing other keywords, and IMAP separates adding (`i`) from removing (`t`+`e`) from creating a child (`k`) from deleting the mailbox (`x`).
+  - **JMAP's `maySubmit` (and IMAP's `p`) is deliberately not carried.** It means mail may be *posted into* the mailbox by address (RFC 8621 §2: "Messages may be submitted directly to this Mailbox"), no client action depends on it, and its name invites reading it as permission to send *as* the mailbox's owner — which no mailbox right expresses. `may_share` is carried, from IMAP's `a` and JMAP's `mayShare` (which RFC 8621 does not define but sharing servers report), symmetric with `CalendarAccess`.
+  - Sourced per adapter: JMAP reads `myRights` (a missing object is `owner()`, a missing right inside one is withheld); IMAP maps the `MYRIGHTS` letters, read off the folder `LIST` where the server has `LIST-MYRIGHTS` (RFC 8440) and otherwise from one pipelined `MYRIGHTS` per selectable folder (`provider-imap`'s `acl` module tabulates the mapping — reading needs `l`+`r`, removing needs `t`+`e`, and RFC 2086's `c`/`d` are ignored because an RFC 4314 server adds them for *any* member right); Graph grants Full Access all-or-nothing per mailbox and Gmail labels carry no rights, so both report `owner()` — correct there, not optimistic.
+  - Unknown reads as `owner()`, never as "no rights" — a server with no ACLs has nothing to restrict with, and hiding mail the caller can see is the worse error. The field is `#[serde(default)]` for the same reason, and `NORMALIZER_VERSION` 6 re-snapshots stored mailboxes so none keeps the default in place of the server's answer.
+- A mail collection says whether it can be opened at all (`Mailbox::selectable`). `false` is a level of the hierarchy that holds no messages: IMAP `\Noselect` / `\NonExistent`, a JMAP mailbox without `myRights.mayReadItems`. Graph folders and Gmail labels always hold messages. It stays in the folder list, because its children hang from it; a host draws it but neither opens nor syncs it. A stored row without the field loads as selectable.
 - User-set tags differ from provider-assigned classifications: user categories/keywords (which may span mail and calendar and reference a per-account registry of name and color) versus classifications the user does not set directly (focused/other, inbox tabs).
 - `Message-ID` is a threading/reconciliation hint, not hard identity.
+- A message carries its importance (`Envelope::importance`): content, not state, so it is in the
+  payload, and in the `message` row because a list row draws it. One rule reads it on every
+  transport, `Importance::from_headers`, and it is Exchange's, observed shape by shape
+  (`provider-graph/tests/fixtures/mail/importance_header_shapes.json`), so a message reads the same
+  on a Graph account as anywhere else: `Importance` (RFC 2156 §5.3), else Outlook's
+  `X-MSMail-Priority`, else `X-Priority`, else normal; the last occurrence of a header; and the
+  first header present decides, one it cannot read stating normal. Where Exchange departs from
+  RFC 5322 in reading a value, the rule follows the RFC (`docs/spec-deviations.md`, MICROSOFT-1).
+  A transport that reads headers by name asks for exactly `Importance::HEADERS`, which a test on
+  each pins; Graph reports Exchange's own reading as `importance`. RFC 2156's `Priority` is an
+  MTA's delivery priority and is not read. A `Draft` carries it to every transport, which writes
+  `Importance` and `X-Priority` for anything but normal.
 - Raw provider payloads are preserved for lossless re-derivation: MIME, iCalendar, JSCalendar, vCard.
 - Provider-defined extended properties and extensions (Microsoft Graph extended properties and open extensions, Google Calendar `extendedProperties`) are preserved as normalized, namespaced key-value data — distinct from raw payloads and from first-class fields.
 - Provider object keys are stable across moves; where a provider's natural id is not (Graph default ids), the adapter uses its immutable-id form, with a version token (ETag, `changeKey`, MODSEQ) tracking revisions.
 - Attachments span kinds — file (bytes), item (an embedded message/event), reference (an external/cloud link with no bytes), and inline (CID); quota and host-open policy apply to byte content only.
 - Normalized messages expose distinct sent, received, and last-modified timestamps, and separate the full body from a reply-unique body used for snippets and indexing.
-- The displayable body is a *derived view*, `MessageBody { plain, html }` (`engine-core`), not stored state: the lossless source is the cached raw RFC 5322 (`RawMime`, Tier-3), and `engine-mime::extract_body` decodes the best `text/plain`/`text/html` parts out of it (content-transfer- and charset-decoded to UTF-8). `plain` is the reading-view text (a text rendering of an HTML-only message when there is no plain part); `html` is the **unsanitized** HTML, present only when a real `text/html` part exists — a host sanitizes before rendering. Its `Debug` is redacted, like the raw payloads.
+- The displayable body is a *derived view*, `MessageBody { plain, html }` (`engine-core`), not stored state: the lossless source is the cached raw RFC 5322 (`RawMime`, Tier-3), and `engine-mime::extract_body` decodes the best `text/plain`/`text/html` parts out of it (content-transfer- and charset-decoded to UTF-8). `plain` is the reading-view text (a text rendering of an HTML-only message when there is no plain part); `html` is the **unsanitized** HTML, present only when a real `text/html` part exists — a host sanitizes before rendering, with `engine-html` (`html.md`). Its `Debug` is redacted, like the raw payloads.
 - Calendar normalization must support floating times, all-day events, embedded timezones, recurrence overrides, exclusions, and cross-DST expansion.
 - A calendar collection carries access rights, subscription/visibility, owner, default reminders (which events may inherit), and color — not only event membership.
+  - A calendar in **another principal's store** (a group's, a colleague's delegated one) is not a new kind of calendar: it syncs under the `AccountId` the host onboarded that store as (`providers.md` → "A shared store is just another account"), and its rights are its own `Calendar::access`, exactly as a folder's are `Mailbox::access`. The store itself is not modelled — `SharedAccount` is a discovery answer, not a model type — so nothing above the calendar claims rights or ownership.
+- An event's conferences are meetings, not links: one `Conference` holds every way into one meeting, the service it runs on and whether the calendar server made it (`calendar-semantics.md` → "Conferences"). The flat formats (iCalendar `CONFERENCE`, JSCalendar `virtualLocations`) are grouped into that shape on read, and a meeting named only in a vendor property, a location or the description is detected there, once however many places name it. `Event::description` stays the server's text; `Event::notes(shown)` is it without the meeting blocks invitations write for the conferences a caller shows. A calendar says which meetings its own server makes (`Calendar::native_conferences`), as the server answers for that calendar.
 - Events carry a kind discriminator (default, plus provider kinds such as working-location, focus-time, out-of-office, birthday); the model records the kind and preserves its payload even when the JSCalendar projection cannot express the behavior.
 - Recurring event range search uses bounded materialized occurrences.
 - Thread ids carry provenance: provider-assigned or locally-derived.
@@ -80,7 +104,7 @@ Before model implementation, create fixtures for:
 - JMAP Email with multiple `mailboxIds`.
 - JMAP Email keywords with system and arbitrary values.
 - JMAP CalendarEvent with multiple `calendarIds`.
-- JSCalendar recurrence rules, recurrence overrides, excluded overrides, participants, and virtual locations.
+- JSCalendar recurrence rules, recurrence overrides, excluded overrides, participants, and virtual locations (read as conferences).
 - iCalendar RRULE/RDATE/EXDATE/RECURRENCE-ID with embedded VTIMEZONE.
 - IMAP UID identity across folder moves and UIDVALIDITY reset.
 - Duplicate or missing `Message-ID` values.

@@ -101,16 +101,34 @@ pub fn split_unquoted(text: &str, delim: char) -> Vec<&str> {
     segments
 }
 
-/// Parses one `KEY=value` (or `KEY="value"`) parameter, uppercasing the name and
-/// stripping surrounding quotes. A segment with no `=` is dropped.
+/// Parses one `KEY=value` (or `KEY="value"`) parameter, uppercasing the name, stripping
+/// surrounding quotes and decoding RFC 6868's escapes. A segment with no `=` is dropped.
 fn parse_param(segment: &str) -> Option<(String, String)> {
     let (key, value) = segment.split_once('=')?;
     let value = value.trim();
-    let value = value
-        .strip_prefix('"')
-        .and_then(|v| v.strip_suffix('"'))
-        .unwrap_or(value);
-    Some((key.trim().to_ascii_uppercase(), value.to_owned()))
+    let value = value.strip_circumfix('"', '"').unwrap_or(value);
+    Some((key.trim().to_ascii_uppercase(), decode_param(value)))
+}
+
+/// Decodes a parameter value's RFC 6868 escapes: `^n` is a newline, `^'` a double quote and
+/// `^^` a caret. A caret before anything else is kept as written (§3).
+fn decode_param(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        let decoded = match (c, chars.peek()) {
+            ('^', Some('n')) => '\n',
+            ('^', Some('\'')) => '"',
+            ('^', Some('^')) => '^',
+            _ => {
+                out.push(c);
+                continue;
+            }
+        };
+        chars.next();
+        out.push(decoded);
+    }
+    out
 }
 
 /// Unescapes an iCalendar TEXT value (RFC 5545 §3.3.11): `\\`, `\;`, `\,`, and
@@ -172,6 +190,14 @@ mod tests {
     }
 
     #[test]
+    fn decodes_rfc_6868_escapes_in_a_parameter_value() {
+        let lines = content_lines(
+            "CONFERENCE;VALUE=URI;LABEL=\"Say ^'hi^'^nthen ^^join ^x\":https://meet.example.com/room\n",
+        );
+        assert_eq!(lines[0].param("LABEL"), Some("Say \"hi\"\nthen ^join ^x"));
+    }
+
+    #[test]
     fn unescapes_text_values() {
         assert_eq!(unescape_text(r"a\, b\; c\nd\\e"), "a, b; c\nd\\e");
         // A trailing lone backslash is preserved rather than panicking.
@@ -188,7 +214,7 @@ mod tests {
 
     #[test]
     fn empty_input_yields_no_lines() {
-        assert!(content_lines("").is_empty());
-        assert!(content_lines("\r\n\r\n").is_empty());
+        assert_eq!(content_lines(""), []);
+        assert_eq!(content_lines("\r\n\r\n"), []);
     }
 }

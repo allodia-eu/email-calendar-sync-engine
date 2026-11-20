@@ -33,7 +33,10 @@ fuzzing = []
 
 [dev-dependencies]
 # `time` (workspace default omits it) powers the live watch test's bounded wait.
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "test-util", "net", "io-util", "sync"] }
+# The silent servers the deadline tests meet (`engine_http::test_server`), and `test-util`
+# above for the paused clock they are measured on.
+engine-http = { workspace = true, features = ["test-server"] }
 # The scheduling fixture dates its invitation a fixed offset from today — a server only
 # auto-schedules a meeting that has not already finished — which needs calendar-aware date
 # arithmetic (month/year rollover), not a duration in seconds.
@@ -41,9 +44,8 @@ time = { workspace = true }
 # `StreamExt` to drain the email chunk stream in the offline sync tests.
 futures-util = { workspace = true }
 stalwart-harness = { path = "../stalwart-harness" }
-# The live RSVP test seeds its invitation with a CalDAV PUT: JMAP has no whole-document
-# write and `EventDraft` cannot state an ORGANIZER/ATTENDEE pair, so an invitation cannot
-# be created over JMAP at all. Test-only, and only for the counterparty's fixture.
+# The live scheduling tests observe organiser and attendee copies over CalDAV and clean
+# both scheduling inboxes after creating and changing the meeting through JMAP.
 provider-caldav = { workspace = true }
 # The live iMIP test reads the message the *server* built back through the engine's own
 # inbound scheduling bridge — the same detection an arriving invitation goes through — so
@@ -55,6 +57,8 @@ engine-search = { workspace = true }
 engine-recurrence = { workspace = true }
 engine-sync = { workspace = true }
 store-sqlite = { workspace = true }
+# The process-kill suite's store files, one directory per case.
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

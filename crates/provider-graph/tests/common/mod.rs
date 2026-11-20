@@ -13,9 +13,11 @@ use engine_core::{
     calendar::Event,
     ids::{AccountId, CalendarId, Uid},
     membership::Memberships,
-    time::{CalendarDate, CalendarDateTime, LocalDateTime, TimeZoneId},
+    sync::SyncState,
+    time::{CalendarDateTime, Horizon, LocalDateTime, TimeZoneId},
 };
-use provider_graph::{CalendarWindow, GraphCalendarProvider, GraphClient};
+use engine_provider::{Provider, ProviderResult, ScopeSync};
+use provider_graph::{GraphCalendarProvider, GraphClient};
 
 pub(crate) fn account() -> AccountId {
     AccountId::try_from("live").unwrap()
@@ -32,10 +34,19 @@ pub(crate) fn token() -> Option<String> {
 // Calendar (gated live)
 // ---------------------------------------------------------------------------
 
-pub(crate) fn calendar_window() -> CalendarWindow {
-    CalendarWindow::new(
-        CalendarDate::new(2026, 8, 1).unwrap(),
-        CalendarDate::new(2026, 11, 1).unwrap(),
+/// `[from, to)` as a horizon of whole UTC days.
+pub(crate) fn days(from: time::Date, to: time::Date) -> Horizon {
+    Horizon::new(
+        format!("{from}T00:00:00Z").parse().unwrap(),
+        format!("{to}T00:00:00Z").parse().unwrap(),
+    )
+    .unwrap()
+}
+
+pub(crate) fn calendar_window() -> Horizon {
+    days(
+        time::Date::from_calendar_date(2026, time::Month::August, 1).unwrap(),
+        time::Date::from_calendar_date(2026, time::Month::November, 1).unwrap(),
     )
 }
 
@@ -43,15 +54,62 @@ pub(crate) fn amsterdam() -> TimeZoneId {
     TimeZoneId::iana("Europe/Amsterdam").unwrap()
 }
 
-/// A calendar provider bound to `calendar`, reading times in Europe/Amsterdam.
-pub(crate) fn calendar_provider(token: &str, calendar: CalendarId) -> GraphCalendarProvider {
+/// A provider bound to the window a live test reads its calendar over, which the engine names
+/// per fetch ([`Provider::sync_events`]). Everything but the fetch derefs to the provider.
+pub(crate) struct Windowed {
+    pub(crate) provider: GraphCalendarProvider,
+    pub(crate) window: Horizon,
+}
+
+impl Windowed {
+    /// The calendar's events since `cursor`, over this provider's window.
+    pub(crate) async fn sync_events(
+        &self,
+        account: &AccountId,
+        calendar: &CalendarId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Event>> {
+        Provider::sync_events(&self.provider, account, calendar, cursor, self.window).await
+    }
+}
+
+impl core::ops::Deref for Windowed {
+    type Target = GraphCalendarProvider;
+
+    fn deref(&self) -> &GraphCalendarProvider {
+        &self.provider
+    }
+}
+
+/// A calendar provider for the account's calendars, reading times in Europe/Amsterdam.
+pub(crate) fn calendar_provider(token: &str) -> Windowed {
+    Windowed {
+        provider: graph_calendars(token),
+        window: calendar_window(),
+    }
+}
+
+/// A calendar provider whose read window contains a generated live-test date.
+pub(crate) fn calendar_provider_around(token: &str, date: time::Date) -> Windowed {
+    Windowed {
+        provider: graph_calendars(token),
+        window: days(
+            date - time::Duration::days(1),
+            date + time::Duration::days(1),
+        ),
+    }
+}
+
+/// The adapter for `token`'s calendars, reading times in Europe/Amsterdam.
+pub(crate) fn graph_calendars(token: &str) -> GraphCalendarProvider {
     let client = GraphClient::connect(
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
-    GraphCalendarProvider::new(client, calendar, calendar_window(), amsterdam())
+    GraphCalendarProvider::new(client, amsterdam())
 }
 
 pub(crate) fn zoned(local: &str) -> CalendarDateTime {

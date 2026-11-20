@@ -331,3 +331,104 @@ fn dav_collection_list_is_distinct_from_a_collection_and_roundtrips() {
     let json = serde_json::to_string(&list).unwrap();
     assert_eq!(serde_json::from_str::<SyncScope>(&json).unwrap(), list);
 }
+
+/// Every scope lands in a domain, containers and JMAP's non-view types included, so forgetting
+/// one domain leaves nothing of it behind. Only a JMAP type this build does not know has none.
+#[test]
+fn domain_places_every_scope_containers_included() {
+    use SearchDomain::{Calendar, Contacts, Mail};
+    let a = account;
+    let jmap = |data_type| SyncScope::JmapType {
+        account: a(),
+        data_type,
+    };
+    let folder = || MailboxId::try_from("INBOX").unwrap();
+    let calendar = || CalendarId::try_from("cal-1").unwrap();
+    let book = || AddressBookId::try_from("book-1").unwrap();
+    let cases = [
+        (jmap(JmapDataType::Email), Mail),
+        (jmap(JmapDataType::Mailbox), Mail),
+        (jmap(JmapDataType::Thread), Mail),
+        (jmap(JmapDataType::EmailSubmission), Mail),
+        (jmap(JmapDataType::Calendar), Calendar),
+        (jmap(JmapDataType::CalendarEvent), Calendar),
+        (jmap(JmapDataType::AddressBook), Contacts),
+        (jmap(JmapDataType::ContactCard), Contacts),
+        (SyncScope::ImapMailboxList { account: a() }, Mail),
+        (
+            SyncScope::ImapMailbox {
+                account: a(),
+                mailbox: folder(),
+            },
+            Mail,
+        ),
+        (SyncScope::GraphFolderList { account: a() }, Mail),
+        (
+            SyncScope::GraphFolder {
+                account: a(),
+                folder: folder(),
+            },
+            Mail,
+        ),
+        (SyncScope::GmailMessages { account: a() }, Mail),
+        (SyncScope::GmailLabelList { account: a() }, Mail),
+        (SyncScope::DavCollectionList { account: a() }, Calendar),
+        (
+            SyncScope::DavCollection {
+                account: a(),
+                collection: DavCollectionId::try_from("/dav/cal/a/default/").unwrap(),
+            },
+            Calendar,
+        ),
+        (SyncScope::GraphCalendarList { account: a() }, Calendar),
+        (
+            SyncScope::GraphCalendar {
+                account: a(),
+                calendar: calendar(),
+            },
+            Calendar,
+        ),
+        (SyncScope::GoogleCalendarList { account: a() }, Calendar),
+        (
+            SyncScope::GoogleCalendar {
+                account: a(),
+                calendar: calendar(),
+            },
+            Calendar,
+        ),
+        (SyncScope::GraphContactFolderList { account: a() }, Contacts),
+        (
+            SyncScope::GraphContacts {
+                account: a(),
+                address_book: book(),
+            },
+            Contacts,
+        ),
+        (SyncScope::GraphOrgContacts { account: a() }, Contacts),
+        (SyncScope::GraphDirectoryUsers { account: a() }, Contacts),
+        (
+            SyncScope::GoogleContactSourceList { account: a() },
+            Contacts,
+        ),
+        (SyncScope::GoogleContacts { account: a() }, Contacts),
+        (SyncScope::GoogleOtherContacts { account: a() }, Contacts),
+        (SyncScope::GoogleDirectoryPeople { account: a() }, Contacts),
+        (SyncScope::GoogleContactGroups { account: a() }, Contacts),
+        (SyncScope::CardDavAddressBookList { account: a() }, Contacts),
+        (
+            SyncScope::CardDavAddressBook {
+                account: a(),
+                address_book: book(),
+            },
+            Contacts,
+        ),
+    ];
+    for (scope, domain) in cases {
+        assert_eq!(scope.domain(), Some(domain), "{scope:?}");
+        // A searchable scope is searched in the domain it belongs to.
+        if let Some(searched) = scope.search_domain() {
+            assert_eq!(searched, domain, "{scope:?}");
+        }
+    }
+    assert_eq!(jmap(JmapDataType::Other("Quota".to_owned())).domain(), None);
+}

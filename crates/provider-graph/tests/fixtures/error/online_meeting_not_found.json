@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "NotFound",
+    "message": "3004: Specified meeting is not found",
+    "innerError": {
+      "date": "2026-11-04T17:46:07",
+      "request-id": "00000000-0000-0000-0000-000000000000",
+      "client-request-id": "00000000-0000-0000-0000-000000000000"
+    }
+  }
+}

@@ -10,6 +10,7 @@
 //! - expose what it can do, and what its transport negotiated, via one [`ConnectionInfo`];
 //! - classify failures through [`ProviderError`] (the engine-neutral
 //!   [`FailureClass`](engine_core::error::FailureClass) taxonomy);
+//! - bound every wait on a server by the one shared [`Deadlines`];
 //! - signal delta-vs-snapshot (carried inside the [`SyncUpdate`](engine_core::sync::SyncUpdate)
 //!   itself).
 //!
@@ -17,6 +18,11 @@
 //! well-known redirects, the TLS handshake, authentication, endpoint discovery — is
 //! observable through [`ConnectStep`] and [`ConnectObserver`], which an adapter's
 //! config carries.
+//!
+//! A credential often reaches more than its own mailbox and calendar. [`SharedAccounts`] and
+//! [`SharedAccount`] are the discovery seam for that (`shared`): they answer *which stores
+//! can I open*, and stop there — a discovered store becomes an ordinary account bound with
+//! the same credential, so no scope, cursor or account kind is added.
 //!
 //! The trait is deliberately **shaped by JMAP** and kept minimal: it covers the
 //! mail spine (mailboxes + email), calendar, submission, and contact contracts.
@@ -26,36 +32,47 @@
 //! the provider-neutral scopes.
 
 mod boxed;
+mod calendar_user;
 mod calendar_write;
 mod capability;
 mod capability_calendar;
 mod capability_contacts;
 mod capability_mailbox;
 mod capability_submission;
+mod capability_window;
 mod connect_observer;
 mod connection;
 mod contact;
+mod content_id;
+mod deadline;
 mod error;
+mod hand_over;
 mod identity;
 mod keyword_name;
 mod mail_edit;
 mod mailbox_edit;
 mod mailbox_write;
+mod meeting;
 mod page;
 mod provider;
 #[cfg(feature = "http")]
 mod redirect;
 mod report;
+mod shared;
 mod sources;
 mod stream;
 mod submit;
 mod sync;
 mod watch;
 
+pub use calendar_user::CalendarUserAddresses;
 pub use calendar_write::{
-    CalendarWrites, DeleteTarget, DraftRecurrence, EventDeletion, EventDraft, EventEdit,
-    EventPatch, EventRsvp, EventWrite, EventWriteReceipt, Occurrence, PatchTarget, RecurrenceEdit,
-    ReplyDelivery, RsvpResponse, TextEdit, WritePrecondition,
+    AttachedConference, CalendarAddress, CalendarWrites, ConferenceEdit, DeleteTarget,
+    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
+    EventWriteReceipt, InvitationError, Invitee, InviteePatch, InviteeRole, MeetingDraft,
+    MeetingText, NewConference, Occurrence, PatchTarget, RecurrenceEdit, ReplyDelivery,
+    RsvpResponse, SchedulingIdentity, TextEdit, WritePrecondition, meeting_text,
+    refuse_native_conference,
 };
 pub use capability::Capabilities;
 pub use capability_calendar::{OverrideSurvival, RsvpControls, WriteGuard};
@@ -67,26 +84,32 @@ pub use contact::{
     ContactDestination, ContactPhoto, ContactSourceSync, ContactUnavailable, ContactWriteReceipt,
     ContactsProvider,
 };
+pub use deadline::Deadlines;
 pub use error::{ProviderError, ProviderResult};
+pub use hand_over::{HandOver, HandOverLog, HandedOver, Unrecorded};
 pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};
 pub use keyword_name::{KeywordName, keyword_named};
 pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use mailbox_edit::{MailboxEdit, MailboxEditReceipt};
 pub use mailbox_write::MailboxWrites;
+pub use meeting::{
+    JitsiMeetings, JitsiServerError, MeetingKey, MeetingKeyError, MeetingRequest, MeetingService,
+};
 pub use page::{PageToken, SyncKind, SyncPage};
 pub use provider::Provider;
 #[cfg(feature = "http")]
-pub use redirect::redirect_target;
+pub use redirect::{redirect_refused, redirect_target};
 pub use report::{
     MessageReport, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
 };
+pub use shared::{SharedAccount, SharedAccounts, StoreDomains};
 pub use sources::{SourceStream, one_at_a_time};
 pub use stream::{EmailChunk, EmailStream, PassMode, split_page};
 pub use submit::{
     ContentIdError, ContentIdHeader, Draft, DraftAttachment, DraftAttachmentDisposition,
     DraftCalendar, SentCopy, SubmissionReceipt,
 };
-pub use sync::ScopeSync;
+pub use sync::{CalendarListing, ScopeSync};
 pub use watch::{Watch, WatchEvent};
 
 /// Default page size [`Provider::sync_email`] uses to drain
@@ -94,5 +117,10 @@ pub use watch::{Watch, WatchEvent};
 /// for a more responsive UI (see `engine-sync`).
 pub(crate) const DEFAULT_DRAIN_PAGE: usize = 500;
 
+#[cfg(test)]
+mod calendar_default_tests;
+#[cfg(test)]
+#[path = "draft_tests.rs"]
+mod draft_tests;
 #[cfg(test)]
 mod tests;

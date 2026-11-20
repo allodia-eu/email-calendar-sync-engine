@@ -94,12 +94,14 @@ async fn jmap_and_carddav_normalize_the_same_seeded_person() {
                 username: harness.account.clone(),
                 password: harness.password.clone(),
             },
+            engine_http::test_server::user_agent(),
         ))
     })
     .await;
     let jmap = JmapProvider::connect(JmapConfig::new(
         origin,
         JmapCredentials::basic(&harness.account, &harness.password),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("JMAP connect");
@@ -154,6 +156,7 @@ async fn a_seeded_photo_arrives_and_a_missing_one_is_an_absence_not_a_failure() 
                 username: harness.account.clone(),
                 password: harness.password.clone(),
             },
+            engine_http::test_server::user_agent(),
         ))
     })
     .await;
@@ -202,6 +205,7 @@ async fn a_seeded_photo_arrives_and_a_missing_one_is_an_absence_not_a_failure() 
     let jmap = JmapProvider::connect(JmapConfig::new(
         format!("http://{}", harness.http_addr),
         JmapCredentials::basic(&harness.account, &harness.password),
+        engine_http::test_server::user_agent(),
     ))
     .await
     .expect("JMAP connect");
@@ -260,6 +264,7 @@ async fn a_created_card_keeps_its_organization_and_title_through_a_patch() {
                 username: harness.account.clone(),
                 password: harness.password.clone(),
             },
+            engine_http::test_server::user_agent(),
         ))
     })
     .await;

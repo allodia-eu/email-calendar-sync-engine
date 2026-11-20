@@ -9,7 +9,10 @@ use engine_core::{
 use engine_provider::Provider;
 use engine_store::MessageSourceCache;
 
-use crate::SyncError;
+use crate::{
+    SyncError,
+    source_answer::{answer_from_if_owed, cache_fetched_source},
+};
 
 /// Returns downloadable attachment metadata for `message`.
 ///
@@ -122,13 +125,14 @@ where
 {
     let key = message.id.key();
     if let Some(cached) = store.get_message_source(account, key).await? {
+        answer_from_if_owed(store, account, key, &cached).await;
         return Ok(cached);
     }
     let raw = provider.fetch_message_source(account, message).await?;
     // The one read here that cannot cache by move, since the caller wants the bytes too. It
     // costs a copy only on a source never cached before, which a host that warms bodies has
     // already paid for elsewhere.
-    let _ = store.put_message_source(account, key, raw.clone()).await;
+    cache_fetched_source(store, account, key, raw.clone()).await;
     Ok(raw)
 }
 
@@ -151,11 +155,12 @@ where
 {
     let key = message.id.key();
     if let Some(cached) = store.get_message_source(account, key).await? {
+        answer_from_if_owed(store, account, key, &cached).await;
         return Ok(extract(&cached));
     }
     let raw = provider.fetch_message_source(account, message).await?;
     let out = extract(&raw);
-    let _ = store.put_message_source(account, key, raw).await;
+    cache_fetched_source(store, account, key, raw).await;
     Ok(out)
 }
 
@@ -267,7 +272,8 @@ mod tests {
             &store,
             &account(),
             &message(),
-            AttachmentPartId::new(0),
+            // The PDF's MIME part number: the multipart is 0, the text body 1.
+            AttachmentPartId::new(2),
         )
         .await
         .expect("attachment")

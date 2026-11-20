@@ -7,7 +7,8 @@
 //! `sync-token`, which becomes the cursor. A server that rejects a stale token
 //! (RFC 6578 §3.2 `valid-sync-token`) is recovered by re-running as a snapshot,
 //! inside the adapter — the same self-healing the JMAP adapter does for
-//! `cannotCalculateChanges`. A single malformed resource is skipped, never failing
+//! `cannotCalculateChanges`. A server that does not do the report is read through its CTag
+//! instead (`ctag_sync`). A single malformed resource is skipped, never failing
 //! the whole pass (`calendar-semantics.md`).
 
 use std::collections::BTreeSet;
@@ -17,15 +18,17 @@ use engine_core::{
     error::FailureClass,
     ids::{CalendarId, EventId, ProviderKey},
     sync::{SyncState, SyncUpdate},
-    version::{ETag, RevisionTokens},
+    version::{ETag, RevisionTokens, ScheduleTag},
 };
 use engine_ical::parse_calendar_object;
 use engine_provider::ScopeSync;
 
 use crate::{
+    ctag_sync::{CtagSync, ctag_sync, is_ctag_cursor, refuses_sync_collection},
     dav::MultiStatus,
     error::CalDavError,
-    request::sync_collection_report,
+    multiget::{Multigets, fill_bodies, same_path},
+    request::{calendar_multiget_report, sync_collection_report},
     transport::{DavExecutor, DavMethod},
 };
 
@@ -36,32 +39,75 @@ use crate::{
 /// Returns [`CalDavError`] on a transport/HTTP failure or a malformed response.
 pub(crate) async fn sync_events(
     exec: &dyn DavExecutor,
+    multigets: &Multigets,
     collection_href: &str,
     calendar: &CalendarId,
     cursor: Option<&SyncState>,
 ) -> Result<ScopeSync<Event>, CalDavError> {
+    if is_ctag_cursor(cursor) {
+        return by_ctag(exec, multigets, collection_href, calendar, cursor).await;
+    }
     let token = cursor.map_or("", SyncState::as_str);
     let mut snapshot = token.is_empty();
-    let multistatus = match report(exec, collection_href, token).await {
-        Ok(multistatus) => multistatus,
+    let mut multistatus = match report(exec, collection_href, token).await {
+        Ok(multistatus) if multistatus.sync_token.is_some() => multistatus,
         // A rejected sync-token forces a full re-read (RFC 6578 §3.2).
         Err(err) if !snapshot && err.failure_class() == FailureClass::NeedsResync => {
             snapshot = true;
             report(exec, collection_href, "").await?
         }
-        Err(err) => return Err(err),
+        Err(err) if !refuses_sync_collection(&err, snapshot) => return Err(err),
+        // A refusal, or an answer without a sync-token: the server does not do the report.
+        _ => return by_ctag(exec, multigets, collection_href, calendar, cursor).await,
     };
+    fill_bodies(
+        exec,
+        multigets,
+        collection_href,
+        &mut multistatus,
+        "calendar-data",
+        calendar_multiget_report,
+    )
+    .await?;
 
-    // RFC 6578 §3.6: a sync-collection response MUST carry the next sync-token.
-    // A missing token is a protocol error — never silently coerced to "" (which
-    // would force a full re-snapshot every pass, masking the violation).
+    // RFC 6578 §3.6: a sync-collection response MUST carry the next sync-token. The first
+    // answer without one went to the CTag path, so only the re-read after a rejected token
+    // gets here without it, and that is a protocol error, never coerced to "".
     let next_cursor = multistatus
         .sync_token
         .clone()
         .map(SyncState::new)
         .ok_or_else(|| CalDavError::protocol("sync-collection response had no sync-token"))?;
-    let update = build_update(&multistatus, calendar, snapshot);
+    let update = build_update(&multistatus, collection_href, calendar, snapshot);
     Ok(ScopeSync::new(update, next_cursor))
+}
+
+/// Syncs `collection_href` through its CTag, as a snapshot whenever it moved.
+async fn by_ctag(
+    exec: &dyn DavExecutor,
+    multigets: &Multigets,
+    collection_href: &str,
+    calendar: &CalendarId,
+    cursor: Option<&SyncState>,
+) -> Result<ScopeSync<Event>, CalDavError> {
+    let sync = ctag_sync(
+        exec,
+        multigets,
+        collection_href,
+        cursor,
+        "calendar-data",
+        calendar_multiget_report,
+    )
+    .await?;
+    Ok(match sync {
+        CtagSync::Unchanged(next) => {
+            ScopeSync::new(SyncUpdate::delta(Vec::new(), Vec::new()), next)
+        }
+        CtagSync::Changed { members, next } => ScopeSync::new(
+            build_update(&members, collection_href, calendar, true),
+            next,
+        ),
+    })
 }
 
 /// Issues one `sync-collection` REPORT and parses the multistatus body.
@@ -86,6 +132,7 @@ async fn report(
 /// whole pass), consistent with the per-resource degrade elsewhere.
 fn build_update(
     multistatus: &MultiStatus,
+    collection_href: &str,
     calendar: &CalendarId,
     snapshot: bool,
 ) -> SyncUpdate<Event> {
@@ -99,8 +146,15 @@ fn build_update(
             removed.extend(response.hrefs.iter().filter_map(|href| href_key(href)));
             continue;
         }
-        // A response with no calendar-data is the collection itself, not a
-        // resource — skip it.
+        // The collection's own entry is not a member.
+        if same_path(response.href(), collection_href) {
+            continue;
+        }
+        // A member the server listed is present whether or not it can be read: a snapshot's
+        // `present` set is the store's "everything that exists server-side", and anything
+        // missing from it is deleted locally, so an unreadable event must not be. CardDAV
+        // keeps the same rule (`carddav_ops::contact_update`).
+        present.extend(response.hrefs.iter().filter_map(|href| href_key(href)));
         let Some(data) = response.props.get("calendar-data") else {
             continue;
         };
@@ -115,7 +169,9 @@ fn build_update(
         if let Some(etag) = response.props.get("getetag") {
             event.revisions = RevisionTokens::from_etag(ETag::new(etag));
         }
-        present.insert(event.id.key().clone());
+        if let Some(schedule_tag) = response.props.get("schedule-tag") {
+            event.revisions.schedule_tag = Some(ScheduleTag::new(schedule_tag));
+        }
         changed.push(event);
     }
     if snapshot {
@@ -152,6 +208,7 @@ mod tests {
         let exec = replay(vec![ok(include_str!("../tests/fixtures/sync-initial.xml"))]);
         let result = sync_events(
             &exec,
+            &Multigets::default(),
             "/dav/cal/alice%40test.local/default/",
             &calendar(),
             None,
@@ -176,11 +233,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_scheduling_resource_keeps_its_schedule_tag_beside_the_etag() {
+        let fixture = include_str!("../tests/fixtures/sync-initial.xml").replace(
+            "<D:getetag>&quot;1532521015&quot;</D:getetag>",
+            "<D:getetag>&quot;1532521015&quot;</D:getetag><A:schedule-tag>&quot;sched-3&quot;</A:schedule-tag>",
+        );
+        let result = sync_events(
+            &replay(vec![ok(&fixture)]),
+            &Multigets::default(),
+            "/dav/cal/alice%40test.local/default/",
+            &calendar(),
+            None,
+        )
+        .await
+        .unwrap();
+        let SyncUpdate::Snapshot { objects, .. } = result.update else {
+            panic!("expected snapshot");
+        };
+        let meeting = objects
+            .iter()
+            .find(|event| event.uid.as_str() == "meeting-2003@test.local")
+            .unwrap();
+        assert_eq!(
+            meeting
+                .revisions
+                .schedule_tag
+                .as_ref()
+                .map(ScheduleTag::as_str),
+            Some("\"sched-3\"")
+        );
+        assert!(meeting.revisions.etag.is_some());
+    }
+
+    #[tokio::test]
     async fn held_token_yields_an_empty_delta() {
         let exec = replay(vec![ok(include_str!("../tests/fixtures/sync-noop.xml"))]);
         let cursor = SyncState::new("urn:stalwart:davsync:16");
         let result = sync_events(
             &exec,
+            &Multigets::default(),
             "/dav/cal/alice%40test.local/default/",
             &calendar(),
             Some(&cursor),
@@ -194,8 +285,8 @@ mod tests {
         else {
             panic!("expected a delta");
         };
-        assert!(changed.is_empty());
-        assert!(removed.is_empty());
+        assert_eq!(changed.as_slice(), []);
+        assert_eq!(removed.as_slice(), []);
     }
 
     #[tokio::test]
@@ -205,6 +296,7 @@ mod tests {
         let cursor = SyncState::new("urn:stalwart:davsync:16");
         let result = sync_events(
             &exec,
+            &Multigets::default(),
             "/dav/cal/alice%40test.local/default/",
             &calendar(),
             Some(&cursor),
@@ -241,6 +333,7 @@ mod tests {
         let cursor = SyncState::new("stale-token");
         let result = sync_events(
             &exec,
+            &Multigets::default(),
             "/dav/cal/alice%40test.local/default/",
             &calendar(),
             Some(&cursor),
@@ -252,13 +345,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_response_missing_the_sync_token_is_an_error() {
-        // RFC 6578 requires the next sync-token; omitting it must error, not
-        // silently reset the cursor to "" (which would force perpetual snapshots).
+    async fn a_server_without_sync_collection_or_a_ctag_is_an_error() {
+        // An answer without the sync-token RFC 6578 requires sends the pass to the CTag, and a
+        // collection with no CTag either has nothing to sync by: an error, not a cursor of "".
         let body = "<D:multistatus xmlns:D=\"DAV:\"></D:multistatus>";
-        let exec = replay(vec![ok(body)]);
+        let exec = replay(vec![ok(body), ok(body)]);
         let result = sync_events(
             &exec,
+            &Multigets::default(),
             "/dav/cal/alice%40test.local/default/",
             &calendar(),
             None,
@@ -276,6 +370,7 @@ mod tests {
         let exec = replay(vec![ok(body)]);
         let result = sync_events(
             &exec,
+            &Multigets::default(),
             "/dav/cal/alice%40test.local/default/",
             &calendar(),
             None,

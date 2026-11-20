@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    send_retrying,
+    Exchange, send_retrying,
     send_test_support::{Reply, client, recording, scripted},
 };
 
@@ -46,7 +46,7 @@ async fn a_403_the_adapter_recognises_as_a_quota_refusal_is_waited_out() {
     ]);
     let (retry, log) = recording();
     let retry = retry.classifying(quota_classifier());
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 200, "the caller sees success");
@@ -65,7 +65,7 @@ async fn a_403_that_really_is_a_permission_failure_is_handed_straight_back_with_
     let (url, served) = scripted(vec![Reply("403 Forbidden", "", FORBIDDEN)]);
     let (retry, log) = recording();
     let retry = retry.classifying(quota_classifier());
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 403);
@@ -84,7 +84,7 @@ async fn a_status_the_adapter_did_not_claim_is_never_read_at_all() {
     let (url, served) = scripted(vec![Reply("404 Not Found", "", QUOTA)]);
     let (retry, _) = recording();
     let retry = retry.classifying(quota_classifier());
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 404);
@@ -106,7 +106,7 @@ async fn a_classifier_can_add_a_throttle_and_never_take_one_away() {
         CLAIMS_EVERYTHING,
         |_status: u16, _body: &[u8]| None,
     )));
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 200);
@@ -132,7 +132,7 @@ async fn a_wait_the_adapter_read_out_of_the_body_is_treated_as_the_servers_own()
         Some(crate::Throttle::after(Duration::from_secs(3)))
     })));
     let started = tokio::time::Instant::now();
-    send_retrying(client().get(&url), &retry)
+    send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(served.load(Ordering::SeqCst), 2);
@@ -161,7 +161,7 @@ async fn a_quota_window_that_has_just_begun_is_reported_rather_than_slept_on() {
         Some(crate::Throttle::after(Duration::from_secs(50)))
     })));
     let started = tokio::time::Instant::now();
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 403);
@@ -188,7 +188,7 @@ async fn a_reply_put_back_together_keeps_everything_the_adapter_reads_off_it() {
     )]);
     let (retry, _) = recording();
     let retry = retry.classifying(quota_classifier());
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 403);
@@ -210,7 +210,7 @@ async fn a_classified_throttle_that_never_clears_is_handed_back_with_its_body_in
     let (url, served) = scripted(vec![Reply("403 Forbidden", "", QUOTA)]);
     let (retry, log) = recording();
     let retry = retry.classifying(quota_classifier());
-    let response = send_retrying(client().get(&url), &retry)
+    let response = send_retrying(client().get(&url), &retry, Exchange::Ordinary)
         .await
         .expect("sent");
     assert_eq!(response.status().as_u16(), 403);

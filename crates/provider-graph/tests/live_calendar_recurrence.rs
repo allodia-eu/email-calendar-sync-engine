@@ -11,7 +11,7 @@ use core::num::NonZeroU32;
 use common::*;
 use engine_core::{
     calendar::{Frequency, NDay, RecurrenceBound, RecurrenceOverride, RecurrenceRule, Weekday},
-    ids::{CalendarId, Uid},
+    ids::Uid,
     sync::SyncUpdate,
 };
 use engine_provider::{
@@ -32,11 +32,11 @@ async fn live_calendar_creates_a_recurring_event() {
         return;
     };
 
-    let placeholder = CalendarId::try_from("placeholder").unwrap();
-    let calendars = calendar_provider(&token, placeholder)
+    let calendars = calendar_provider(&token)
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };
@@ -46,7 +46,7 @@ async fn live_calendar_creates_a_recurring_event() {
         .expect("a default calendar")
         .id
         .clone();
-    let provider = calendar_provider(&token, calendar_id.clone());
+    let provider = calendar_provider(&token);
 
     // Every Monday, eight times — the shape the product's repeat picker produces, and one
     // Graph states as `weekly` + `numbered` rather than as an RRULE.
@@ -80,7 +80,7 @@ async fn live_calendar_creates_a_recurring_event() {
 
     // Read it back through the adapter's own sync path: what a host would see.
     let events = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &calendar_id, None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {
@@ -126,11 +126,11 @@ async fn live_calendar_changes_and_removes_a_rule() {
         return;
     };
 
-    let placeholder = CalendarId::try_from("placeholder").unwrap();
-    let calendars = calendar_provider(&token, placeholder)
+    let calendars = calendar_provider(&token)
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };
@@ -140,7 +140,7 @@ async fn live_calendar_changes_and_removes_a_rule() {
         .expect("a default calendar")
         .id
         .clone();
-    let provider = calendar_provider(&token, calendar_id.clone());
+    let provider = calendar_provider(&token);
 
     let mut mondays = RecurrenceRule::new(Frequency::Weekly);
     mondays.by_day = vec![NDay {
@@ -201,7 +201,7 @@ async fn live_calendar_changes_and_removes_a_rule() {
             .clone()
     };
     let events = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &calendar_id, None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {
@@ -234,7 +234,7 @@ async fn live_calendar_changes_and_removes_a_rule() {
         .expect("remove the rule");
 
     let events = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &calendar_id, None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {
@@ -273,11 +273,11 @@ async fn live_calendar_removes_one_occurrence_and_keeps_the_series() {
         return;
     };
 
-    let placeholder = CalendarId::try_from("placeholder").unwrap();
-    let calendars = calendar_provider(&token, placeholder)
+    let calendars = calendar_provider(&token)
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };
@@ -287,7 +287,7 @@ async fn live_calendar_removes_one_occurrence_and_keeps_the_series() {
         .expect("a default calendar")
         .id
         .clone();
-    let provider = calendar_provider(&token, calendar_id.clone());
+    let provider = calendar_provider(&token);
 
     let mut mondays = RecurrenceRule::new(Frequency::Weekly);
     mondays.by_day = vec![NDay {
@@ -336,7 +336,7 @@ async fn live_calendar_removes_one_occurrence_and_keeps_the_series() {
         .expect("remove one occurrence");
 
     let events = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &calendar_id, None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {
@@ -383,11 +383,11 @@ async fn live_calendar_edits_one_occurrence_and_leaves_the_series_alone() {
         return;
     };
 
-    let placeholder = CalendarId::try_from("placeholder").unwrap();
-    let calendars = calendar_provider(&token, placeholder)
+    let calendars = calendar_provider(&token)
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };
@@ -397,7 +397,7 @@ async fn live_calendar_edits_one_occurrence_and_leaves_the_series_alone() {
         .expect("a default calendar")
         .id
         .clone();
-    let provider = calendar_provider(&token, calendar_id.clone());
+    let provider = calendar_provider(&token);
 
     let mut mondays = RecurrenceRule::new(Frequency::Weekly);
     mondays.by_day = vec![NDay {
@@ -447,7 +447,7 @@ async fn live_calendar_edits_one_occurrence_and_leaves_the_series_alone() {
         .expect("edit one occurrence");
 
     let events = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &calendar_id, None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {

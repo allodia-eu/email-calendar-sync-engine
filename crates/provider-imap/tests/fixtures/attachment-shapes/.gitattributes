@@ -1,0 +1,3 @@
+# Message bytes as a server received them: CRLF line endings are part of the shape.
+*.eml -text
+*.bodystructure -text

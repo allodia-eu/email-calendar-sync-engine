@@ -9,11 +9,14 @@
 //! adapter precisely because some questions (a scheduling-inbox `PROPFIND`, a `.well-known`
 //! redirect) cannot be asked through a typed calendar API at all.
 
+use std::collections::BTreeMap;
+
 use engine_core::{
-    calendar::Event,
-    ids::AccountId,
+    calendar::{Calendar, Event},
+    ids::{AccountId, CalendarId},
     raw::{RawIcal, RawMime},
     sync::SyncUpdate,
+    version::CollectionTag,
 };
 use engine_ical::{Document, Edit, Edits, LineEdit};
 use engine_provider::{
@@ -29,6 +32,13 @@ fn account() -> AccountId {
     AccountId::try_from("dav-cli").expect("a constant account id is valid")
 }
 
+/// What the tool names itself in every request: this crate, as itself. It is a developer's
+/// tool, so a provider should not read its traffic as an application's.
+pub(crate) fn user_agent() -> provider_caldav::UserAgent {
+    provider_caldav::UserAgent::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+        .expect("the crate's name and version are tokens")
+}
+
 /// Connects and discovers, printing what the adapter concluded about the server.
 ///
 /// The capability line is the first thing worth knowing about an unfamiliar server, and it
@@ -42,9 +52,10 @@ pub(crate) async fn connect(profile: &Profile) -> Result<CalDavProvider, String>
             username: profile.user.clone(),
             password: profile.pass.clone(),
         },
+        user_agent(),
     );
-    if let Some(calendar) = &profile.calendar {
-        config = config.with_calendar(calendar.clone());
+    if let Some(start) = &profile.start {
+        config = config.with_discovery_path(start.clone());
     }
     CalDavProvider::connect(config)
         .await
@@ -54,6 +65,10 @@ pub(crate) async fn connect(profile: &Profile) -> Result<CalDavProvider, String>
 /// Prints what discovery learned: the capabilities that decide what the other commands can do.
 pub(crate) fn describe(provider: &CalDavProvider) {
     let capabilities = provider.connection_info().capabilities;
+    println!(
+        "  principal           {}   (what a host stores; pass it to --start)",
+        provider.principal_url().unwrap_or("(none named)")
+    );
     println!("  calendars           {}", capabilities.calendars());
     println!("  calendar writes     {}", capabilities.calendar_writes());
     println!(
@@ -69,10 +84,85 @@ pub(crate) fn describe(provider: &CalDavProvider) {
     }
 }
 
-/// Every event on the bound collection, as the server currently stores it.
-pub(crate) async fn events(provider: &CalDavProvider) -> Result<Vec<Event>, String> {
+/// The tag the listing showed for each calendar, keyed by its id.
+pub(crate) type Tags = BTreeMap<CalendarId, CollectionTag>;
+
+/// Every calendar under the home, as the listing reports it, with the tags it showed.
+pub(crate) async fn calendars(provider: &CalDavProvider) -> Result<(Vec<Calendar>, Tags), String> {
+    let listed = provider
+        .sync_calendars(&account(), None)
+        .await
+        .map_err(|err| format!("listing calendars failed: {err}"))?;
+    let calendars = match listed.sync.update {
+        SyncUpdate::Snapshot { objects, .. } => objects,
+        SyncUpdate::Delta { changed, .. } => changed,
+    };
+    Ok((calendars, listed.tags))
+}
+
+/// One line per calendar: its href, name, whether this account may write to it, and the tag
+/// a sync compares to decide whether to ask it anything.
+pub(crate) fn print_calendars(calendars: &[Calendar], tags: &Tags) {
+    println!("{} calendar(s):\n", calendars.len());
+    for calendar in calendars {
+        println!("  {}", calendar.name);
+        println!("    href       {}", calendar.id.as_str());
+        println!("    writable   {}", calendar.access.may_write);
+        println!(
+            "    tag        {}",
+            tags.get(&calendar.id)
+                .map_or("(none: every sync asks)", CollectionTag::as_str)
+        );
+        println!();
+    }
+}
+
+/// The calendar the event commands act on: the one `--calendar` names (its href, the last
+/// segment of its href, or its display name), otherwise one called `default`, otherwise the
+/// first listed.
+pub(crate) async fn calendar(
+    provider: &CalDavProvider,
+    profile: &Profile,
+) -> Result<CalendarId, String> {
+    let (calendars, _) = calendars(provider).await?;
+    let named = |wanted: &str| {
+        calendars.iter().find(|calendar| {
+            let href = calendar.id.as_str();
+            href == wanted
+                || href.trim_end_matches('/').rsplit('/').next() == Some(wanted)
+                || calendar.name == wanted
+        })
+    };
+    let found = match &profile.calendar {
+        Some(wanted) => named(wanted).ok_or_else(|| {
+            let listed: Vec<&str> = calendars.iter().map(|c| c.id.as_str()).collect();
+            format!("no calendar {wanted:?}; this account has {listed:?}")
+        })?,
+        None => named("default")
+            .or_else(|| calendars.first())
+            .ok_or("this account lists no calendar")?,
+    };
+    Ok(found.id.clone())
+}
+
+/// Every event on `calendar`, as the server currently stores it.
+pub(crate) async fn events(
+    provider: &CalDavProvider,
+    calendar: &CalendarId,
+) -> Result<Vec<Event>, String> {
+    // CalDAV reads a calendar whole and ignores the window; it is wide for a transport that would
+    // not.
+    let whole = engine_core::time::Horizon::new(
+        "1900-01-01T00:00:00Z"
+            .parse()
+            .map_err(|_| "a valid instant")?,
+        "2200-01-01T00:00:00Z"
+            .parse()
+            .map_err(|_| "a valid instant")?,
+    )
+    .map_err(|err| err.to_string())?;
     let synced = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), calendar, None, whole)
         .await
         .map_err(|err| format!("sync failed: {err}"))?;
     Ok(match synced.update {
@@ -175,10 +265,14 @@ pub(crate) async fn rsvp(
 ///
 /// `If-None-Match: *` rather than an unconditional write: the interesting failure is
 /// something already being there, and an unconditional `PUT` would overwrite it silently.
-pub(crate) async fn store(provider: &CalDavProvider, path: &str) -> Result<(), String> {
+pub(crate) async fn store(
+    provider: &CalDavProvider,
+    calendar: &CalendarId,
+    path: &str,
+) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|err| format!("cannot read {path}: {err}"))?;
     let text = if starts_with_calendar(&bytes) {
-        String::from_utf8_lossy(&bytes).into_owned()
+        String::from_utf8_lossy_owned(bytes)
     } else {
         engine_mime::extract_calendar_part(&RawMime::new(bytes))
             .ok_or_else(|| format!("no text/calendar part in {path}"))?
@@ -191,7 +285,7 @@ pub(crate) async fn store(provider: &CalDavProvider, path: &str) -> Result<(), S
     let stored = strip_method(&text);
 
     let href = provider
-        .event_href(&uid)
+        .event_href(calendar, &uid)
         .map_err(|err| format!("cannot mint an href for this UID: {err}"))?;
     println!("uid       {}", uid.as_str());
     println!("href      {}", href.as_str());

@@ -127,6 +127,7 @@ async fn live_a_jmap_concurrency_refusal_is_waited_out_rather_than_returned() {
         let config = JmapConfig::new(
             format!("http://{}", harness.http_addr),
             Credentials::basic(&harness.account, &harness.password),
+            engine_http::test_server::user_agent(),
         )
         .with_retry(RetryConfig::default().with_observer(Arc::clone(&observer)));
         providers.push(JmapProvider::connect(config).await.expect("connect"));

@@ -19,8 +19,9 @@
 
 use engine_core::{
     calendar::{
-        Calendar, Event, EventStatus, FreeBusyStatus, Location, Participant, ParticipantKind,
-        ParticipantRole, ParticipationStatus, Privacy, VirtualLocation,
+        Calendar, CalendarAccess, ConferenceService, DetectionSources, Event, EventStatus,
+        FreeBusyStatus, Location, Participant, ParticipantKind, ParticipantRole,
+        ParticipationStatus, Privacy, add_detected,
     },
     ids::{CalendarId, EventId, Uid},
     membership::Memberships,
@@ -30,13 +31,14 @@ use engine_core::{
 use serde_json::Value;
 
 use crate::{
+    cal_conference,
     cal_recur::parse_recurrence,
     error::GraphError,
     json::{bool_field, datetime, opt_str, req_str, wrap_id},
 };
 
 /// The namespaced key under which the whole raw Graph event JSON is preserved.
-const RAW_EVENT_KEY: &str = "microsoft.graph/event";
+pub(crate) const RAW_EVENT_KEY: &str = "microsoft.graph/event";
 
 /// The event's cross-system [`Uid`] — Graph reports it under **two** names that hold
 /// different values, and only one of them is the `UID` the rest of the world uses.
@@ -77,12 +79,34 @@ pub(crate) fn calendar_from_json(value: &Value) -> Result<Calendar, GraphError> 
         .or_else(|| opt_str(value, "color").filter(|c| *c != "auto"))
         .map(str::to_owned);
     calendar.is_default = bool_field(value, "isDefaultCalendar");
+    // `canEdit` is the signed-in user's right to change the calendar's events. Graph sends it on
+    // every calendar; one without it keeps the owner's access, the model's default.
+    if value.get("canEdit").and_then(Value::as_bool) == Some(false) {
+        calendar.access = CalendarAccess::reader();
+    }
     calendar.owner = value
         .get("owner")
         .and_then(|o| opt_str(o, "address"))
         .map(str::to_owned);
+    calendar.native_conferences = native_conferences(value);
     calendar.revisions = revisions(value);
     Ok(calendar)
+}
+
+/// The meetings the calendar's server makes itself, from `allowedOnlineMeetingProviders`.
+///
+/// Only `teamsForBusiness` makes one: `skypeForBusiness` and `skypeForConsumer` name retired
+/// services, and `unknown` (what a personal account lists) names none.
+fn native_conferences(value: &Value) -> Vec<ConferenceService> {
+    let lists_teams = value
+        .get("allowedOnlineMeetingProviders")
+        .and_then(Value::as_array)
+        .is_some_and(|providers| providers.iter().any(|p| p == "teamsForBusiness"));
+    if lists_teams {
+        vec![ConferenceService::Teams]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Normalizes one Graph `event` (`seriesMaster` or `singleInstance`) into an [`Event`]
@@ -131,7 +155,20 @@ pub(crate) fn event_from_json(value: &Value, calendar: &CalendarId) -> Result<Ev
     event.recurrence = parse_recurrence(value)?;
     event.participants = participants(value);
     event.locations = locations(value);
-    event.virtual_locations = virtual_locations(value);
+    event.conferences = cal_conference::conferences(value);
+    // The whole body, not the preview the description falls back to: an HTML body holds
+    // its links in `href`s the preview leaves out.
+    add_detected(
+        &mut event.conferences,
+        &DetectionSources {
+            locations: &event.locations,
+            description: value
+                .get("body")
+                .and_then(|body| opt_str(body, "content"))
+                .or(event.description.as_deref()),
+            ..DetectionSources::default()
+        },
+    );
     event.categories = value
         .get("categories")
         .and_then(Value::as_array)
@@ -182,8 +219,8 @@ fn resolve_zone(name: &str) -> Result<TimeZoneId, GraphError> {
     resolve_zone_name(name).map_err(|e| GraphError::protocol(format!("bad zone {name:?}: {e}")))
 }
 
-/// The event description: the plain-text `body` when Graph sent text, else the
-/// server-computed `bodyPreview`.
+/// The event description: the `body` when Graph sent it as text, which the sync asks for
+/// ([`crate::cal_fetch`]), else the server-computed `bodyPreview`, cut at 255 characters.
 fn description(value: &Value) -> Option<String> {
     let body = value.get("body");
     let text = if body.and_then(|b| opt_str(b, "contentType")) == Some("text") {
@@ -282,7 +319,8 @@ fn address(email: &Value) -> Option<(String, Option<String>)> {
     Some((addr.to_owned(), opt_str(email, "name").map(str::to_owned)))
 }
 
-/// The physical `locations` (falling back to the singular `location`).
+/// The physical `locations` (falling back to the singular `location`), without the one
+/// Exchange adds to an online meeting ([`cal_conference::is_placeholder`]).
 fn locations(value: &Value) -> Vec<Location> {
     let array = value.get("locations").and_then(Value::as_array);
     let items: Vec<&Value> = match array {
@@ -291,6 +329,7 @@ fn locations(value: &Value) -> Vec<Location> {
     };
     items
         .into_iter()
+        .filter(|loc| !cal_conference::is_placeholder(value, loc))
         .filter_map(|loc| {
             let name = opt_str(loc, "displayName").filter(|n| !n.is_empty())?;
             let mut location = Location::named(name);
@@ -306,16 +345,6 @@ fn coordinates(loc: &Value) -> Option<String> {
     let lat = coords.get("latitude").and_then(Value::as_f64)?;
     let lon = coords.get("longitude").and_then(Value::as_f64)?;
     Some(format!("geo:{lat},{lon}"))
-}
-
-/// The online-meeting join URL as a virtual location, when the event is an online meeting.
-fn virtual_locations(value: &Value) -> Vec<VirtualLocation> {
-    value
-        .get("onlineMeeting")
-        .and_then(|m| opt_str(m, "joinUrl"))
-        .filter(|u| !u.is_empty())
-        .map(|uri| vec![VirtualLocation::new(uri)])
-        .unwrap_or_default()
 }
 
 /// The revision tokens Graph supplies: the `@odata.etag` and the `changeKey`.

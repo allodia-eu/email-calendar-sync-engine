@@ -1,14 +1,15 @@
 //! Outbound mail submission shapes.
 
-use core::fmt;
 use std::collections::BTreeSet;
 
 use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Keyword},
+    mail::{EmailAddress, Importance, Keyword},
     scheduling::ScheduleMethod,
 };
 use serde::{Deserialize, Serialize};
+
+pub use crate::content_id::{ContentIdError, ContentIdHeader};
 
 /// A mail message to send.
 ///
@@ -73,6 +74,12 @@ pub struct Draft {
     /// Defaulted so a payload serialized before this field still deserializes.
     #[serde(default)]
     pub sent_copy_keywords: BTreeSet<Keyword>,
+    /// The importance the sender gives the message (RFC 2156 §5.3). Anything but
+    /// [`Normal`](Importance::Normal) is written as `Importance` and `X-Priority`, on what the
+    /// recipients receive and on every stored copy; normal writes neither, which is what their
+    /// absence means. Defaulted so a payload serialized before this field still deserializes.
+    #[serde(default)]
+    pub importance: Importance,
 }
 
 impl Draft {
@@ -102,6 +109,7 @@ impl Draft {
             in_reply_to: None,
             references: Vec::new(),
             sent_copy_keywords: BTreeSet::new(),
+            importance: Importance::Normal,
         }
     }
 
@@ -182,6 +190,13 @@ impl Draft {
         self
     }
 
+    /// Sets the importance the message is sent with ([`Self::importance`]).
+    #[must_use]
+    pub fn with_importance(mut self, importance: Importance) -> Self {
+        self.importance = importance;
+        self
+    }
+
     /// Asks for `keyword` on the sender's filed copy ([`Self::sent_copy_keywords`]).
     #[must_use]
     pub fn with_sent_copy_keyword(mut self, keyword: Keyword) -> Self {
@@ -227,84 +242,6 @@ impl DraftCalendar {
         }
     }
 }
-
-/// A validated `Content-ID` header value without surrounding angle brackets.
-///
-/// The type keeps inline-image references distinct from arbitrary strings and
-/// prevents the characters that would break the header boundary.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct ContentIdHeader(Box<str>);
-
-impl ContentIdHeader {
-    /// Builds a content id value without surrounding angle brackets.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ContentIdError`] when the value is empty or contains a character
-    /// that cannot be safely placed inside a `Content-ID` header.
-    pub fn new(value: impl Into<String>) -> Result<Self, ContentIdError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(ContentIdError::Empty);
-        }
-        if value
-            .bytes()
-            .any(|b| matches!(b, b'\r' | b'\n' | b'\0' | b'<' | b'>'))
-        {
-            return Err(ContentIdError::ForbiddenCharacter);
-        }
-        Ok(Self(value.into_boxed_str()))
-    }
-
-    /// Returns the header value without surrounding angle brackets.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for ContentIdHeader {
-    type Error = ContentIdError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl From<ContentIdHeader> for String {
-    fn from(value: ContentIdHeader) -> Self {
-        value.0.into()
-    }
-}
-
-impl fmt::Display for ContentIdHeader {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Why a `Content-ID` header value was rejected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContentIdError {
-    /// The value was empty.
-    Empty,
-    /// The value contained CR, LF, NUL, `<`, or `>`.
-    ForbiddenCharacter,
-}
-
-impl fmt::Display for ContentIdError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => f.write_str("content id must not be empty"),
-            Self::ForbiddenCharacter => {
-                f.write_str("content id contains a forbidden character (CR, LF, NUL, '<', or '>')")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ContentIdError {}
 
 /// Whether a draft attachment is a regular attachment or an inline related part.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -443,8 +380,19 @@ pub struct SubmissionReceipt {
 
 impl SubmissionReceipt {
     /// Records a submission whose sent copy **was** filed in the account's Sent folder.
+    ///
+    /// `handed_over` is the proof the attempt recorded its hand-over ([`HandOver`]): a
+    /// receipt says a message was delivered, and none can be made by an attempt that never
+    /// recorded it might be.
+    ///
+    /// [`HandOver`]: crate::HandOver
     #[must_use]
-    pub fn filed(email_key: ProviderKey, message_id: MessageIdHeader) -> Self {
+    pub fn filed(
+        email_key: ProviderKey,
+        message_id: MessageIdHeader,
+        handed_over: &crate::HandedOver,
+    ) -> Self {
+        let _ = handed_over;
         Self {
             email_key,
             message_id,
@@ -455,13 +403,15 @@ impl SubmissionReceipt {
 
     /// Records a submission that was **delivered but whose sent copy was not filed**, with
     /// `detail` explaining why. The message is still sent: a caller surfaces this, and never
-    /// retries the submission.
+    /// retries the submission. `handed_over` as for [`filed`](Self::filed).
     #[must_use]
     pub fn unfiled(
         email_key: ProviderKey,
         message_id: MessageIdHeader,
         detail: impl Into<String>,
+        handed_over: &crate::HandedOver,
     ) -> Self {
+        let _ = handed_over;
         Self {
             email_key,
             message_id,

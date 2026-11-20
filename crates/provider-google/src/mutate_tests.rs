@@ -16,7 +16,7 @@ use crate::{
     normalize::ALL_MAIL_ID,
     test_support::{
         capturing_replay_server, capturing_server, fake_client, fake_client_fallible, json, retry,
-        tls,
+        tls, user_agent,
     },
 };
 
@@ -67,7 +67,7 @@ async fn mark_read_removes_unread_and_flag_adds_starred() {
 async fn mark_read_body_removes_unread_over_the_real_transport() {
     // Drive the REAL reqwest transport at a capturing server and assert the modify body.
     let (base, rx) = capturing_server("200 OK", r#"{"id":"message-1"}"#);
-    let client = GoogleClient::with_base("tok", base, tls(), &retry()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), &retry(), &user_agent()).unwrap();
     edit(
         &client,
         &MailEdit::mark_seen(key("message-1"), true),
@@ -100,7 +100,7 @@ async fn mark_read_body_removes_unread_over_the_real_transport() {
 #[tokio::test]
 async fn mark_unread_adds_unread() {
     let (base, rx) = capturing_server("200 OK", r#"{"id":"message-1"}"#);
-    let client = GoogleClient::with_base("tok", base, tls(), &retry()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), &retry(), &user_agent()).unwrap();
     edit(
         &client,
         &MailEdit::mark_seen(key("message-1"), false),
@@ -119,7 +119,7 @@ async fn mark_unread_adds_unread() {
 async fn move_to_trash_uses_the_trash_endpoint() {
     // Answers with the real captured `messages.trash` body.
     let (base, rx) = capturing_server("200 OK", TRASH);
-    let client = GoogleClient::with_base("tok", base, tls(), &retry()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), &retry(), &user_agent()).unwrap();
     edit(
         &client,
         &MailEdit::move_to(key("message-4"), MailboxId::try_from("TRASH").unwrap()),
@@ -137,7 +137,7 @@ async fn move_to_trash_uses_the_trash_endpoint() {
 #[tokio::test]
 async fn move_to_a_label_replaces_membership_leaving_state_intact() {
     // MoveTo fetches the current labels then replaces: add destination, remove every
-    // other place label (but not UNREAD/STARRED/SENT). The message currently has
+    // other place label (but not UNREAD/STARRED/SENT or a category). The message currently has
     // INBOX + UNREAD + STARRED + CATEGORY_UPDATES.
     let client = fake_client(vec![
         (
@@ -179,7 +179,7 @@ async fn move_to_all_mail_archives_by_removing_place_labels_and_adds_none() {
         ),
         ("/modify", json(MODIFY_ARCHIVED)),
     ]);
-    let client = GoogleClient::with_base("tok", base, tls(), &retry()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), &retry(), &user_agent()).unwrap();
     edit(
         &client,
         &MailEdit::move_to(key("message-4"), MailboxId::try_from(ALL_MAIL_ID).unwrap()),
@@ -199,7 +199,8 @@ async fn move_to_all_mail_archives_by_removing_place_labels_and_adds_none() {
         "archive adds no label: {modify}"
     );
     assert!(!modify.contains(ALL_MAIL_ID), "{modify}");
-    // It leaves the inbox (and its category), but keeps read/flag state.
+    // It leaves the inbox, but keeps read/flag state and its inbox category, which is no place
+    // (`normalize::is_unfiled_label`): Gmail keeps the category on an archived message too.
     let removed: Vec<&str> = body["removeLabelIds"]
         .as_array()
         .unwrap()
@@ -207,7 +208,7 @@ async fn move_to_all_mail_archives_by_removing_place_labels_and_adds_none() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert!(removed.contains(&"INBOX"), "{removed:?}");
-    assert!(removed.contains(&"CATEGORY_UPDATES"), "{removed:?}");
+    assert!(!removed.contains(&"CATEGORY_UPDATES"), "{removed:?}");
     // Read state and the Sent copy survive the archive — `UNREAD`/`SENT` are system-managed
     // (`UNTOUCHABLE_ON_MOVE`), which the captured response confirms: it comes back holding
     // exactly those two and no `INBOX`.
@@ -220,7 +221,7 @@ async fn move_to_all_mail_archives_by_removing_place_labels_and_adds_none() {
 #[tokio::test]
 async fn permanent_delete_hits_the_delete_endpoint() {
     let (base, rx) = capturing_server("204 No Content", "");
-    let client = GoogleClient::with_base("tok", base, tls(), &retry()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), &retry(), &user_agent()).unwrap();
     edit(
         &client,
         &MailEdit::delete(key("message-1")),

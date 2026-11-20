@@ -72,7 +72,7 @@ where
 ///   the caller re-syncs before retrying.
 /// - A classified [`ProviderError`] from the underlying IMAP command on failure, a
 ///   [`Retryable`](FailureClass::Retryable) one when the server went silent mid-body for
-///   [`BODY_READ_STALL`](crate::transport_read::BODY_READ_STALL).
+///   [`Deadlines::stall`](engine_provider::Deadlines::stall).
 pub(crate) async fn fetch_message_source<S>(
     connection: &mut Connection<S>,
     key: &ProviderKey,

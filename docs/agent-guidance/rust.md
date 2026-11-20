@@ -80,10 +80,64 @@ Two things this deliberately does **not** break, both verified rather than assum
 Need a real debugger? `cargo build --profile debugger` gets full info, and lands in
 `target/debugger/` so it doesn't evict the warm `debug/` cache.
 
-If the loop still drags on Windows, two per-machine wins that must **not** be committed (they are
-true of one box, not of a contributor's or a runner's): link with `lld-link.exe` via a
-`.cargo/config.toml` in a parent directory of the checkout, and give worktrees a shared
-`CARGO_TARGET_DIR`. Both are described in the product core's `docs/debugging.md`.
+If the loop still drags on Windows, one per-machine win that must **not** be committed (it is true
+of one box, not of a contributor's or a runner's): link with `lld-link.exe` via a
+`.cargo/config.toml` in a parent directory of the checkout, as the product core's
+`docs/debugging.md` describes.
+
+### Worktrees each build their own `target/`
+
+A `.claude/worktrees/*` checkout is a separate Cargo workspace and builds in a `target/` of its
+own: its first build compiles the whole dependency tree, and it holds several GB from then on.
+Removing the worktree removes its build with it.
+
+Do not point checkouts at one shared directory to save that, by `build-dir` or `CARGO_TARGET_DIR`.
+This repository did, and stopped. Cargo names a workspace crate's artifact, and the fingerprint
+guarding it, from the workspace-relative path, so every checkout collides on one entry and
+freshness comes down to mtimes against a relative file list: a checkout whose sources predate
+another checkout's last build is handed that checkout's binary, and a suite reports `ok` for an
+assertion this tree cannot satisfy. Keeping that safe took a claim-and-clean step in front of the
+gate that rebuilt this repository's crates on every switch and covered nothing typed by hand.
+
+### Share the compile work with kache
+
+Sharing the work between worktrees is a compiler cache's job, and only one that keys on content
+with each checkout's paths mapped away helps. [kache](https://github.com/kunobi-ninja/kache) does:
+it maps the workspace, target directory and Cargo home to placeholders before hashing. sccache keys
+on absolute paths, and every rustc call names the build directory, so it misses across worktrees.
+Set kache up once per machine; `kache init` writes the `rustc-wrapper` into your own
+`~/.cargo/config.toml`, which is where it belongs, since a tracked one would break every build
+without it, CI's included:
+
+```sh
+cargo install kache --locked
+kache init
+kache doctor --probe        # compiles a throwaway crate and proves a local hit
+```
+
+Nothing depends on it: a build without it is the same build, only slower.
+
+A cold `cargo build --workspace --all-features` in a fresh `.claude/worktrees/*` worktree, its
+`target/` empty, on Windows arm64 with Defender's real-time scan off:
+
+| | |
+|---|---|
+| no cache (`RUSTC_WRAPPER=`) | 115 s |
+| kache, filled by the main checkout's gate | **51 s**, 145 crates hit, 2 missed |
+
+Two things decide whether a worktree hits:
+
+- **The same cargo configuration.** A worktree under `.claude/worktrees/` also reads the main
+  checkout's [`.cargo/config.toml`](../../.cargo/config.toml), so an array there is passed twice
+  and no hash matches; that file keeps every value a string for that reason.
+- **What kache can cache at all.** On Windows it does not cache a link, so test binaries and
+  executables are linked in every worktree, and MSVC's `cl.exe` passes through, so `ring`'s and
+  bundled SQLite's C is compiled every time. macOS and Linux cache executables and build scripts as
+  well, which is why nothing compiled may carry an absolute path from `env!`
+  ([`.cargo/config.toml`](../../.cargo/config.toml) says how to read one instead).
+
+When a result cannot be squared with the diff, rule the cache out by running that build with
+`RUSTC_WRAPPER=` set to nothing. `kache explain <crate>` says why a crate missed.
 
 ## Measuring at scale
 

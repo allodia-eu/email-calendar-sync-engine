@@ -2,14 +2,17 @@
 //! fixtures under `tests/fixtures/calendar/`.
 
 use engine_core::calendar::{
-    EventStatus, FreeBusyStatus, Frequency, ParticipantRole, ParticipationStatus, RecurrenceBound,
-    RecurrenceOverride,
+    ConferenceOrigin, ConferenceService, ConferenceUri, DetectedIn, EventStatus, FreeBusyStatus,
+    Frequency, ParticipantRole, ParticipationStatus, RecurrenceBound, RecurrenceOverride,
 };
 use serde_json::Value;
 
 use super::*;
 
 const CALENDARS: &str = include_str!("../tests/fixtures/calendar/calendars.json");
+/// Four calendars another account shared with this one, one per role, as its `calendarList`
+/// returned them (`live_calendar_roles.rs`, which also records what each role really allowed).
+const SHARED_ROLES: &str = include_str!("../tests/fixtures/calendar/calendars_shared_roles.json");
 const SINGLE: &str = include_str!("../tests/fixtures/calendar/event_single.json");
 const RECURRING: &str = include_str!("../tests/fixtures/calendar/event_recurring_master.json");
 const ALLDAY: &str = include_str!("../tests/fixtures/calendar/event_allday.json");
@@ -49,6 +52,94 @@ fn calendar_list_maps_primary_and_reader_roles() {
     let holiday = calendars.iter().find(|c| !c.is_default).unwrap();
     assert!(!holiday.access.may_write);
     assert!(holiday.owner.is_none());
+}
+
+#[test]
+fn each_access_role_maps_to_the_grant_it_names() {
+    let owner = access_role(Some("owner"));
+    assert!(owner.may_read && owner.may_write && owner.may_share && owner.may_delete);
+
+    // A writer edits events but does not own the calendar: it cannot re-share or delete it.
+    // `writerWithoutPrivateAccess` differs only in hidden private-event details.
+    for role in ["writer", "writerWithoutPrivateAccess"] {
+        let writer = access_role(Some(role));
+        assert!(
+            writer.may_read && writer.may_write && writer.may_rsvp,
+            "{role}"
+        );
+        assert!(!writer.may_share && !writer.may_delete, "{role}");
+    }
+
+    let reader = access_role(Some("reader"));
+    assert!(reader.may_read && !reader.may_write);
+
+    // The privacy-relevant one: busy times, never the events themselves.
+    let free_busy = access_role(Some("freeBusyReader"));
+    assert!(!free_busy.may_read && free_busy.may_read_free_busy);
+    assert!(!free_busy.may_write && !free_busy.may_rsvp);
+
+    // Absent or unknown reads as visible-but-immutable: a capability hidden rather than a
+    // rejected write invited.
+    for unknown in [None, Some("somethingNew")] {
+        let fallback = access_role(unknown);
+        assert!(fallback.may_read && !fallback.may_write);
+    }
+}
+
+#[test]
+fn a_calendar_that_allows_meet_makes_meet_meetings() {
+    // Every captured calendar, the primary and the shared ones alike, lists `hangoutsMeet`.
+    let doc: Value = serde_json::from_str(CALENDARS).unwrap();
+    for entry in doc["items"].as_array().unwrap() {
+        let calendar = calendar_from_json(entry).unwrap();
+        assert_eq!(calendar.native_conferences, [ConferenceService::GoogleMeet]);
+    }
+}
+
+#[test]
+fn a_calendar_without_meet_makes_no_meeting() {
+    // A Workspace admin can switch Meet off, and the classic Hangouts types are retired.
+    let doc: Value = serde_json::from_str(CALENDARS).unwrap();
+    let mut entry = doc["items"][0].clone();
+    entry["conferenceProperties"]["allowedConferenceSolutionTypes"] =
+        serde_json::json!(["eventHangout", "eventNamedHangout"]);
+    assert_eq!(calendar_from_json(&entry).unwrap().native_conferences, []);
+    entry
+        .as_object_mut()
+        .unwrap()
+        .remove("conferenceProperties");
+    assert_eq!(calendar_from_json(&entry).unwrap().native_conferences, []);
+}
+
+#[test]
+fn a_calendar_shared_with_the_account_reads_as_what_its_role_was_seen_to_allow() {
+    // Each expectation is what Google let the grantee do, probed live on the calendar these
+    // entries came from: read an event's details, add one, re-share, delete the calendar, see
+    // its busy time. A writer's entry also names the owner (`dataOwner`); a reader's does not.
+    let doc: Value = serde_json::from_str(SHARED_ROLES).unwrap();
+    let seen = [
+        ("writer", [true, true, false, false, true]),
+        (
+            "writerWithoutPrivateAccess",
+            [true, true, false, false, true],
+        ),
+        ("reader", [true, false, false, false, true]),
+        ("freeBusyReader", [false, false, false, false, true]),
+    ];
+    let items = doc["items"].as_array().unwrap();
+    assert_eq!(items.len(), seen.len());
+    for (entry, (role, allowed)) in items.iter().zip(seen) {
+        assert_eq!(entry["accessRole"], role);
+        let access = calendar_from_json(entry).unwrap().access;
+        let mapped = [
+            access.may_read,
+            access.may_write,
+            access.may_share,
+            access.may_delete,
+            access.may_read_free_busy,
+        ];
+        assert_eq!(mapped, allowed, "{role}");
+    }
 }
 
 #[test]
@@ -112,10 +203,50 @@ fn all_day_event_is_a_zoneless_date() {
 }
 
 #[test]
-fn meet_event_projects_the_join_link_as_a_virtual_location() {
+fn meet_event_projects_its_conference() {
     let event = event(MEET);
-    assert_eq!(event.virtual_locations.len(), 1);
-    assert!(event.virtual_locations[0].uri.contains("meet.google.com"));
+    assert_eq!(event.conferences.len(), 1);
+    assert!(
+        event.conferences[0]
+            .join()
+            .unwrap()
+            .as_str()
+            .contains("meet.google.com")
+    );
+}
+
+#[test]
+fn a_meeting_named_only_in_the_location_or_description_is_detected() {
+    let json = serde_json::json!({
+        "id": "evt-1", "iCalUID": "evt-1@example.com", "summary": "Pasted",
+        "start": { "dateTime": "2026-08-03T10:00:00+02:00", "timeZone": "Europe/Amsterdam" },
+        "end": { "dateTime": "2026-08-03T11:00:00+02:00", "timeZone": "Europe/Amsterdam" },
+        "location": "https://video.example.com/room-12",
+        "description": "<a href=\"https://teams.microsoft.com/meet/123?p=x\">Join</a>"
+    });
+    let event = event_from_json(&json, &calendar(), None).unwrap();
+    let found: Vec<_> = event
+        .conferences
+        .iter()
+        .map(|c| (c.join().map(ConferenceUri::as_str), c.origin))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (
+                Some("https://video.example.com/room-12"),
+                ConferenceOrigin::Detected {
+                    place: DetectedIn::Location
+                }
+            ),
+            (
+                Some("https://teams.microsoft.com/meet/123?p=x"),
+                ConferenceOrigin::Detected {
+                    place: DetectedIn::Description
+                }
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -201,7 +332,7 @@ fn optional_and_resource_attendees_transparency_and_visibility_map() {
 
 #[test]
 fn a_confidential_event_is_secret_and_meet_falls_back_to_an_entry_point() {
-    // No hangoutLink, but a conferenceData video entry point → still a virtual location.
+    // No hangoutLink, but a conferenceData video entry point → still a conference.
     let json = serde_json::json!({
         "id": "e", "summary": "Conf", "visibility": "confidential",
         "start": { "dateTime": "2026-08-03T10:00:00+02:00", "timeZone": "Europe/Amsterdam" },
@@ -213,11 +344,10 @@ fn a_confidential_event_is_secret_and_meet_falls_back_to_an_entry_point() {
     });
     let event = event_from_json(&json, &calendar(), None).unwrap();
     assert_eq!(event.privacy, engine_core::calendar::Privacy::Secret);
-    assert_eq!(event.virtual_locations.len(), 1);
-    assert!(
-        event.virtual_locations[0]
-            .uri
-            .contains("meet.google.com/xyz")
+    assert_eq!(event.conferences.len(), 1);
+    assert_eq!(
+        event.conferences[0].join().map(ConferenceUri::as_str),
+        Some("https://meet.google.com/xyz")
     );
 }
 

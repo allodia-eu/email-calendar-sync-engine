@@ -27,7 +27,7 @@ fn single_event_materializes_one_occurrence() {
 fn cancelled_event_materializes_nothing() {
     let mut ev = event(utc("2026-06-01T09:00:00"));
     ev.status = EventStatus::Cancelled;
-    assert!(expand_ok(&ev, wide()).is_empty());
+    assert_eq!(expand_ok(&ev, wide()), []);
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn event_outside_the_horizon_is_not_materialized() {
         instant("2028-01-01T00:00:00Z"),
     )
     .unwrap();
-    assert!(expand_ok(&ev, horizon).is_empty());
+    assert_eq!(expand_ok(&ev, horizon), []);
 }
 
 // --- floating vs all-day (calendar-semantics required test) --------------

@@ -1,8 +1,10 @@
-//! The mail row and the message-id graph: schema steps v8 through v10.
+//! The mail row and the message-id graph: schema steps v8 through v10, v17 and v21; and v18, the
+//! instants every table stores.
 //!
 //! Split from [`super`], which holds the base store, the search layer and the calendar steps.
-//! These three are one story — a message's mutable half becoming a table, and the graph its
-//! conversation is a component of — and they are the steps a mail change touches.
+//! These are one story — a message's mutable half becoming a table, the graph its conversation
+//! is a component of, and the keywords it shows while a change to them is queued — and they are
+//! the steps a mail change touches.
 
 /// Migration v8: the thread lookup `mail_index` never had.
 ///
@@ -123,4 +125,62 @@ CREATE TABLE msgid_ref (
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX msgid_ref_lookup ON msgid_ref (account, msgid);
+";
+
+/// Migration v17: the keywords a message shows while a change to them is queued.
+///
+/// A queued op carries the [`KeywordEdit`](engine_core::write::KeywordEdit) it makes
+/// (`pending_op.keyword_edit`, JSON), which the store applies to the message the moment the op is
+/// queued. `server_keywords` holds, for a message with such an op still unsettled, the keyword set
+/// the server last reported: a sync replaces it, an accepted change joins it, and the message row
+/// shows it with every unsettled change applied. `pending_op.settled_at` records when an op
+/// settled, so a sync pass that began before an accepted change landed cannot undo it on screen.
+///
+/// Nothing to fill: no op queued before v17 carries a change, and so no message has a server set
+/// to keep.
+pub(crate) const V17: &str = "\
+ALTER TABLE pending_op ADD COLUMN keyword_edit TEXT;
+ALTER TABLE pending_op ADD COLUMN settled_at TEXT;
+CREATE TABLE server_keywords (
+    account      TEXT NOT NULL,
+    provider_key TEXT NOT NULL,
+    keywords     TEXT NOT NULL,
+    PRIMARY KEY (account, provider_key)
+) STRICT, WITHOUT ROWID;
+";
+
+/// Migration v18: every stored instant in its fixed-width form,
+/// [`UtcDateTime::to_sortable_string`](engine_core::time::UtcDateTime::to_sortable_string).
+///
+/// No DDL: the step is the rewrite in [`crate::backfill::fixed_width_instants`], which commits with
+/// it. The form a store wrote before dropped a zero fraction and trailing zeros, and so did not
+/// sort as text within one second.
+pub(crate) const V18: &str = "";
+
+/// Migration v21: `source_attachment` — whether a message carries a download, as its own source
+/// says.
+///
+/// A provider's `has_attachment` is a guess made without the bytes (Gmail's metadata read has no
+/// parts tree; a server's own rule need not count what the opened message lists). Reading the
+/// source settles it, and a key's source never changes, so the answer is kept apart from the row
+/// a sync rewrites: `derived_ops::upsert_message` takes it in place of the value a sync carries.
+/// Keyed by `(account, provider_key)` like the body caches, since a body is read without a scope.
+///
+/// No backfill: it fills as sources are read, by an open or the warming pass.
+pub(crate) const V21: &str = "\
+CREATE TABLE source_attachment (
+    account        TEXT    NOT NULL,
+    provider_key   TEXT    NOT NULL,
+    has_attachment INTEGER NOT NULL,
+    PRIMARY KEY (account, provider_key)
+) STRICT, WITHOUT ROWID;
+";
+
+/// Migration v22: `message.importance`, the importance the sender stated, as its RFC 2156 token
+/// (`low`, `normal`, `high`).
+///
+/// A list row draws it, so it sits in the row rather than only in the payload. No backfill: a row
+/// written before reads `normal` until `NORMALIZER_VERSION` 16's re-snapshot rewrites it.
+pub(crate) const V22: &str = "\
+ALTER TABLE message ADD COLUMN importance TEXT NOT NULL DEFAULT 'normal';
 ";

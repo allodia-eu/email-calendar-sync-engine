@@ -35,6 +35,14 @@ pub(in crate::contract) async fn expired_op_lease_is_rejected<S: Store + StoreRe
     let old_lease = claimed_old[0].lease.clone();
 
     clock.advance(Duration::from_secs(90)); // the op lease expires
+    // The claim recovers the dead attempt first: an interrupted edit is a retryable failure,
+    // so it backs off before it runs again.
+    let backing_off = store
+        .claim_pending_ops(account.clone(), lease_request("worker-new", 30), 10)
+        .await
+        .unwrap();
+    assert_eq!(backing_off, []);
+    clock.advance(crate::retry_delay(1, None));
     let claimed_new = store
         .claim_pending_ops(account.clone(), lease_request("worker-new", 30), 10)
         .await
@@ -109,7 +117,7 @@ pub(in crate::contract) async fn claim_filters_dependencies_and_resources<S: Sto
         .claim_pending_ops(account.clone(), lease_request("worker", 30), 10)
         .await
         .unwrap();
-    assert!(blocked.is_empty());
+    assert_eq!(blocked, []);
 
     store
         .mark_pending_op(

@@ -142,23 +142,25 @@ impl fmt::Debug for InlinePart {
     }
 }
 
-/// Stable index of an attachment part inside a parsed raw RFC 5322 message.
+/// The MIME part number of an attachment inside a raw RFC 5322 message.
 ///
-/// The id is derived from the immutable raw source cached for a message, so it is stable
-/// for that source and intentionally scoped to one message. Hosts pass it back when the
-/// user downloads one listed attachment; it is not a provider object id.
+/// Parts are numbered in document order from the message's root (`0`), the parts of nested
+/// messages included. The number follows from the immutable raw source cached for a message
+/// alone, not from how the parts are classified, so it is stable for that source and an id
+/// can only name the part it was listed for. It is scoped to one message: hosts pass it back
+/// when the user downloads one listed attachment; it is not a provider object id.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AttachmentPartId(u32);
 
 impl AttachmentPartId {
-    /// Creates an attachment-part id from the parser's attachment index.
+    /// Creates an attachment-part id from a MIME part number.
     #[must_use]
     pub const fn new(value: u32) -> Self {
         Self(value)
     }
 
-    /// The zero-based parser attachment index.
+    /// The MIME part number, the root part being `0`.
     #[must_use]
     pub const fn as_u32(self) -> u32 {
         self.0

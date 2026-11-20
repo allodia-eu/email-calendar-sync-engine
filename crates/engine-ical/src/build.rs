@@ -3,7 +3,8 @@
 //! This is how CalDAV serializes the neutral [`EventDraft`]: a host states the intent
 //! through the `engine-api` facade, and the adapter renders it as the iCalendar body of a
 //! conditional `PUT` (`caldav.md`). It is deliberately small — enough for a valid create
-//! (`UID`, `DTSTAMP`, `DTSTART`/`DTEND`, `SUMMARY`, optional `DESCRIPTION`).
+//! (`UID`, `DTSTAMP`, `DTSTART`/`DTEND`, `SUMMARY`, optional `DESCRIPTION`, `LOCATION`,
+//! `RRULE`, scheduling and `CONFERENCE` properties).
 //!
 //! It is **only** for a create. Rebuilding a document to *update* an event would delete
 //! every property this function does not emit — the `RRULE`, the attendees, the alarms, the
@@ -20,7 +21,11 @@
 use engine_core::raw::RawIcal;
 use engine_provider::EventDraft;
 
-use super::format::{date_time_line, escape_text, format_utc, strip_control};
+use super::{
+    conference_write::attachment,
+    format::{date_time_line, escape_text, fold_line, format_utc, strip_control},
+    scheduling_write::{attendee_line, organiser_line},
+};
 use crate::error::IcalError;
 
 /// Builds a minimal RFC 5545 `VCALENDAR`/`VEVENT` document for a create `PUT`.
@@ -33,8 +38,14 @@ use crate::error::IcalError;
 /// Returns [`IcalError`] if the draft's recurrence cannot be written as an `RRULE`: a
 /// non-Gregorian rule (which would silently become Gregorian), or a rule ending at a wall
 /// clock on a zoned or UTC event with no resolved instant to render `UNTIL` from — see
-/// [`engine_provider::DraftRecurrence`].
+/// [`engine_provider::DraftRecurrence`]. Also for a meeting the server would have to make
+/// ([`engine_provider::NewConference::Native`]), and one without a web link to join it at.
 pub fn build_event_ical(draft: &EventDraft) -> Result<RawIcal, IcalError> {
+    if let Some(meeting) = &draft.meeting {
+        meeting
+            .validate(None)
+            .map_err(|error| IcalError::new(error.to_string()))?;
+    }
     let mut ical = String::new();
     ical.push_str("BEGIN:VCALENDAR\r\n");
     ical.push_str("VERSION:2.0\r\n");
@@ -51,11 +62,26 @@ pub fn build_event_ical(draft: &EventDraft) -> Result<RawIcal, IcalError> {
     ical.push_str(&date_time_line("DTEND", &draft.end));
     ical.push_str("\r\n");
     push_property(&mut ical, "SUMMARY", &escape_text(&draft.summary));
-    if let Some(description) = &draft.description {
+    let conference = draft
+        .conference
+        .as_ref()
+        .map(|new| attachment(draft.description.as_deref().unwrap_or_default(), new))
+        .transpose()?;
+    let description = conference
+        .as_ref()
+        .map(|conference| conference.notes.as_str())
+        .or(draft.description.as_deref());
+    if let Some(description) = description {
         push_property(&mut ical, "DESCRIPTION", &escape_text(description));
     }
-    if let Some(location) = &draft.location {
+    let location = draft.location.as_deref().or(conference
+        .as_ref()
+        .map(|conference| conference.join.as_str()));
+    if let Some(location) = location {
         push_property(&mut ical, "LOCATION", &escape_text(location));
+    }
+    for line in conference.iter().flat_map(|conference| &conference.lines) {
+        ical.push_str(&fold_line(line, "\r\n"));
     }
     if let Some(recurrence) = &draft.recurrence {
         push_property(
@@ -63,6 +89,12 @@ pub fn build_event_ical(draft: &EventDraft) -> Result<RawIcal, IcalError> {
             "RRULE",
             &crate::patch::rrule_value(recurrence, &draft.start)?,
         );
+    }
+    if let Some(meeting) = &draft.meeting {
+        ical.push_str(&fold_line(&organiser_line(meeting.organiser()), "\r\n"));
+        for invitee in meeting.invitees() {
+            ical.push_str(&fold_line(&attendee_line(invitee), "\r\n"));
+        }
     }
     ical.push_str("END:VEVENT\r\n");
     ical.push_str("END:VCALENDAR\r\n");
@@ -72,10 +104,7 @@ pub fn build_event_ical(draft: &EventDraft) -> Result<RawIcal, IcalError> {
 /// Appends one `NAME:VALUE` content line, CRLF-terminated (RFC 5545 §3.1). `value`
 /// is already escaped/formatted by the caller.
 fn push_property(out: &mut String, name: &str, value: &str) {
-    out.push_str(name);
-    out.push(':');
-    out.push_str(value);
-    out.push_str("\r\n");
+    out.push_str(&fold_line(&format!("{name}:{value}"), "\r\n"));
 }
 
 #[cfg(test)]

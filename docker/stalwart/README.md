@@ -13,7 +13,7 @@ throwaway credentials and never holds real data.
 
 ## Run it
 
-One self-bootstrapping service. It completes Stalwart v0.16's first-run setup
+One self-bootstrapping service. It completes Stalwart's first-run setup
 through the management API, creates the accounts, and seeds the dataset inside
 its entrypoint, then reports healthy once seeding is done:
 
@@ -33,7 +33,7 @@ export STALWART_IMAP_STARTTLS_ADDR=127.0.0.1:11143 # IMAP STARTTLS
 export STALWART_SMTP_STARTTLS_ADDR=127.0.0.1:11587 # SMTP submission STARTTLS
 export STALWART_ACCOUNT=alice@test.local
 export STALWART_PASSWORD=harness-alice-pw
-cargo test -p stalwart-harness --test smoke -- --nocapture
+cargo test -p stalwart-harness --test smoke --test smoke_shared_stores -- --nocapture
 ```
 
 Reset to a clean slate (the harness re-bootstraps from empty volumes; CI always
@@ -63,14 +63,15 @@ entrypoint provisions them via the management API to exercise the engine's START
 
 ## Seeded accounts
 
-Created at startup via Stalwart's management API (v0.16 has no declarative config
-file — see the design doc).
+Created at startup via Stalwart's management API (Stalwart has had no declarative config
+file since v0.16 — see the design doc).
 
 | Account             | Password           | Role                          |
 | ------------------- | ------------------ | ----------------------------- |
 | `alice@test.local`  | `harness-alice-pw` | primary; holds the whole seed (mail + calendar + contacts) |
 | `bob@test.local`    | `harness-bob-pw`   | scratch: SMTP recipient, and **organizer** in the scheduling suite |
 | `carol@test.local`  | `harness-carol-pw` | scratch: **attendee** in the scheduling suite |
+| `dave@test.local`   | `harness-dave-pw`  | shares one calendar with Alice, read-only, and nothing else |
 | `admin`             | `harness-admin-pw` | fallback admin (management)   |
 
 Bob and Carol hold none of the seed. RFC 6638 auto-scheduling makes the server mail
@@ -81,7 +82,10 @@ assert (`docs/agent-guidance/stalwart-harness.md`).
 The entrypoint also **raises Stalwart's inbound rate limiters** (`x:MtaInboundThrottle`)
 at bootstrap, logging `relaxed inbound rate limiters`. The default of 25 messages/hour
 per sender-domain→recipient otherwise breaks the scheduling suite after a few runs, and
-does so silently — see the harness guidance doc.
+does so silently — see the harness guidance doc. It raises the **anonymous HTTP rate limit**
+(`x:Http.rateLimitAnonymous`, 100/minute) too, logging `relaxed the anonymous HTTP rate
+limit`: readiness polls and the uncredentialed first request of each DAV connection spend it,
+and back-to-back runs used to exhaust it.
 
 ## Layout
 

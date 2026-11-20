@@ -238,7 +238,7 @@ mod tests {
             !chunks[0].is_reconcile_final(),
             "a delta must not tombstone the folder's other mail"
         );
-        assert!(chunks[0].present.is_empty());
+        assert_eq!(chunks[0].present, []);
         assert_eq!(chunks[0].changed.len(), 1);
     }
 

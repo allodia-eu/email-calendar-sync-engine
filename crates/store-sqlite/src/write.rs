@@ -12,14 +12,14 @@ use engine_core::{
     write::{PendingOp, PendingOpId, PendingOutcome},
 };
 use engine_store::{
-    ApplyBatch, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, OpRejection, PendingOpClaim,
-    Result, Store, SyncApplied, SyncClaim, SyncLease,
+    ApplyBatch, Confirmation, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, OpRejection,
+    PendingOpClaim, Result, Store, SyncApplied, SyncClaim, SyncLease,
 };
 use serde::Serialize;
 
 use crate::{
     Clock, SqliteStore, convert::expiry_after, outbox_ops, purge, scope_key, scope_ops,
-    scope_ops::OwnedUpdate, window_ops,
+    scope_ops::OwnedUpdate, scope_renew, window_ops, window_ops::CursorRecord,
 };
 
 #[async_trait]
@@ -66,6 +66,13 @@ impl<C: Clock> Store for SqliteStore<C> {
         let contact_scope = lease.scope().object_kind() == Some(ObjectKind::ContactCard);
         // `None` (a streaming page) leaves the cursor unchanged.
         let next_state = batch.next_state.map(|s| s.as_str().to_owned());
+        let next_state = next_state.map(|cursor| CursorRecord {
+            cursor,
+            collection_tag: batch.collection_tag.map(|tag| tag.as_str().to_owned()),
+            fetch_window: batch.fetch_window,
+        });
+        let observed_from = batch.observed_from;
+        let now = self.clock.now();
         self.call(move |conn| {
             scope_ops::apply(
                 conn,
@@ -76,7 +83,9 @@ impl<C: Clock> Store for SqliteStore<C> {
                 &reconcile,
                 &observations,
                 contact_scope,
-                next_state.as_deref(),
+                next_state.as_ref(),
+                observed_from,
+                now,
             )
         })
         .await
@@ -99,6 +108,18 @@ impl<C: Clock> Store for SqliteStore<C> {
         let token = lease.token().get();
         let window = window.clone();
         self.call(move |conn| window_ops::set_expansion_window(conn, &key, token, &window))
+            .await
+    }
+
+    async fn renew_sync_scope_lease(
+        &self,
+        lease: &SyncLease,
+        ttl: core::time::Duration,
+    ) -> Result<()> {
+        let expiry = expiry_after(self.clock.now(), ttl)?;
+        let key = scope_key(lease.scope());
+        let token = lease.token().get();
+        self.call(move |conn| scope_renew::renew(conn, &key, token, expiry))
             .await
     }
 
@@ -151,11 +172,33 @@ impl<C: Clock> Store for SqliteStore<C> {
             .await
     }
 
-    async fn mark_pending_op(&self, lease: &OpLease, outcome: PendingOutcome) -> Result<()> {
-        let op_id = lease.op();
-        let token = lease.token().get();
+    async fn recover_interrupted_ops(&self) -> Result<usize> {
         let now = self.clock.now();
-        self.call(move |conn| outbox_ops::mark(conn, op_id, token, now, &outcome))
+        self.call(move |conn| outbox_ops::recover_interrupted(conn, now))
+            .await
+    }
+
+    async fn record_hand_over(&self, lease: &OpLease) -> Result<()> {
+        let lease = lease.clone();
+        self.call(move |conn| outbox_ops::hand_over(conn, &lease))
+            .await
+    }
+
+    async fn renew_pending_op_lease(
+        &self,
+        lease: &OpLease,
+        ttl: core::time::Duration,
+    ) -> Result<()> {
+        let expiry = expiry_after(self.clock.now(), ttl)?;
+        let lease = lease.clone();
+        self.call(move |conn| outbox_ops::renew(conn, &lease, expiry))
+            .await
+    }
+
+    async fn mark_pending_op(&self, lease: &OpLease, outcome: PendingOutcome) -> Result<()> {
+        let lease = lease.clone();
+        let now = self.clock.now();
+        self.call(move |conn| outbox_ops::mark(conn, &lease, now, &outcome))
             .await
     }
 
@@ -176,6 +219,17 @@ impl<C: Clock> Store for SqliteStore<C> {
     ) -> Result<Option<OpRejection>> {
         let now = self.clock.now();
         self.call(move |conn| outbox_ops::retry_now(conn, &account, op, now))
+            .await
+    }
+
+    async fn confirm_pending_op(
+        &self,
+        account: AccountId,
+        op: PendingOpId,
+        confirmation: Confirmation,
+    ) -> Result<Option<OpRejection>> {
+        let now = self.clock.now();
+        self.call(move |conn| outbox_ops::confirm(conn, &account, op, now, confirmation))
             .await
     }
 }

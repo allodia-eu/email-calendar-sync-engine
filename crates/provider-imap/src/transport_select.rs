@@ -29,6 +29,9 @@ pub(crate) struct Selection {
     /// The mailbox name as the caller passed it, before any wire encoding.
     mailbox: String,
     uid_validity: u32,
+    /// `UIDNEXT` as the open reported it, the extent of a search that has to stay under a
+    /// message limit ([`crate::transport_search`]).
+    pub(crate) uid_next: Option<u32>,
 }
 
 impl<S> Connection<S> {
@@ -76,6 +79,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         self.selected = Some(Selection {
             mailbox: mailbox.to_owned(),
             uid_validity: data.uid_validity,
+            uid_next: data.uid_next,
         });
         Ok(data)
     }

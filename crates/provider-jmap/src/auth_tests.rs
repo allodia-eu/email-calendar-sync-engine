@@ -69,7 +69,7 @@ fn a_token68_credential_is_not_read_as_a_scheme() {
 
 #[test]
 fn an_empty_header_offers_nothing() {
-    assert!(challenge_schemes("").is_empty());
+    assert_eq!(challenge_schemes(""), [] as [String; 0]);
 }
 
 // ---- negotiation policy ------------------------------------------------------------

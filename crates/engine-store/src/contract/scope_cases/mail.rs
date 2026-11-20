@@ -26,6 +26,7 @@ fn row(key: &str, date: Option<&str>, thread: Option<&ThreadId>) -> MailRow {
         date_utc: date.map(|d| d.parse::<UtcDateTime>().unwrap()),
         flags: MailFlags::default(),
         has_attachment: false,
+        importance: engine_core::mail::Importance::Normal,
         size_octets: None,
         from_name: None,
         from_addr: None,
@@ -344,12 +345,12 @@ pub(in crate::contract) async fn list_mail_by_keys_resolves_named_messages<S: St
         vec![pk("m2")],
         "the named message, and nothing for a key the store does not hold"
     );
-    assert!(
+    assert_eq!(
         store
             .list_mail(&accounts, MailSelector::Keys(&[]), usize::MAX)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        []
     );
 }
 

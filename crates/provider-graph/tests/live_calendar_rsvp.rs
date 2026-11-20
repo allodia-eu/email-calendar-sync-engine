@@ -49,10 +49,10 @@ use engine_core::{
     calendar::{Event, ParticipationStatus},
     ids::{AccountId, CalendarId},
     sync::SyncUpdate,
-    time::{CalendarDate, TimeZoneId},
+    time::{Horizon, TimeZoneId},
 };
 use engine_provider::{CalendarWrites, EventRsvp, Provider, RsvpResponse};
-use provider_graph::{CalendarWindow, GraphCalendarProvider, GraphClient};
+use provider_graph::{GraphCalendarProvider, GraphClient};
 
 const GRAPH: &str = "https://graph.microsoft.com/v1.0";
 
@@ -88,11 +88,12 @@ fn http() -> reqwest::Client {
 }
 
 /// The window `calendarView` covers — the seeded meeting sits inside it.
-fn calendar_window() -> CalendarWindow {
-    CalendarWindow::new(
-        CalendarDate::new(2026, 8, 1).unwrap(),
-        CalendarDate::new(2026, 11, 1).unwrap(),
+fn calendar_window() -> Horizon {
+    Horizon::new(
+        "2026-08-01T00:00:00Z".parse().unwrap(),
+        "2026-11-01T00:00:00Z".parse().unwrap(),
     )
+    .unwrap()
 }
 
 /// The address behind a token, so neither account is hardcoded.
@@ -113,24 +114,22 @@ async fn whoami(token: &str) -> String {
         .to_owned()
 }
 
-/// A calendar provider for `token`, bound to that account's default calendar.
-async fn calendar_provider(token: &str) -> GraphCalendarProvider {
+/// A calendar provider for `token`, and that account's default calendar.
+async fn calendar_provider(token: &str) -> (GraphCalendarProvider, CalendarId) {
     let client = GraphClient::connect(
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
-    let placeholder = GraphCalendarProvider::new(
-        client,
-        CalendarId::try_from("placeholder").unwrap(),
-        calendar_window(),
-        TimeZoneId::iana("Europe/Amsterdam").unwrap(),
-    );
+    let placeholder =
+        GraphCalendarProvider::new(client, TimeZoneId::iana("Europe/Amsterdam").unwrap());
     let calendars = placeholder
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("a calendar list sync is a snapshot");
     };
@@ -142,13 +141,13 @@ async fn calendar_provider(token: &str) -> GraphCalendarProvider {
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
-    GraphCalendarProvider::new(
-        client,
-        default.id.clone(),
-        calendar_window(),
-        TimeZoneId::iana("Europe/Amsterdam").unwrap(),
+    let default = default.id.clone();
+    (
+        GraphCalendarProvider::new(client, TimeZoneId::iana("Europe/Amsterdam").unwrap()),
+        default,
     )
 }
 
@@ -184,10 +183,14 @@ async fn seed_invitation(organizer_token: &str, attendee: &str) -> (String, Stri
 
 /// Polls the account's own calendar until the invitation with `uid` is delivered — an
 /// invitation crosses two mailboxes, so it is not there the instant the seed returns.
-async fn await_invitation(provider: &GraphCalendarProvider, uid: &str) -> Event {
+async fn await_invitation(
+    provider: &GraphCalendarProvider,
+    calendar: &CalendarId,
+    uid: &str,
+) -> Event {
     for _ in 0..20 {
         let sync = provider
-            .sync_events(&account(), None)
+            .sync_events(&account(), calendar, None, calendar_window())
             .await
             .expect("sync events");
         let SyncUpdate::Snapshot { objects, .. } = &sync.update else {
@@ -202,9 +205,9 @@ async fn await_invitation(provider: &GraphCalendarProvider, uid: &str) -> Event 
 }
 
 /// Re-reads the account's own copy of `uid`.
-async fn reread(provider: &GraphCalendarProvider, uid: &str) -> Event {
+async fn reread(provider: &GraphCalendarProvider, calendar: &CalendarId, uid: &str) -> Event {
     let sync = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), calendar, None, calendar_window())
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &sync.update else {
@@ -245,17 +248,18 @@ fn status_of(event: &Event, address: &str) -> ParticipationStatus {
 /// land. The last read is returned either way, so a real failure still says what was there.
 async fn await_own_answer(
     provider: &GraphCalendarProvider,
+    calendar: &CalendarId,
     uid: &str,
     address: &str,
     want: &ParticipationStatus,
 ) -> Event {
-    let mut last = reread(provider, uid).await;
+    let mut last = reread(provider, calendar, uid).await;
     for _ in 0..20 {
         if status_of(&last, address) == *want {
             return last;
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        last = reread(provider, uid).await;
+        last = reread(provider, calendar, uid).await;
     }
     last
 }
@@ -346,7 +350,7 @@ async fn live_rsvp_answers_an_invitation_and_the_organizer_is_told() {
         organizer.to_lowercase(),
         "the two tokens must be different accounts: a mailbox cannot answer its own meeting"
     );
-    let provider = calendar_provider(&token).await;
+    let (provider, calendar) = calendar_provider(&token).await;
 
     let controls = provider
         .connection_info()
@@ -360,7 +364,7 @@ async fn live_rsvp_answers_an_invitation_and_the_organizer_is_told() {
 
     // The counterparty invites us, and Graph delivers it as a real invitation.
     let (organizer_copy, uid) = seed_invitation(&organizer_token, &me).await;
-    let invitation = await_invitation(&provider, &uid).await;
+    let invitation = await_invitation(&provider, &calendar, &uid).await;
 
     // Finding 2: the organizer is named twice in an invitee's copy and must project once,
     // holding the owner role — and their implied acceptance, not the `"none"` Graph writes
@@ -404,7 +408,14 @@ async fn live_rsvp_answers_an_invitation_and_the_organizer_is_told() {
         .expect("the neutral verb answers on Graph");
 
     // Our own copy records it…
-    let answered = await_own_answer(&provider, &uid, &me, &ParticipationStatus::Tentative).await;
+    let answered = await_own_answer(
+        &provider,
+        &calendar,
+        &uid,
+        &me,
+        &ParticipationStatus::Tentative,
+    )
+    .await;
     assert_eq!(
         status_of(&answered, &me),
         ParticipationStatus::Tentative,

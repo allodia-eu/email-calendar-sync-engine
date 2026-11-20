@@ -50,8 +50,13 @@ impl ThrottleObserver for CountThrottles {
 
 /// A folder-bound provider on `retry`, as a host builds one per folder.
 fn provider(token: &str, retry: &RetryConfig) -> GraphProvider {
-    let client = GraphClient::connect(token, &engine_tls::TlsClientConfig::bundled(), retry)
-        .expect("client");
+    let client = GraphClient::connect(
+        token,
+        &engine_tls::TlsClientConfig::bundled(),
+        retry,
+        &engine_http::test_server::user_agent(),
+    )
+    .expect("client");
     GraphProvider::new(
         client,
         engine_core::ids::MailboxId::try_from("inbox").unwrap(),

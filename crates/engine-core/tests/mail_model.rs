@@ -69,7 +69,7 @@ fn duplicate_and_missing_message_id_are_valid() {
     assert_eq!(header.to_string(), "dup@example.com");
 
     let missing = message("m2", Memberships::of_one(mailbox("inbox")));
-    assert!(missing.envelope.message_id.is_empty());
+    assert_eq!(missing.envelope.message_id, []);
 }
 
 #[test]

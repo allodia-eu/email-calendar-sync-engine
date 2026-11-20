@@ -145,7 +145,8 @@ mail/calendar/identity scopes.
 ### JMAP Contacts
 
 - Advertise and use `urn:ietf:params:jmap:contacts`.
-- Sync `AddressBook/get|changes` before `ContactCard/get|changes`.
+- Sync `AddressBook/get|changes` before `ContactCard/query|get|changes`, paging the cards
+  within `maxObjectsInGet` (`jmap.md`).
 - Preserve the server-assigned card `id`, `uid`, non-empty multi-address-book
   membership, rights, JSContact property ids, groups, and extensions.
 - Use `ContactCard/set` for CRUD. JMAP state protects the set operation at a
@@ -170,10 +171,14 @@ mail/calendar/identity scopes.
 
 - `CardDavProvider` shares DAV HTTP/TLS primitives with CalDAV but has separate
   discovery, normalization, and write code.
-- Discover address-book homes and collections. Prefer RFC 6578 `sync-collection`;
-  use CTag/per-resource ETag comparison when the server lacks it.
-- Fetch changed cards with `addressbook-multiget`, requesting `getetag` and
-  `address-data`.
+- Discover address-book homes, ask the home whether it advertises the
+  `addressbook` class, and only then list collections: a home without it offers
+  no contacts. Prefer RFC 6578 `sync-collection`; a server without it is read through
+  its CTag, a member listing and a multiget (`caldav.md`, "A server without
+  `sync-collection`").
+- A changed card the sync returned without `address-data` (iCloud returns every card
+  that way) is fetched with `addressbook-multiget`, requesting `getetag` and
+  `address-data` (`multiget::fill_bodies`).
 - Parse vCard 4 and supported vCard 3 compatibility forms while retaining the
   original vCard.
 - Create with `If-None-Match: *`; update and delete with `If-Match` using the
@@ -342,6 +347,10 @@ each image through the API only to write it out again is work nobody needs; the 
 is named by the SHA-256 of its contents, so its name changes when the photo does.
 `Engine::cached_contact_photo` is the same read with no provider behind it, for the
 pass that builds a screen and must not grow a network fetch.
+
+The provider a host passes is the one `Engine::contact_source` names: an account connects one
+adapter per contact source, each knows only its own ids, and Graph refuses another source's id as
+`ErrorInvalidIdMalformed`.
 
 ### Photo delivery per provider (surveyed, and each verified live)
 

@@ -11,10 +11,7 @@
 //! only locates bytes and decodes them to text.
 
 use engine_core::raw::RawMime;
-use mail_parser::{
-    Address, ContentType, GetHeader, HeaderName, HeaderValue, MessageParser, MessagePart,
-    MimeHeaders,
-};
+use mail_parser::{ContentType, MessageParser, MessagePart, PartKind};
 
 /// The iCalendar media type an iMIP scheduling message carries (RFC 6047 §2.4).
 const CALENDAR_MEDIA_TYPE: &str = "text/calendar";
@@ -75,21 +72,24 @@ impl CalendarPart {
 /// how a published `.ics` arrives (and it parses to `METHOD:PUBLISH`, which the product
 /// then declines to offer an RSVP for).
 ///
+/// Only the message's own parts are read: an invitation inside a message it forwards
+/// (`message/rfc822`) was addressed to whoever received *that* message.
+///
 /// Like every read in this crate, hostile or truncated input yields `None`, never a panic.
 #[must_use]
 pub fn extract_calendar_part(raw: &RawMime) -> Option<CalendarPart> {
     let message = MessageParser::default().parse(raw.as_bytes())?;
     let mut fallback = None;
-    for part in &message.parts {
-        if !is_calendar_media_type(part) {
+    for part in message.root().parts() {
+        if !is_calendar_media_type(&part) {
             continue;
         }
-        let Some(text) = decoded_text(part) else {
+        let Some(text) = decoded_text(&part) else {
             continue;
         };
         let found = CalendarPart {
             text,
-            media_type: declared_media_type(part),
+            media_type: declared_media_type(&part),
             from_inline_body: part.content_disposition().is_none(),
         };
         if found.from_inline_body {
@@ -132,47 +132,20 @@ pub fn extract_delivery_recipients(raw: &RawMime) -> Vec<String> {
         }
     };
 
+    // Not address fields in RFC 5322, so mail-parser keeps them as text.
     for name in DELIVERY_HEADERS {
-        for value in message.header_values(*name) {
-            collect_addresses(value, &mut push);
+        for header in message.headers().all(*name) {
+            if let Some(text) = header.value().as_text() {
+                push(strip_angle_brackets(text));
+            }
         }
     }
-    for header in [HeaderName::To, HeaderName::Cc] {
-        if let Some(value) = message.root_part().headers.header_value(&header) {
-            collect_addresses(value, &mut push);
+    for list in [message.to(), message.cc()].into_iter().flatten() {
+        for email in list.mailboxes().filter_map(|mailbox| mailbox.address()) {
+            push(email);
         }
     }
     out
-}
-
-/// Appends every address in `value` to `push`, handling both address-typed headers (`To:`,
-/// `Cc:`) and the plain-text delivery headers, which are not parsed as addresses.
-fn collect_addresses(value: &HeaderValue<'_>, push: &mut impl FnMut(&str)) {
-    match value {
-        HeaderValue::Address(Address::List(list)) => {
-            for addr in list {
-                if let Some(email) = &addr.address {
-                    push(email.as_ref());
-                }
-            }
-        }
-        HeaderValue::Address(Address::Group(groups)) => {
-            for group in groups {
-                for addr in &group.addresses {
-                    if let Some(email) = &addr.address {
-                        push(email.as_ref());
-                    }
-                }
-            }
-        }
-        HeaderValue::Text(text) => push(strip_angle_brackets(text.as_ref())),
-        HeaderValue::TextList(list) => {
-            for text in list {
-                push(strip_angle_brackets(text.as_ref()));
-            }
-        }
-        _ => {}
-    }
 }
 
 /// Strips the `<…>` a delivery header often wraps its address in.
@@ -195,10 +168,10 @@ fn is_calendar_media_type(part: &MessagePart<'_>) -> bool {
 /// The part's `Content-Type` media type with parameters stripped, lowercased.
 fn declared_media_type(part: &MessagePart<'_>) -> String {
     part.content_type()
-        .map_or_else(String::new, |ct| media_type_of(ct).to_ascii_lowercase())
+        .map_or_default(|ct| media_type_of(ct).to_ascii_lowercase())
 }
 
-fn media_type_of(content_type: &ContentType<'_>) -> String {
+fn media_type_of(content_type: ContentType<'_>) -> String {
     match content_type.subtype() {
         Some(subtype) => format!("{}/{}", content_type.ctype(), subtype),
         None => content_type.ctype().to_owned(),
@@ -214,13 +187,12 @@ fn media_type_of(content_type: &ContentType<'_>) -> String {
 /// than dropped — iCalendar is ASCII-dominated, so this recovers a payload that would
 /// otherwise be invisible.
 fn decoded_text(part: &MessagePart<'_>) -> Option<String> {
-    use mail_parser::PartType;
-    let text = match &part.body {
-        PartType::Text(text) | PartType::Html(text) => text.as_ref().to_owned(),
-        PartType::Binary(bytes) | PartType::InlineBinary(bytes) => {
-            String::from_utf8_lossy(bytes.as_ref()).into_owned()
+    let text = match part.kind() {
+        PartKind::Text | PartKind::Html => part.text()?.into_owned(),
+        PartKind::Binary | PartKind::InlineBinary => {
+            String::from_utf8_lossy(&part.decoded()).into_owned()
         }
-        PartType::Message(_) | PartType::Multipart(_) => return None,
+        PartKind::Message(_) | PartKind::Multipart => return None,
     };
     (!text.trim().is_empty()).then_some(text)
 }
@@ -295,6 +267,30 @@ mod tests {
     }
 
     #[test]
+    fn an_invitation_inside_a_forwarded_message_is_not_this_messages() {
+        // mail-parser 1.0 numbers the parts of nested messages with the root's; only the
+        // root message's own parts may yield the card.
+        let forwarded = b"To: a@test.local\r\n\
+            Content-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
+            --m\r\nContent-Type: text/plain\r\n\r\nfyi\r\n\
+            --m\r\nContent-Type: message/rfc822\r\n\r\n\
+            Content-Type: text/calendar; method=REQUEST\r\n\r\n\
+            BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n\
+            --m--\r\n";
+        assert!(extract_calendar_part(&raw(forwarded)).is_none());
+    }
+
+    #[test]
+    fn a_group_in_to_is_flattened_into_its_mailboxes() {
+        let msg = b"To: Team: one@test.local, two@test.local;, three@test.local\r\n\
+            Content-Type: text/plain\r\n\r\nhi\r\n";
+        assert_eq!(
+            extract_delivery_recipients(&raw(msg)),
+            ["one@test.local", "two@test.local", "three@test.local"]
+        );
+    }
+
+    #[test]
     fn a_message_with_no_calendar_part_yields_none() {
         let plain = b"To: a@test.local\r\nContent-Type: text/plain\r\n\r\nhello\r\n";
         assert!(extract_calendar_part(&raw(plain)).is_none());
@@ -363,8 +359,31 @@ mod tests {
     }
 
     #[test]
+    fn an_attached_copy_typed_as_binary_is_read_as_text() {
+        // `application/ics` is not a text type, so the part is binary; iCalendar is ASCII.
+        let attached_only = b"Content-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
+            --m\r\nContent-Type: text/plain\r\n\r\nsee attached\r\n\
+            --m\r\nContent-Type: application/ics; name=\"invite.ics\"\r\n\
+            Content-Disposition: attachment; filename=\"invite.ics\"\r\n\
+            Content-Transfer-Encoding: base64\r\n\r\n\
+            QkVHSU46VkNBTEVOREFSDQpNRVRIT0Q6UkVRVUVTVA0KRU5EOlZDQUxFTkRBUg0K\r\n\
+            --m--\r\n";
+        let part = extract_calendar_part(&raw(attached_only)).expect("calendar part");
+        assert_eq!(part.media_type(), "application/ics");
+        assert!(!part.from_inline_body());
+        assert!(part.text().contains("METHOD:REQUEST"));
+    }
+
+    #[test]
+    fn a_blank_delivery_header_names_no_one() {
+        // mail-parser 1.0 gives a present but blank field the value "" rather than none.
+        let msg = b"Delivered-To: \r\nTo: a@test.local\r\nContent-Type: text/plain\r\n\r\nhi\r\n";
+        assert_eq!(extract_delivery_recipients(&raw(msg)), ["a@test.local"]);
+    }
+
+    #[test]
     fn a_message_with_no_recipients_yields_empty() {
         let msg = b"From: a@test.local\r\nContent-Type: text/plain\r\n\r\nhi\r\n";
-        assert!(extract_delivery_recipients(&raw(msg)).is_empty());
+        assert_eq!(extract_delivery_recipients(&raw(msg)), [] as [String; 0]);
     }
 }

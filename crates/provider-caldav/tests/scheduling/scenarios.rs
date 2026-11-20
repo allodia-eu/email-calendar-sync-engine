@@ -144,7 +144,7 @@ pub(crate) async fn the_scheduling_inbox_carries_a_parseable_itip_request(partie
         .harness
         .dav_get_as(parties.attendee_auth.auth(), &hrefs[0])
         .expect("GET the scheduling-inbox message");
-    let text = String::from_utf8_lossy(&body.body).into_owned();
+    let text = String::from_utf8_lossy_owned(body.body);
 
     let message = engine_ical::parse_scheduling_message(&text).expect("a scheduling message");
     assert_eq!(message.method, ScheduleMethod::Request);

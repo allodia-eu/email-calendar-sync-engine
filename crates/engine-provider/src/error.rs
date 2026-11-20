@@ -29,6 +29,7 @@ pub struct ProviderError {
     detail: String,
     retry_after: Option<Duration>,
     confirmation_needed: bool,
+    item_unavailable: bool,
     source: Option<BoxError>,
 }
 
@@ -41,6 +42,7 @@ impl ProviderError {
             detail: detail.into(),
             retry_after: None,
             confirmation_needed: false,
+            item_unavailable: false,
             source: None,
         }
     }
@@ -97,13 +99,30 @@ impl ProviderError {
         Self::new(FailureClass::Permanent, detail)
     }
 
-    /// The outcome is **genuinely ambiguous** and must not be blindly retried —
-    /// e.g. an SMTP send whose post-`DATA` acknowledgement was lost, which may or
-    /// may not have delivered (`providers.md`). The op is parked for confirmation
-    /// (sync reconciliation, `Message-ID` lookup, or an explicit resolve) rather
-    /// than retried. Classified [`FailureClass::InvalidState`] so it is never
-    /// plain-retryable; the outbox routes it to
-    /// [`PendingOutcome::NeedsConfirmation`](engine_core::write::PendingOutcome::NeedsConfirmation).
+    /// The provider can never serve this one item, however often it is asked, while the
+    /// account and its other items are unaffected ([`FailureClass::Permanent`]): a message
+    /// the server stored but cannot give back. A caller may stop asking for it. A permanent
+    /// failure without this flag may be about the whole account or the request, and says
+    /// nothing about the item.
+    #[must_use]
+    pub fn item_unavailable(detail: impl Into<String>) -> Self {
+        Self {
+            item_unavailable: true,
+            ..Self::new(FailureClass::Permanent, detail)
+        }
+    }
+
+    /// The outcome is **genuinely ambiguous** and must not be blindly retried: an SMTP send
+    /// whose post-`DATA` acknowledgement was lost, which may or may not have delivered, or a
+    /// calendar or contact write whose answer was lost after the server may have applied it
+    /// (`providers.md`). Classified [`FailureClass::InvalidState`] so it is never
+    /// plain-retryable.
+    ///
+    /// A send is parked as
+    /// [`PendingOutcome::NeedsConfirmation`](engine_core::write::PendingOutcome::NeedsConfirmation)
+    /// until sync reconciliation or the user resolves it. A calendar or contact write settles
+    /// `Failed`, and its caller is told the change may have been applied. On a write, every
+    /// failure that is **not** this one means the write was not applied.
     #[must_use]
     pub fn needs_confirmation(detail: impl Into<String>) -> Self {
         Self {
@@ -155,6 +174,13 @@ impl ProviderError {
     #[must_use]
     pub fn requires_confirmation(&self) -> bool {
         self.confirmation_needed
+    }
+
+    /// Whether the provider can never serve the item asked for
+    /// ([`item_unavailable`](Self::item_unavailable)).
+    #[must_use]
+    pub fn is_item_unavailable(&self) -> bool {
+        self.item_unavailable
     }
 }
 
@@ -238,6 +264,14 @@ mod tests {
         assert_eq!(err.class(), FailureClass::InvalidState);
         // An ordinary failure is not flagged for confirmation.
         assert!(!ProviderError::permanent("550 rejected").requires_confirmation());
+    }
+
+    #[test]
+    fn an_unavailable_item_is_permanent_and_says_so_while_a_plain_permanent_does_not() {
+        let err = ProviderError::item_unavailable("the server cannot give this message back");
+        assert!(err.is_item_unavailable());
+        assert_eq!(err.class(), FailureClass::Permanent);
+        assert!(!ProviderError::permanent("403 Forbidden").is_item_unavailable());
     }
 
     #[test]

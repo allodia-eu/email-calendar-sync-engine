@@ -440,6 +440,22 @@ which occurrence), both in `engine-provider`, and the adapter does the rest:
 Read `caldav.md` → "CalDAV writes" and `jmap.md` → "Calendar writes" for the two renderings;
 this section fixes the *semantics* they share.
 
+- **A meeting draft owns its invitation.** `EventDraft::meeting` carries one explicit
+  organiser and at least one required or optional invitee. Addresses are validated and
+  canonicalised. Duplicate invitees and an organiser repeated in the roster are refused.
+  CalDAV renders `ORGANIZER` and `ATTENDEE`; JMAP resolves the organiser through
+  `ParticipantIdentity/get`; Graph and Google render their attendee arrays.
+- **A roster edit is a whole-series operation.** `EventPatch::invitees` carries address
+  removals and invitee upserts. It cannot target one recurrence instance or edit the
+  organiser. Each adapter starts from the stored raw event, so accepted or declined states,
+  opaque participant ids and unknown fields survive a role or name change. Adding an
+  invitee starts them in the provider's unanswered state.
+- **Storage and delivery remain separate facts.** Graph and Google schedule every create,
+  roster update and delete. JMAP requests `sendSchedulingMessages` on every such write.
+  CalDAV relies on RFC 6638 only when `calendar_scheduling` is advertised. A plain CalDAV
+  server stores the meeting but does not notify its invitees; organiser-side client-iMIP
+  delivery is not yet an engine workflow.
+
 - **Never rebuild a document to update it.** A create-path serializer emits only the handful
   of properties it knows about. An update that went through one would delete the recurrence
   rule, the attendees, the location, the alarms and the timezone from the user's calendar,
@@ -581,6 +597,199 @@ tzdata, and a removed occurrence `404`s), so `provider-graph` asks for the maste
 `originalStartTimeZone` and the two agree by construction. The side effect is worth knowing:
 a recurring Graph event is stored in the zone it was **authored** in, unlike every
 non-recurring one, which carries the provider's display zone.
+
+## Conferences
+
+`Event::conferences` holds the meetings an event can be joined at, one
+`Conference` per meeting with every way in it offers (a join link, dial-in numbers, a SIP
+address, each with its codes), the service it runs on and how it came to be on the event.
+The formats split two ways, and the model takes the second shape because it is what a person
+sees:
+
+| Format | Shape | Read by |
+|---|---|---|
+| iCalendar `CONFERENCE` (RFC 7986 §5.11) | flat list of URIs | `engine-ical`'s `party` → `group_flat` |
+| JSCalendar `virtualLocations` (RFC 8984 §4.2.6) | flat map of URIs | `provider-jmap`'s `calendar_conference` → `group_flat` |
+| Google `conferenceData` | one meeting, `entryPoints[]` | `provider-google`'s `cal_conference` |
+| Graph `isOnlineMeeting` + `onlineMeeting` | one meeting, `joinUrl` + numbers | `provider-graph`'s `cal_conference` |
+
+- **Grouping a flat list** (`engine_core::calendar::group_flat`): each web URI starts a
+  meeting; a `tel:` or `sip:` URI joins it when the list holds exactly one web URI and stands
+  alone otherwise, since nothing in either format says which meeting a number dials into.
+- **Origin.** `Native` is a meeting the calendar server made and keeps: Google's
+  `hangoutsMeet` (with `pending`/`failure` read from `createRequest.status`) and any Graph
+  online meeting. Both are removable, each its own way (below, "Writing a meeting").
+  `Attached` is a meeting stored in a field built for it that the server did not make:
+  `CONFERENCE`, `virtualLocations`, a Google `addOn`. `Detected` is one found elsewhere
+  (below).
+- **Service** comes from the server where it names one (`hangoutsMeet`,
+  `onlineMeetingProvider`) and otherwise from `ConferenceService::recognise`, which matches
+  each service's *meeting* URL shapes only, never its bare domain. `None` means neither said.
+- **`ConferenceUri`** admits `https`, `http`, `tel`, `sip` and `sips`, and a web URI only
+  with a host and no credentials. A host opens this value when a person asks to join, so an
+  entry with any other value is left out of the projection; the raw payload keeps it.
+  The iCalendar reader unescapes a `CONFERENCE` value before parsing it: Stalwart 0.16 serves
+  a dial-in's pause as `\,`, and a URI never holds a backslash.
+- **Keys** name a conference for a later edit: the `virtualLocations` map key, the field
+  name where the provider allows one conference (`conferenceData`, `onlineMeeting`), else
+  the first URI.
+- **Detection** (`engine_core::calendar::add_detected`, run by every adapter after its
+  conference fields): the vendor properties Google's and Microsoft's invitations carry
+  (`X-GOOGLE-CONFERENCE`, `X-MICROSOFT-SKYPETEAMSMEETINGURL`; iCalendar only, since JMAP
+  does not carry them), then a location that is only a web link, or a meeting link in one,
+  then a meeting link in the description. In a description only a link `recognise`
+  names counts, and a link written inside another is part of it: Google Calendar wraps
+  every link in an invitation's description as `https://www.google.com/url?q=https://…`, and
+  the copy inside carries Google's parameters. A Teams link is a meeting only under `/meet/`
+  or `/l/meetup-join/`; the meeting's chat (`/l/chat/`) and options page sit beside it. Graph detects in the whole `body`: the sync
+  reads it as text, each link kept as `label<url>`, and one that arrives as HTML holds its
+  links in `href`s. A link joins a meeting already held
+  (`Conference::joined_at`) when `ConferenceUri::same_meeting` says so (host and path,
+  escapes compared without case, and one query holding every parameter of the other), or
+  when it runs on the service of a `Native` meeting or one a vendor property names, which is
+  the event's one meeting there:
+  a work tenant's Teams `joinUrl` (and `X-MICROSOFT-SKYPETEAMSMEETINGURL`) is the long
+  `meetup-join` link and its body the short `meet/<id>?p=` one. A detected meeting takes
+  the fullest link any place writes for it (`ConferenceUri::fuller_than`), so a location's
+  bare Zoom link gives way to the description's one with its `pwd`; a stored or server-made
+  meeting keeps its own. Stalwart, SabreDAV
+  and Nextcloud all keep `X-GOOGLE-CONFERENCE` over CalDAV (the seed's
+  `meeting-attendees.ics`).
+- **Notes.** `Event::notes(shown)` is the description without each meeting block an
+  invitation writes that repeats a conference the caller shows: a block goes when a link in it
+  joins such a conference (`Conference::joined_at`), or when it holds no link at all. Any
+  other block stays, because it is then the only place its meeting appears, so the caller
+  passes the same rule it uses to show a conference. Teams writes two shapes: between rules (a line of
+  underscores, a first line naming "Microsoft Teams", a closing line of underscores at least
+  as long as the opening one, since shorter rules separate the block's own sections), and,
+  as a work tenant does today, appended with no rule above it (a heading naming "Microsoft
+  Teams" whose next line holds the meeting link, running to the end of the text). Google's
+  has `-::~:~::~:~…::-` above and below. A block without its closing line runs to the end,
+  because a preview cuts it off (Graph's `bodyPreview`, the description of a body read as
+  HTML). `description` itself stays the server's text, since edits are computed
+  against it.
+- **Graph's stand-in location.** Exchange gives an online meeting a location named after the
+  provider in the organiser's language ("Microsoft Teams-vergadering") with no address or
+  coordinates. A typed location has the same shape, so the brand in the name is the test
+  (a booked `conferenceRoom` is always kept), and the projection, an occurrence's
+  included, leaves it out. An iCalendar copy of the invitation carries it as plain
+  `LOCATION` text, which is kept, since nothing there tells it from a typed one.
+- **Dial-in numbers.** `EntryPoint::phone_number` is the number a person reads for a `tel:`
+  way in: the server's label when it is written as a number (Google's and Graph's are), else
+  the URI's number without its parameters and without what is dialled after the call connects
+  (`tel:+14255550100,,123456789#`). A JSCalendar `name` such as "Dial in" names the way in,
+  not the number. `ConferenceUri::dialled_after_pause` is that remainder (`123456789#`), the
+  PIN of a way in whose only copy of it is its URI.
+- **Occurrences** read the master's conferences; no override carries its own.
+- **Which calendars make one** is the server's to say, per calendar, never the account
+  kind, and is read with the calendar list into `Calendar::native_conferences`: Graph's
+  `allowedOnlineMeetingProviders` (`teamsForBusiness` is Teams) and Google's
+  `conferenceProperties.allowedConferenceSolutionTypes` (`hangoutsMeet` is Meet). A
+  subscribed or shared Exchange calendar lists nothing, and a Workspace admin can switch Meet
+  off. Retired services a server still names (Skype, Skype for Business, classic Hangouts)
+  are left out. The list does not depend on `access`: Google lists Meet on a calendar the
+  caller can only read, so a host reads the two together. CalDAV and JMAP servers make no
+  meetings. Observed live: a
+  work or school calendar lists `teamsForBusiness` and makes the meeting on create; a
+  personal Microsoft account's calendar lists only `unknown`, and a create asking for
+  `teamsForBusiness` succeeds with `isOnlineMeeting: false` and no meeting, without an
+  error. `live_calendar_conference` in `provider-graph` and `provider-google` reads a
+  server-made meeting back through the adapter, and a meeting written only into the
+  location and description.
+- **Writing a meeting** (`EventDraft::conference`, `EventPatch::conference`, advertised as
+  `Capabilities::conference_writes`). `NewConference::Native` asks the calendar's server for
+  one of its own; `NewConference::Attach` stores one made elsewhere. `ConferenceEdit::Set`
+  puts one on, replacing a named one, and `Remove` takes one off. A meeting belongs to the
+  series, so an occurrence edit carrying one is refused (`EventEdit::refuse_conference_on_occurrence`).
+  What an edit leaves in the notes and location is decided once, by `meeting_text`, for every
+  adapter that writes a meeting into them; an adapter decides only which of its own fields name
+  the meeting. Measured per adapter:
+  - **Graph.** Teams is `isOnlineMeeting: true` with `teamsForBusiness`; Exchange appends its
+    block and stand-in location, and keeps changing the event while it sets up the meeting,
+    so a patch on a revision read just after the create can be refused as stale (`412`).
+    Taking Teams off is writing the body without Teams' block and clearing the stand-in:
+    Graph accepts `isOnlineMeeting: false` and ignores it. A meeting made elsewhere has no
+    field, so it is written as our block in the body and, when the event has none, as the
+    location; it reads back as a detected meeting, and a self-hosted server's link names no
+    service.
+  - **Google.** Everything is `conferenceData` under `conferenceDataVersion=1`, which Google
+    otherwise ignores. Meet is a `createRequest` for `hangoutsMeet` whose `requestId` comes
+    from the event's UID and the edit's stamp, so a retried write asks for the same meeting.
+    A meeting made elsewhere is an `addOn` conference with its entry points; Google Calendar
+    shows it with a Join button and writes its link into its own block and `LOCATION` in the
+    invitations it sends, so no block of ours is written. Removing either is
+    `conferenceData: null`.
+  - **CalDAV and JMAP.** No server makes a meeting of its own, so `NewConference::Native` is
+    refused before anything is sent (`refuse_native_conference`). A meeting made elsewhere is
+    one `CONFERENCE` line (RFC 7986, `FEATURE` from the way in's kind when none is stated, a
+    `LABEL` escaped per RFC 6868) or one `virtualLocations` entry per way in, our block in the
+    notes and, when the event has none, the join link as the location: Outlook, Google
+    Calendar and Thunderbird read neither field. Taking one off removes every
+    `CONFERENCE`, vendor property or `virtualLocations` entry whose address joins it, its
+    block, and the location when that is still its link; adding one replaces any entry for
+    the same address rather than repeating it. CalDAV resolves the meeting's key against the
+    projection of the stored document, so a key means what it did on the read. Stalwart,
+    SabreDAV and Nextcloud keep `CONFERENCE` and its `LABEL`, and Stalwart keeps
+    `virtualLocations` and their names.
+  - **Our block** (`Conference::text_block`) is a rule of 40 `-=` characters, the meeting's
+    name (its label, else the caller's word for a video meeting), `Join: <link>`, its ID,
+    passcode and dial-in numbers, and the rule again. A number's code (its `access_code`,
+    else its `pin`) follows the numbers once when every number shares it, as a Teams phone
+    conference ID is shared, and stands beside its number otherwise. The words come from the
+    caller in a `ConferenceText`, since the engine has no locale; a write queued before
+    `dial_in_code` existed reads it as empty and leaves the codes out. It is recognised like Teams' and
+    Google's blocks, so `notes` leaves it out, and removing the meeting takes it out of the
+    notes with every other block that joins it (`without_text_block`).
+  `live_calendar_conference_write` in `provider-graph`, `provider-google` and `provider-jmap`,
+  and `common::conference_write` against each DAV server in `provider-caldav`, put each kind
+  on and take it off through the adapter.
+- **Meeting services** (`MeetingService`) make a meeting for an event whose calendar's server
+  makes none, or makes one on another service than the person wants; the caller then attaches
+  it (`NewConference::attach`). A service is told only a `MeetingRequest`: a title, the start,
+  the end (a series' last end, since a service that expires a meeting does so after its end,
+  and for a series without one, as long as the caller wants it to last) and a `MeetingKey`.
+  The key is minted by the caller from at least 128 bits of a secure random source, because
+  the engine makes no randomness of its own; it is 26 to 64 lowercase letters and digits,
+  since Jitsi lowercases a room name, and its `Debug` hides it, because the key alone is a way
+  in. A service that keeps a key answers a repeated one with the same meeting.
+  `delete_meeting` takes the conference as the event holds it, `create_meeting`'s answer or
+  the same meeting read back, and finds the meeting by its join link, so nothing of the
+  service's own is kept beside the event; a meeting already gone is a success.
+  - **Jitsi** (`JitsiMeetings`) has no API: the meeting is `https://<server>/<key>`, made
+    without a request, and there is nothing to delete. The server is an `https` address
+    without a query or fragment, a path kept.
+  - **Teams** (`TeamsMeetings`, in `provider-graph`) uses `onlineMeetings/createOrGet` with
+    the key as `externalId`. The meeting is the signed-in user's whatever mailbox the client
+    is rooted at, because Graph makes one only for `/me`. Its answer becomes the join link with
+    its passcode, the meeting ID and each dial-in number, which carries `audioConferencing`'s
+    phone conference ID as its `access_code`. A delete looks the meeting up by
+    `JoinWebUrl` and deletes each match; Graph answers 404 for one that is gone, and after a
+    delete the same key makes a new meeting. `live_teams_meetings` checks both against a
+    work account.
+  - **Google Meet** (`MeetMeetings`, in `provider-google`) makes a space with the Meet REST
+    API's `spaces.create`, on `meet.googleapis.com`, with an empty body: Meet names the space
+    itself, so the title and times are not sent. Its answer becomes the join link
+    (`meetingUri`), the meeting code as the meeting ID, and each `phoneAccess` number with its
+    PIN. Meet keeps no key of the caller's, so a repeated request makes a second space, and the
+    API has no delete: `delete_meeting` sends nothing, and a space no event names is one
+    nobody has the link to. The token needs `meetings.space.created`, and a grant without it
+    is refused with a permanent `403`. A personal account makes a space too; its answer has
+    no `phoneAccess`, and its `accessType` is `TRUSTED`, so a guest the host's organisation
+    does not know asks to join and the host lets them in. `live_meet_meetings` makes one
+    against a real account.
+  - **Nextcloud Talk** (`TalkMeetings`, in `provider-caldav`) makes a public conversation
+    (`roomType` 3) named after the title, which a guest joins at
+    `<server>/index.php/call/<token>`. Talk keeps no key of the caller's, so a repeated
+    request makes a second conversation. Where the administrator forces a password on public
+    conversations (`force-passwords` in the capabilities) the key is the password, carried as
+    the join entry's `password`; elsewhere there is none, because a guest would then need more
+    than the link. A delete takes the token from the link only when the link is under this
+    server's `call` path, so a link to another server never names a conversation here; Talk
+    answers 404 for one that is gone. `offered` asks the capabilities alone, so a caller can
+    tell a server without Talk, or an account Talk lets start no conversation, from one it can
+    use before any meeting is wanted. The conversation is a regular one: an event carrying its
+    link does not make it an event conversation, so Talk's event retention never removes it.
+    `live_talk` runs against the Nextcloud harness, whose hook installs a pinned Talk.
 
 ## Supported recurrence subset
 

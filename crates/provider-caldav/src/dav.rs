@@ -15,6 +15,10 @@ use quick_xml::{Reader, escape::resolve_predefined_entity, events::Event, name::
 
 use crate::error::CalDavError;
 
+#[path = "dav_components.rs"]
+mod components;
+use components::record_component;
+
 /// A parsed `multistatus`: its member responses and the top-level `sync-token`
 /// (present on a `sync-collection` REPORT, RFC 6578).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -23,6 +27,15 @@ pub(crate) struct MultiStatus {
     pub responses: Vec<DavResponse>,
     /// The `<sync-token>` reported for the whole collection, if any.
     pub sync_token: Option<String>,
+}
+
+impl MultiStatus {
+    /// Whether any response named the requester `<DAV:unauthenticated/>` (RFC 5397 §3).
+    pub(crate) fn names_unauthenticated(&self) -> bool {
+        self.responses
+            .iter()
+            .any(|response| response.props.names_unauthenticated())
+    }
 }
 
 /// One `<response>`: its href(s), an optional response-level status (a `404`
@@ -68,12 +81,35 @@ pub(crate) struct Props {
     /// at all. The distinction matters: an empty set means "you may do nothing here",
     /// whereas `None` means "this server does not say".
     privileges: Option<BTreeSet<String>>,
+    /// Every property reported, keyed like `text`, with the `<href>`s inside it in document
+    /// order: empty for a property that holds none. A property that holds several hrefs
+    /// (`calendar-user-address-set`) is read here, since `text` keeps only one.
+    hrefs: BTreeMap<String, Vec<String>>,
+    /// Whether `current-user-principal` held the `<DAV:unauthenticated/>` pseudo-principal: the
+    /// server answered without knowing who asked (RFC 5397 §3).
+    unauthenticated: bool,
+    /// The component names in `supported-calendar-component-set` (RFC 4791 §5.2.3), uppercased,
+    /// or `None` when the server did not report it.
+    components: Option<BTreeSet<String>>,
 }
 
 impl Props {
+    /// Whether the server named the requester `<DAV:unauthenticated/>` (RFC 5397 §3): it let an
+    /// anonymous request through rather than challenging it.
+    pub(crate) fn names_unauthenticated(&self) -> bool {
+        self.unauthenticated
+    }
+
     /// The value of the text (or inner-href) property `name`, if present.
     pub(crate) fn get(&self, name: &str) -> Option<&str> {
         self.text.get(name).map(String::as_str)
+    }
+
+    /// Every `<href>` inside property `name`, or `None` when the server did not report the
+    /// property. `Some` of an empty slice is a property reported with nothing in it, which is
+    /// a different answer from not reporting it.
+    pub(crate) fn hrefs(&self, name: &str) -> Option<&[String]> {
+        self.hrefs.get(name).map(Vec::as_slice)
     }
 
     /// Whether `<resourcetype>` marked this collection a CalDAV calendar.
@@ -177,6 +213,9 @@ pub(crate) fn parse_multistatus(xml: &str) -> Result<MultiStatus, CalDavError> {
                 }
                 record_resourcetype_child(&path, &name, &mut propstat);
                 record_privilege(&path, &name, &mut propstat);
+                record_component(&path, &name, &start, &mut propstat);
+                record_property(&path, &name, &mut propstat);
+                record_unauthenticated(&path, &name, &mut propstat);
                 path.push(name);
                 text.clear();
             }
@@ -184,10 +223,14 @@ pub(crate) fn parse_multistatus(xml: &str) -> Result<MultiStatus, CalDavError> {
                 // Self-closing elements (e.g. `<D:collection/>`, `<D:write/>`) never
                 // push state; only `<resourcetype>`'s and `<privilege>`'s children
                 // carry meaning here — plus an empty `<current-user-privilege-set/>`,
-                // which is a server saying "no privileges", not "no answer".
+                // which is a server saying "no privileges", not "no answer", and any other
+                // property reported empty.
                 let name = local_name(empty.local_name());
                 record_resourcetype_child(&path, &name, &mut propstat);
                 record_privilege(&path, &name, &mut propstat);
+                record_component(&path, &name, &empty, &mut propstat);
+                record_property(&path, &name, &mut propstat);
+                record_unauthenticated(&path, &name, &mut propstat);
             }
             // A `Text` run is already the literal characters: the reader hands every
             // `&…;` back separately as `GeneralRef`, so the run itself can never hold
@@ -293,11 +336,44 @@ fn store_prop_text(path: &[String], text: &str, propstat: &mut Option<(Option<u1
         // A property whose value is a nested `<href>`, at any depth — e.g.
         // `<current-user-principal><href>…` or a server that wraps it deeper like
         // `<current-user-principal><authenticated-as><href>…`.
-        [prop, .., last] if last == "href" => prop,
+        [prop, .., last] if last == "href" => {
+            if !text.is_empty() {
+                props
+                    .hrefs
+                    .entry(prop.clone())
+                    .or_default()
+                    .push(text.to_owned());
+            }
+            prop
+        }
         _ => return,
     };
     if !text.is_empty() {
         props.text.insert(key.clone(), text.to_owned());
+    }
+}
+
+/// Records that a property was reported, when its element opens directly inside `<prop>`,
+/// so one reported with no `<href>` in it still reads as reported.
+fn record_property(path: &[String], name: &str, propstat: &mut Option<(Option<u16>, Props)>) {
+    if path.last().map(String::as_str) == Some("prop")
+        && let Some((_, props)) = propstat.as_mut()
+    {
+        props.hrefs.entry(name.to_owned()).or_default();
+    }
+}
+
+/// Records `<DAV:unauthenticated/>` inside `current-user-principal` (RFC 5397 §3).
+fn record_unauthenticated(
+    path: &[String],
+    name: &str,
+    propstat: &mut Option<(Option<u16>, Props)>,
+) {
+    if name == "unauthenticated"
+        && path.last().map(String::as_str) == Some("current-user-principal")
+        && let Some((_, props)) = propstat.as_mut()
+    {
+        props.unauthenticated = true;
     }
 }
 
@@ -351,6 +427,17 @@ fn commit_propstat(
     if let (true, Some(response)) = (succeeded, response) {
         response.props.text.extend(props.text);
         response.props.resourcetype.extend(props.resourcetype);
+        response.props.unauthenticated |= props.unauthenticated;
+        if let Some(components) = props.components {
+            response
+                .props
+                .components
+                .get_or_insert_with(BTreeSet::new)
+                .extend(components);
+        }
+        for (name, hrefs) in props.hrefs {
+            response.props.hrefs.entry(name).or_default().extend(hrefs);
+        }
         if let Some(privileges) = props.privileges {
             response
                 .props

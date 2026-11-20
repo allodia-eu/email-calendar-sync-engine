@@ -279,8 +279,8 @@ impl<C: Clock> SqliteStore<C> {
         }
         let path = blob::contact_photo_path(self.blobs.root(), &row.content_hash);
         let media_type = row.media_type;
-        Ok(Self::block(move || path.exists().then_some(path))
-            .await
+        Ok(Self::block(move || Ok(path.exists().then_some(path)))
+            .await?
             .map(|path| ContactPhotoFile { path, media_type }))
     }
 

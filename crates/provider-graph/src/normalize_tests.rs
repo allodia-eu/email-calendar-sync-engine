@@ -196,12 +196,12 @@ fn internet_message_id_brackets_are_stripped_and_empty_is_dropped() {
     let without = serde_json::json!({
         "id": "m", "parentFolderId": "folder-inbox", "internetMessageId": "<>"
     });
-    assert!(
+    assert_eq!(
         message_from_json(&without, &[])
             .unwrap()
             .envelope
-            .message_id
-            .is_empty()
+            .message_id,
+        []
     );
 }
 
@@ -293,4 +293,46 @@ fn a_size_is_estimated_from_the_attachments_and_only_when_there_are_any() {
     assert_eq!(bare.size, None);
     let empty = message_from_json(&with_attachments(json!([])), &[]).expect("message");
     assert_eq!(empty.size, None);
+}
+
+#[test]
+fn the_select_keeps_the_recipients_that_make_sender_an_address() {
+    // Without them Graph answers `sender` with an X.500 DN, not an address (`MESSAGE_SELECT`).
+    assert!(MESSAGE_SELECT.contains(&"sender"));
+    assert!(MESSAGE_SELECT.contains(&"toRecipients"));
+}
+
+#[test]
+fn importance_is_read_from_its_property() {
+    let importance = |id: &str| {
+        messages()
+            .into_iter()
+            .find(|m| m.id.as_str() == id)
+            .unwrap()
+            .envelope
+            .importance
+    };
+    assert_eq!(importance("message-1"), engine_core::mail::Importance::Low);
+    assert_eq!(importance("message-2"), engine_core::mail::Importance::High);
+    assert_eq!(
+        importance("message-3"),
+        engine_core::mail::Importance::Normal
+    );
+    assert!(MESSAGE_SELECT.contains(&"importance"));
+}
+
+/// A draft created from MIME carrying `Importance: high`, read back with the sync's own `$select`:
+/// Exchange turns the header into the property, lowercased.
+#[test]
+fn a_header_set_on_the_mime_reads_back_as_the_property() {
+    let doc: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/mail/message_importance.json"
+    ))
+    .unwrap();
+    assert_eq!(doc["importance"], "high");
+    let message = message_from_json(&doc, &[]).unwrap();
+    assert_eq!(
+        message.envelope.importance,
+        engine_core::mail::Importance::High
+    );
 }

@@ -34,6 +34,8 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/messages_delta_removed.json` | replay after `DELETE` | `{ id, @removed:{reason} }` tombstone shape |
 | `mail/messages_list_page1.json` / `_page2.json` | `GET …/messages?$top=2` + its `@odata.nextLink` | real `nextLink` pagination chain |
 | `mail/message_detail.json` | `GET /me/messages/{id}` | full single-message shape (the changed-id re-fetch) |
+| `mail/importance_header_shapes.json` | thirty drafts created from MIME, one per importance header shape, each read back with `$select=importance` and deleted | what Exchange makes of every shape (precedence, a repeated header, an unreadable value, whitespace, comments): the rule `Importance::from_headers` copies, checked shape by shape by `importance_shapes_tests.rs`. Only header lines and the stored value; nothing identifies the account |
+| `mail/message_importance.json` | `POST /me/messages` with base64 MIME carrying `Importance: high` and `X-Priority: 1`, then `GET /me/messages/{id}?$select=…` with `MESSAGE_SELECT` | that Exchange turns the MIME header into the `importance` property (lowercased), which is how a draft and a send written as MIME keep their importance. A self-addressed draft, deleted after the capture; the display name was the account owner's and is scrubbed with the rest |
 | `mail/message_state.json` | `GET /me/messages/{id}?$select=id,isRead,isDraft,flag,lastModifiedDateTime,changeKey` | the **state-only** read a lightweight partial resolves through — and that it answers with `@odata.etag` (see Finding 15) |
 | `mail/message_patched.json` | `PATCH /me/messages/{id}` body `{isRead,flag}` | the write echo of a mark-read + flag edit (`isRead:true`, `flag.flagStatus:"flagged"`) |
 | `mail/sent_copy_lookup.json` | `GET /me/mailFolders/sentitems/messages?$filter=internetMessageId eq '<…>'&$select=id,categories&$top=1`, a few seconds after a `sendMail` | finding the filed copy of a just-sent message by the `Message-ID` its MIME carried, to give it a category (`categories`) |
@@ -43,12 +45,28 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/message_reported.json` | `POST {beta}/messages/{id}/reportMessage` `{ReportAction,IsMessageMoveRequested}` | the report echo — a **`reportMessageCommandResult`**, not the `message` object the docs describe (see Finding 17) |
 | `error/report_bad_action.json` | the same call with `ReportAction: unknownFutureValue` | the `400 RequestBodyRead` for a `reportAction` outside the three that exist |
 | `error/bad_request.json` / `unauthorized.json` | a 400 and a 401 | `error` envelope → `FailureClass` mapping |
+| `mail/shared_mailbox_probe.json` | `GET /users/{shared}/mailFolders/inbox?$select=id` | the shared-mailbox probe's success shape — a **work/school** tenant, so the address is scrubbed to `shared@example.test` (percent-encoded in `@odata.context`, as Graph writes it) |
+| `mail/own_inbox_probe.json` | `GET /me/mailFolders/inbox?$select=id` | the id the own-mailbox check compares against; Graph names the user in `@odata.context` by **object id**, not address, so that is scrubbed too |
+| `error/shared_mailbox_invalid_user.json` | the probe, for an address not in the tenant | `404 ErrorInvalidUser` |
+| `error/shared_mailbox_not_enabled.json` | the probe, for a principal whose mailbox is inactive or on-premises | `404 MailboxNotEnabledForRESTAPI` (captured in the #89 probe, not re-captured) |
+| `error/shared_mailbox_no_inbox.json` | the probe, for a principal that is not a mailbox (a group) | `404 ErrorItemNotFound`, "Default folder Inbox not found" (captured in the #89 probe, not re-captured) |
+| `calendar/shared_calendar_probe.json` | `GET /users/{shared}/calendar?$select=id` | the shared-calendar probe's success shape, scrubbed as `mail/shared_mailbox_probe.json`; the id is a placeholder |
+| `calendar/own_calendar_probe.json` | `GET /me/calendar?$select=id` | the id the own-calendar check compares against, the user scrubbed to a zero object id |
+| `error/shared_calendar_invalid_user.json` | the calendar probe, for an address not in the tenant | `404 ErrorInvalidUser` |
+| `error/shared_calendar_no_calendar.json` | the calendar probe, for a group address | `404 ErrorItemNotFound` "Default folder Calendar not found"; the item id and the MAPI trace (encoded SIDs and server names) are cut |
+| `calendar/online_meeting.json` | `POST /me/onlineMeetings/createOrGet` `{externalId,subject,startDateTime,endDateTime}` | what `TeamsMeetings` reads from a new meeting: `joinWebUrl`, `joinMeetingIdSettings` with its passcode, and no `audioConferencing` on an account without that licence. A **work/school** tenant, so the organiser, tenant, thread and meeting ids are scrubbed in every form the URLs carry them; `joinInformation` is a placeholder |
+| `calendar/online_meeting_lookup.json` | `GET /me/onlineMeetings?$filter=JoinWebUrl eq '…'` | finding that meeting again by its join link, which is how a delete names it |
+| `error/online_meeting_not_found.json` | the same lookup after the meeting's `DELETE` | `404 NotFound` (`3004`), which a delete treats as already gone |
+| `error/shared_mailbox_access_denied.json` | `GET /users/{shared}/mailboxSettings` **with** `MailboxSettings.ReadWrite` granted | `403 ErrorAccessDenied` — a *grant* shortfall, not a missing mailbox (Shared-mailbox finding 1) |
 | `mail/draft_patched.json` | `PATCH /me/messages/{id}` on a draft | the in-place rewrite: same `id`, same `internetMessageId`, `hasAttachments` echoed back so the caller can tell whether it had to fall back (see Mail-write finding 15) |
 | `error/draft_delete_not_found.json` | `POST /me/messages/{id}/permanentDelete` on a draft already purged | the `404` a retried draft delete meets (see Mail-write finding 16) |
 | `error/draft_delete_already_deleted.json` | `DELETE /me/messages/{id}` on an already-moved message | the `403 ErrorCannotDeleteObject` that also means "not there" (see Mail-write finding 16) |
+| `error/mime_content_conversion_failed.json` | `GET /me/messages/{id}/$value` on a message Exchange could not convert on arrival | the `500` that is permanent for that message (see `graph.md`, "A message Exchange cannot give back as MIME") |
 | `error/photo_image_not_found.json` | `GET /me/photos/240x240/$value` with no photo set | the 404 that means "there is no image" |
 | `error/photo_invalid_size.json` | `GET /me/photos/999x999/$value` | the 404 that means "that size is not offered" (see Finding 16) |
 | `me.json` | `GET /me` | account identity probe |
+| `organization/organization.json` | `GET /organization?$select=id`, on an Exchange Online tenant | an organization's account named by its tenant (`affiliation`); the tenant id is replaced with a fake GUID |
+| `error/organization_msa_unsupported.json` | the same call on a personal account | the `400 BadRequest` that is the answer "personal" |
 
 ## Real-behavior findings (captured, not assumed)
 
@@ -172,6 +190,7 @@ public repo must not ship a working join link (see Finding 10).
 | Fixture | Real Graph call | Protects |
 | --- | --- | --- |
 | `calendar/calendars.json` | `GET /me/calendars` | calendar-list → `Calendar` normalization: **two** calendars under one account — the default `Calendar` and the non-default `Extra calendar test` (`hexColor: #f7630c`) |
+| `calendar/calendars_work.json` | `GET /me/calendars?$top=100` on a work tenant | `allowedOnlineMeetingProviders` per calendar: `teamsForBusiness` on the user's own calendar, nothing on the two subscribed ones. Names, ids and the owner are placeholders |
 | `calendar/calendar.json` | one entry from `GET /me/calendars` | a single `Calendar` (the default) in isolation |
 | `calendar/event_extra_calendar.json` | a `singleInstance` from the non-default calendar's `calendarView` | an event bound to a **non-default** calendar — membership keeps it separable from the default calendar's events |
 | `calendar/event_series_master.json` | `GET /me/events/{id}` (a `seriesMaster`) | `patternedRecurrence` → `Recurrence`, zone, location, organizer |
@@ -180,6 +199,7 @@ public repo must not ship a working join link (see Finding 10).
 | `calendar/event_external_invitation.json` | the invitee's copy of an invitation an organizer **outside Exchange** mailed in (a `singleInstance` from `calendarView`) | the one shape where `uid` and `iCalUId` disagree: `uid` is the organizer's own `UID`, `iCalUId` the `PidLidGlobalObjectId` Exchange wrapped it in. The wrapper is re-encoded around the scrubbed `UID` so the two still agree byte for byte |
 | `calendar/event_allday.json` | an all-day `singleInstance` | `isAllDay` → zoneless `Date` + one-day duration |
 | `calendar/event_online_meeting.json` | a Teams `singleInstance` from `calendarView` | the online-meeting shape (`isOnlineMeeting`, `onlineMeetingProvider`, `onlineMeeting.joinUrl`) preserved on `Event.extended` — captured ahead of online-meeting-provider support |
+| `calendar/event_online_meeting_text_body.json` | `GET /me/events/{id}` on a work tenant with `Prefer: outlook.timezone="Europe/Amsterdam", outlook.body-content-type="text"`, the headers the delta sends | a Teams meeting made with HTML notes longer than `bodyPreview`'s 255 characters, its body as Exchange renders it in text: the whole notes, each link as `label<url>`, and Teams' current block (see Finding 10). Ids, the tenant and organiser GUIDs, the meeting number and both passcodes are same-shape placeholders |
 | `calendar/events_delta.json` | `GET /me/calendars/{id}/calendarView/delta?startDateTime=…&endDateTime=…` | the delta page shape: `seriesMaster`/`singleInstance` **kept**, `occurrence` **dropped**, `exception` folded onto its series (it carries `seriesMasterId` + `occurrenceId`), `@odata.deltaLink` cursor |
 | `calendar/event_master_cancellations.json` | `GET /me/events/{seriesMaster}?$select=start,end,cancelledOccurrences` with `Prefer: outlook.timezone="W. Europe Standard Time"` | the second request every series master costs: the two occurrences removed from the standup, and the master's start/end in its **own** authoring zone (see Finding 23) |
 
@@ -206,10 +226,20 @@ public repo must not ship a working join link (see Finding 10).
 10. **A Teams online meeting carries `isOnlineMeeting: true`, `onlineMeetingProvider:
     "teamsForBusiness"`, and an `onlineMeeting.joinUrl`** (the deprecated
     `onlineMeetingUrl` stays `null`); the join link, meeting-id, and passcodes are also
-    duplicated as HTML in the `body`. The `joinUrl` **is** projected today, as an
-    `Event.virtual_locations` entry. What is *not* modelled yet is the online-meeting
-    **provider identity** (`onlineMeetingProvider`/`isOnlineMeeting`); that stays on the
-    preserved raw payload (`Event.extended`) for a future provider-typing mapper.
+    duplicated as HTML in the `body`. `cal_conference` projects them as one native
+    `Conference` (service from `onlineMeetingProvider`, the dial-in numbers and
+    `conferenceId` beside the `joinUrl`). The body is read for meeting links like any
+    description, and its Teams link is the same meeting even where it differs: live, a
+    work tenant's `joinUrl` is the long `meetup-join` link and its body the short
+    `meet/<id>?p=` one. Exchange also adds a `location` named after the provider in the
+    organiser's language ("Microsoft Teams-vergadering"), with no address or coordinates;
+    the projection leaves it out. The fixture's body is Teams' older block between
+    underscore rules; a work tenant now writes the block with no rule above it, a heading
+    and `Deelnemen: <link>` first, and the meeting-options section last (`conference_block`).
+    The sync reads each body as text (`event_online_meeting_text_body.json`): asked for HTML,
+    Exchange gives the description only as the 255-character `bodyPreview`, and a notes edit
+    written back from it takes the meeting off the event, because Exchange keeps
+    `isOnlineMeeting` only while the body still holds the block.
 11. **One MS account owns many calendars** (`GET /me/calendars` → a list). Each is a
     distinct `Calendar` with its own immutable id, `isDefaultCalendar` flag, and colour
     (`hexColor` `#rrggbb` wins over the named `color`). A Graph `event` object does not
@@ -326,6 +356,57 @@ contact ids → `contact-N`, folder ids → `contact-folder-*`, `changeKey`/`@od
     to Junk regardless, with both the JSON boolean and the string `"false"` (the doc's own
     example form) tried. And only `junk`/`notJunk`/`phish` are accepted; the documented
     `unknown` and `unknownFutureValue` are both `400`. Details in `graph.md`.
+
+## Shared-mailbox findings (captured, not assumed)
+
+Probed read-only against a real Microsoft 365 tenant (`tools/graph-oauth --profile m365`) on
+2026-09-22, with a shared mailbox the account holds Full Access to. Where a finding repeats an
+earlier probe (PR #89) it says so, and where Graph has since changed it says that too.
+
+1. **Graph will not say that a mailbox exists but is not shared with you.** The probe
+   `GET /users/{addr}/mailFolders/inbox` has produced three different `404` codes and no
+   `403`: `ErrorInvalidUser` (not a principal), `MailboxNotEnabledForRESTAPI` (inactive,
+   soft-deleted or on-premises) and `ErrorItemNotFound` — "Default folder Inbox not found" —
+   which #89 recorded for a group. #89 probed every mailbox of a tenant, unshared ones
+   included, and got no `403`, so a mailbox never shared with the caller is a `404` as well
+   and "not resolvable by you" is all a resolver can report. (Which of the three codes an
+   unshared *user* mailbox gets was not recorded; the classification does not depend on it.) `403
+   ErrorAccessDenied` is a *different* failure, the credential's grant falling short of the
+   route: `/users/{shared}/mailboxSettings` answers it even with `MailboxSettings.ReadWrite`
+   granted and Full Access to the mailbox, while `/me/mailboxSettings` answers `200`.
+   Re-observed 2026-09-22 for `ErrorInvalidUser` and the `mailboxSettings` `403`.
+2. **An encoded `/` is still a path separator: Graph decodes the segment once and re-parses
+   the path.** `/users/a@b.example%2FmailFolders%2Fsentitems/mailFolders/inbox` answers `400
+   "Resource not found for the segment 'mailFolders'"`, and `a%2Fb@…` answers `400 "Unexpected
+   segment"`. Every other encoded character arrived as data — `%3F`, `%23`, `%3C`/`%3E`, `;`
+   come back inside an `ErrorInvalidUser` message — and `%252F` is decoded exactly once, to a
+   literal `%2F`. So `principal::MailboxAddress` refuses `/` and `\` and encodes the rest.
+3. **`..` segments are refused by Graph today, and were not always.** Every traversal shape
+   tried — `..%2Fme`, `%2e%2e%2fme`, `a%2F..%2F..%2Fme`, `..%5Cme` — answers `400 "The
+   request URL must not contain '..' path segments."`, and `/users/me` answers `400
+   TargetIdShouldNotBeMeOrWhitespace`. The #89 probe recorded `/users/..%2Fme/mailFolders/inbox`
+   answering **`200` with the signed-in user's own Inbox**. The guard is Microsoft's and
+   recent, which is exactly why the adapter does not lean on it (finding 2).
+4. **The same mailbox has the same Inbox id by every route.** `/me/mailFolders/inbox`,
+   `/users/{own upn}/…` and `/users/{own address in upper case}/…` returned one id; the shared
+   mailbox's differed. `/users/{own address}` answers `200` like a shared mailbox, so the
+   resolver compares Inbox ids to refuse the caller's own mailbox under any address or alias.
+   The folder id is the same with and without `Prefer: IdType="ImmutableId"`.
+5. **Addresses are case-insensitive on this route.** The probe answered the same mailbox for
+   the address in upper case.
+6. **Sending as the shared mailbox works, and files there.** One real email, with the user's
+   leave (2026-09-23, `live_shared_send.rs`): `POST /users/{shared}/sendMail` (MIME) answered
+   `202`. The copy was filed in the shared mailbox's Sent Items with `from` the shared address
+   and the pre-generated `Message-ID` kept; the signed-in user's own Sent Items got none.
+   `sender` named the delegate, and the delivered message's source had `Sender:` the delegate
+   beside `From:` the shared mailbox, so "on behalf of" is on the wire. The recipient's client
+   still displayed `From` alone. No fixture: the copy carries three real addresses and nothing in
+   it drives a normalizer change.
+7. **`sender` is an address only when the recipients are selected with it.** The same copy read
+   with `$select=from,sender` gave the delegate's X.500 `legacyExchangeDN`
+   (`/O=EXCHANGELABS/…/CN=RECIPIENTS/CN=…`) as `sender.emailAddress.address`; add `toRecipients`
+   and it was the delegate's SMTP address. `MESSAGE_SELECT` keeps the recipients for that reason,
+   and a unit test holds it there.
 
 ## The throttle fixture is a captured refusal, not an invented one
 

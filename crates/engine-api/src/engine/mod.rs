@@ -25,9 +25,11 @@ mod contact_photo;
 mod contact_query;
 mod contact_reads;
 mod contacts;
+mod forget;
 mod identities;
 mod mailbox_writes;
 mod reads;
+mod shared_accounts;
 mod sync;
 mod writes;
 

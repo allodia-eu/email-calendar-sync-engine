@@ -38,22 +38,36 @@
 //!   ([`EventWrite`](engine_provider::EventWrite)), because an RSVP is naturally a finished
 //!   document rather than a property patch.
 //! - `provider` — the [`Provider`](engine_provider::Provider) implementation.
+//! - `talk` — [`TalkMeetings`], the Nextcloud Talk meeting service: not a calendar adapter, but it
+//!   speaks to the same server with the same [`Credentials`].
 
+mod caldav_config;
 mod calendar;
 mod carddav;
+mod carddav_config;
 mod carddav_ops;
+mod credential_hosts;
+mod credential_scope;
+mod ctag_sync;
 mod dav;
+mod dav_client;
+mod delete_guard;
 mod discovery;
 mod error;
 mod href;
 pub mod imip;
+mod multiget;
+mod owners;
 mod provider;
 mod request;
 mod response;
 pub mod schedule_status;
+mod shared;
 mod sync;
+mod talk;
 #[cfg(test)]
 mod test_support;
+mod throttle;
 mod transport;
 mod vcard;
 mod vcard_escape;
@@ -62,15 +76,37 @@ mod vcard_write;
 mod write;
 
 #[cfg(test)]
+mod bound_tests;
+#[cfg(test)]
+mod carddav_class_tests;
+#[cfg(test)]
 mod carddav_tests;
 #[cfg(test)]
 mod carddav_unit_tests;
 #[cfg(test)]
+mod carddav_write_tests;
+#[cfg(test)]
+mod ctag_sync_tests;
+#[cfg(test)]
+mod delete_guard_tests;
+#[cfg(test)]
+mod discovery_start_tests;
+#[cfg(test)]
+mod double_encoding_tests;
+#[cfg(test)]
 mod vcard_tests;
+#[cfg(test)]
+mod write_outcome_tests;
 
-pub use carddav::{CardDavConfig, CardDavProvider};
+pub use caldav_config::CalDavConfig;
+pub use carddav::CardDavProvider;
+pub use carddav_config::CardDavConfig;
+pub use credential_hosts::CredentialHosts;
+/// The product a host names in every request's `User-Agent`, required by both configs.
+pub use engine_http::UserAgent;
 pub use error::CalDavError;
-pub use provider::{CalDavConfig, CalDavProvider};
+pub use provider::CalDavProvider;
+pub use talk::TalkMeetings;
 pub use transport::Credentials;
 
 /// Parses arbitrary bytes as an iCalendar object resource through the full

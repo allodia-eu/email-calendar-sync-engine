@@ -1,38 +1,29 @@
 //! The [`Provider`] trait: the one seam every adapter implements.
-//!
-//! Lifted out of the crate root purely for size — the trait is the crate's whole surface,
-//! and the root now carries the module docs, the module tree and the re-exports. Nothing
-//! about it changed in the move.
 
 use async_trait::async_trait;
 use engine_core::{
-    calendar::{Calendar, Event},
-    ids::{AccountId, ProviderKey},
+    calendar::Event,
+    ids::{AccountId, CalendarId, ProviderKey},
     mail::{Mailbox, Message},
     raw::RawMime,
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
+    time::Horizon,
 };
 
 use crate::{
-    CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream, MailEdit,
-    MailEditReceipt, MailboxWrites, MessageReport, ProviderError, ProviderResult, ReportReceipt,
-    ScopeSync, SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
-    error::unsupported,
+    CalendarListing, CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream,
+    HandOver, MailEdit, MailEditReceipt, MailboxWrites, MessageReport, ProviderError,
+    ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SharedAccount,
+    SourceStream, SubmissionReceipt, error::unsupported, sync::jmap_scope,
 };
-// `Capabilities`, `EmailChunk` and `PageToken` are named only by the doc links here, but
-// rustdoc resolves those against the *module's* scope — a link that worked in the crate root
-// silently breaks on a move, and this crate denies rustdoc warnings, so the move would fail
-// the build rather than quietly produce dead links.
-#[allow(
-    unused_imports,
-    reason = "named by intra-doc links on the trait's methods"
-)]
+// Named only by intra-doc links, which rustdoc resolves against this module's scope.
+#[allow(unused_imports, reason = "named by intra-doc links only")]
 use crate::{
     Capabilities, EmailChunk, IdentityControls, PageToken, PassMode, ReportControls, RsvpControls,
+    SharedAccounts,
 };
 
-/// A read/sync provider adapter for one account's mail (and, as slices land,
-/// calendar and submission).
+/// A read/sync provider adapter for one account's mail, calendar and submission.
 ///
 /// Each `sync_*` method fetches the changes for one scope since `cursor` (or a
 /// first full snapshot when `cursor` is `None`) and returns them as a
@@ -56,19 +47,13 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
     /// a different granularity (IMAP) override it. A calendar-only provider never
     /// has this consulted (its [`Capabilities::mail`] is false).
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
-        SyncScope::JmapType {
-            account: account.clone(),
-            data_type: JmapDataType::Mailbox,
-        }
+        jmap_scope(account, JmapDataType::Mailbox)
     }
 
     /// The scope the account's mail objects sync under. Defaults to the JMAP
     /// `(account, Email)` scope; non-JMAP mail providers override.
     fn email_scope(&self, account: &AccountId) -> SyncScope {
-        SyncScope::JmapType {
-            account: account.clone(),
-            data_type: JmapDataType::Email,
-        }
+        jmap_scope(account, JmapDataType::Email)
     }
 
     /// Fetches the account's mail collections since `cursor` (a full snapshot when
@@ -115,12 +100,10 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
     ///   streaming granularity a host commits and renders; `0` means one chunk per batch.
     ///
     /// A large `fetch_batch` with a small `chunk_size` gives *both* few round trips
-    /// *and* row-as-it-arrives commits. The returned [`EmailStream`] borrows `self`
-    /// and the arguments; the adapter's fetch advances only as the stream is polled
-    /// (backpressure). Each chunk carries a [`PassMode`] and an optional
-    /// [`advance_to`](EmailChunk::advance_to) checkpoint telling the orchestrator
-    /// how to apply and how far to advance the cursor, so a killed cold sync resumes
-    /// (`store-and-sync.md`).
+    /// *and* row-as-it-arrives commits. The returned [`EmailStream`] is pulled (backpressure).
+    /// Each chunk carries a [`PassMode`] and an optional [`advance_to`](EmailChunk::advance_to)
+    /// checkpoint telling the orchestrator how to apply and how far to advance the cursor, so a
+    /// killed cold sync resumes (`store-and-sync.md`).
     ///
     /// Mail providers ([`Capabilities::mail`]) override this; the default yields a
     /// single classified `Err`, so a capability-checking caller never relies on it.
@@ -174,6 +157,14 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
     /// on it. Submission is outbox-mediated by the caller (a durable pending op
     /// precedes this side effect); this method performs only the provider call.
     ///
+    /// **`hand_over` is committed immediately before the first byte that could deliver the
+    /// message, and that byte is written only if the commit succeeded** ([`HandOver`]). Whether
+    /// an interrupted send is retried or must be confirmed turns on that record, so marking
+    /// late can send a message twice, and marking early only asks the user about one that had
+    /// not gone. After the commit, an error is a definitive refusal only when the server
+    /// answered one; a reply that never came, or a connection lost before it, is
+    /// [`ProviderError::needs_confirmation`].
+    ///
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]. The default returns
@@ -182,8 +173,9 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
         &self,
         account: &AccountId,
         draft: &Draft,
+        hand_over: &HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
-        let _ = (account, draft);
+        let _ = (account, draft, hand_over);
         Err(unsupported("mail submission"))
     }
 
@@ -410,22 +402,49 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
         Err(unsupported("changing the sender name"))
     }
 
+    /// Every store this credential can open besides its default one (`crate::shared`): a
+    /// fact about the **credential**, like [`connection_info`](Self::connection_info), the same
+    /// whichever store this provider is bound to. [`SharedAccounts::Enumerable`] overrides it.
+    ///
+    /// # Errors
+    ///
+    /// A classified [`ProviderError`]; the default is
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    async fn list_shared_accounts(&self) -> ProviderResult<Vec<SharedAccount>> {
+        Err(unsupported("listing shared accounts"))
+    }
+
+    /// The store at `address`, if this credential can open it. The default matches
+    /// [`list_shared_accounts`](Self::list_shared_accounts) by [`SharedAccount::answers_to`];
+    /// an adapter that can only answer by address ([`SharedAccounts::ByAddress`]) overrides it.
+    ///
+    /// # Errors
+    ///
+    /// [`FailureClass::Permanent`](engine_core::error::FailureClass::Permanent) when nothing
+    /// this credential can open answers to `address` (on some transports including a mailbox
+    /// never shared with it: the server will not say which), and
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState) on an
+    /// adapter with no mechanism at all.
+    async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
+        crate::shared::resolve_by_listing(self, address).await
+    }
+
     /// The scope the account's calendars sync under. Defaults to the JMAP
     /// `(account, Calendar)` scope; non-JMAP providers override.
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
-        SyncScope::JmapType {
-            account: account.clone(),
-            data_type: JmapDataType::Calendar,
-        }
+        jmap_scope(account, JmapDataType::Calendar)
     }
 
-    /// The scope the account's calendar events sync under. Defaults to the JMAP
-    /// `(account, CalendarEvent)` scope; non-JMAP providers override.
-    fn event_scope(&self, account: &AccountId) -> SyncScope {
-        SyncScope::JmapType {
-            account: account.clone(),
-            data_type: JmapDataType::CalendarEvent,
-        }
+    /// The scope `calendar`'s events sync under.
+    ///
+    /// One provider serves every calendar of the account it signed in to, so this is asked per
+    /// calendar. Where the protocol's event delta is per calendar (CalDAV, Graph, Google) each
+    /// calendar has a scope of its own; where it is account-wide (JMAP's `CalendarEvent` state)
+    /// every calendar answers the **same** scope, and the account's events sync once under it.
+    /// Defaults to that JMAP scope; non-JMAP providers override.
+    fn event_scope(&self, account: &AccountId, calendar: &CalendarId) -> SyncScope {
+        let _ = calendar;
+        jmap_scope(account, JmapDataType::CalendarEvent)
     }
 
     /// Fetches the account's calendar collections since `cursor`. Providers
@@ -439,13 +458,19 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
         &self,
         account: &AccountId,
         cursor: Option<&SyncState>,
-    ) -> ProviderResult<ScopeSync<Calendar>> {
+    ) -> ProviderResult<CalendarListing> {
         let _ = (account, cursor);
         Err(unsupported("calendar sync"))
     }
 
-    /// Fetches the account's calendar events since `cursor` (JSCalendar). Providers
-    /// advertising [`Capabilities::calendars`] override this.
+    /// Fetches the events of the scope [`event_scope`](Self::event_scope) names for `calendar`,
+    /// since `cursor`. Where several calendars share one scope, any of them answers for all.
+    /// Providers advertising [`Capabilities::calendars`] override this.
+    ///
+    /// `window` is the date range the engine wants the scope to hold. A transport that fetches
+    /// inside one ([`Capabilities::windowed_events`]) opens any cursor it must open (none yet, or
+    /// one the server expired) over it, and a delta keeps the window its cursor was opened over;
+    /// one that fetches a calendar whole ignores it.
     ///
     /// # Errors
     ///
@@ -454,13 +479,11 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
     async fn sync_events(
         &self,
         account: &AccountId,
+        calendar: &CalendarId,
         cursor: Option<&SyncState>,
+        window: Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
-        let _ = (account, cursor);
+        let _ = (account, calendar, cursor, window);
         Err(unsupported("calendar sync"))
     }
 }
-
-#[cfg(test)]
-#[path = "draft_tests.rs"]
-mod draft_tests;

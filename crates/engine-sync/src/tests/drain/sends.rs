@@ -46,7 +46,7 @@ async fn a_queued_send_goes_out_on_the_next_drain() {
     assert_eq!(report.attempted[0].kind, PendingOpKind::MailSubmit);
     assert_eq!(report.attempted[0].outcome, DrainOutcome::Succeeded);
     // Nothing outstanding: the message went out and the op settled.
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    assert_eq!(store.list_pending_ops(account()).await.unwrap(), []);
 }
 /// A failure during a drain parks the op again, counting the attempt, rather than
 /// settling it: the send is still coming.
@@ -108,7 +108,7 @@ async fn a_drain_reports_a_delivered_send_whose_copy_was_not_filed() {
     );
     // Counted as delivered, because it was: the recipients have it.
     assert_eq!(report.delivered(), 1);
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    assert_eq!(store.list_pending_ops(account()).await.unwrap(), []);
 }
 /// An ambiguous send is parked for confirmation and the drainer must never pick it up
 /// again: a blind retry is how a message reaches its recipients twice.
@@ -207,8 +207,22 @@ async fn a_drain_settles_a_failure_no_retry_fixes() {
             class: FailureClass::Permanent,
         }
     );
-    // Off the queue: nothing will attempt it again, and a host can say so.
-    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
+    // Settled, so nothing attempts it again; still listed, so the user sees a message that
+    // has not gone and can send it again or withdraw it.
+    let rows = store.list_pending_ops(account()).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state, PendingOpState::Failed);
+    assert_eq!(rows[0].failure_class, Some(FailureClass::Permanent));
+    let again = drain_outbox(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+    )
+    .await
+    .unwrap();
+    assert!(again.attempted.is_empty(), "{again:?}");
 }
 /// A withdrawn send is gone for good: the drainer must not deliver a message the user
 /// deleted from the outbox.

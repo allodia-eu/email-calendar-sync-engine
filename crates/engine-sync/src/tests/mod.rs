@@ -25,11 +25,11 @@ use engine_core::{
     write::{IdempotencyKey, PendingOp, PendingOpKind, PendingOutcome, ResourceKey},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, EventDeletion,
-    EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, MailEdit,
-    MailEditReceipt, MessageReport, OverrideSurvival, PatchTarget, Provider, ProviderError,
-    ProviderResult, ReportReceipt, ReportVerdict, RsvpResponse, ScopeSync, SubmissionReceipt,
-    WriteGuard,
+    CalendarListing, CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream,
+    EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt,
+    MailEdit, MailEditReceipt, MessageReport, OverrideSurvival, PatchTarget, Provider,
+    ProviderError, ProviderResult, ReportReceipt, ReportVerdict, RsvpResponse, ScopeSync,
+    SubmissionReceipt, WriteGuard,
 };
 use engine_recurrence::Horizon;
 use engine_store::{
@@ -45,22 +45,34 @@ use super::{
     sync_mail,
 };
 
+pub(super) mod before_claim;
+mod calendar_expansion_wait;
+mod calendar_fanout;
+mod calendar_reach;
 mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
 mod drafts;
 pub(super) mod drain;
+mod durable_send;
 mod fake_provider;
+mod long_pass;
 mod mail_account;
 mod mail_edit;
 mod mail_sync;
 mod mailbox_edit;
+mod queued_edits;
+mod reconcile_state;
+mod sent_copy;
 mod sent_copy_keywords;
 mod state_change;
 mod streaming;
 mod streaming_resume;
 mod submit;
+mod unconfirmed_write;
+mod unrecordable;
 mod vanished;
+mod window_change;
 
 /// A way the fake provider can fail, so a test can drive one failure path without the
 /// provider carrying a flag per path.
@@ -74,6 +86,8 @@ enum Fault {
     UnfiledCopy,
     /// Reporting a message is throttled.
     Report,
+    /// Editing a message is throttled: retryable, so the edit stays queued.
+    ThrottledEdit,
     /// The send is lost *after* `DATA` — the ambiguous, unretryable case.
     AmbiguousSubmit,
     /// Every write's revision guard is refused (a CalDAV `412`, a JMAP `stateMismatch`).
@@ -99,6 +113,9 @@ struct FakeMail {
     /// Keyword-only changes emitted once alongside `delta` — what a provider that can tell a
     /// mark-read from a content change sends.
     state_delta: Mutex<Vec<MailStateChange>>,
+    /// When set, the pass after the first reconciles against these keys instead of adding: the
+    /// shape an IMAP session without QRESYNC sends, its state changes beside it.
+    present: Mutex<Option<Vec<ProviderKey>>>,
     /// The folder this provider is bound to, for the IMAP shape where a host builds one per
     /// folder. `None` is the JMAP shape: one provider, one account-wide email scope.
     folder: Option<MailboxId>,
@@ -134,6 +151,7 @@ impl FakeMail {
             faults: Vec::new(),
             delta: Mutex::default(),
             state_delta: Mutex::default(),
+            present: Mutex::default(),
             folder: None,
             started: Arc::new(Mutex::new(Vec::new())),
             failing_sends: Mutex::new(0),
@@ -175,6 +193,13 @@ impl FakeMail {
             .caps
             .with_sent_copy_keywords()
             .with_sent_copy_keywords_deferred();
+        self
+    }
+
+    /// Makes the pass after the first a reconcile against `present`, carrying the armed state
+    /// changes.
+    fn then_reconciling(self, present: Vec<ProviderKey>) -> Self {
+        *self.present.lock().expect("present mutex poisoned") = Some(present);
         self
     }
 

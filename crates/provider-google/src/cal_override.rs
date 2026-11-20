@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 
 use engine_core::{
     calendar::{Event, OverrideBuilder, Recurrence, RecurrenceOverride},
-    ids::ProviderKey,
+    ids::{CalendarId, ProviderKey},
     time::{CalendarDateTime, LocalDateTime},
 };
 use serde_json::Value;
@@ -56,10 +56,10 @@ pub(crate) struct PendingOverride {
 /// `originalStartTime`, or times that will not parse.
 pub(crate) fn pending_override(
     value: &Value,
+    calendar: &CalendarId,
     default_zone: Option<&str>,
 ) -> Result<PendingOverride, GoogleError> {
-    let master = ProviderKey::new(req_str(value, "recurringEventId")?)
-        .map_err(|e| GoogleError::protocol(format!("bad recurringEventId: {e}")))?;
+    let master = crate::cal_id::key(calendar.key().as_str(), req_str(value, "recurringEventId")?)?;
     let original = parse_endpoint(value, "originalStartTime", default_zone)?;
     let at = local_of(&original);
 

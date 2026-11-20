@@ -12,6 +12,8 @@ use rusqlite::Connection;
 
 use crate::{SqliteStore, convert::backend};
 
+mod domain;
+
 /// Tables keyed by `scope_key`: every row whose scope belongs to the account is
 /// removed via the `sync_scope` sub-select. `fts_doc`'s FTS5 shadow (`fts_index`)
 /// follows through its delete trigger, so it is not listed here.
@@ -41,6 +43,8 @@ const ACCOUNT_TABLES: &[&str] = &[
     "recipient_observation",
     "recipient_coverage",
     "recipient_index_state",
+    "server_keywords",
+    "source_attachment",
 ];
 
 impl<C: Clock> SqliteStore<C> {
@@ -142,7 +146,8 @@ pub(crate) fn forget_scope(conn: &mut Connection, scope_key: &str, token: u64) -
     tx.execute(
         "UPDATE sync_scope
          SET cursor = NULL, lease_expiry = NULL,
-             horizon_start = NULL, horizon_end = NULL, expansion_zone = NULL
+             horizon_start = NULL, horizon_end = NULL, expansion_zone = NULL,
+             collection_tag = NULL, fetch_start = NULL, fetch_end = NULL
          WHERE scope_key = ?1",
         [scope_key],
     )

@@ -1,0 +1,22 @@
+{
+  "config": {
+    "accessType": "TRUSTED",
+    "artifactConfig": {
+      "recordingConfig": {
+        "autoRecordingGeneration": "OFF"
+      },
+      "smartNotesConfig": {
+        "autoSmartNotesGeneration": "OFF"
+      },
+      "transcriptionConfig": {
+        "autoTranscriptionGeneration": "OFF"
+      }
+    },
+    "attendanceReportGenerationType": "DO_NOT_GENERATE",
+    "entryPointAccess": "ALL",
+    "moderation": "OFF"
+  },
+  "meetingCode": "aaa-bbbb-ccc",
+  "meetingUri": "https://meet.google.com/aaa-bbbb-ccc",
+  "name": "spaces/fixture-space-1"
+}

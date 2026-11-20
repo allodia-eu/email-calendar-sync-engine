@@ -157,7 +157,7 @@ impl<'a> Tokens<'a> {
         let mut out: Vec<u8> = Vec::new();
         loop {
             match self.bump() {
-                Some(b'"') => return Ok(Item::Quoted(String::from_utf8_lossy(&out).into_owned())),
+                Some(b'"') => return Ok(Item::Quoted(String::from_utf8_lossy_owned(out))),
                 Some(b'\\') => match self.bump() {
                     Some(c @ (b'"' | b'\\')) => out.push(c),
                     // RFC 9051's `QUOTED-CHAR` allows `\` only before `"` or `\`, so anything

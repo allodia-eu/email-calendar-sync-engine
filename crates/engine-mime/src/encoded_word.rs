@@ -5,73 +5,26 @@
 //! carries the header text verbatim, and Gmail's `payload.headers` returns the raw value,
 //! so a non-ASCII subject reaches them as `=?UTF-8?Q?Caf=C3=A9?=`.
 //!
-//! The `B` (base64) and `Q` (quoted-printable) encodings are decoded here; the charset is
-//! read with `mail-parser`'s table, the same one body extraction uses, so a header and a
-//! body cannot disagree about what `iso-2022-jp` means. Per RFC 2047 §6.2, linear
-//! whitespace *between* two adjacent encoded-words is removed (a word may be split
-//! mid-character). Malformed input is passed through verbatim — header text is hostile
-//! input and must never panic (`north-star.md`).
+//! The scanning and the `B` (base64) and `Q` (quoted-printable) payloads are `encodify`'s
+//! RFC 2047 decoder, the one mail-parser runs on the headers of a parsed message; the
+//! charset is read with `mail-parser`'s table, the same one body extraction uses, so a
+//! header and a body cannot disagree about what `iso-2022-jp` means. Per RFC 2047 §6.2,
+//! linear whitespace *between* two adjacent encoded-words is removed, and adjacent words in
+//! one charset are joined before conversion, so a character split across two words decodes.
+//! Folding whitespace becomes one space and the ends are trimmed. Malformed words are passed
+//! through verbatim — header text is hostile input and must never panic (`north-star.md`).
 
-use mail_parser::decoders::{base64::base64_decode, charsets::map::charset_decoder};
+use mail_parser::decoders::charsets;
 
 /// Decodes any RFC 2047 encoded-words in `input`, leaving ordinary text untouched.
 #[must_use]
 pub fn decode(input: &str) -> String {
-    let mut out = String::new();
-    let mut rest = input;
-    let mut prev_was_encoded = false;
-    loop {
-        let Some(idx) = rest.find("=?") else {
-            out.push_str(rest);
-            return out;
-        };
-        let before = &rest[..idx];
-        let parsed = parse_encoded_word(&rest[idx + 2..]);
-        // Whitespace between two adjacent encoded-words is dropped (RFC 2047 §6.2).
-        let drop_ws = prev_was_encoded
-            && parsed.is_some()
-            && !before.is_empty()
-            && before.chars().all(|c| c == ' ' || c == '\t');
-        if !drop_ws {
-            out.push_str(before);
-        }
-        if let Some((decoded, consumed)) = parsed {
-            out.push_str(&decoded);
-            rest = &rest[idx + 2 + consumed..];
-            prev_was_encoded = true;
-        } else {
-            out.push_str("=?");
-            rest = &rest[idx + 2..];
-            prev_was_encoded = false;
-        }
-    }
+    encodify::rfc2047::decode_text(input.as_bytes(), decode_charset).into_owned()
 }
 
-/// Parses one encoded-word body (the text *after* the leading `=?`): returns the
-/// decoded text and how many bytes it consumed (through the closing `?=`), or
-/// `None` if it is not a well-formed encoded-word.
-fn parse_encoded_word(body: &str) -> Option<(String, usize)> {
-    let charset_end = body.find('?')?;
-    let charset = &body[..charset_end];
-    let after_charset = &body[charset_end + 1..];
-    let encoding_end = after_charset.find('?')?;
-    let encoding = &after_charset[..encoding_end];
-    let text = &after_charset[encoding_end + 1..];
-    let text_end = text.find("?=")?;
-    let encoded = &text[..text_end];
-
-    let bytes = match encoding.to_ascii_uppercase().as_str() {
-        "B" => base64_decode(encoded.as_bytes())?,
-        "Q" => q_decode(encoded),
-        _ => return None,
-    };
-    let consumed = charset_end + 1 + encoding_end + 1 + text_end + 2;
-    Some((decode_charset(charset, &bytes), consumed))
-}
-
-/// Interprets bytes per the (case-insensitive) charset; a `*language` suffix
-/// (RFC 2231) is ignored, and a charset `mail-parser` does not know falls back to a
-/// UTF-8-lossy read.
+/// Appends `bytes`, read in `charset`, to `out`; a charset `mail-parser` does not know falls
+/// back to a UTF-8-lossy read. `encodify` hands over the label without its RFC 2231
+/// `*language` suffix.
 ///
 /// Delegating the table rather than keeping one here is what makes the legacy charsets
 /// real mail still carries work at all: the stateful `ISO-2022-*` sets, `Shift_JIS`,
@@ -86,55 +39,18 @@ fn parse_encoded_word(body: &str) -> Option<(String, usize)> {
 /// quotes, en/em dashes, `€`) in real mail — the lenient mapping browsers use (WHATWG
 /// Encoding: the `iso-8859-1` label *is* `windows-1252`). Without it an Outlook subject's
 /// en-dash (`0x96`) decodes to an unrenderable `\u{96}`. Stated here rather than left to
-/// the table, because the table has already changed its answer once: `mail-parser` reads
-/// this label as true Latin-1 at the pinned 0.11.4 and as CP1252 by 0.11.9.
-fn decode_charset(charset: &str, bytes: &[u8]) -> String {
-    let name = charset.split('*').next().unwrap_or(charset);
-    let lowercased = name.to_ascii_lowercase();
-    let name = match lowercased.as_str() {
-        "iso-8859-1" | "iso_8859-1" | "latin1" | "l1" => "windows-1252",
-        _ => name,
+/// the table, because the table has already changed its answer once: `mail-parser` read
+/// this label as true Latin-1 at 0.11.4 and reads it as CP1252 from 0.11.5 on.
+fn decode_charset(charset: &[u8], bytes: &[u8], out: &mut String) {
+    let charset: &[u8] = if [&b"iso-8859-1"[..], b"iso_8859-1", b"latin1", b"l1"]
+        .iter()
+        .any(|label| charset.eq_ignore_ascii_case(label))
+    {
+        b"windows-1252"
+    } else {
+        charset
     };
-    match charset_decoder(name.as_bytes()) {
-        Some(decode) => decode(bytes),
-        None => String::from_utf8_lossy(bytes).into_owned(),
-    }
-}
-
-/// Quoted-printable decoding for the `Q` encoding: `_` is a space, `=XX` is a hex
-/// byte; a malformed `=` is kept literally.
-fn q_decode(text: &str) -> Vec<u8> {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'_' => out.push(b' '),
-            b'=' => {
-                if let (Some(hi), Some(lo)) = (
-                    bytes.get(i + 1).copied().and_then(hex_value),
-                    bytes.get(i + 2).copied().and_then(hex_value),
-                ) {
-                    out.push(hi * 16 + lo);
-                    i += 3;
-                    continue;
-                }
-                out.push(b'=');
-            }
-            other => out.push(other),
-        }
-        i += 1;
-    }
-    out
-}
-
-fn hex_value(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+    charsets::decode_append(charset, bytes, out);
 }
 
 #[cfg(test)]
@@ -243,5 +159,14 @@ mod tests {
         }
         // A bad encoding letter leaves the word literal.
         assert_eq!(decode("=?UTF-8?Z?x?="), "=?UTF-8?Z?x?=");
+        assert_eq!(decode("=?UTF-8?Q?unterminated"), "=?UTF-8?Q?unterminated");
+    }
+
+    #[test]
+    fn a_character_split_across_two_words_decodes() {
+        // RFC 2047 §5 forbids the split, and senders make it anyway: the em-dash's three
+        // bytes span two words. Decoding each word on its own leaves two U+FFFD.
+        assert_eq!(decode("=?UTF-8?Q?=E2=80?= =?UTF-8?Q?=94?="), "—");
+        assert_eq!(decode("=?UTF-8?B?4oA=?= =?UTF-8?B?lA==?="), "—");
     }
 }

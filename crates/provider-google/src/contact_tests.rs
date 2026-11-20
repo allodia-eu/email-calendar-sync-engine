@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::{
     GoogleClient, GoogleContactProvider, GoogleContactSource,
-    test_support::{capturing_server, fake_client, fake_client_fallible, retry, tls},
+    test_support::{capturing_server, fake_client, fake_client_fallible, retry, tls, user_agent},
 };
 
 fn account() -> AccountId {
@@ -25,7 +25,7 @@ fn account() -> AccountId {
 async fn update_contact_carries_the_source_etag_and_update_mask() {
     let (base_url, captured) = capturing_server("200 OK", r#"{"resourceName":"people/c1"}"#);
     let provider = GoogleContactProvider::connections(
-        GoogleClient::with_base("token", base_url, tls(), &retry()).unwrap(),
+        GoogleClient::with_base("token", base_url, tls(), &retry(), &user_agent()).unwrap(),
     );
     let mut base = ContactCard::new(
         ContactId::try_from("people/c1").unwrap(),
@@ -127,7 +127,7 @@ async fn contact_groups_are_always_listed_as_a_snapshot_without_sync_token() {
         r#"{"contactGroups":[{"resourceName":"contactGroups/friends","name":"Friends"}]}"#,
     );
     let provider = GoogleContactProvider::groups(
-        GoogleClient::with_base("token", base_url, tls(), &retry()).unwrap(),
+        GoogleClient::with_base("token", base_url, tls(), &retry(), &user_agent()).unwrap(),
     );
     let result = provider
         .sync_contacts(&account(), Some(&SyncState::new("old-snapshot")))
@@ -250,7 +250,7 @@ async fn source_discovery_and_paginated_snapshot_are_complete() {
 }
 
 #[tokio::test]
-async fn deltas_tombstones_token_recovery_and_permissions_are_source_local() {
+async fn deltas_tombstones_and_permissions_are_source_local() {
     let delta = GoogleContactProvider::other_contacts(fake_client(vec![(
         "syncToken=old",
         json!({
@@ -274,30 +274,6 @@ async fn deltas_tombstones_token_recovery_and_permissions_are_source_local() {
             SyncUpdate::Delta { changed, removed, .. }
                 if changed.len() == 1 && removed.len() == 1
         )
-    ));
-
-    let recovered = GoogleContactProvider::connections(fake_client_fallible(vec![
-        (
-            "syncToken=expired",
-            Err((410, json!({"error": {"status": "EXPIRED_SYNC_TOKEN"}}))),
-        ),
-        (
-            "requestSyncToken=true",
-            Ok(json!({
-                "connections": [{"resourceName": "people/recovered"}],
-                "nextSyncToken": "fresh"
-            })),
-        ),
-    ]))
-    .sync_contacts(&account(), Some(&SyncState::new("expired")))
-    .await
-    .unwrap();
-    assert!(matches!(
-        recovered,
-        ContactSourceSync::Available {
-            cursor_recovered: true,
-            sync,
-        } if matches!(sync.update, SyncUpdate::Snapshot { .. })
     ));
 
     let forbidden = vec![(

@@ -26,8 +26,13 @@
 //!
 //! Mail, calendar, and People read/sync and writes share this transport spine.
 
+mod affiliation;
 mod base64url;
+mod cal_conference;
+mod cal_conference_write;
 mod cal_fetch;
+mod cal_id;
+mod cal_invite;
 mod cal_normalize;
 mod cal_override;
 mod cal_write;
@@ -36,17 +41,25 @@ mod contact;
 mod contact_normalize;
 mod contact_source;
 mod contact_write;
+mod cursor;
 mod drafts;
 mod error;
 mod fetch;
 mod http_transport;
 mod identity;
+mod imap_cursor;
+mod imap_labels;
+mod imap_mail;
+mod imap_pass;
 mod json;
 mod labels_write;
+mod meet_meetings;
 mod mutate;
 mod named_labels;
 mod normalize;
+mod pass;
 mod provider;
+mod quota;
 mod report;
 mod submit;
 mod throttle;
@@ -60,11 +73,13 @@ mod contact_shape_tests;
 mod contact_tests;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod write_outcome_tests;
 
-pub use cal_fetch::CalendarWindow;
 pub use calendar::GoogleCalendarProvider;
 pub use contact::GoogleContactProvider;
 pub use contact_source::GoogleContactSource;
 pub use error::GoogleError;
+pub use meet_meetings::MeetMeetings;
 pub use provider::GmailProvider;
 pub use transport::GoogleClient;

@@ -1,7 +1,7 @@
 //! Offline calendar-provider tests: `sync_calendars` and the snapshot/delta/410-restart
 //! `sync_events` drain.
 
-use engine_core::sync::SyncUpdate;
+use engine_core::{sync::SyncUpdate, time::Horizon};
 
 use super::*;
 use crate::test_support::{fake_client, fake_client_fallible, json};
@@ -16,18 +16,27 @@ fn account() -> AccountId {
 }
 
 fn calendar() -> CalendarId {
-    CalendarId::try_from("primary").unwrap()
+    CalendarId::try_from("me@example.com").unwrap()
+}
+
+/// A window wide enough to be the whole calendar.
+fn whole() -> Horizon {
+    Horizon::new(
+        "2000-01-01T00:00:00Z".parse().unwrap(),
+        "2100-01-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap()
 }
 
 fn provider(routes: Vec<(&'static str, serde_json::Value)>) -> GoogleCalendarProvider {
-    GoogleCalendarProvider::new(fake_client(routes), calendar())
+    GoogleCalendarProvider::new(fake_client(routes))
 }
 
 #[test]
-fn scopes_bind_a_calendar_and_a_calendar_list_container() {
+fn each_calendar_has_its_own_scope_under_a_calendar_list_container() {
     let p = provider(vec![]);
     assert_eq!(
-        p.event_scope(&account()),
+        p.event_scope(&account(), &calendar()),
         SyncScope::GoogleCalendar {
             account: account(),
             calendar: calendar()
@@ -41,11 +50,25 @@ fn scopes_bind_a_calendar_and_a_calendar_list_container() {
 }
 
 #[tokio::test]
+async fn the_calendars_schedule_as_the_primary_calendars_address() {
+    let provider = provider(vec![(
+        "/calendar/v3/calendars/primary",
+        serde_json::json!({ "kind": "calendar#calendar", "id": "alice@example.org",
+            "summary": "alice@example.org", "timeZone": "Europe/Amsterdam" }),
+    )]);
+    assert_eq!(
+        provider.calendar_user_addresses(&account()).await.unwrap(),
+        CalendarUserAddresses::Including(vec!["alice@example.org".to_owned()])
+    );
+}
+
+#[tokio::test]
 async fn sync_calendars_snapshots_the_list() {
     let sync = provider(vec![("/calendarList", json(CALENDARS))])
         .sync_calendars(&account(), None)
         .await
-        .unwrap();
+        .unwrap()
+        .sync;
     assert!(sync.is_snapshot());
     let SyncUpdate::Snapshot { objects, present } = &sync.update else {
         panic!("expected a calendar snapshot");
@@ -55,9 +78,21 @@ async fn sync_calendars_snapshots_the_list() {
 }
 
 #[tokio::test]
+async fn the_default_calendar_syncs_under_its_address_not_the_alias() {
+    // Its events would be keyed `primary/…` beside the same events under the address.
+    let aliased = CalendarId::try_from("primary").unwrap();
+    assert!(
+        provider(vec![("/events?singleEvents=false", json(EVENTS))])
+            .sync_events(&account(), &aliased, None, whole())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn sync_events_snapshot_reconciles_with_a_sync_token() {
     let sync = provider(vec![("/events?singleEvents=false", json(EVENTS))])
-        .sync_events(&account(), None)
+        .sync_events(&account(), &calendar(), None, whole())
         .await
         .unwrap();
     assert!(sync.is_snapshot());
@@ -65,13 +100,18 @@ async fn sync_events_snapshot_reconciles_with_a_sync_token() {
         panic!("expected a snapshot");
     };
     assert_eq!(objects.len(), 5);
-    assert_eq!(sync.next_cursor.as_str(), "events-sync-token-1");
+    assert_eq!(sync.next_cursor.as_str(), "v1;events-sync-token-1");
 }
 
 #[tokio::test]
 async fn sync_events_delta_is_additive_with_a_tombstone() {
     let sync = provider(vec![("syncToken=", json(DELTA))])
-        .sync_events(&account(), Some(&SyncState::new("events-sync-token-1")))
+        .sync_events(
+            &account(),
+            &calendar(),
+            Some(&SyncState::new("v1;events-sync-token-1")),
+            whole(),
+        )
         .await
         .unwrap();
     assert!(!sync.is_snapshot());
@@ -83,19 +123,15 @@ async fn sync_events_delta_is_additive_with_a_tombstone() {
     };
     assert_eq!(changed.len(), 1);
     assert_eq!(removed.len(), 1);
-    assert_eq!(sync.next_cursor.as_str(), "events-sync-token-2");
+    assert_eq!(sync.next_cursor.as_str(), "v1;events-sync-token-2");
 }
 
 #[test]
-fn with_window_and_write_capabilities_and_debug() {
-    use engine_core::time::CalendarDate;
-    let window = crate::CalendarWindow::new(
-        CalendarDate::new(2026, 8, 1).unwrap(),
-        CalendarDate::new(2026, 9, 1).unwrap(),
-    );
-    let p = provider(vec![]).with_window(window);
+fn write_capabilities_and_debug() {
+    let p = provider(vec![]);
     // Google enforces the If-Match guard → writes advertised.
     assert!(p.connection_info().capabilities.calendar_writes());
+    assert!(p.connection_info().capabilities.conference_writes());
     assert!(format!("{p:?}").contains("GoogleCalendarProvider"));
 }
 
@@ -121,7 +157,7 @@ async fn create_patch_delete_route_through_the_provider() {
         ("/events/srv-1", created),
     ]);
 
-    // A draft for the *bound* calendar is created; one for another calendar is refused.
+    // A draft is created in the calendar it names.
     let draft = EventDraft::new(
         calendar(),
         Uid::new("u@test.local").unwrap(),
@@ -131,20 +167,46 @@ async fn create_patch_delete_route_through_the_provider() {
         stamp,
     );
     let receipt = p.create_event(&account(), &draft).await.unwrap();
-    assert_eq!(receipt.event.key().as_str(), "srv-1");
+    assert_eq!(receipt.event.key().as_str(), "me@example.com/srv-1");
+    // A server that answers only under another calendar proves the request went there.
+    let other = provider(vec![(
+        "/calendars/other/events",
+        serde_json::json!({ "id": "srv-2", "iCalUID": "o@google.com", "etag": "\"v1\"" }),
+    )]);
     let elsewhere = EventDraft::new(
         CalendarId::try_from("other").unwrap(),
-        Uid::new("u@test.local").unwrap(),
-        "Nope",
+        Uid::new("o@test.local").unwrap(),
+        "Elsewhere",
         zoned.clone(),
         zoned.clone(),
         stamp,
     );
-    assert!(p.create_event(&account(), &elsewhere).await.is_err());
+    let receipt = other.create_event(&account(), &elsewhere).await.unwrap();
+    assert_eq!(receipt.event.key().as_str(), "other/srv-2");
+    assert!(
+        provider(vec![(
+            "/calendars/me%40example.com/events",
+            serde_json::json!({})
+        )])
+        .create_event(&account(), &elsewhere)
+        .await
+        .is_err(),
+        "and never to the default calendar",
+    );
+    // The default calendar is named by its address; the alias would be a second id for it.
+    let aliased = EventDraft::new(
+        CalendarId::try_from("primary").unwrap(),
+        Uid::new("a@test.local").unwrap(),
+        "Aliased",
+        zoned.clone(),
+        zoned.clone(),
+        stamp,
+    );
+    assert!(p.create_event(&account(), &aliased).await.is_err());
 
     // Patch + delete route through too.
     let mut base = Event::new(
-        engine_core::ids::EventId::try_from("srv-1").unwrap(),
+        engine_core::ids::EventId::try_from("me@example.com/srv-1").unwrap(),
         Uid::new("u@google.com").unwrap(),
         Memberships::of_one(calendar()),
         zoned,
@@ -157,9 +219,27 @@ async fn create_patch_delete_route_through_the_provider() {
     );
     assert!(p.patch_event(&account(), &base, &edit).await.is_ok());
     assert!(
-        p.delete_event(&account(), None, &EventDeletion::of(&base))
+        p.delete_event(&account(), Some(&base), &EventDeletion::of(&base))
             .await
             .is_ok()
+    );
+
+    // A delete with no stored event reaches the calendar its id names, and only that one.
+    let gone = EventDeletion::unconditional(receipt.event, receipt.uid);
+    let in_other = provider(vec![(
+        "/calendars/other/events/srv-2",
+        serde_json::Value::Null,
+    )]);
+    assert!(in_other.delete_event(&account(), None, &gone).await.is_ok());
+    let in_default = provider(vec![(
+        "/calendars/me%40example.com/events/srv-2",
+        serde_json::Value::Null,
+    )]);
+    assert!(
+        in_default
+            .delete_event(&account(), None, &gone)
+            .await
+            .is_err()
     );
 }
 
@@ -168,11 +248,50 @@ async fn sync_events_restarts_as_a_snapshot_when_the_sync_token_expired() {
     let mut routes: Vec<(&str, crate::test_support::FakeRoute)> =
         vec![("syncToken=", Err((410, json(SYNC_GONE))))];
     routes.push(("/events?singleEvents=false", Ok(json(EVENTS))));
-    let sync = GoogleCalendarProvider::new(fake_client_fallible(routes), calendar())
-        .sync_events(&account(), Some(&SyncState::new("old")))
+    let sync = GoogleCalendarProvider::new(fake_client_fallible(routes))
+        .sync_events(
+            &account(),
+            &calendar(),
+            Some(&SyncState::new("v1;old")),
+            whole(),
+        )
         .await
         .unwrap();
     // Recovery yields a fresh snapshot, not an error.
     assert!(sync.is_snapshot());
-    assert_eq!(sync.next_cursor.as_str(), "events-sync-token-1");
+    assert_eq!(sync.next_cursor.as_str(), "v1;events-sync-token-1");
+}
+
+/// The window the engine names bounds the snapshot: the route answers only the December range.
+/// A delta carries no window at all.
+#[tokio::test]
+async fn sync_events_opens_over_the_window_the_engine_names() {
+    let p = provider(vec![
+        (
+            "&timeMin=2026-12-01T00:00:00Z&timeMax=2027-01-01T00:00:00Z",
+            json(EVENTS),
+        ),
+        ("syncToken=", json(DELTA)),
+    ]);
+    assert!(p.connection_info().capabilities.windowed_events());
+    let december = Horizon::new(
+        "2026-12-01T00:00:00Z".parse().unwrap(),
+        "2026-12-31T12:00:00Z".parse().unwrap(),
+    )
+    .unwrap();
+    let snapshot = p
+        .sync_events(&account(), &calendar(), None, december)
+        .await
+        .unwrap();
+    assert!(snapshot.is_snapshot());
+    let delta = p
+        .sync_events(
+            &account(),
+            &calendar(),
+            Some(&snapshot.next_cursor),
+            december,
+        )
+        .await
+        .unwrap();
+    assert!(!delta.is_snapshot());
 }

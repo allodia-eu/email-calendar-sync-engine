@@ -68,8 +68,13 @@ async fn the_throttle_a_real_mailbox_sends_is_a_wait_and_not_a_loss() {
     );
     let base = mock_server(response);
     let retry = engine_http::RetryConfig::default().with_policy(engine_http::RetryPolicy::none());
-    let transport =
-        HttpTransport::new("tok".to_owned(), crate::test_support::tls(), &retry).unwrap();
+    let transport = HttpTransport::new(
+        "tok".to_owned(),
+        crate::test_support::tls(),
+        &retry,
+        &crate::test_support::user_agent(),
+    )
+    .unwrap();
 
     let err = transport.get(&base).await.expect_err("a refusal");
 
@@ -96,6 +101,7 @@ async fn the_anonymous_byte_path_sends_no_authorization_header() {
         "super-secret".to_owned(),
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap();
 
@@ -126,6 +132,7 @@ async fn get_parses_a_success_body() {
         "tok".to_owned(),
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap();
     let doc = transport.get(&base).await.unwrap();
@@ -142,6 +149,7 @@ async fn the_http_version_is_unknown_until_the_first_response() {
         "tok".to_owned(),
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap();
     assert_eq!(GraphTransport::http_version(&transport), None);
@@ -166,6 +174,7 @@ async fn get_bytes_returns_the_raw_body_verbatim() {
         "tok".to_owned(),
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap()
     .get_bytes(&base)
@@ -183,6 +192,7 @@ async fn get_bytes_non_success_is_a_classified_status_error() {
         "tok".to_owned(),
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap()
     .get_bytes(&base)
@@ -199,6 +209,7 @@ async fn non_success_status_becomes_a_classified_status_error() {
         "tok".to_owned(),
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap()
     .get(&base)
@@ -217,6 +228,7 @@ async fn a_non_json_success_body_is_a_permanent_decode_error() {
         "tok".to_owned(),
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap()
     .get(&base)
@@ -238,6 +250,7 @@ async fn a_refused_connection_is_a_retryable_transport_error() {
         "tok".to_owned(),
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap()
     .get("http://127.0.0.1:1/me")
@@ -255,6 +268,7 @@ async fn a_write_body_parses_json_or_treats_empty_as_none() {
         "tok".to_owned(),
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap()
     .post(&base, "application/json", b"{}".to_vec())
@@ -267,6 +281,7 @@ async fn a_write_body_parses_json_or_treats_empty_as_none() {
         "tok".to_owned(),
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap()
     .patch(&base, "application/json", Some("etag"), b"{}".to_vec())
@@ -283,6 +298,7 @@ async fn a_412_write_is_a_classified_conflict() {
         "tok".to_owned(),
         crate::test_support::tls(),
         &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
     )
     .unwrap()
     .delete(&base, Some("stale-etag"))

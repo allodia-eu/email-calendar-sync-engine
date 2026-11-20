@@ -36,10 +36,14 @@ mod base64;
 mod blob;
 mod blob_batch;
 mod calendar;
+mod calendar_conference;
+mod calendar_conference_write;
 mod calendar_patch;
+mod calendar_rights;
 mod calendar_rsvp;
 mod calendar_rule;
 mod calendar_write;
+mod config;
 mod contact;
 mod contact_fields;
 mod contact_write;
@@ -49,28 +53,34 @@ mod drafts_blobs;
 mod error;
 mod executor;
 mod fetch;
+mod fetch_scope;
 mod identity;
 mod json;
 mod mail;
 mod mailbox_write;
 mod mutate;
+mod participant_identity;
 mod provider;
 mod provider_calendar;
 mod report;
 mod request;
 mod session;
+mod session_accounts;
+mod session_limits;
 mod session_urls;
+mod shared;
 mod submit;
 mod submit_body;
 mod sync_ops;
 mod transport;
+mod walk;
 mod watch;
 
 use core::fmt;
-use std::sync::Arc;
 
+pub use config::{Credentials, JmapConfig};
+use engine_http::Exchange;
 use engine_provider::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
-use engine_tls::TlsClientConfig;
 pub use error::JmapError;
 pub use provider::JmapProvider;
 use reqwest::Url;
@@ -86,146 +96,6 @@ use crate::{
 /// The maximum number of redirects followed while discovering the session
 /// resource (the well-known endpoint 307-redirects to the session URL).
 const MAX_SESSION_REDIRECTS: usize = 5;
-
-/// Credentials for authenticating to a JMAP server.
-///
-/// This names the credential the caller *holds*, not the header that goes on the wire.
-/// JMAP specifies no authentication mechanism of its own — RFC 8620 §8.2 defers to the
-/// IANA scheme registry and marks Basic NOT RECOMMENDED — so the scheme is whatever the
-/// server challenges for, and the transport re-frames the secret to match (see
-/// `crate::auth`). A `Basic` credential is therefore also presentable as a bearer token;
-/// the variant records that a username came with it, not that Basic will be sent.
-///
-/// `Debug` is redacted — the secret never appears in logs (`north-star.md` security).
-#[derive(Clone)]
-pub enum Credentials {
-    /// A username and secret: a login password, an app-specific password, or an API
-    /// token that the user happened to enter alongside their address.
-    Basic {
-        /// The username (full email address for the fixture).
-        username: String,
-        /// The password or app-specific token.
-        password: String,
-    },
-    /// A bare secret with no username — an OAuth or API bearer token.
-    Bearer(String),
-}
-
-impl Credentials {
-    /// HTTP Basic credentials.
-    #[must_use]
-    pub fn basic(username: impl Into<String>, password: impl Into<String>) -> Self {
-        Self::Basic {
-            username: username.into(),
-            password: password.into(),
-        }
-    }
-
-    /// An OAuth bearer token.
-    #[must_use]
-    pub fn bearer(token: impl Into<String>) -> Self {
-        Self::Bearer(token.into())
-    }
-}
-
-impl fmt::Debug for Credentials {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Never render the secret.
-        let kind = match self {
-            Self::Basic { username, .. } => format!("Basic {{ username: {username:?}, .. }}"),
-            Self::Bearer(_) => "Bearer(..)".to_owned(),
-        };
-        f.write_str(&kind)
-    }
-}
-
-/// How to connect a [`JmapClient`].
-#[derive(Clone)]
-pub struct JmapConfig {
-    base_url: String,
-    credentials: Credentials,
-    session_path: String,
-    session_urls: SessionUrlPolicy,
-    tls: TlsClientConfig,
-    retry: engine_http::RetryConfig,
-    connect_observer: Option<Arc<dyn ConnectObserver>>,
-}
-
-impl JmapConfig {
-    /// Configures a connection to `base_url` (e.g. `http://127.0.0.1:18080`) with
-    /// `credentials`, defaulting to well-known session discovery and rebasing
-    /// advertised URLs onto the connection.
-    #[must_use]
-    pub fn new(base_url: impl Into<String>, credentials: Credentials) -> Self {
-        Self {
-            base_url: base_url.into(),
-            credentials,
-            session_path: "/.well-known/jmap".to_owned(),
-            session_urls: SessionUrlPolicy::RebaseToConnection,
-            tls: TlsClientConfig::default(),
-            retry: engine_http::RetryConfig::default(),
-            connect_observer: None,
-        }
-    }
-
-    /// Overrides the session-discovery path (default `/.well-known/jmap`).
-    #[must_use]
-    pub fn with_session_path(mut self, path: impl Into<String>) -> Self {
-        self.session_path = path.into();
-        self
-    }
-
-    /// Overrides how advertised session URLs are resolved.
-    #[must_use]
-    pub fn with_session_urls(mut self, policy: SessionUrlPolicy) -> Self {
-        self.session_urls = policy;
-        self
-    }
-
-    /// Sets the TLS trust policy (the host builds one and shares it across the
-    /// account's providers). Defaults to the hermetic bundled roots
-    /// (`docs/agent-guidance/tls.md`).
-    #[must_use]
-    pub fn with_tls(mut self, tls: TlsClientConfig) -> Self {
-        self.tls = tls;
-        self
-    }
-
-    /// Sets the throttling policy (the host builds one and shares it across the account's
-    /// providers, like the TLS policy above). Defaults to waiting a `429` out
-    /// (`docs/agent-guidance/http-throttling.md`).
-    #[must_use]
-    pub fn with_retry(mut self, retry: engine_http::RetryConfig) -> Self {
-        self.retry = retry;
-        self
-    }
-
-    /// Observes the connect phase: one [`ConnectStep::Redirected`] per well-known hop,
-    /// [`ConnectStep::Authenticated`] when the server serves the session, and
-    /// [`ConnectStep::Discovered`] naming the `apiUrl` that will serve every method
-    /// call. No TLS step — an HTTP adapter learns its TLS version from a response,
-    /// after the connect phase, so it lands in `ConnectionInfo::tls_version` instead
-    /// (`docs/agent-guidance/tls.md`).
-    ///
-    /// The observer rides on the config, so a host that rebuilds this client after a
-    /// dropped session observes the redial too. `Arc` so one host observer can be
-    /// shared across the account's providers.
-    #[must_use]
-    pub fn with_connect_observer(mut self, observer: Arc<dyn ConnectObserver>) -> Self {
-        self.connect_observer = Some(observer);
-        self
-    }
-}
-
-impl fmt::Debug for JmapConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JmapConfig")
-            .field("base_url", &self.base_url)
-            .field("session_path", &self.session_path)
-            .field("session_urls", &self.session_urls)
-            .finish_non_exhaustive()
-    }
-}
 
 /// A connected JMAP client: an authenticated transport plus the resolved session.
 ///
@@ -256,7 +126,12 @@ impl JmapClient {
             .connect_observer
             .as_deref()
             .unwrap_or(&IgnoreConnectSteps);
-        let transport = Transport::new(config.credentials, &config.tls, &config.retry)?;
+        let transport = Transport::new(
+            config.credentials,
+            &config.tls,
+            &config.retry,
+            &config.user_agent,
+        )?;
         let (document, served_by) = fetch_session(
             &transport,
             &base,
@@ -269,7 +144,12 @@ impl JmapClient {
         // started from. A chain that changed origin means the advertised `apiUrl`
         // belongs to the new one, and rebasing it onto the old one aims every method
         // call at a host that never had the session.
-        let session = Session::parse(&document, &served_by, config.session_urls)?;
+        let session = Session::parse(
+            &document,
+            &served_by,
+            config.session_urls,
+            config.shared_account.as_ref(),
+        )?;
         // What this server said it allows, stated once for the whole account. RFC 8620 §2
         // scopes `maxConcurrentRequests` to the API endpoint and defines no companion for
         // downloads, but a server may apply one number to both and Stalwart does — so it
@@ -306,17 +186,20 @@ impl JmapClient {
     }
 
     /// Ships a batched request to the API endpoint and parses the response
-    /// envelope. Method-level errors surface when a result is read
-    /// ([`Response::result`]).
+    /// envelope; `exchange` says whether it submits a message. Method-level errors
+    /// surface when a result is read ([`Response::result`]).
     ///
     /// # Errors
     ///
     /// Returns [`JmapError`] on a transport/HTTP failure or a malformed response.
-    pub(crate) async fn execute(&self, request: &Request) -> Result<Response, JmapError> {
+    pub(crate) async fn execute(
+        &self,
+        request: &Request,
+        exchange: Exchange<'_>,
+    ) -> Result<Response, JmapError> {
         let body = request.to_json();
-        let value = self
-            .transport
-            .post_json(self.session.api_url(), &body)
+        let value = (self.transport)
+            .post_json(self.session.api_url(), &body, exchange)
             .await?;
         Response::parse(&value)
     }
@@ -356,50 +239,6 @@ impl JmapClient {
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
             .ok_or_else(|| JmapError::protocol("upload response missing blobId"))
-    }
-
-    /// Opens the JMAP **EventSource** change-notification stream (RFC 8620 §7.3): a
-    /// long-lived `text/event-stream` GET over the session `eventSourceUrl`, watching
-    /// `types` (empty ⇒ all types, `*`), never closing early (`closeafter=no`), and
-    /// asking the server to `ping` every `ping` seconds so the stream stays alive and
-    /// surfaces keep-alives. Returns the streaming response for [`crate::watch`] to
-    /// read chunk by chunk.
-    ///
-    /// # Errors
-    ///
-    /// [`JmapError::Session`] if the server advertised no `eventSourceUrl`, or the
-    /// classified failure of opening the stream (a non-success status is
-    /// [`JmapError::Status`]).
-    pub(crate) async fn open_event_source(
-        &self,
-        types: &[&str],
-        ping: core::time::Duration,
-    ) -> Result<reqwest::Response, JmapError> {
-        let template = self
-            .session
-            .event_source_url()
-            .ok_or_else(|| JmapError::session("server advertised no eventSourceUrl"))?;
-        let types_param = if types.is_empty() {
-            "*".to_owned()
-        } else {
-            types.join(",")
-        };
-        // `ping=0` disables server pings (RFC 8620 §7.3); keep at least 1s so the
-        // stream still emits keep-alives.
-        let ping_secs = ping.as_secs().max(1);
-        let url = template
-            .replace("{types}", &types_param)
-            .replace("{closeafter}", "no")
-            .replace("{ping}", &ping_secs.to_string());
-        // `Accept: text/event-stream` so a content-negotiating server serves the SSE
-        // stream, not a buffered representation; the shared status check rejects a
-        // non-2xx before the caller treats the body as an event stream.
-        let resp = self.transport.get_event_stream(&url).await?;
-        // The status is checked on the reply, and only then is the body taken out unread:
-        // an SSE stream has no end, so it is the one body nothing here may read.
-        transport::error_for_status(resp)
-            .await
-            .map(engine_http::Sent::into_streaming)
     }
 }
 
@@ -446,11 +285,10 @@ async fn fetch_session(
                 .get(reqwest::header::LOCATION)
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| JmapError::session("redirect without Location"))?;
-            let next = engine_provider::redirect_target(&url, location).ok_or_else(|| {
-                // Unparseable, or a hop off TLS — which these requests may never take,
-                // since every one of them carries the account's credentials.
-                JmapError::session(format!("unresolvable redirect to {location:?}"))
-            })?;
+            // Unparseable, or a hop off TLS that `redirect_target` cannot take over TLS: every
+            // one of these requests carries the account's credentials.
+            let next = engine_provider::redirect_target(&url, location)
+                .ok_or_else(|| JmapError::session(engine_provider::redirect_refused(location)))?;
             // Both sides resolved, so a host sees the hop it can actually replay —
             // not a bare `Location` path whose origin it would have to reconstruct.
             observer.step(&ConnectStep::redirected(&url, &next));
@@ -490,9 +328,15 @@ pub fn fuzz_parse(data: &[u8]) {
 }
 
 #[cfg(test)]
+mod process_kill_tests;
+
+#[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;
 
 #[cfg(test)]
 #[path = "redirect_tests.rs"]
 mod redirect_tests;
+
+#[cfg(test)]
+mod write_outcome_tests;

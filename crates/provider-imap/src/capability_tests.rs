@@ -91,7 +91,10 @@ fn one_enable_carries_the_dialect_and_every_extension_that_needs_one() {
     assert_eq!(session.enable_arguments(), ["IMAP4rev2", "QRESYNC"]);
 
     // Nothing to enable at all is an empty list, and the caller issues no command.
-    assert!(caps(&["IMAP4rev1", "IDLE"]).enable_arguments().is_empty());
+    assert_eq!(
+        caps(&["IMAP4rev1", "IDLE"]).enable_arguments(),
+        [] as [&str; 0]
+    );
 }
 
 #[test]
@@ -120,4 +123,67 @@ fn special_use_is_asked_for_wherever_it_is_advertised_whatever_the_dialect() {
     folded_only.confirm_enabled(&["IMAP4rev2".to_owned()]);
     assert!(folded_only.has(Extension::SpecialUse));
     assert!(!folded_only.must_request_special_use());
+}
+
+#[test]
+fn list_myrights_is_had_only_where_advertised_on_either_dialect() {
+    // RFC 8440 is neither folded into rev2 nor announced with `ENABLE`: it only adds a
+    // `LIST` return option, which a server that never advertised it answers with `BAD`.
+    assert!(!Extension::ListMyrights.folded_into_rev2());
+    assert!(!Extension::ListMyrights.needs_enable());
+    assert!(caps(&["IMAP4rev1", "LIST-MYRIGHTS"]).has(Extension::ListMyrights));
+    assert!(!caps(&["IMAP4rev1", "ACL"]).has(Extension::ListMyrights));
+}
+
+/// Yahoo's capability line after login, verbatim.
+const YAHOO: &[&str] = &[
+    "IMAP4rev1",
+    "ID",
+    "MOVE",
+    "NAMESPACE",
+    "XYMHIGHESTMODSEQ",
+    "UIDPLUS",
+    "LITERAL+",
+    "CHILDREN",
+    "UNSELECT",
+    "X-MSG-EXT",
+    "OBJECTID",
+    "IDLE",
+    "ENABLE",
+    "UIDONLY",
+    "X-UIDONLY",
+    "LIST-EXTENDED",
+    "LIST-STATUS",
+    "SPECIAL-USE",
+    "MESSAGELIMIT=1000",
+    "PARTIAL",
+    "APPENDLIMIT=41697280",
+    "COMPRESS=DEFLATE",
+];
+
+#[test]
+fn uid_mode_is_asked_for_where_advertised_and_holds_only_once_confirmed() {
+    // RFC 9586: UIDONLY changes what the server sends, so it takes an `ENABLE`, and a server
+    // that limits a mailbox's view without it (Yahoo's default) shows only part of it.
+    let mut session = caps(YAHOO);
+    assert_eq!(session.enable_arguments(), ["UIDONLY"]);
+    assert!(!session.has(Extension::UidOnly));
+    session.confirm_enabled(&["UIDONLY".to_owned()]);
+    assert!(session.has(Extension::UidOnly));
+}
+
+#[test]
+fn the_message_limit_is_read_from_the_capability() {
+    // RFC 9738: the most messages one command may touch.
+    assert_eq!(caps(YAHOO).message_limit(), Some(1000));
+    assert_eq!(caps(&["IMAP4rev1"]).message_limit(), None);
+    assert_eq!(caps(&["MESSAGELIMIT=many"]).message_limit(), None);
+}
+
+#[test]
+fn a_fetch_never_names_more_than_the_message_limit() {
+    assert_eq!(caps(YAHOO).within_message_limit(0), 1000);
+    assert_eq!(caps(YAHOO).within_message_limit(5000), 1000);
+    assert_eq!(caps(YAHOO).within_message_limit(200), 200);
+    assert_eq!(caps(&["IMAP4rev1"]).within_message_limit(0), 0);
 }

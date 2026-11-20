@@ -7,11 +7,10 @@
 //! list syncs under [`SyncScope::GmailLabelList`]. Labels are multi-membership on each
 //! message, not the scope it was fetched under.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use engine_core::{
-    error::FailureClass,
     ids::{AccountId, ProviderKey},
     mail::{Mailbox, Message},
     raw::RawMime,
@@ -19,13 +18,18 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, IdentityControls,
+    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailStream, IdentityControls,
     KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites,
-    PageToken, PassMode, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
-    ScopeSync, SenderIdentity, SenderIdentityId, SubmissionReceipt, SyncKind, split_page,
+    Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts, ScopeSync,
+    SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
 };
+use futures_util::StreamExt;
+use provider_imap::GmailMail;
+use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{fetch, mutate, named_labels::Labels, submit, transport::GoogleClient};
+use crate::{
+    fetch, imap_mail::ImapMail, mutate, named_labels::Labels, submit, transport::GoogleClient,
+};
 
 /// The label list is re-discovered as a snapshot each pass (`GET /users/me/labels`), so
 /// it carries no provider cursor of its own — like IMAP's folder list.
@@ -46,12 +50,16 @@ pub struct GmailProvider {
     since: Option<CalendarDate>,
     /// The keywords kept as labels ([`GmailProvider::with_keyword_names`]).
     labels: Labels,
+    /// The account's mail read over IMAP, when the host connected it
+    /// ([`GmailProvider::with_imap`]).
+    imap: Option<Arc<dyn ImapMail>>,
 }
 
 impl core::fmt::Debug for GmailProvider {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GmailProvider")
             .field("capabilities", &self.capabilities)
+            .field("imap", &self.imap.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -59,6 +67,14 @@ impl core::fmt::Debug for GmailProvider {
 impl GmailProvider {
     /// Binds a connected client for Gmail read/sync, on-demand source fetch, mail writes,
     /// and submission.
+    ///
+    /// Note what is **not** advertised: shared mailboxes. Gmail delegation is a real product
+    /// feature, but not one a user credential reaches — the route that would serve it,
+    /// `users/{userId}` for another user, needs a service account with domain-wide
+    /// delegation. So the capability stays
+    /// [`SharedAccounts::Unsupported`](engine_provider::SharedAccounts::Unsupported) and
+    /// both discovery verbs keep their rejecting defaults, rather than offering an onboarding
+    /// flow that could only fail (`google.md`).
     #[must_use]
     pub fn new(client: GoogleClient) -> Self {
         Self {
@@ -98,7 +114,30 @@ impl GmailProvider {
                 .with_sender_identities(IdentityControls::Writable),
             since: None,
             labels: Labels::default(),
+            imap: None,
         }
+    }
+
+    /// Reads the account's mail over IMAP rather than the Gmail API: the message sync
+    /// (`crate::imap_pass`) and every body. Labels, writes, drafts, sending, reports and
+    /// identities stay on the API.
+    ///
+    /// The API bills a message's metadata 20 units and its body 60 against 6,000 per user per
+    /// minute (`crate::quota`), which holds a sync to about 270 messages a minute; IMAP bills
+    /// nothing per message and reads a thousand in about a second. Both write the same keys,
+    /// threads, memberships and keywords, so an account moves between them without a resync
+    /// of its rows (`crate::imap_labels`).
+    #[must_use]
+    pub fn with_imap<S>(self, mail: GmailMail<S>) -> Self
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+    {
+        self.with_imap_mail(Arc::new(mail))
+    }
+
+    pub(crate) fn with_imap_mail(mut self, imap: Arc<dyn ImapMail>) -> Self {
+        self.imap = Some(imap);
+        self
     }
 
     /// Sets the default sync-depth cutoff for the whole-scope [`Provider::sync_email`]
@@ -142,8 +181,15 @@ impl Provider for GmailProvider {
             // (`fetch::MAX_CONCURRENT_GETS`), reported so a caller draining a work list of
             // single fetches — warming bodies, most of all — overlaps them the same way
             // instead of paying one round trip per object.
-            ..ConnectionInfo::new(self.capabilities)
-                .with_concurrent_fetches(crate::fetch::MAX_CONCURRENT_GETS)
+            ..match self.imap {
+                // A body read over IMAP carries many sources in one `UID FETCH`; four at a time
+                // leaves the account's fifth connection to the sync pass.
+                Some(_) => ConnectionInfo::new(self.capabilities)
+                    .with_concurrent_fetches(IMAP_CONCURRENT_READS)
+                    .with_sources_per_request(IMAP_SOURCES_PER_REQUEST),
+                None => ConnectionInfo::new(self.capabilities)
+                    .with_concurrent_fetches(crate::fetch::MAX_CONCURRENT_GETS),
+            }
         }
     }
 
@@ -191,89 +237,28 @@ impl Provider for GmailProvider {
         _fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
-        // A sync-depth window bounds the *snapshot* via `q: after:<floor>`. A delta
+        // A sync-depth window bounds the *backfill* via `q: after:<floor>`. A delta
         // cannot carry one (`history.list` takes a `startHistoryId`, not a query), so a
         // relabelled old message is reported whatever its date; the engine drops it on
         // apply (`SyncWindow::admits`), which is where the delta's bound holds for every
-        // adapter. The snapshot's bound is this query, and is not re-checked there.
-        let floor = window.floor();
-        Box::pin(async_stream::try_stream! {
-            let mut page_token: Option<PageToken> = None;
-            let mut mode: Option<PassMode> = None;
-            // The delta cursor (a historyId); dropped to `None` to restart as a snapshot.
-            let mut cursor = cursor;
-            // The account historyId captured before a snapshot enumeration, carried as
-            // the snapshot's persisted cursor.
-            let mut snapshot_cursor: Option<SyncState> = None;
-            let named = self.labels.resolved(&self.client).await?;
-            let final_cursor = loop {
-                let page = if let Some(delta_cursor) = cursor {
-                    match fetch::delta_page(&self.client, delta_cursor, page_token.as_ref(), &named)
-                        .await
-                    {
-                        Ok(page) => page,
-                        // Gmail has aged the stored historyId out of its window (`404`):
-                        // it cannot produce a delta from that cursor again. Drop it and
-                        // restart the pass as a full snapshot. Only before the first page
-                        // is committed (page_token none) and only on the first call —
-                        // exactly like the Graph 410 restart: restarting mid-pass would
-                        // leave later pages `Delta`, contributing nothing to `present`, and
-                        // the reconcile would tombstone everything they returned.
-                        Err(err)
-                            if page_token.is_none()
-                                && err.failure_class() == FailureClass::NeedsResync =>
-                        {
-                            cursor = None;
-                            continue;
-                        }
-                        Err(err) => Err(err)?,
-                    }
-                } else {
-                    // Snapshot: capture the account cursor once, before the first page, so
-                    // messages arriving mid-snapshot are re-reported by the first delta.
-                    if snapshot_cursor.is_none() {
-                        snapshot_cursor = Some(fetch::current_history_id(&self.client).await?);
-                    }
-                    let history = snapshot_cursor.as_ref().expect("captured above");
-                    fetch::snapshot_page(&self.client, page_token.as_ref(), floor, history, &named)
-                        .await?
-                };
-
-                // Decide the pass mode once, from the first page: a snapshot reconciles
-                // (its present set tombstones absent rows); a delta is additive.
-                let pass_mode = *mode.get_or_insert(match page.kind {
-                    SyncKind::Snapshot => PassMode::Reconcile,
-                    SyncKind::Delta => PassMode::Additive,
-                });
-                let is_last = page.next_page.is_none();
-                let next_cursor = page.next_cursor.clone();
-                for chunk in split_page(
-                    pass_mode,
-                    page.changed,
-                    page.patched,
-                    page.removed,
-                    page.present,
-                    None,
-                    chunk_size,
-                ) {
-                    yield chunk;
-                }
-                if is_last {
-                    break next_cursor;
-                }
-                page_token = page.next_page;
-            };
-            // The final marker carries the cursor (and, for reconcile, tombstones against
-            // the accumulated present set).
-            yield match mode.unwrap_or(PassMode::Additive) {
-                PassMode::Additive => {
-                    EmailChunk::additive(Vec::new(), Vec::new(), None, final_cursor)
-                }
-                PassMode::Reconcile => {
-                    EmailChunk::reconcile_last(Vec::new(), Vec::new(), None, final_cursor)
-                }
-            };
-        })
+        // adapter.
+        match &self.imap {
+            Some(imap) => crate::imap_pass::stream(
+                imap.as_ref(),
+                &self.client,
+                &self.labels,
+                cursor,
+                window.floor(),
+                chunk_size,
+            ),
+            None => crate::pass::stream(
+                &self.client,
+                &self.labels,
+                cursor,
+                window.floor(),
+                chunk_size,
+            ),
+        }
     }
 
     async fn fetch_message_source(
@@ -281,9 +266,62 @@ impl Provider for GmailProvider {
         _account: &AccountId,
         message: &Message,
     ) -> ProviderResult<RawMime> {
+        if let Some(imap) = &self.imap {
+            let ids = [gmail_id(message.id.key())?];
+            return match imap.sources(&ids).next().await {
+                Some(Ok((_, source))) => Ok(source),
+                Some(Err(err)) => Err(err),
+                None => Err(gone(message.id.key())),
+            };
+        }
         // Gmail streams a message's raw RFC 5322 source from `messages.get?format=raw`
         // (base64url); the message's provider key is the Gmail message id.
         Ok(fetch::message_source(&self.client, message.id.key()).await?)
+    }
+
+    fn fetch_message_sources<'a>(
+        &'a self,
+        account: &'a AccountId,
+        messages: &'a [Message],
+    ) -> SourceStream<'a> {
+        let Some(imap) = &self.imap else {
+            return engine_provider::one_at_a_time(self, account, messages);
+        };
+        Box::pin(async_stream::stream! {
+            let ids: Vec<Option<u64>> =
+                messages.iter().map(|m| gmail_id(m.id.key()).ok()).collect();
+            let wanted: Vec<u64> = ids.iter().flatten().copied().collect();
+            let mut answered = vec![false; messages.len()];
+            let mut sources = imap.sources(&wanted);
+            while let Some(item) = sources.next().await {
+                match item {
+                    Ok((id, source)) => {
+                        let Some(index) =
+                            (0..messages.len()).find(|&at| !answered[at] && ids[at] == Some(id))
+                        else {
+                            continue;
+                        };
+                        answered[index] = true;
+                        yield (index, Ok(source));
+                    }
+                    Err(err) => {
+                        for (index, done) in answered.iter_mut().enumerate() {
+                            if !*done {
+                                *done = true;
+                                let err =
+                                    engine_provider::ProviderError::new(err.class(), err.detail());
+                                yield (index, Err(err));
+                            }
+                        }
+                    }
+                }
+            }
+            for (index, message) in messages.iter().enumerate() {
+                if !answered[index] {
+                    yield (index, Err(gone(message.id.key())));
+                }
+            }
+        })
     }
 
     /// Applies a [`MailEdit`] via `messages.modify`/`trash`/`delete` (`mutate`). The
@@ -320,8 +358,9 @@ impl Provider for GmailProvider {
         &self,
         _account: &AccountId,
         draft: &Draft,
+        hand_over: &engine_provider::HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
-        submit::send(&self.client, draft, &self.labels).await
+        submit::send(&self.client, draft, &self.labels, hand_over).await
     }
 
     async fn sender_identities(&self, _account: &AccountId) -> ProviderResult<Vec<SenderIdentity>> {
@@ -359,6 +398,34 @@ impl MailboxWrites for GmailProvider {
 
 impl CalendarWrites for GmailProvider {}
 
+/// Body reads in flight at once over IMAP.
+const IMAP_CONCURRENT_READS: usize = 4;
+
+/// Bodies one IMAP read carries (`provider_imap::GmailMail::sources` searches 50 ids a command).
+const IMAP_SOURCES_PER_REQUEST: usize = 50;
+
+/// The Gmail id a message key names: the key is that id in hex.
+fn gmail_id(key: &ProviderKey) -> ProviderResult<u64> {
+    u64::from_str_radix(key.as_str(), 16).map_err(|_| {
+        engine_provider::ProviderError::invalid_state(format!(
+            "not a Gmail message id: {}",
+            key.as_str()
+        ))
+    })
+}
+
+/// A message no folder holds any more.
+fn gone(key: &ProviderKey) -> engine_provider::ProviderError {
+    engine_provider::ProviderError::conflict(format!(
+        "message {} is no longer on the server: re-sync before reading it",
+        key.as_str()
+    ))
+}
+
 #[cfg(test)]
 #[path = "provider_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "imap_bodies_tests.rs"]
+mod imap_bodies_tests;

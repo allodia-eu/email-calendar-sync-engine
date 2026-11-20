@@ -189,7 +189,7 @@ async fn a_rev2_session_still_asks_for_special_use_where_the_server_advertised_i
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
     conn.negotiate().await.unwrap();
-    conn.list().await.unwrap();
+    conn.list("*").await.unwrap();
 
     let sent = written(&recorded);
     assert!(
@@ -214,7 +214,7 @@ async fn a_rev2_session_never_asks_for_what_the_server_did_not_advertise() {
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("alice", "pw").await.unwrap();
     conn.negotiate().await.unwrap();
-    conn.list().await.unwrap();
+    conn.list("*").await.unwrap();
 
     let sent = written(&recorded);
     assert!(sent.contains(r#"a4 LIST "" "*""#), "{sent}");

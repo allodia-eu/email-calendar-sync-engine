@@ -146,6 +146,7 @@ where
     scope_cases::container_and_member_scopes_are_independent(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::scope_lease_is_exclusive_until_released(&store, &clock).await;
+    scope_cases::a_renewed_scope_lease_keeps_a_long_pass_its_own(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::abandon_sync_leases_preserves_cursor_and_fences_old_worker(&store, &clock).await;
     let (store, clock) = make();
@@ -156,6 +157,10 @@ where
     scope_cases::release_with_stale_token_is_noop(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::forget_scope_drops_objects_rows_and_cursor(&store, &clock).await;
+    let (store, clock) = make();
+    scope_cases::collection_tag_travels_with_the_cursor(&store, &clock).await;
+    let (store, clock) = make();
+    scope_cases::fetch_window_travels_with_the_cursor(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::forget_scope_under_a_stale_lease_is_rejected(&store, &clock).await;
     let (store, clock) = make();
@@ -238,6 +243,48 @@ where
 
     let (store, clock) = make();
     outbox_cases::the_host_verbs_refuse_what_they_cannot_act_on(&store, &clock).await;
+
+    let (store, clock) = make();
+    outbox_cases::an_op_the_previous_process_left_in_flight_is_recovered(&store, &clock).await;
+
+    Box::pin(run_hand_over_cases(make)).await;
+}
+
+/// The hand-over record and what the recovery of a dead send turns on.
+async fn run_hand_over_cases<S, F>(make: &F)
+where
+    S: Store + StoreRead,
+    F: Fn() -> (S, ManualClock),
+{
+    let (store, clock) = make();
+    outbox_cases::the_hand_over_is_recorded_under_the_current_lease_only(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_dead_send_that_never_handed_over_is_retried_on_every_path(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_dead_send_that_handed_over_awaits_confirmation_on_every_path(&store, &clock)
+        .await;
+    let (store, clock) = make();
+    outbox_cases::a_confirmation_ends_the_old_attempts_say(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_renewed_lease_keeps_a_slow_attempt_its_own(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_send_that_failed_stays_listed_until_the_host_acts(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_sent_copy_resolves_a_dead_send_nothing_recovered_yet(&store, &clock).await;
+
+    let (store, clock) = make();
+    outbox_cases::a_queued_keyword_change_shows_at_once_and_survives_a_sync(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::only_a_change_that_will_not_happen_goes_back(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::an_accepted_change_outlasts_a_pass_that_read_before_it(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_change_accepted_within_the_second_a_pass_began_outlasts_it(&store, &clock)
+        .await;
+    let (store, clock) = make();
+    outbox_cases::queued_changes_compose_and_one_can_drop_out(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_change_to_a_message_not_yet_held_shows_when_it_arrives(&store, &clock).await;
 }
 
 /// Runs contact-generation, people-CAS, and recipient-history contracts.
@@ -251,6 +298,8 @@ where
 {
     let (store, _) = make();
     contact_cases::contact_generation_and_people_cas(&store).await;
+    let (store, _) = make();
+    contact_cases::a_person_with_no_name_is_stored(&store).await;
     let (store, _) = make();
     contact_cases::recipient_idempotency_and_suppression(&store).await;
     let (store, _) = make();

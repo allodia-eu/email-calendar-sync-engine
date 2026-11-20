@@ -175,9 +175,9 @@ where
                             if again(&mut retried, &err) {
                                 continue 'attempts;
                             }
-                            // A failure the connection did not cause (a literal over the cap,
-                            // a line that does not parse, a `NO`) may be one message's, and
-                            // the rest of the set must not carry it: each is asked for alone.
+                            // A failure that will not pass (a literal over the cap, a line that
+                            // does not parse, a lasting `NO`) may be one message's, and the
+                            // rest of the set must not carry it: each is asked for alone.
                             if err.class() != FailureClass::Retryable && wanted.len() > 1 {
                                 for each in wanted.drain(..) {
                                     let key = messages[each.index].id.key();
@@ -212,7 +212,8 @@ where
     }
 }
 
-/// Whether to ask once more after `err`: only for a lost connection, and only once.
+/// Whether to ask once more after `err`: only for a failure that may pass (a lost connection,
+/// a refusal the server called temporary), and only once.
 fn again(retried: &mut bool, err: &ProviderError) -> bool {
     if *retried || err.class() != FailureClass::Retryable {
         return false;

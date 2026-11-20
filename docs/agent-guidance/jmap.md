@@ -39,8 +39,10 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   per-account `TlsClientConfig` in `JmapConfig` (`tls.md`). Layers: `transport`
   (auth + HTTP), `request` (the `{using, methodCalls}` envelope, `#id`
   back-references, typed responses), `session` (discovery + URL policy),
-  `fetch` (the generic container/member sync **and** the paged `member_page`
-  primitive `stream_email` re-chunks), `mail`/`calendar`/`json` (normalizers),
+  `fetch` (the `MemberPass` `stream_email` re-chunks, and the `Foo/changes` page),
+  `walk` (a snapshot's anchored walk over `Foo/query`), `fetch_scope` (whole-scope
+  queried/container sync, bounded by
+  `maxObjectsInGet`), `mail`/`calendar`/`json` (normalizers),
   `submit` (sending), `provider` (the trait impl) behind an `Executor` seam.
 - **`engine-sync`** — the per-scope loop: `claim → fetch → project/derive →
   apply → release`, with `StaleLease` re-claim-and-recompute and container-
@@ -87,7 +89,13 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   1,000 messages a minute there; `Blob/get` (below) needs a 25th as many requests.
 - **Session discovery + URL policy.** The session is fetched (well-known →
   redirect handled), then capabilities, account ids (per `primaryAccounts`, *not*
-  assumed), and the core limits are read. `JmapClient::connect` reports the phase to
+  assumed), and the core limits are read. **A domain is offered per account, not per server**
+  (RFC 8620 §2): mail, submission, calendars and contacts each count only when the server lists
+  the capability, `primaryAccounts` names an account for it, and that account's
+  `accountCapabilities` lists it too. Each domain is read from its own primary account, which
+  may differ from mail's. An account object missing the (required) `accountCapabilities` map is
+  taken at the server's word, and a capability with no primary account is not offered, since
+  every call for it is addressed to that account. `JmapClient::connect` reports the phase to
   the config's `ConnectObserver` (`providers.md`): one `ConnectStep::Redirected` per
   hop it resolves itself (both sides fully resolved, so a host sees the hop it could
   replay), `ConnectStep::Authenticated` when the session responds `2xx` with the
@@ -115,7 +123,8 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   origin change the advertised `apiUrl` belongs to the new host, and rebasing it onto
   the old one aims every method call at a server that never had the session. The same
   helper refuses a hop that leaves TLS, since every discovery request carries the
-  account's credentials.
+  account's credentials; one to the same host and port is taken over TLS
+  instead.
 
   ⚠️ **Know what that trust buys and what it costs.** The JMAP transport authenticates
   every request unconditionally, with no `same_origin` gate (CalDAV has one, for URLs
@@ -137,29 +146,82 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   only aim the request at a path the connection host does not route. It did exactly
   that: every Fastmail message-source download hit a catch-all `302` to a marketing
   page, so no JMAP body ever cached.
-- **Generic container/member fetch.** Containers (`Mailbox`, `Calendar`) sync via
-  `Foo/get` (snapshot) or `Foo/changes`→`Foo/get` (delta). Members (`Email`,
-  `CalendarEvent`) sync via `Foo/query`→`Foo/get` (snapshot) or `Foo/changes`→
-  `Foo/get` (delta). Changed objects are fetched in one round trip via an `#ids`
-  result back-reference. The only per-type difference is the method-name prefix,
-  the capability set, and the normalizer.
-- **Streaming member fetch (`stream_email` re-chunks `member_page`).** Email streams
+- **Generic queried/container fetch.** Queried types (`Mailbox`, `Email`,
+  `CalendarEvent`, `ContactCard`) snapshot by `Foo/query`→`Foo/get`. Containers
+  (`Calendar`, `AddressBook`) snapshot with one `Foo/get`, having no `/query`. Both
+  delta by `Foo/changes`→`Foo/get`. Each page's ids are fetched in the same request via
+  an `#ids` result back-reference. The only per-type difference is the method-name
+  prefix, the capability set, and the normalizer.
+- **No request asks for more than `maxObjectsInGet` ids.** A server refuses a larger
+  `/get` outright with `requestTooLarge` (RFC 8620 §5.1, including `ids: null` once the
+  type holds more than the limit); it does not truncate. Fastmail (9,808 events against
+  a limit it enforces) and the Stalwart harness (500) both answer it. So every
+  whole-scope pass pages: a snapshot walks `Foo/query` with `limit` = `maxObjectsInGet`,
+  and every delta pages `Foo/changes` by `maxChanges` = `maxObjectsInGet`, so each
+  page's `/get` fits.
+- **A snapshot walk stays correct while other clients change the account** (`walk.rs`).
+  The account is live between the requests of a multi-page snapshot, so:
+  - Each page is anchored after the last id the previous page returned (`anchor`,
+    `anchorOffset: 1`, RFC 8620 §5.5), never placed at a `position`. A position counts
+    from the top, so a destroy above it moves every later id up one place and the walk
+    skips an object no later delta names. An anchor that was itself destroyed answers
+    `anchorNotFound`, and the walk steps back through the ids it was given (the last
+    four, then twice as far each time), or starts again from the top once every one
+    tried is gone; an id it is given again is not handed on twice. The pages a step back
+    re-reads are allowed for in the page size the server serves, which may be smaller
+    than the one asked for.
+  - The cursor is the type's `state` read with the **first** page, so whatever changes
+    during the walk (a destroy, a create above the walk, a flag) is replayed by the next
+    delta.
+  - A walk of more than one page ends with a listing of the ids, and any the walk did not
+    see are fetched by id. The listing fetches no objects, so `maxObjectsInGet` does not
+    bound it: it asks for 5,000 ids a page and usually takes one request, which is
+    answered at once. An id destroyed before its fetch is answered as `notFound` and
+    left out. A server that sends no `queryState` (RFC 8620 §5.5 requires one) gives
+    nothing to compare, and its listing is taken as it is rather than never. An object can move from ahead of the walk to
+    behind it unseen, and a delta does not name it if it moved without changing.
+    `Mailbox`, `CalendarEvent` and `ContactCard` are walked in the server's own order,
+    which an update may change (`Order::Server`); there the listing must hold still
+    (`queryState` unchanged across it), and one that never does fails the pass as
+    `Retryable` (`JmapError::Unsettled`) rather than storing part of the scope. `Email`
+    is walked by `receivedAt`, which no update changes (RFC 8621 §4.1, `Order::Fixed`),
+    and the listing is taken all the same: **Stalwart lists a message it has just stored
+    last and sorts it into place within half a second, without moving `queryState`.** A
+    message stored just before the first page is read at the end, moves to the top while
+    the walk is on later pages, and is in no delta, since it predates the cursor. A single
+    move is caught either way: the walk saw it before it moved, or the listing sees it
+    after. `Foo/queryChanges` (§5.6) would not help, since a server that moves results
+    without moving `queryState` names nothing there either.
+  - Paged changes apply in order, the last page to mention an object deciding whether it
+    exists. A `hasMoreChanges` that does not move `newState` is treated as
+    `cannotCalculateChanges` (§5.2), so the pass recovers with a snapshot rather than
+    paging forever.
+  - A container's one `Foo/get` is refused once a server holds more calendars or address
+    books than one `/get` carries; there is no `/query` to page them by.
+
+  Pinned offline against a server fake that refuses an oversized `/get`
+  (`bounded_server.rs`, `fetch_scope_tests.rs`, `walk_tests.rs`, which also changes
+  the data between two requests, or re-sorts it without a state change) and live against
+  Stalwart: `tests/live_scope_limits.rs` fails on unpaged code; `tests/live_snapshot_walk.rs`
+  deletes the newest message and the next page's anchor between two pages of a first mail
+  sync (position paging loses two messages), and stores a message just before one (a walk
+  without the closing listing loses it).
+- **Streaming member fetch (`stream_email` re-chunks a `MemberPass`).** Email streams
   as `EmailChunk`s so a host stays responsive. The JMAP round trip is atomic (a page
-  arrives whole), so `stream_email` loops `member_page` and re-chunks each page with
-  `split_page` — a **snapshot** page becomes `Reconcile` chunks, a **delta** page
-  `Additive` chunks — then yields a final marker chunk carrying the cursor. JMAP is
-  not cheaply resumable mid-pass, so intermediate chunks **hold** the cursor
-  (`additive_held`) and a crash re-runs the pass. A **snapshot** page is `Email/query`
-  sorted `receivedAt` descending (newest first) at a `position` with a `limit` and
-  `calculateTotal:true`, then `Email/get` over the page's `#ids`; the query ids are the
-  page's `present` set and `next_position` (driven by `total`, or a short page when the
-  server omits it) decides whether another page follows. A **delta** page is
+  arrives whole), so `stream_email` pulls one `MemberPass` page at a time and re-chunks
+  it with `split_page` (a **snapshot** page becomes `Reconcile` chunks, a **delta**
+  page `Additive` chunks), then yields a final marker chunk carrying the cursor. JMAP
+  is not cheaply resumable mid-pass, so intermediate chunks **hold** the cursor
+  (`additive_held`) and a crash re-runs the pass. A **snapshot** is the anchored walk
+  above, sorted `receivedAt` descending (newest first), with `calculateTotal:true` for
+  the progress total; each page's new ids are its `present` share. A **delta** page is
   `Email/changes` bounded by `maxChanges`, paging on `hasMoreChanges` and resuming from
-  each page's `newState`. The streaming knobs map on: `fetch_batch` is the per-page
-  `limit` (clamped to `maxObjectsInGet`; `0` = the server's max), `chunk_size` is how
-  many messages `split_page` emits per commit. The page's mode + offset/state travel in
-  the opaque `PageToken` (`s:<position>` / `d:<state>`) — a provider-**internal** helper
-  now, not trait surface — so a continuation page resumes and the engine never parses it.
+  each page's `newState`; a page past the first that claims more without moving its
+  state ends the pass there, so the next pass meets it on its first page and recovers
+  with a snapshot. The streaming knobs map on: `fetch_batch` is the per-page `limit`
+  (clamped to `maxObjectsInGet`; `0` = the server's max), `chunk_size` is how many
+  messages `split_page` emits per commit. The pass is held in memory, so no page token
+  is encoded or parsed.
 - **Sync-depth window (JMAP now windows).** `stream_email` takes a `SyncWindow { since }`
   **per sync** and threads it into the snapshot `Email/query` as an `after` filter on
   `receivedAt` (RFC 8621 §4.4.1), so a large mailbox syncs only recent mail — JMAP is no
@@ -251,7 +313,11 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   identity (`Mailbox/get` + `Identity/get`) before the batched create. The
   `onSuccessUpdateEmail` produces an implicit second `Email/set` response sharing
   the submission's call id. The created `Email` is the sender's copy, so it carries
-  every recipient header **including `bcc`**, plus `inReplyTo` and `references`: RFC
+  every recipient header **including `bcc`**, plus `inReplyTo` and `references`, and an
+  importance other than normal as `header:Importance:asText` and `header:X-Priority:asText`
+  (JMAP has no importance property; `Email/get` asks for every header the importance rule reads
+  in the same singular `asText` form, which answers a header's last occurrence as the rule wants,
+  live-verified in `tests/live_importance.rs`): RFC
   8621 §7.5 has the server **remove the Bcc header during delivery**, which is the same
   filed-copy shape `engine-rfc5322` gives the other transports. The envelope is sent
   explicitly, `rcptTo` = To + Cc + Bcc deduplicated case-insensitively as SMTP's
@@ -270,6 +336,17 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   `engine-sync::submit_mail`: a durable `PendingOp` (carrying the serialized draft,
   idempotent by `Message-ID`) precedes the provider call; the result is recorded under
   the op lease.
+  - **The identity is the one for the draft's `From`, never simply the first.** An account
+    holds one identity per address it may send as, and membership of a group mailbox gives
+    it the group's — which Stalwart lists **ahead of** the user's own. Taking `list[0]`
+    (which this used to do) submitted `From: alice@` under `support@`, and Stalwart
+    answered `forbiddenFrom`; the moment the harness grew a group mailbox, four live
+    submission tests failed that way. The match is the exact address first, then an
+    identity whose address is `*@domain` covering it (RFC 8621 §6), both ASCII
+    case-insensitive. A `From` no identity covers is **refused before anything is created**
+    (`JmapError::Refused`, `Permanent`): the RFC says the identity's address is the one the
+    client MUST use, so sending under another would be the client's violation, not the
+    server's call.
 - **Sender identities.** `Identity/get` and `Identity/set` (RFC 8621 §6) back the
   neutral `sender_identities`/`set_sender_name` verbs (`providers.md`). They belong to
   the **submission** capability, not to mail, so every request names
@@ -362,6 +439,16 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   RFC 8620 does not promise that, so a server that reorders would refuse the parent until a
   retry. `mailbox_writes` rides the `mail_writes` gate. Live: `tests/live_mailbox_writes.rs`,
   as the scratch account `carol@`.
+- **A submission that loses its answer needs confirming.** The batched `Email/set` +
+  `EmailSubmission/set` goes through `Executor::submit`, which waits the `submission`
+  bound for its reply. Once that request may have reached the server, a failure there (a
+  timeout or a dropped connection) is `ProviderError::needs_confirmation`, never a retry;
+  before it (connect, handshake, a body the server stopped taking) it is `Retryable`. The
+  context read and the blob uploads before it fail as they always did (`deadlines.md`).
+  That request is the point of no return, and its hand-over is recorded before the last
+  piece of its body (`providers.md`). A `502`/`504`, an unreadable body and a response
+  missing the call are lost answers and need confirming; a `SetError` is the server's
+  refusal and keeps its class.
 - **Push (EventSource → `Watch`).** `JmapWatcher` holds a **dedicated** long-lived
   `text/event-stream` connection to the session `eventSourceUrl` (RFC 8620 §7.3;
   opened `types=Email,Mailbox&closeafter=no&ping=<secs>`), parses the Server-Sent
@@ -376,7 +463,10 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   calendars), so a host never opens a watcher whose `Changed` could not map to a
   synced scope (`crate::watch`). Stalwart also
   advertises a WebSocket push channel (`supportsPush`); EventSource is chosen as the
-  simpler RFC-8620-core transport over the existing HTTP client.
+  simpler RFC-8620-core transport over the existing HTTP client. A stream that says
+  nothing for its `ping` interval plus the `reply` bound is a lost connection, `Retryable`,
+  so a host reconnects rather than waiting on a dead socket (`watch::quiet_bound`,
+  `deadlines.md`).
 - **Calendar (read).** `Calendar/get` → `Calendar`; `CalendarEvent/get` →
   JSCalendar `Event`, mapping the time model (`start` + `timeZone` → zoned;
   `timeZone: null` + `showWithoutTime` → all-day date; else floating), recurrence
@@ -422,17 +512,19 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
     the JMAP Session `capabilities`, and its account-level properties
     (`maxCalendarsPerEvent`, `minDateTime`, `maxDateTime`, `maxExpandedQueryDuration`,
     `maxParticipantsPerEvent`, `mayCreateCalendar`) are **byte-identical between
-    draft-24 and draft-27** — verified by diffing the two drafts in full. Nothing in the
-    session distinguishes them, by design rather than oversight.
+    draft-24 and draft-27**, and again between draft-28 and draft-33 — verified by diffing
+    each pair in full. Nothing in the session distinguishes them, by design rather than
+    oversight.
   - **The only in-band signal is the object's own `version`** (JSCalendar 2.0 /
-    jscalendarbis §3.1.2, value `"2.0"`). **Do not send it.** Stalwart neither emits it nor
-    honours it, and how it refuses it *moved between pins*: on v0.16.15 a
-    `CalendarEvent/set` create carrying `version` was rejected with
-    `invalidProperties: ["version"]`; on v0.16.21 the same create is **accepted and the
-    property silently dropped** — never echoed back, and asking for it in `properties` still
-    returns nothing (both observed). That makes the signal weaker, not stronger: a client
-    that sent `version` to announce its dialect would now get a success that means nothing.
-    So "support the latest draft" cannot mean "emit the 2.0 markers".
+    jscalendarbis §3.1.2, value `"2.0"`), and it is a property of *one object*, not of the
+    server. Do not branch on it: an object without it is 1.0 (jscalendarbis-22 §3.1.2), so a
+    server that stores objects from several sources may hold both. Stalwart's handling has
+    *moved with every pin*: v0.16.15 rejected a create carrying it with
+    `invalidProperties: ["version"]`; v0.16.21 accepted the create and silently dropped it;
+    **v1.0.2** (jmap-calendars-33, which makes the server set it on a create that omits it,
+    §5.9) keeps the `"2.0"` a create sends and returns `"version": "2.0"` on *every* event,
+    including ones written over CalDAV without it (all observed). Three behaviours in three
+    pins is the argument for reading the shape: it survived all three unchanged.
   - **What differs in practice is one spelling**, and it is fallback-shaped rather than
     switch-shaped. A participant's address is `calendarAddress` in 2.0 and `sendTo`
     (a map of *method* → URI; `imip` is the mail one) in 1.0 — and 2.0 **reserves**
@@ -441,20 +533,33 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
     same applies to the event's organizer (`organizerCalendarAddress` in 2.0, `replyTo` in
     1.0), which the projection does not read today — the organizer is a participant with the
     owner role.
-  - **Writes stay on the intersection.** Everything `calendar_write` sends (`@type`, `uid`,
-    `title`, `start`/`timeZone`/`showWithoutTime`, `duration`, `locations`) is spelled the
-    same in both versions, so there is nothing to choose. That stops being true the moment a
-    write carries participants, and *that* is when a version decision has to be made — from
-    the shape read back, not from a capability.
-  - **Stalwart is the only JMAP calendar server we can test any of this against.** It serves
-    2.0 shapes (`calendarAddress`, `organizerCalendarAddress`) and its docs cite
-    draft-ietf-jmap-calendars + jscalendarbis without pinning a number. Fastmail — the draft's
-    own authors — serve **no** JMAP calendars to third parties at all: their developer page
-    says calendars are CalDAV-only and JMAP access is coming "as soon as the specification is
-    finalized", and their API tokens have no Calendars scope to grant (a request for the
-    capability is refused `403 unknownCapability`). So the 1.0 fallback above is
-    **spec-derived (RFC 8984 §4.4.6), not observed** — there is currently no server to
-    observe it on, and that is a disclosure, not an omission.
+  - **A create declares `"version": "2.0"`, and otherwise stays on the intersection.**
+    jscalendarbis makes `version` required; Fastmail refuses a create without it
+    (`invalidProperties`, `properties: version`) and Stalwart accepts it (v0.16.21 dropped
+    it; v1.0.2 keeps and returns it). Everything else `calendar_write` sends (`@type`, `uid`,
+    `title`, `start`/`timeZone`/`showWithoutTime`, `duration`, `locations`, the singular
+    `recurrenceRule`) is what both servers read back. A write that carries participants is
+    where the two versions' spellings part, and *that* is when a version decision has to be
+    made, from the shape read back rather than from a capability.
+  - **Stalwart is the only JMAP calendar server we can test any of this against in CI.** It
+    serves 2.0 shapes (`calendarAddress`, `organizerCalendarAddress`) and its docs cite
+    draft-ietf-jmap-calendars + jscalendarbis without pinning a number. **Fastmail serves JMAP
+    calendars to an OAuth grant and to nothing else.** Its developer page says calendars are
+    CalDAV-only until the specification is finalised, and an **API token** indeed has no
+    Calendars scope to grant: its session lists no `urn:ietf:params:jmap:calendars` at all.
+    But an OAuth client that asks for `urn:ietf:params:oauth:scope:calendars` (which its
+    authorization-server metadata advertises) is granted `urn:ietf:params:jmap:calendars`,
+    and the session then carries it, observed 2026-10-11 against a real account: the
+    capability object is `{}` at session and account level (none of the draft's optional
+    limits), `Calendar/get` returns the draft's rights (`mayReadItems`, `mayWriteAll`,
+    `mayWriteOwn`, `mayUpdatePrivate`, `mayRSVP`, `mayReadFreeBusy`, `mayShare`,
+    `mayDelete`), and an unfiltered `CalendarEvent/query` returned all 9,808 ids at once
+    while the `/get` of them was refused `requestTooLarge` (the paging above). Every event it
+    serves carries `"version": "2.0"` and the 2.0 spellings (`organizerCalendarAddress`, the
+    singular `recurrenceRule`), and a create without `version` is refused (above); an update
+    PatchObject is accepted as it is. So the 1.0 fallback above is still **spec-derived
+    (RFC 8984 §4.4.6), not observed**, and Fastmail is a second server to observe shapes on by
+    hand, through an OAuth grant, never in CI.
 - **Calendar writes (`CalendarEvent/set`).** The three neutral write verbs
   (`providers.md`) fold onto one `CalendarEvent/set` (`crate::calendar_write`):
   `create_event` → a `create` of a JSCalendar object under a fixed creation id, whose
@@ -462,6 +567,24 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   it; `patch_event` → an `update` PatchObject; `delete_event` → a `destroy`. The
   `calendar_writes` capability is advertised whenever the account exposes calendars and is
   not `isReadOnly`, exactly as `mail_writes` is.
+  - **An answer that does not say what became of the object is unconfirmed**, not a
+    `notFound` conflict: one naming the object in neither `created`/`notCreated` (nor the
+    update and destroy pairs), one that is not JSON or lacks the call, and
+    `serverPartialFail` (`JmapError::after_write`). A conflict would send a host to refetch
+    and create again, and the first create may exist. `ContactCard/set` follows the same
+    rule (`providers.md`).
+  - **A meeting create first resolves the organiser's account identity.**
+    `ParticipantIdentity/get` supplies the participant id whose `calendarAddress` matches
+    `EventDraft::meeting.organiser`. A foreign organiser address is refused. The create sets
+    `organizerCalendarAddress` explicitly, then emits the organiser with `owner` and `chair`
+    roles and invitees with `required` or `optional` roles from JSCalendar 2.0. New invitees
+    start at `needs-action` with `expectReply: true`. The account capability's
+    `maxParticipantsPerEvent` limit includes the organiser, so the adapter subtracts that
+    one slot before validating the invitee roster.
+  - **A roster patch replaces the `participants` map from preserved JSCalendar.** It keeps
+    opaque participant ids, response states and unknown fields. Address comparison ignores
+    scheme and case. The organiser cannot be removed or edited, and invitees can only be
+    changed on the series.
   - **The server does the surgery, so this adapter has no serializer.** JMAP's `update` *is*
     a patch — a JSON-pointer PatchObject (RFC 8620 §5.3) the server merges into the stored
     object. Verified live, not assumed (`tests/live_calendar_write.rs::partial_update_is_merged_by_the_server`):
@@ -494,8 +617,9 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
     end state holds, which is what makes an outbox retry of a delete whose response was lost
     safe (the same contract CalDAV gets from treating `404`/`410` as success).
   - **`updated: {id: null}` is an acknowledgement**, and a target the server mentions in
-    *neither* the applied nor the failed map is a synthetic `notFound` conflict — never a
-    silent success. (Both hard-won on the `Email/set` path; see **Mail writes**.)
+    *neither* the applied nor the failed map is unconfirmed (above), never a silent success.
+    (Both hard-won on the `Email/set` path, where the second is still a `notFound` conflict;
+    see **Mail writes**.)
   - There is **no whole-document write verb**: a JSCalendar object is not a file whose bytes
     the client owns, so `Provider::put_event` stays unimplemented here even though the
     adapter advertises `calendar_writes` — that capability covers the neutral spine, not the
@@ -531,7 +655,7 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   decision. v0.16.11–v0.16.13 parsed it and never compared it (a stale-state `/set` was applied
   and returned a fresh `newState`, where RFC 8620 §5.3 requires a `stateMismatch`; a *malformed*
   state string still `400`s, so it was parsed, just never checked). v0.16.14 fixed it, and the
-  harness now pins **v0.16.21**, so enforcement is what our live runs meet: a stale-but-
+  harness now pins **v1.0.2**, which still enforces it, so enforcement is what our live runs meet: a stale-but-
   well-formed token is refused with `stateMismatch` and the write does not land. That only
   sharpens reason 2 — the probe's state had moved because of an edit to a *different* property
   of a *different* event, which is precisely the spurious rejection a per-event guard must not
@@ -543,10 +667,9 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
 
   Be precise about what that test can and cannot catch. It drives the **adapter**, which sends
   no precondition, so server-side `ifInState` enforcement can never fail it — and did not: it
-  passes unchanged on v0.16.15 and on v0.16.21. It is a tripwire for *the writes we actually send*
-  losing their
-  ability to clobber, which is what `WriteGuard::Absent` claims; it is **not** a tripwire for
-  Stalwart gaining a precondition. A host that must not lose a concurrent edit has to detect it
+  passes unchanged on v0.16.15, v0.16.21, v0.16.24 and v1.0.2. It is a tripwire for *the writes we
+  actually send* losing their ability to clobber, which is what `WriteGuard::Absent` claims;
+  it is **not** a tripwire for Stalwart gaining a precondition. A host that must not lose a concurrent edit has to detect it
   above the engine. The one thing that must not happen is a neutral write API that *looks* like
   it gives optimistic concurrency on every provider when here it gives none.
 
@@ -560,10 +683,21 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   and a *malformed* token is a `400 notRequest` instead, so "a bad token fails" is **not**
   evidence of enforcement — check *which* error you got before concluding anything.
 - **Scheduling is opt-in, and omitting the flag fails silently.** `sendSchedulingMessages`
-  (draft-ietf-jmap-calendars §5.3, default **`false`**) is what makes the server derive the
+  (draft-ietf-jmap-calendars §5.9, `CalendarEvent/set`, default **`false`**) is what makes the server derive the
   iTIP message from a `/set`. A request without it is stored and notifies **nobody**: the
   organizer is never told an invitation was answered, and an attendee keeps a meeting the
   organizer cancelled. Nothing in the response distinguishes that from success.
+
+  Meeting creation was written against draft-ietf-jmap-calendars-28 and
+  draft-ietf-calext-jscalendarbis-19; the harness's Stalwart v1.0.2 implements -33 and -22,
+  and nothing the adapter sends or reads changed between them (diffed in full when the pin
+  moved: the capability URIs, `sendSchedulingMessages`, `calendarAddress` and
+  `organizerCalendarAddress` are untouched). Stalwart 0.16.15 did not infer
+  `organizerCalendarAddress` when participants are supplied, although the JMAP Calendars
+  draft requires the server to do so (§5.9); v1.0.2 does (observed: a create naming an owner
+  participant comes back with it set). The adapter still sends it explicitly — permitted,
+  and what a server that does not infer it needs to deliver the invitation. The live suite
+  locks that behaviour.
 
   The adapter sends it on all four verbs. The RSVP carries the caller's choice
   (`EventRsvp::notify_organizer`); create/patch/destroy send `true` unconditionally
@@ -604,6 +738,78 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   now wrong. Neither is a harness problem and neither is fixed by this pin; the shape of a
   fix has to be provider-neutral (CalDAV discovers the same fact from `OPTIONS`, per #107),
   so it is tracked separately rather than patched into the JMAP adapter.
+
+## Shared accounts: the session's `accounts` map, asked what each holds
+
+Offered through the neutral `SharedAccounts` seam (`providers.md`). A JMAP provider serves mail
+and calendars, so it reports both domains, each only where the store answers for it.
+
+RFC 8620 §1.6.2's `accounts` map lists **every** account the credential can reach, the user's
+own marked `isPersonal: true`; the rest are stores shared with it (`crate::shared`,
+`crate::session_accounts`). On a server implementing JMAP Sharing (RFC 9670) the map holds
+the shares the user has **subscribed** to, so a share appears there once accepted.
+
+- **The map says which stores, not what is in them.** Each account lists its domains in
+  `accountCapabilities`, and Stalwart v1.0.2 lists mail *and* calendars on every shared
+  account, whatever was shared: bob's INBOX-only share refuses `Calendar/get`, dave's
+  calendar-only share refuses `Mailbox/get`, both `accountNotSupportedByMethod` (STALWART-1,
+  pinned in `smoke_shared_stores.rs`). So `list_shared_accounts()` **asks**: one request
+  carrying a `Mailbox/get` and a `Calendar/get` with `ids: []` per shared account, for each
+  domain the server serves and the account claims, split only past `maxCallsInRequest`.
+  `accountNotSupportedByMethod`, `accountNotFound` or `forbidden` means the domain is not there
+  for this credential; any other method error fails the listing, because a server fault is not
+  an empty store. Stores keep the order the session lists them in. Enumeration
+  used to cost nothing (the map arrives with the session); it now costs that request.
+- **What is listed:** accounts with `isPersonal: false` that answer for at least one domain,
+  each with `domains` naming those that answered. The user's own is left out (a host already
+  holds it). The handle is the account id; the account `name` ("usually the primary email
+  address") is offered as the address only when it has an address's shape. `Enumerable` is
+  advertised whenever the server serves mail or calendars and an `accounts` map, whatever the
+  client is bound to. Resolving an address reads this list (the trait's default), so it costs
+  the same request.
+- **Binding is `JmapConfig::with_shared_account(handle)`.** Every domain the bound account
+  exposes in its own `accountCapabilities` is then addressed at it — mail, submission,
+  calendars, contacts — and a domain it does not expose is simply not advertised, with an
+  accessor error that names the reason. The handle is checked at connect, so a withdrawn or
+  foreign one fails `connect` rather than every call after it.
+- **A bound store's calendar user is its owner.** `ParticipantIdentity/get` answers with the
+  **user's** identities on any account: on the group's and on dave's it returns alice and the
+  group, never dave (pinned live). So a bound client keeps the identities whose address is the
+  account's `name`: the group's address in the group store; **none** in dave's read-only share,
+  where alice cannot schedule as dave, which reads `NotEnabled`; and `Unknown` where the name is
+  no address, or where the answer was partial (`Including`) and so cannot rule the owner out
+  (`participant_identity::for_store`). A meeting created in the group calendar is
+  organised as the group and scheduled by the server: the attendee's copy names
+  `organizerCalendarAddress: mailto:support@…` (`live_shared_calendars.rs`).
+- **A calendar's rights are its `myRights`.** `Calendar.myRights` becomes `Calendar::access`
+  (`crate::calendar_rights`), the way a mailbox's becomes `Mailbox::access`: a missing right is
+  withheld and a missing object is `owner()`. `may_write` is `mayWriteAll` alone — `mayWriteOwn`
+  covers only the user's own events. Before `NORMALIZER_VERSION` 15 no JMAP calendar's rights
+  were read, so dave's read-only calendar claimed it could be written. A shared calendar also
+  arrives `isSubscribed: false`, read into `Calendar::is_subscribed`, which no host reads yet.
+- **Binding is unchanged by calendars**, and a host dials only the domains `domains` names: the
+  bound client's capabilities still come from the overclaiming `accountCapabilities`, so a
+  client bound to dave's account advertises mail it will be refused.
+- **Rights come from each `Mailbox.myRights`; the account flag cannot answer.** The flag is
+  what gates `mail_writes` (as RFC 8620 defines it), and on Stalwart it is coarser than the
+  folders. v0.16 reported `isReadOnly: false` for the account bob shares read-only, whose one
+  INBOX grants `mayReadItems` alone. v1.0.2 reports `true` for it — so `mail_writes` is no
+  longer advertised there — but `false` for a share mixing a writable and a read-only folder
+  (observed by hand), so the *folder* is still the only place a per-folder answer lives
+  (`modeling.md`). Both directions of the flag are pinned live (`smoke.rs`, `live_shared.rs`).
+- **Each account carries its own `accountCapabilities`, and on Stalwart v1 they differ.**
+  v0.16 gave every account the same set, shares included, so the per-account narrowing was a
+  no-op against it. v1.0.2 drops `submission`, `sieve`, `vacationresponse`, `quota` and
+  `emailpush` from the read-only share (the group share keeps them all), so a client bound to
+  it advertises no send — exercised offline from the captured session
+  (`session_shared_accounts.json`) and live.
+- **Sending from a group mailbox works through its own account.** Bound to it, `Identity/get`
+  answers the group's one identity and the message leaves as the group (live: the copy bob
+  receives is `From: support@`). A share granted read-only offers no send at all on v1.0.2:
+  its `accountCapabilities` list no `submission`, so the adapter does not advertise one. On
+  v0.16 they did, and `Identity/get` there answered `forbidden`, so a send failed
+  `Permanent` — a capability names the door, not that it opens, and a server that lists
+  `submission` for an account it will not send from still gets that answer.
 
 ## Known limitations (documented, not bugs)
 
@@ -652,17 +858,10 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   (`RsvpControls::comment: false`) and a caller that supplies one is refused: no server we
   run is known to relay it into the `REPLY`, and a note that may go nowhere is worse than one
   never offered. Verify against a server before promising it.
-- **A neutral `EventDraft` cannot state a recurrence rule.** Both adapters share this gap
-  (CalDAV's `build_event_ical` cannot either), so a recurring event can only be *created*
-  through the CalDAV whole-document verb today. Editing one already exists on both. It is
-  the obvious next extension of the draft, and the live `recurrence_override_edit` test
-  works around it by editing the seeded series and restoring it.
-- **Calendar events are still fetched whole**, not streamed: only email has a
-  streaming primitive (`stream_email`) so far. Events have no natural recency sort and
-  the seed fits one page; when streaming is wanted there, generalize `member_page` with
-  a per-type sort and add an event stream. Snapshot-during-mutation across pages
-  remains inherently racy (JMAP gives no cross-query consistency token); the final
-  page's cursor is the resume point.
+- **Calendar events are not streamed**: only email has a streaming primitive
+  (`stream_email`). Events, contacts and mailboxes sync whole through `fetch_scope`
+  (walked in pages, delivered as one `ScopeSync`); an event stream would be a
+  `MemberPass` over `CalendarEvent` with its own sort.
 - **JSCalendar verbatim order.** The preserved payload is re-serialized from the
   parsed value, so object key order may normalize; all data survives.
 
@@ -722,8 +921,8 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   - `round_trip` (create → patch → destroy, plus the idempotent re-destroy) and
     `recurrence_override_edit` (is a `recurrenceOverrides/<start>/…` pointer accepted?) cover
     the wire shapes. The recurrence test edits the **seeded** series — the only recurring
-    event available, since a neutral draft cannot yet state a rule — and restores it before
-    returning, so the seed the read tests assert on is left exactly as found.
+    event available, and restores it before returning, so the seed the read tests assert on
+    is left exactly as found.
 - **Fuzzing:** `fuzz/` is a separate cargo-fuzz workspace (`cargo +nightly fuzz
   run jmap_parse`) driving `provider_jmap::fuzz_parse` (behind the `fuzzing`
   feature) over the JSON parse + normalize pipeline.
@@ -731,8 +930,10 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
 ## JMAP Contacts
 
 RFC 9610's `urn:ietf:params:jmap:contacts` capability supplies a separate primary
-account. `AddressBook/get|changes` and `ContactCard/get|changes` map onto normal
-container/card scopes while preserving non-empty multi-address-book membership,
+account. `AddressBook/get|changes` maps onto a container scope and
+`ContactCard/query|get|changes` onto a member scope (paged like `CalendarEvent`, since
+an address book can hold more cards than one `/get` may carry), preserving non-empty
+multi-address-book membership,
 JSContact property-map ids, group cards, rights, extensions, and raw JSContact.
 
 `ContactCard/set` implements create/update/destroy. Update is the server's
@@ -760,6 +961,13 @@ IANA-registered keyword (`$junk`, `$notjunk`, `$phishing`; RFC 8621 §4.1.1, RFC
 - **Both halves ride one `Email/set`.** The keyword patch and the `mailboxIds` replacement
   that files the message travel in the same PatchObject, so a report and its move cannot
   land half-applied and cost one round-trip. Verified against Stalwart, which applied both.
+  Stalwart before v0.16.24 mishandles exactly this shape when the `mailboxIds` it names is
+  the message's current membership: the update succeeds and the message's IMAP UID becomes
+  0, so IMAP clients on the same mailbox can no longer address it (reproduced on v0.16.22,
+  fixed in v0.16.24). That happens when a host reports a message already in the
+  destination, such as a junk report from a search result that sits in Junk. The adapter
+  does not work around it: it cannot see the current membership without a fetch, and the
+  defect is the server's.
 - **The contradicting keyword is cleared in the same patch**, and "not junk" clears **both**
   accusations (`$junk` *and* `$phishing`): the user is vouching for the message, and leaving
   the stronger claim standing against it would be wrong. Leaving a message asserting it is

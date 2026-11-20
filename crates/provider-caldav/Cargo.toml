@@ -21,12 +21,16 @@ engine-provider = { workspace = true, features = ["http"] }
 # One throttling answer for every HTTP provider (docs/agent-guidance/http-throttling.md).
 engine-http = { workspace = true }
 engine-tls = { workspace = true, features = ["reqwest"] }
+bytes = { workspace = true }
 reqwest = { workspace = true }
 quick-xml = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
+futures-util = { workspace = true }
+# `sync` for the semaphore one provider's multigets share (`multiget::Multigets`).
+tokio = { workspace = true, features = ["sync"] }
 
 [features]
 # Exposes `fuzz_parse` for a cargo-fuzz target driving the iCalendar parser; off
@@ -36,7 +40,10 @@ fuzzing = []
 [dev-dependencies]
 # `sync` for the live tests' serialization Mutex (held across awaits); `time` for
 # the SabreDAV connect retry's sleep.
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["sync", "time", "test-util"] }
+# The silent servers the deadline tests meet (`engine_http::test_server`), and `test-util`
+# above for the paused clock they are measured on.
+engine-http = { workspace = true, features = ["test-server"] }
 # The scheduling fixture dates its invitation a fixed offset from today — a server only
 # auto-schedules a meeting that has not already finished — which needs calendar-aware date
 # arithmetic (month/year rollover), not a duration in seconds.

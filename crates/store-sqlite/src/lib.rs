@@ -20,7 +20,9 @@
 //!   [`tokio::task::spawn_blocking`]. A file database splits into one writer connection and a pool
 //!   of `query_only` readers (`pool.rs`), so a committing sync and a list read no longer queue
 //!   behind each other; an in-memory database keeps a single connection, because there each
-//!   connection is its own database.
+//!   connection is its own database. A call the runtime cancels while shutting down fails with
+//!   [`StoreError::ShuttingDown`](engine_store::StoreError::ShuttingDown) rather than panicking
+//!   (`join.rs`).
 //!
 //! The FTS5 search index and the normalized structured-filter tables layer over
 //! this base in migration `V2` (`schema.rs`). On-demand message content (`V5`) splits
@@ -34,6 +36,8 @@ mod contact_ops;
 mod contact_store;
 mod convert;
 mod derived_ops;
+mod join;
+mod keyword_edits;
 mod mail_ops;
 mod migrations;
 mod outbox_ops;
@@ -44,6 +48,7 @@ mod purge;
 mod read;
 mod schema;
 mod scope_ops;
+mod scope_renew;
 mod search_ops;
 mod source_ops;
 mod sql;
@@ -150,15 +155,13 @@ impl<C: Clock> SqliteStore<C> {
 
     /// Runs `f` against the **writer** on a blocking thread. Every transaction and
     /// every pragma that changes the database goes here.
-    async fn call<F, R>(&self, f: F) -> R
+    async fn call<F, R>(&self, f: F) -> Result<R>
     where
-        F: FnOnce(&mut Connection) -> R + Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
         let pool = Arc::clone(&self.pool);
-        tokio::task::spawn_blocking(move || f(&mut pool.writer()))
-            .await
-            .expect("sqlite blocking task panicked")
+        join::joined(tokio::task::spawn_blocking(move || f(&mut pool.writer()))).await
     }
 
     /// Runs `f` against a free **reader** on a blocking thread, so it does not wait
@@ -166,28 +169,24 @@ impl<C: Clock> SqliteStore<C> {
     ///
     /// Readers are `query_only`: routing a write here fails rather than silently
     /// falling back to the writer's lock.
-    async fn read<F, R>(&self, f: F) -> R
+    async fn read<F, R>(&self, f: F) -> Result<R>
     where
-        F: FnOnce(&Connection) -> R + Send + 'static,
+        F: FnOnce(&Connection) -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
         let pool = Arc::clone(&self.pool);
-        tokio::task::spawn_blocking(move || f(&pool.reader()))
-            .await
-            .expect("sqlite blocking task panicked")
+        join::joined(tokio::task::spawn_blocking(move || f(&pool.reader()))).await
     }
 
     /// Runs `f` on a blocking thread **without** holding the connection lock — for
     /// filesystem blob I/O (a multi-megabyte read/write) that must not serialize the
     /// whole store behind the SQLite mutex the way [`Self::call`] does.
-    async fn block<F, R>(f: F) -> R
+    async fn block<F, R>(f: F) -> Result<R>
     where
-        F: FnOnce() -> R + Send + 'static,
+        F: FnOnce() -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        tokio::task::spawn_blocking(f)
-            .await
-            .expect("blob blocking task panicked")
+        join::joined(tokio::task::spawn_blocking(f)).await
     }
 
     /// Searches mail across `scopes`, returning ranked hits and the answer's
@@ -240,7 +239,7 @@ impl<C: Clock> SqliteStore<C> {
         search_ops::assemble_results(ranked, scope_count)
     }
 
-    /// Clears every scope's sync cursor (and releases any held lease), so the next sync
+    /// Clears every scope's sync cursor (and fences off any pass holding one), so the next sync
     /// re-snapshots the account from scratch — re-fetching and **re-normalizing** every
     /// object. The durable outbox (queued sends) and the schema are untouched. Backs a
     /// host "reset / full refetch" action; the caller should sync afterwards to
@@ -260,12 +259,11 @@ impl<C: Clock> SqliteStore<C> {
     /// flag/move/expunge changes incrementally — `imap-smtp.md`) or a forced full
     /// re-snapshot.
     ///
-    /// Unlike [`reset_sync`](Self::reset_sync) it **leaves any held lease intact**:
-    /// this clear runs on every refresh, concurrently with fire-and-forget syncs, so it
-    /// must not steal a live lease (it carries no fencing token to check, and clearing
-    /// `lease_expiry` without bumping the generation would let a stolen-then-resumed
-    /// worker commit its cursor back over the clear). An in-flight sync therefore keeps
-    /// its lease; the cleared cursor takes effect on the next claim of the scope. The
+    /// It also takes the scope from any pass holding it, bumping the fencing token and
+    /// freeing the lease, because a host clears a cursor to change what the next pass
+    /// fetches (a wider sync window, an account added again). A pass still running under
+    /// the old terms would otherwise write its cursor back over the clear at its next
+    /// commit; fenced, that commit is refused and the scope can be claimed at once. The
     /// scope row, its objects, and the durable outbox are left in place.
     ///
     /// # Errors
@@ -305,24 +303,28 @@ impl<C: Clock> SqliteStore<C> {
     }
 }
 
-/// Clears every scope's cursor and lease so the next sync re-snapshots from scratch.
+/// Clears every scope's cursor, collection tag and lease so the next sync re-snapshots from
+/// scratch rather than skipping a calendar whose tag has not moved, bumping each fencing token
+/// so a pass still running cannot commit its cursor back over the clear.
 /// Leaves the scope rows (and their stable `scope_key`s) and objects in place — the
 /// re-snapshot overwrites and tombstones them — so no object is orphaned.
 fn clear_sync_cursors(conn: &Connection) -> Result<()> {
     conn.execute(
-        "UPDATE sync_scope SET cursor = NULL, lease_expiry = NULL",
+        "UPDATE sync_scope
+         SET cursor = NULL, collection_tag = NULL, token = token + 1, lease_expiry = NULL",
         [],
     )
     .map_err(backend)?;
     Ok(())
 }
 
-/// Clears one scope's cursor (by `scope_key`) so the next sync re-snapshots it. Leaves
-/// `lease_expiry` and the fencing token untouched, so a concurrent in-flight sync's
-/// lease is not stolen (see [`SqliteStore::clear_scope_cursor`]).
+/// Clears one scope's cursor and collection tag (by `scope_key`) so the next sync re-snapshots
+/// it, and fences off the pass holding it (see [`SqliteStore::clear_scope_cursor`]).
 fn clear_one_cursor(conn: &Connection, scope_key: &str) -> Result<()> {
     conn.execute(
-        "UPDATE sync_scope SET cursor = NULL WHERE scope_key = ?1",
+        "UPDATE sync_scope
+         SET cursor = NULL, collection_tag = NULL, token = token + 1, lease_expiry = NULL
+         WHERE scope_key = ?1",
         [scope_key],
     )
     .map_err(backend)?;

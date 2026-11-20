@@ -81,7 +81,7 @@ async fn recurring_calendar_ingest_search_and_horizon_advance() {
     let beyond = search_calendar(&store, account(), "after:2026-06-10 before:2026-06-12", 10)
         .await
         .unwrap();
-    assert!(beyond.hits.is_empty());
+    assert_eq!(beyond.hits, []);
 
     // Advancing the horizon materializes further out through apply_maintenance.
     let wide = horizon("2026-06-01T00:00:00Z", "2026-06-20T00:00:00Z");

@@ -220,8 +220,8 @@ fn name_taken(err: &GraphError) -> bool {
         || matches!(err, GraphError::Status { code: Some(code), .. } if code == "ErrorFolderExists")
 }
 
-/// Whether Graph answered that the folder is not there.
-fn is_not_found(err: &GraphError) -> bool {
+/// Whether Graph answered that the folder, or any item, is not there.
+pub(crate) fn is_not_found(err: &GraphError) -> bool {
     matches!(err, GraphError::Status { status: 404, .. })
         || matches!(err, GraphError::Status { code: Some(code), .. } if code == "ErrorItemNotFound")
 }

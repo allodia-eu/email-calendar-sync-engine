@@ -320,7 +320,7 @@ async fn a_discarded_connection_is_not_offered_to_the_next_caller() {
 async fn a_budget_of_zero_is_clamped_rather_than_deadlocking() {
     let (dial, _dials) = dialler(true);
     let pool = ImapPool::new(dial, 0, ALWAYS_CHECK);
-    assert_eq!(pool.max_connections(), 1);
+    assert_eq!(pool.max_connections, 1);
     // A pool that can hold nothing would hang here forever instead of failing visibly.
     let _only = tokio::time::timeout(std::time::Duration::from_millis(500), pool.acquire())
         .await

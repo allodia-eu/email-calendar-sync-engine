@@ -51,13 +51,7 @@ async fn a_renamed_folder_leaves_no_copy_of_its_mail_under_the_old_name() {
     let second = sync(&pass(&["INBOX", "New"], &["INBOX", "New"]), &store).await;
     assert!(second.is_ok(), "{second:?}");
 
-    assert!(
-        store
-            .object_keys(&imap_scope("Old"))
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(store.object_keys(&imap_scope("Old")).await.unwrap(), []);
     assert!(
         store
             .load_sync_state(account(), &imap_scope("Old"))

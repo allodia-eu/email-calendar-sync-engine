@@ -28,10 +28,10 @@ is authoritative for the `provider-caldav` calendar client.
   `connect_session`); it describes the IMAP session, not the per-send SMTP dial. For
   the same reason it is the only one to emit `ConnectStep::TlsEstablished` on the
   connect-observer seam (`providers.md`), followed by `ConnectStep::Authenticated` once
-  `LOGIN` succeeds — and nothing else: IMAP dials a known address and runs no
+  the credential is accepted — and nothing else: IMAP dials a known address and runs no
   discovery, so it has no `Redirected`/`Discovered` step. Both are emitted from
-  `open_session`, the stream-generic half of the dial, so the offline suite asserts the
-  exact sequence over a `MockStream`. A rejected `LOGIN` emits no `Authenticated`. The
+  `finish_session`, the stream-generic half of the dial, so the offline suite asserts the
+  exact sequence over a `MockStream`. A rejected credential emits no `Authenticated`. The
   observer rides on `ImapConfig` (`config.rs`), so an `ImapWatcher`'s dedicated
   connection — which shares `connect_session` — is observed too.
 - **A refused `LOGIN` is not always a bad credential.** `NO` is `ImapError::Auth`
@@ -42,13 +42,33 @@ is authoritative for the `provider-caldav` calendar client.
   live as `NO [LIMIT] LOGIN Rate limit hit.` on a session opened seconds after five
   others had authenticated with the same credential. The rule is scoped to `LOGIN`:
   RFC 5530's `LIMIT` is any implementation limit, so on `STORE` it can mean too many
-  keywords, which is `InvalidState` like any other `NO`. SMTP `AUTH` follows the same
-  rule in its own terms: a 4xx is "try again later" (RFC 5321 §4.2.1), so it is
-  `RateLimited` too, except RFC 4954's `432` (a password transition is needed), which only
-  the user can resolve and stays `Authentication`. Nothing in the adapter waits either
+  keywords, which is `InvalidState` like any other lasting `NO`. A temporary code (next
+  item) did not judge the credential either, and stays the `Retryable` `NO` it is: RFC 5530
+  §3's own example of `UNAVAILABLE` is a `LOGIN` refused while the directory that checks
+  passwords is down. An `AUTHENTICATE` carrying a token
+  is classified the same way, since it is the other way into a session. SMTP `AUTH`, with a
+  password or a token, follows the same rule in its own terms: a 4xx is "try again later"
+  (RFC 5321 §4.2.1), so it is `RateLimited` too, except RFC 4954's `432` (a password
+  transition is needed), which only the user can resolve and stays `Authentication`. Nothing in the adapter waits either
   out; the class is the host's cue to back off (`http-throttling.md` covers the HTTP
   adapters, where the engine does the waiting).
-- Layers: `transport` (connect + the tagged line protocol: `LOGIN`/`CAPABILITY`/
+- **A refused command is classed by its response code.** A tagged `NO` is `ImapError::No`
+  whatever it carries, so every site that tolerates a refusal (an `ENABLE`, a `STATUS`
+  probe, `NAMESPACE`) keeps tolerating it. Its class is read from the code RFC 5530 puts at
+  the start of the text (`error::opens_with_temporary_code`): `[UNAVAILABLE]`, `[INUSE]`
+  and `[SERVERBUG]` say the refusal is temporary, so they are `Retryable`; any other code,
+  and none, is `InvalidState`. A `NO` took no effect, so a write the outbox parks on
+  `Retryable` and repeats after its backoff cannot apply twice. Without this a host cannot
+  tell a server that is briefly short of something from a lasting answer such as a folder
+  hidden from IMAP, and has to guess with waits of its own. Proof:
+  `transport_refusal_tests.rs`.
+- Layers: `dial` (the connect sequence itself: TCP, TLS, authenticate, negotiate; behind
+  `ImapAccount::connect` and every connection the account's pool opens after it),
+  `credentials`/`sasl` (a password or an OAuth 2.0 access token, and the two SASL
+  mechanisms that carry a token — see **Authentication** below),
+  `probe` (what a server accepts, read *before* there is a credential to present),
+  `transport_auth`/`smtp_auth` (the `AUTHENTICATE`/`AUTH` exchanges those drive),
+  `transport` (connect + the tagged line protocol: `LOGIN`/`CAPABILITY`/
   `ENABLE`/`SELECT [(CONDSTORE)]`/`UID FETCH [(CHANGEDSINCE … VANISHED)]`/`LIST`/
   `CREATE`/`APPEND`, literal handling), `transport_starttls` (the plaintext `STARTTLS`
   preamble + the raw-socket unwrap and greeting-less `resume` for the upgrade — see
@@ -60,8 +80,11 @@ is authoritative for the `provider-caldav` calendar client.
   expunges via `CHANGEDSINCE`/`VANISHED`), `idle`/`watch` (the `IDLE` push primitives +
   the `ImapWatcher`), `smtp` (the submission *conversation*; the RFC 5322/MIME
   message assembly it feeds to `DATA` is the shared `engine-rfc5322` crate — see
-  **SMTP submission**), `pool` + `account` (the per-account connection budget — see
-  **Connections** below), `provider` (the `Provider` impl).
+  **SMTP submission**), `smtp_stream` (its framing: reading a reply, writing a command
+  or the message), `deadline` (how IMAP and SMTP apply the shared bounds on a silent
+  server, `deadlines.md`), `pool` + `account` (the per-account connection budget — see
+  **Connections** below), `provider` (the `Provider` impl), `gmail` + `gmail_read` +
+  `parse_gmail` (Gmail's mail as one store, below).
 
 ## How IMAP differs from JMAP (the shape)
 
@@ -94,7 +117,9 @@ is authoritative for the `provider-caldav` calendar client.
   each dialled a socket they held for their whole lifetime, so an account's socket count
   was a property of the *type* — one per bound folder, idle or not, all re-dialled in one
   burst on every network drop (measured: 107 connections in four hours on one Android
-  device). Two `ImapAccount`s for one account are two budgets; build one.
+  device). Two `ImapAccount`s for one account are two budgets; build one. A mail store shared
+  with that login is a view of it (`ImapAccount::with_shared_account`, under "Shared
+  mailboxes"), not a second account.
 - **Why the engine must bound it, not the server.** IMAP has no way to learn a server's
   connection limit, and only some servers say when it was hit: RFC 5530 has no "too many
   connections" code. Yahoo answers with `NO [LIMIT]` at `LOGIN` (`RateLimited`, above);
@@ -128,11 +153,14 @@ is authoritative for the `provider-caldav` calendar client.
   number, and the server's limit is shared with every other client of the user's. A caller
   whose dial fails while another *worker* holds a connection waits for one to come back
   rather than failing; it fails only once no worker is left. When the server *answered*
-  (`LOGIN` `NO`, `NO [LIMIT]`, `BYE` at the greeting) the ceiling also drops by that
-  connection, since a `NO` to a credential other sessions are logged in with right now is
-  a session limit, not a verdict on the credential; `ImapAccount::invalidate` restores it,
+  (`LOGIN` `NO`, with or without a code, `BYE` at the greeting) the ceiling also drops by
+  that connection, since a `NO` to a credential other sessions are logged in with right now
+  is a session limit, not a verdict on the credential; `ImapAccount::invalidate` restores it,
   a new network being a new address. An unanswered dial (the network) lowers nothing.
-  Proof: `pool_refusal_tests.rs`.
+  A refused **token** first gets its one renewal (**Authentication** below), so an expired
+  token that a fresh one replaces never reaches the pool as a refusal; only a fresh token
+  refused as well does, and that is the session limit again. Proof: `pool_refusal_tests.rs`,
+  `dial_renewal_tests.rs`.
 - **The pool re-dials on its own.** A provider holds no socket, so a dead one is replaced
   on the next call rather than failing every call until the host rebuilds the provider.
   Every pool dial reports through the config's connect observer, so a host still sees
@@ -146,13 +174,18 @@ is authoritative for the `provider-caldav` calendar client.
 ## IMAP specifics implemented
 
 - **Cursor + paging.** The cursor is `(UIDVALIDITY, UIDNEXT)` encoded
-  `v{validity};n{next}`, with an optional QRESYNC `HIGHESTMODSEQ` appended as
-  `;m{modseq}` when the session negotiated QRESYNC, and an optional `;b{low}`
+  `v{validity};n{next};g{version}`, with an optional `HIGHESTMODSEQ` appended as
+  `;m{modseq}` whenever `SELECT` reported one, `;r` when the pass that wrote it left the
+  folder reconciled (see the reconciling delta below), and an optional `;b{low}`
   **backfill watermark** (the lowest UID a still-descending cold backfill has
-  committed — see the next bullet) while one is in flight (a completed non-QRESYNC
-  cursor is byte-identical to the old format, and cursors lacking `;m`/`;b` decode
-  with those fields `None`); a foreign/garbage cursor decodes to "no cursor" →
-  snapshot. The **page path** below (used by a delta or a `UIDVALIDITY`-reset
+  committed — see the next bullet) while one is in flight; a foreign/garbage cursor
+  decodes to "no cursor" → snapshot. **`;g` is the sync's version**
+  (`cursor::CURSOR_VERSION`): a cursor of an older version, or one without `;g`, is read as
+  no cursor, so its folder is synced afresh once. Bump it when a sync fix leaves stored
+  mail that only a fresh sync corrects (mail an older sync never fetched, or state it
+  never read), and say in its doc comment what the bump repairs. It is per folder and IMAP
+  only; `NORMALIZER_VERSION` (`store-and-sync.md`) re-syncs every scope of every provider,
+  and is for a change in how stored data is decoded. The **page path** below (used by a delta or a `UIDVALIDITY`-reset
   re-snapshot) pages **newest UIDs first, up to `limit` *messages* per page**: a page
   fetches
   a UID window and, if a gap (expunged UID) leaves it under-filled, **widens the
@@ -191,12 +224,12 @@ is authoritative for the `provider-caldav` calendar client.
   changes depth without reconnecting the provider; `ImapConfig::with_since(date)`
   survives only as the `default_sync_window` the whole-scope `sync_email` drain fetches
   under. Either way it bounds a **snapshot/backfill** to mail delivered on or after
-  `date`: a single `UID SEARCH SINCE <dd-Mon-yyyy>` (`transport::uid_search_since`,
-  parsed by `parse_search`, tolerating both classic `* SEARCH` and extended
-  `* ESEARCH … ALL`) yields the in-window UIDs, and the sync starts at the **lowest** of
+  `date`: `UID SEARCH SINCE <dd-Mon-yyyy>` (`transport_search`, split by UID span above a
+  `MESSAGELIMIT`, parsed by `parse_search`, tolerating both classic `* SEARCH` and
+  extended `* ESEARCH … ALL`) yields the in-window UIDs, and the sync starts at the **lowest** of
   them (older mail is never fetched), reporting their count as the `total` progress
   denominator. No matches yields an empty snapshot that still tombstones stale rows
-  below the window. A **delta** issues no `SEARCH`, so the fetch is unbounded; the
+  below the window. A **QRESYNC delta** issues no `SEARCH`, so the fetch is unbounded; the
   orchestrator drops any arrival the window does not admit, which is what stops an old
   message *filed* into the folder (a fresh UID, since IMAP has no in-place edit) from
   re-entering. With no cutoff (the default) the whole mailbox
@@ -207,12 +240,47 @@ is authoritative for the `provider-caldav` calendar client.
   **snapshot** (rediscover from UID 1, carry `present`). A matching cursor → **delta**.
   On a QRESYNC session with a prior `HIGHESTMODSEQ` baseline the delta is **incremental
   and complete** — flag changes *and* expunges of already-synced messages, plus new
-  arrivals, in one round trip (see **CONDSTORE/QRESYNC** below). Without QRESYNC (or on
-  the first delta after an upgrade, before a modseq baseline exists) the delta is
-  **new arrivals only** (UIDs at or above the cursor's `UIDNEXT`) and carries **no
-  removals**, so flag/expunge changes reconcile via a periodic snapshot — the honest
-  baseline `providers.md` prescribes ("CONDSTORE/QRESYNC paths are optional
-  capabilities, not assumptions").
+  arrivals, in one round trip (see **CONDSTORE/QRESYNC** below). Without QRESYNC the delta
+  **reconciles** the long way (RFC 4549 §4.3; `resync` module): `UID FETCH … (UID FLAGS)`
+  over everything below the cursor's `UIDNEXT`, one short line per message, becomes a
+  `MailStateChange` each; the arrivals at or above it come whole; and the keys of both are
+  the pass's `present` set, so the final chunk tombstones whatever the server no longer
+  holds (expunged, or moved by any client). The state changes ride an intermediate chunk,
+  because the final one commits as a snapshot and a snapshot carries no partials. A
+  sync-depth window bounds both halves through `UID SEARCH SINCE`, and every `FETCH`
+  names at most `fetch_batch` UIDs (see **Message limits** below). CONDSTORE/QRESYNC stay
+  optional capabilities, not
+  assumptions (`providers.md`); the cost of not having them is one flags line per message
+  per pass. Except where the folder has not changed: a server advertising
+  `XYMHIGHESTMODSEQ` (Yahoo) reports a per-folder `HIGHESTMODSEQ` on `SELECT` without
+  CONDSTORE, and it moves on every arrival, flag change and removal (observed: each of
+  those moved it by one, and a change in one folder moved no other). A delta whose
+  `UIDNEXT` and `HIGHESTMODSEQ` both match the cursor's returns no changes and reads
+  nothing (`resync::unchanged`), provided the cursor carries `;r`: written by a pass that
+  left the folder reconciled. A resumed backfill completes without reconciling, so its
+  cursor carries none and the folder is read once more first. An unchanged pass then
+  takes 0.4 s for a 2584-message Yahoo inbox where reading every flag took about 6 s. A
+  `HIGHESTMODSEQ` a server reports without that capability is not trusted for this. Mail
+  that aged out of a sync-depth window is dropped on the next pass that finds a change, as
+  on the QRESYNC path.
+- **Message limits and UID mode** (RFC 9738, RFC 9586, RFC 9394). A server advertising
+  `MESSAGELIMIT=<n>` may refuse or cut short a command over `n` messages. Every sync `FETCH`
+  is capped at `n` (`Negotiated::within_message_limit`), including a page whose caller set no
+  limit. A window search (`transport_search`) that returns `n` matches, or is refused with
+  `NO [LIMIT]`, is read as cut off: the window is then decided from each message's own
+  `INTERNALDATE`, compared by day as `SINCE` compares, fetched `PARTIAL 1:<n>` at a time
+  where `PARTIAL` is advertised and in UID spans of width `n` otherwise. Yahoo is why: it
+  answers `UID SEARCH SINCE` with the newest `n` matches by date and a plain `OK`, in either
+  mode, and cuts before any other criterion, so narrowing by UID finds nothing more; its
+  search `PARTIAL` is ignored, and any range not starting at 1 is `BAD`. Its `FETCH`
+  `PARTIAL` works as specified, which is what pages by message count rather than by UID.
+  Where `UIDONLY` is advertised the client enables it, because Yahoo documents its default
+  mode as showing a folder above `n` only in part. On the account tested it did not: the
+  default mode showed all 2584 messages, and UID mode only turned an over-limit `FETCH` into
+  `NO [LIMIT]` with partial results. Stalwart offers `UIDONLY` as well, so the harness
+  suites run in UID mode. Every command already addresses messages by UID, so the
+  only change on the wire is that fetch responses arrive as `* <uid> UIDFETCH (…)`, which
+  the fetch, body and `IDLE` parsers read as rows numbered by UID.
 - **CONDSTORE/QRESYNC incremental delta** (RFC 7162; `qresync` module). After login the
   client issues `CAPABILITY` (capabilities are advertised only post-auth) and, when the
   server lists `QRESYNC`, `ENABLE QRESYNC` — best-effort, so a server that lists it but
@@ -248,14 +316,41 @@ is authoritative for the `provider-caldav` calendar client.
   changes no longer needs `Engine::clear_mail_cursors` against a QRESYNC server — a plain
   delta sync reconciles them.
 - **Normalization.** `UID FETCH (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE
-  BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (REFERENCES)])` (safe metadata — none sets
-  `\Seen`). The `References` header is not an `ENVELOPE` field, so it rides a
-  separate peek-safe body-header item to feed threading (`threading.md`).
-  `BODYSTRUCTURE` feeds `Message.has_attachment` without downloading parts: explicit
-  attachments or named non-CID parts count; CID inline resources do not, a `text/plain`/
-  `text/html` body part is never counted on a bare `name=` alone, RFC 2231 split/encoded
-  filenames (`name*0*`) are recognized, and `message/global` is read like `message/rfc822`.
-  This keeps the list-time flag in step with `engine-mime::extract_attachments`. Flags → keywords:
+  BODY.PEEK[HEADER.FIELDS (REFERENCES IMPORTANCE X-MSMAIL-PRIORITY X-PRIORITY CONTENT-TYPE
+  CONTENT-DISPOSITION)])` (safe metadata — none sets `\Seen`). The `References` header is not an
+  `ENVELOPE` field, so it rides a separate peek-safe body-header item to feed threading
+  (`threading.md`); the headers that state a message's importance, `Importance::HEADERS`
+  (`modeling.md`), ride the same item, every occurrence of each, and `header_section` hands the
+  rule the last (live-verified, `tests/live_imap_importance.rs`; captured,
+  `tests/fixtures/importance_fetch.txt`).
+  `BODYSTRUCTURE` is a **second** command, `UID FETCH <set> (UID BODYSTRUCTURE)`, over only the
+  rows whose top-level headers do not show one text body (`engine-mime::is_single_text_body`:
+  `text/plain` or `text/html`, or no `Content-Type`, and no `attachment` disposition); such a
+  message has no other part, so its flag is `false` without asking. A section that repeats
+  either field is read from the structure too. The open rows go out in sets of at most 500 UIDs
+  (fewer under a `MESSAGELIMIT`), since they are scattered and a set names most of them one by
+  one. Yahoo builds
+  `BODYSTRUCTURE` at about 25 ms a message, single-part ones included, against under 3 ms for
+  the rest of the metadata together, and about half of a typical inbox is one text body. The
+  streamed backfill commits every row as it arrives, an open one as having no attachment, and
+  once a batch's structure is in sends again only the open rows it shows carry one, before the
+  batch's checkpoint. Those sets are shared out over up to three **spare** pooled
+  connections (`ImapPool::try_acquire_for` lends only a free permit and never waits), one per 20
+  open rows beyond the first 20; a helper that fails is discarded and its share asked again on
+  the pass's own connection. On Yahoo this took a 2577-message cold pass from about 45 s to about
+  34 s, with no session refused.
+  `BODYSTRUCTURE` feeds `Message.has_attachment` without downloading parts, by the rule
+  `engine-mime::extract_attachments` applies to the bytes (RFC 8621's classification plus the
+  engine's exceptions, `bodystructure.rs`): every leaf counts, named or not, except a
+  `text/plain`/`text/html` body part (the first child, a version of an alternative, or an
+  unnamed part outside a `related`), an undispositioned `text/calendar` (the invitation
+  card), and a non-text, non-message part with a `Content-ID` (a `cid:` resource);
+  `Content-Disposition: attachment` always counts. RFC 2231 split/encoded filenames
+  (`name*0*`) are recognized, `message/global` is read like `message/rfc822`, and a nested
+  message is one part. The two agree on every shape in
+  `provider-imap/tests/fixtures/attachment-shapes/` (real Stalwart structures), which a test
+  enforces. Once the message's source is read, that answer replaces this one
+  (`store-and-sync.md`, "The source answers the row's paperclip"). Flags → keywords:
   `\Seen`/`\Flagged`/
   `\Answered`/`\Draft` map to their `$`-keywords; `\Deleted`/`\Recent` are
   deliberately not keywords (expunge/session model); custom keywords pass through.
@@ -281,8 +376,8 @@ is authoritative for the `provider-caldav` calendar client.
   attributes. `list_command` builds the clause, and asks for `SPECIAL-USE` only where the
   capability was advertised: an unadvertised return option is a `BAD`, which costs the
   whole folder list rather than only its roles.
-- **Unread counts** (`Mailbox::unread_count`, `unseen.rs`). `LIST` carries none, so the
-  folder-list sync asks for `UNSEEN` too: one round trip via
+- **Unread counts** (`Mailbox::unread_count`, `listing.rs`/`unseen.rs`). `LIST` carries none,
+  so the folder-list sync asks for `UNSEEN` too: one round trip via
   `LIST "" "*" RETURN (SPECIAL-USE STATUS (UNSEEN))` where the server advertised
   **LIST-STATUS** (RFC 5819), else one `STATUS <mailbox> (UNSEEN)` per selectable mailbox — capped at
   `MAX_STATUS_PROBES`, so a pathological account cannot turn a folder list into a
@@ -297,6 +392,158 @@ is authoritative for the `provider-caldav` calendar client.
   which exists for a response code that may ride the completion line): Dovecot completes a
   `LIST` with `List completed (0.003 + 0.000 secs).` — four items whose first word is the
   keyword and whose last is a bare `.`, so read as data it invents a mailbox named `.`.
+
+
+## Authentication: a password or an OAuth 2.0 token
+
+`ImapConfig::new(addr, server_name, credentials)` takes a **`Credentials`** —
+`Password` (IMAP `LOGIN`, SMTP `AUTH PLAIN`) or `OAuth2` (a bearer access token over
+SASL). That is the same shape `provider-jmap` and `provider-caldav` already expose, and
+the same posture as Graph and Google: **the engine stays OAuth-agnostic** — acquiring,
+storing and refreshing the token is the host's job (`north-star.md`).
+
+**Every dial asks for its credential.** The config holds a `CredentialSource`, not a
+credential: an async trait with `credentials()` (what to present now) and `renew(refused)`
+(a replacement after the server refused one, `None` by default). A `Credentials` is its own
+source, which is what `ImapConfig::new` wraps; a host whose account signs in with OAuth
+passes its token store to `ImapConfig::from_credential_source`. The source is asked once
+per connection the account's pool dials and once per SMTP submission, because the pool
+dials for as long as the host runs and a token lives about an hour: a pool that presented
+the token it connected with would lose every new connection an hour in, while the sessions
+already open went on working. A session outlives the token that opened it, so nothing
+renews an open one.
+
+- **A refused token is renewed once, on a fresh connection.** An `Auth` refusal asks the
+  source's `renew`; a replacement is presented on a new connection (a server may drop a
+  connection after a failed sign-in, and counts the attempt either way). One re-dial at
+  most. A password's source never renews, so a refused password is never sent again: the
+  same secret to the same server gets the same answer, at a provider that may be counting
+  towards a lockout. The same rule wraps SMTP, where `AUTH` precedes `MAIL FROM`, so a
+  retried submission has sent nothing. Proof: `dial_renewal_tests.rs` and
+  `filing_smtp_server_tests.rs`.
+- **A source that cannot produce a credential dials nothing.** It fails with
+  `ImapError::Credential`, classified as the source classified it: a revoked grant is
+  `Authentication`, an unreachable token endpoint is retryable. It is not a session
+  refusal, so the pool's ceiling does not move.
+
+**The mechanism is negotiated, never configured.** Two SASL mechanisms carry a bearer
+token, and providers disagree about which:
+
+| Provider | IMAP advertises | Source |
+| --- | --- | --- |
+| Gmail | `AUTH=XOAUTH2` **and** `AUTH=OAUTHBEARER` | **observed** |
+| Yahoo / AOL | `AUTH=XOAUTH2` **and** `AUTH=OAUTHBEARER` | **observed** |
+| Microsoft 365 | `AUTH=XOAUTH2` only | documented |
+| Stalwart | both | documented |
+
+⚠️ **Yahoo's row contradicts Yahoo's own documentation**, which presents `OAUTHBEARER`
+as *the* mechanism for its IMAP and never mentions `XOAUTH2` there. The server
+advertises both. Both real capability lines are captured verbatim in `sasl_tests.rs`, so
+the preference order below rests on observed bytes rather than on a vendor page — which
+is the difference between a fix and a guess, and here it inverted the answer.
+
+So `sasl::select` reads the server's own `AUTH=` list and picks. Nothing above this
+crate knows which provider it is talking to — a host that had to ask would be the engine
+leaking its job outward ("Provider-neutral by default", `AGENTS.md`), and there is
+deliberately **no knob**, because a caller able to pin a mechanism would be encoding the
+provider in its configuration.
+
+**`OAUTHBEARER` wins where both are offered, and the reason is testability.** Every
+server this repo can reach offers both, so the preference decides only which of the two
+code paths ever runs live — and `OAUTHBEARER` is the one more likely to be subtly wrong:
+it is newer (RFC 7628, 2015), it carries a GS2 header and `host`/`port` pairs `XOAUTH2`
+does not, and its rejection is acknowledged with `AQ==` rather than an empty line.
+`XOAUTH2` is a decade-old de-facto standard whose exact bytes Google publishes. Given one
+live proof to spend, it buys more on the standard mechanism. `XOAUTH2` stays the fallback
+and is what a server offering only it (Microsoft 365) gets.
+
+Preferring the other way round was the first attempt here, on the reasoning that
+`XOAUTH2` is what every deployed client sends and is therefore the better-trodden path.
+That is true, and it is the wrong trade: it would have left `OAUTHBEARER` — the riskier
+implementation — running against **no** live server at all, since the argument that Yahoo
+would exercise it rested on a documentation claim the server disproves.
+
+- **Both protocols carry the same bytes**, which is why `sasl.rs` is protocol-neutral:
+  IMAP frames the blob as `AUTHENTICATE <mech> <base64>` and SMTP as
+  `AUTH <mech> <base64>` (RFC 4959 / RFC 4954). `OAUTHBEARER` is a GS2 header plus
+  `%x01`-separated pairs — `n,a=<user>,^Ahost=…^Aport=…^Aauth=Bearer <token>^A^A` —
+  and `XOAUTH2` the flatter `user=…^Aauth=Bearer …^A^A`. The `host`/`port` describe
+  **the connection the response rides on**, so an SMTP submission sends its own host and
+  port, never the IMAP session's; `port` is dropped rather than invented when the dial
+  address carried no parsable one (RFC 7628 §3.1 makes it optional for a bearer token).
+  The initial response is only sent inline where `SASL-IR` is advertised; otherwise the
+  client names the mechanism, waits for the bare `+`, and sends the blob on its own line
+  — the two-step form every server takes.
+- **A rejected token answers with a challenge, not an error — and then waits.** Both
+  mechanisms describe the refusal in base64 JSON (`{"status":"invalid_token",…}`) and
+  will not send the tagged `NO` (or the SMTP `535`) until the client acknowledges: a
+  single `%x01`, base64 `AQ==`, for `OAUTHBEARER` (RFC 7628 §3.2.3), and an **empty
+  line** for `XOAUTH2`. A client that skips the acknowledgement does not get an
+  authentication error, it gets a **stalled connection** — so this is not politeness, it
+  is what turns an expired token into a failure a host can act on. The decoded challenge
+  travels in the error, because it is the only place the server says *whether* the token
+  was expired, wrongly scoped, or issued for another account.
+- **A token is never downgraded into a password attempt.** A server advertising no OAuth
+  mechanism fails with an `Auth` error naming what it *did* offer — the usual cause is an
+  OAuth credential pointed at an account that only takes a password — and no credential
+  reaches the wire.
+- **Credential components are screened before encoding.** `%x01` is the key/value
+  separator itself, so a token carrying one could append its own `auth=` pair; CR/LF/NUL
+  would break out of the command line the base64 rides on. Rejected up front — the same
+  guard `smtp.rs` applies to envelope addresses and `engine-rfc5322` to header values.
+- **The pre-auth `CAPABILITY` is a third call, not a duplicate of the other two.** The
+  session already asks before `STARTTLS` (is the upgrade offered?) and again after
+  authenticating (what does *this* session get — servers advertise a different set once
+  they know who is asking, which is why that one cannot be optimized away). An OAuth dial
+  adds one in between, because the mechanism list and `SASL-IR` are only knowable before
+  the credential is sent.
+- **Getting a Yahoo token is the hard part, and it is not a code problem.** Yahoo does
+  not self-serve mail scopes: `mail-r`/`mail-w` are granted only after a developer-access
+  review (<https://senders.yahooinc.com/developer/developer-access/>). `tools/yahoo-oauth`
+  drives the flow once that is approved — authorization code, no PKCE, out-of-band
+  redirect, HTTP Basic at the token endpoint, all as Yahoo documents. Its `check` command
+  prints the scopes a token actually carries, which is the first thing to look at when
+  IMAP answers `AUTHENTICATE` with `NO`: a token minted without approved mail scope looks
+  perfectly valid and opens nothing.
+
+### Asking before there is a credential: `probe_imap_auth` / `probe_smtp_auth`
+
+A host setting up an account has to decide **which credential to ask the user for**, and
+that decision is only the server's to make. `probe_imap_auth(addr, server_name, security,
+connector)` and `probe_smtp_auth(…, ehlo_domain, connector)` (`probe.rs`) dial, read the
+pre-authentication `CAPABILITY` / `EHLO`, and return an `AuthOffer`: the advertised
+mechanisms verbatim, plus `password` and `oauth`. They share `dial::open_secured` with
+the real connect, so a probe is byte-for-byte the dial an account would make, minus the
+credential.
+
+- **Nothing is presented, and nothing is recorded against the account.** RFC 7628 §3.2.2
+  lets a server describe its OAuth configuration — an `openid-configuration` URL
+  included — in the challenge it returns when it *rejects* a token, so a client could
+  discover the authorization server by sending a deliberately invalid one. This does not.
+  It would leave a failed authentication on the user's account before they had signed in
+  once, on the screen where they are most likely to give up, and the field is optional:
+  Stalwart answers a bad token with a bare `NO [AUTHENTICATIONFAILED]` and no challenge.
+  A host discovers the authorization server over HTTPS instead.
+- **On a STARTTLS dial, the reading is the post-upgrade one.** A server commonly withholds
+  its mechanism list, or advertises `LOGINDISABLED`, until the link is secured, so the
+  cleartext capability describes a session nobody will use. Same on SMTP: the `EHLO` that
+  negotiated the upgrade is not the one whose `AUTH` line counts.
+- **`LOGINDISABLED` and "no `AUTH=` mechanism" are different answers.** The capability
+  withdraws the `LOGIN` *command* (RFC 3501 §6.2.3), not the password: a server may
+  disable it and still take `AUTH=PLAIN`, and a server advertising no mechanism at all
+  still takes `LOGIN`. Reading either as "no password" hides the only route that works.
+  Microsoft 365 is the case where both are true at once, and where the honest answer is
+  that a password field would be a dead end.
+- **SMTP has no such fallback.** Submission authenticates over SASL or not at all
+  (RFC 4954), so an `AUTH` line naming no password mechanism means no password.
+- **Every failure means one thing to a caller: the question went unanswered.** A refused
+  dial, a bad server name, an unadvertised `STARTTLS` — a host offers what works
+  everywhere (a password) rather than a sign-in that may not exist.
+- **The `EHLO` domain is screened for CR/LF/NUL in `ehlo` itself**, not in each caller:
+  the probe is the first thing a setup screen runs, and it takes the domain straight from
+  a host, so the guard belongs where the command line is built (`converse` already
+  screened the envelope addresses it owns). One CR would append a second SMTP command
+  (RFC 5321 §2.3.8).
 
 ## SMTP submission
 
@@ -318,7 +565,9 @@ is authoritative for the `provider-caldav` calendar client.
   `In-Reply-To: <id>` when `Draft.in_reply_to` is set and `References: <id1> <id2> …`
   (space-separated, each angle-bracketed) when `Draft.references` is non-empty — each
   control-char-guarded like the other ids and omitted when its field is empty, so a
-  sent reply threads with its original (`threading.md`). The body is normalized so a
+  sent reply threads with its original (`threading.md`). An importance other than normal is
+  written as `Importance: high|low` and `X-Priority: 1 (Highest)|5 (Lowest)` in every assembly
+  (wire, filed copy, draft); normal writes neither. The body is normalized so a
   bare CR/LF never reaches the wire. Plain drafts emit `text/plain`; drafts with an
   HTML alternative emit `multipart/alternative`; CID-referenced inline attachments
   wrap the body in `multipart/related`; regular attachments wrap the result in
@@ -345,13 +594,22 @@ is authoritative for the `provider-caldav` calendar client.
   conventional `Sent`/`Drafts` name. This costs one `LIST` per submission (rare path).
 - **Three transports.** `ImapConfig::with_smtp(addr)` is **plaintext, no auth** — for
   an MX that accepts local mail (the fixture's port 25). `with_smtp_tls(addr,
-  server_name)` is **implicit TLS + `AUTH PLAIN`** (port 465) using the account
-  credentials and the injected connector. `with_smtp_starttls(addr, server_name)` is
-  **STARTTLS + `AUTH PLAIN`** (port 587): the client connects in the clear, `EHLO`s,
-  upgrades the socket with `STARTTLS`, re-`EHLO`s over TLS, then authenticates — it
-  **fails** if the server does not advertise `STARTTLS` (no cleartext auth). AUTH is
-  only ever attempted once the stream is secured (implicit TLS, or after the upgrade),
-  never in the clear. The upgrade is negotiated in `smtp::negotiate_starttls` (greeting
+  server_name)` is **implicit TLS + `AUTH`** (port 465) using the account credentials and
+  the injected connector. `with_smtp_starttls(addr, server_name)` is **STARTTLS + `AUTH`**
+  (port 587): the client connects in the clear, `EHLO`s, upgrades the socket with
+  `STARTTLS`, re-`EHLO`s over TLS, then authenticates — it **fails** if the server does
+  not advertise `STARTTLS` (no cleartext auth). Which `AUTH` runs follows from the
+  credential (**Authentication** above): `AUTH PLAIN` for a password, `AUTH XOAUTH2` /
+  `AUTH OAUTHBEARER` for an access token. AUTH is only ever attempted once the stream is
+  secured (implicit TLS, or after the upgrade), never in the clear — which matters more
+  for a token than for a password, since a token grants the whole mailbox and is
+  replayable until it expires.
+- **`EHLO`'s extensions are read line by line, never from the joined reply.** An
+  extension keyword only means anything at the start of its own line, so flattening the
+  reply first lets a server's greeting prose answer a question it was never asked — the
+  SMTP twin of the `Response::untagged` trap that had Dovecot's `List completed …` line
+  read as a mailbox. `read_reply_lines` is the form both the `STARTTLS` check and the
+  mechanism list use; `read_reply` (joined) stays for replies whose content is prose. The upgrade is negotiated in `smtp::negotiate_starttls` (greeting
   → `EHLO` → `STARTTLS`), then the caller TLS-wraps the socket and the conversation
   continues over `smtp::send_after_starttls` (which skips the greeting a server does
   not re-send post-upgrade). Data buffered past the `STARTTLS` `220` is rejected — a
@@ -360,10 +618,28 @@ is authoritative for the `provider-caldav` calendar client.
 - **Per-recipient acceptance/rejection** is captured from each `RCPT TO` reply (a
   `250` accept, a `550` reject). The message still goes to the accepted recipients;
   if none accept, it is a permanent rejection with no `DATA`.
+- **A server that stops answering never holds a send** (`deadline.rs`, by the shared
+  `Deadlines` of `deadlines.md`). The TCP connect and the TLS handshake are each bounded by
+  `dial` (30 s); the greeting and every reply before the end of the message by `reply`
+  (1 min); each 8 KiB piece of a write by `stall` (1 min); the reply to the final `.` by
+  `submission` (10 min, RFC 5321 §4.5.3.2.6). A bound that fires is an `Io` `TimedOut`, so it
+  is classified exactly as a connection lost at the same point: **retryable** anywhere before
+  the end of the message, because nothing has been submitted and the outbox may send it
+  again, and **ambiguous** after it (below), never retried. Unbounded, a server that accepts
+  the connection and never speaks (a paused process behind a port forwarder, a captive
+  portal, a dead NAT mapping) holds a send forever, in no queue the host can retry or the
+  user can edit. The probes (`extensions`, `negotiate_starttls`) share the same reads and
+  bounds, and the IMAP dial (`dial::open_secured`) shares `dial`.
+- **The `.` that ends `DATA` is the point of no return.** The message text goes first, then
+  the hand-over is recorded (`providers.md`), then the `.` line, written by
+  `SmtpStream::write_terminator`, which takes the proof of the record. A record that fails
+  drops the connection mid-`DATA` with nothing queued (RFC 5321 §4.1.1.4), and the send is
+  retried; a `.` that could not be written is as ambiguous as a lost reply.
 - **Post-`DATA` disposition.** `2xx` → delivered; `5xx` → permanent rejection;
   `4xx` → transient (retryable — the message was not queued); any **unreadable
-  acknowledgement once the message bytes are on the wire** — a dropped connection
-  *or* a malformed final reply — → **ambiguous** (never a plain transport error, so
+  acknowledgement once the message bytes are on the wire** — a dropped connection,
+  a reply that did not come within the `submission` bound, *or* a malformed final reply —
+  → **ambiguous** (never a plain transport error, so
   an already-sent message is never reported as a clean failure). The
   ambiguous case becomes `ProviderError::needs_confirmation`, which
   `engine_sync::submit_mail` routes to `PendingOutcome::NeedsConfirmation` rather
@@ -406,7 +682,11 @@ is authoritative for the `provider-caldav` calendar client.
   one folder. The **id** is that name decoded (`utf7::decode`), whole path included: it is
   what `SELECT`/`APPEND`/`CREATE` are given, with `crate::transport` putting the wire form
   back, and what every `imap:v…:u…@folder` key embeds, so a message does not re-key the day a
-  server starts offering rev2. The **display name** is the folder's own, the last segment of
+  server starts offering rev2. **The inbox's id is always `INBOX`**, as is the parent id of a
+  folder inside it: the reserved name is case-insensitive (RFC 9051 §5.1) and a host binds the
+  inbox by it, so Yahoo's `Inbox` as an id would sync the same mailbox twice under two scopes.
+  The folder writes resolve `INBOX` back to the listed spelling for the paths they send. The
+  **display name** is the folder's own, the last segment of
   that path, with the nesting carried by `Mailbox::parent` instead. There is deliberately no
   general encoder: no name this crate sends originates from a decoded one.
 - **The folder list is a tree, and IMAP is the only transport that spells it in the name.**
@@ -437,6 +717,16 @@ is authoritative for the `provider-caldav` calendar client.
   Gmail reads its hierarchy out of a name too and lands elsewhere, because nothing hands it
   fragment rows: `provider-google`'s `nest_labels` splits only where the prefix is a label the
   account actually has, so `Work/Clients` with no `Work` beside it stays one label.
+- **A level of the tree that holds no mail stays in the list, as `Mailbox::selectable: false`.**
+  `\Noselect` rows (Gmail's `[Gmail]`, the parent of a folder made inside one nobody made) are
+  where their children hang, so dropping one orphans them; `SELECT` or `STATUS` on one is an
+  error, so a host neither opens nor syncs it, and `unseen` never probes it. `\NonExistent`
+  implies `\Noselect` (RFC 9051 §7.3.1), and **the same folder can arrive either way**: for a
+  parent nobody created, Dovecot answers the plain `LIST` with `\Noselect \HasChildren` and the
+  extended one (`RETURN (…)`, which is what this crate sends wherever it is offered) with a bare
+  `\NonExistent`. So `mail::mailboxes_from_list` keeps a `\NonExistent` row while a listed
+  folder sits beneath it and drops it otherwise, when it names nothing a host could draw.
+  Stalwart never produces either: it makes a real parent. `live_mailbox_writes` pins both.
 - **An unknown escape in a quoted string is kept, not refused.** `QUOTED-CHAR` allows `\` only
   before `"` or `\` (RFC 9051 §4.3), so anything else is a server getting it wrong. A protocol
   error there is scoped to the whole response rather than the one string, so refusing takes every
@@ -503,7 +793,9 @@ protocol on both dialects.
   it.
 - **Names.** A leaf carrying the delimiter would make levels nobody asked for, and a
   subfolder on a server whose delimiter is `NIL` has nowhere to go; both are `InvalidState`
-  before anything is sent, as is any edit of `INBOX` and a top-level folder called `INBOX`.
+  before anything is sent, as is any edit of the store's Inbox and a top-level folder called
+  `INBOX`. The top level is the store's: for a provider bound to a shared store it is below
+  the store's root (see "Shared mailboxes").
   Names go through `quoted_name`, so rev1 sends modified UTF-7 (`Reçus` → `Re&AOc-us`).
 - **`Create`** → `CREATE "<path>"`, then `SUBSCRIBE`. A path the `LIST` already holds is not
   created again, and `NO [ALREADYEXISTS]` is success: a retry meets what the first attempt
@@ -556,10 +848,15 @@ folders into Trash is proven offline only: all three servers file a folder insid
   selection is forgotten *before* a `SELECT`/`EXAMINE` is sent, because a refused one
   deselects (§6.3.1). A write always `SELECT`s again. `ImapPool::acquire_for(mailbox)`
   hands a read a parked connection that already has its mailbox open.
-- **A read that goes silent is a lost connection.** Every read of a body response is
-  bounded by `transport_read::BODY_READ_STALL` (60 s) of *silence*, never of the whole
-  body, and fails `Retryable`; a single fetch that lost its connection is tried once more
-  on one proved alive (`fetch::fetch_from_pool`).
+- **A server that goes silent mid-session is a lost connection.** `Connection::read_line`
+  waits `reply` (1 min) for each line, so the greeting and every command's response are
+  bounded without a call site having to ask; each read of a body literal waits `stall`
+  (1 min) of *silence*, never the whole body; and every write, an `APPEND` literal included,
+  goes out 8 KiB a piece under `stall` (`deadline::write`). Each fails `Retryable`, and the
+  pool discards the connection (`PooledConnection::settle`); a single fetch that lost its
+  connection is tried once more on one proved alive (`fetch::fetch_from_pool`). The one
+  read without a bound of its own is a connection in `IDLE`, which the watch bounds by its
+  keep-alive (below).
 - **Batches: one `UID FETCH <set> (BODY.PEEK[])` per mailbox** (`fetch_batch.rs`,
   `Provider::fetch_message_sources`). A warm of thousands of bodies one request at a time
   spends its time on round trips, not bytes; a set costs one round trip plus its bytes,
@@ -608,10 +905,21 @@ folders into Trash is proven offline only: all three servers file a folder insid
   every reconnect**; and (3) the mandatory **~28-minute keep-alive re-`IDLE`** (under
   RFC 2177's 29-minute rule), which doubles as a liveness probe and a backstop sync
   trigger — and whose pre-re-`IDLE` `DONE` drain converts a boundary change into
-  `Changed` rather than swallowing it. The keep-alive interval is the one host-supplied
+  `Changed` rather than swallowing it. The wait in `IDLE` is the one read in the crate the
+  `reply` bound does not cover, because silence is what `IDLE` is; the `DONE` drain does
+  get it, so a server that never completes `DONE` is a lost connection
+  (`watch_tests::an_idle_is_bounded_by_its_keepalive_and_the_done_by_the_reply_bound`).
+  The keep-alive interval is the one host-supplied
   knob (a protocol timer, clamped to a sane range; default 28 min, shorter on mobile to
   detect a dead link sooner), not a product policy — **scheduling and reconnect/backoff
-  live in the host**, not the engine.
+  live in the host**, not the engine. A change the server reports before it accepts an
+  `IDLE` (ahead of the `+` continuation) is not repeated once idling, so it is reported as
+  `Changed` too.
+- **A server's own `IDLE` delay is accepted, not polled around.** Yahoo reports changes over
+  `IDLE` only on a two-minute cycle, so its new mail shows up to two minutes late
+  (`spec-deviations.md`, YAHOO-15). A `NOOP` between short turns would show it sooner, at the
+  cost of a command every few seconds per watched folder per user, the load `IDLE` exists to
+  spare a server; it was tried and withdrawn.
 - **Coverage.** The `idle` primitives (continuation handling, untagged-line
   classification, `DONE` drain) are unit-tested over scripted transcripts; the watcher's
   keep-alive timing and stay-idling-across-events behavior are tested over a real
@@ -625,19 +933,137 @@ folders into Trash is proven offline only: all three servers file a folder insid
   a second connection pushes a `Changed` — confirming the path across a second server
   implementation, like the QRESYNC delta was.
 
+## Shared mailboxes: namespaces, stores and rights
+
+An IMAP store is offered through the neutral `SharedAccounts` seam (`providers.md`) and reported with `StoreDomains` mail, the only domain this provider serves.
+
+`LIST "" "*"` answers for every principal at once: the credential's own folders and every
+folder shared with it, flat and interleaved. Before this was read against `NAMESPACE` two
+things went wrong — a folder list held two principals' folders, and the `\Sent` a sent copy
+was filed into was whichever the server listed first (Stalwart happens to list the
+credential's own first, which is why it looked right). `crate::store` is the fix, and
+everything below runs against Stalwart and both Dovecots (`live_imap_shared_contract.rs`).
+
+- **A provider covers one store** (`MailStore`): the credential's own — the whole tree minus
+  every foreign namespace — or one shared store, bound with
+  `ImapAccount::with_shared_account`. The folder list, the Sent/Drafts placement (on a pooled
+  connection *and* the retry's checked one), a fallback folder's creation and a folder write's
+  top level are all scoped to it. A server without `NAMESPACE` yields the old behaviour
+  exactly: everything is the credential's own.
+- **A shared store spends its login's budget.** `with_shared_account` is a view of the
+  credential's `ImapAccount`, not a second account: its providers and watches borrow from the
+  same pool. The store is opened by the same login, and a server's connection limit is per
+  login (Dovecot's `mail_max_userip_connections`), so a pool per store would spend that limit
+  once per store the user can open — the failure the pool exists to prevent.
+- **The namespaces are asked for lazily and kept** (`crate::folders`), once per account and
+  shared by every provider and store view of it. Most providers never need to know whose mail
+  is whose, so a `NAMESPACE` at connect would be a round trip per login for nothing. Prefixes
+  arrive in the wire dialect and are decoded like names, so they compare against decoded
+  mailbox ids.
+- **RFC 2342's two foreign positions are treated alike.** Both Stalwart and Dovecot put their
+  stores in *Other Users'*; the engine's only question is mine-or-not. A prefix match must end
+  at the delimiter: `Shared Foldersomething` is somebody's own folder.
+- **Where a store keeps its inbox is not assumable.** Stalwart makes the store's root a
+  `\Noselect` container with `INBOX` below it; Dovecot makes the **root itself** the inbox —
+  selectable, holding the mail, with `…/INBOX` an alias it never lists. So the store's `LIST`
+  pattern is `<root>*` (the root and everything below), and a selectable root is adopted as the
+  Inbox. Dropping it — which the first cut of this code did — lost Dovecot's Inbox, and made a
+  share of one INBOX list nothing at all. A shared store is re-rooted either way: its top
+  folders have no parent, and its `INBOX` is the Inbox (the reserved name is matched relative
+  to the store, not the full path).
+- **A shared store may have no roles.** Dovecot's shared namespace carries no SPECIAL-USE
+  attributes unless configured, so placing a draft there takes the fallback — the
+  conventional name, **qualified by the store** (`shared/support@test.local/Drafts`), which is
+  the folder Dovecot really has. Unqualified, the fallback would resolve among the credential's
+  own folders and file the store's mail there; on Stalwart, where a qualified `CREATE` in
+  someone else's store is refused (`NO [CANNOT]`), the refusal is the proof.
+- **Discovery** lists one level below each foreign prefix (`LIST "" "<prefix>/%"`): that level
+  is the owner, and the handle is the store's root path. `Enumerable` is advertised when the
+  session has `NAMESPACE` **and** `ACL` — a server without ACLs cannot share, and Gmail and
+  Outlook.com advertise `NAMESPACE` alone, so claiming a list there would offer a picker that
+  never fills. A credential nothing is shared with gets an empty list, not a refusal.
+- **Rights ride the folder `LIST` where the server has `LIST-MYRIGHTS`** (RFC 8440): the
+  `MYRIGHTS` return option joins `SPECIAL-USE` and `STATUS (UNSEEN)` on the one `LIST`
+  (`listing.rs`), and a `* MYRIGHTS` line follows each row it covers. Both Dovecots advertise it
+  and are live-proven to take this path; RFC 8440 lets a server leave a row out when it cannot
+  look the rights up, and such a row keeps `owner()`.
+- **Otherwise rights are one `MYRIGHTS` per selectable folder, pipelined** in batches of 64,
+  wherever the server has `ACL` alone (Stalwart), so a folder list pays one extra round trip
+  rather than one per folder. Answers are paired with folders **by the mailbox name on the
+  untagged line**, never by position: RFC 9051 §5.5 lets a server work on the next command
+  before finishing this one, and Stalwart does — the first live run paired by tag and failed on
+  `a21 OK` arriving while an earlier tag was pending. On either path a folder without an answer
+  (a `NO`, a row left out) keeps `owner()` ("unknown", never "no rights"); a server without
+  `ACL` is not asked at all. The letter mapping is in `crate::acl` — reading needs `l`+`r`,
+  removing needs `t`+`e`, and RFC 2086's `c`/`d` are **ignored**: RFC 4314 §2.1.1 has a server
+  add them when *any one* member right is set, so reading `lrtd` as "may expunge" would be wrong.
+- **A provider scoped to a shared store refuses to sync a folder outside it** (`InvalidState`),
+  since that would put the credential's own mail into the shared mailbox's account. And a store
+  the server lists nothing of is `Permanent` — access withdrawn — not an empty mailbox.
+- **A folder write stays in its store** (`crate::mailbox_write`). The folders an edit names come
+  from the store's own list, so only two things need the store: a folder made or moved to the
+  **top level** is qualified by it (`Shared Folders/support@test.local/Receipts`), since the bare
+  name would make it one of the credential's own; and the Inbox no edit may touch is the store's
+  — `…/INBOX`, or on Dovecot the root itself — which a comparison with the literal `INBOX` would
+  have let a host rename or delete. Both harness servers refuse a root folder in a shared store
+  even to a grantee with every right — Stalwart `NO [CANNOT]`, Dovecot `NO [NOPERM]` — which is
+  what proves the path named the share (`live_imap_shared_contract.rs`): unqualified, the
+  `CREATE` succeeds among the credential's own folders.
+
+## Gmail as one store (`GmailMail`)
+
+Gmail files a message under labels and shows each label to IMAP as a folder holding a copy, so
+the per-mailbox shape above downloads a message once per label and stores each copy as its own
+object. `ImapAccount::gmail` (offered only on a session advertising `X-GM-EXT-1`) returns a
+`GmailMail` instead: a reader of All Mail (`\All`), Spam (`\Junk`) and Trash (`\Trash`), the
+three folders that between them hold every message once. It reads and never writes; what a
+label means is `provider-google`'s (`google.md`, "Mail read over IMAP"), which is the only user.
+
+- **Gmail's items.** `X-GM-MSGID`, `X-GM-THRID` and `X-GM-LABELS` (`parse_gmail`) are the same
+  for a message in every folder; a message moving between the three keeps its Gmail id under a
+  new UID, so a caller keys by the id, never the UID. Labels arrive in modified UTF-7 on a rev1
+  session and are decoded; system labels keep their backslash names.
+- **CONDSTORE without QRESYNC.** Gmail offers `CONDSTORE` and no `QRESYNC`, so
+  `Connection::uid_fetch_changed` sends `CHANGEDSINCE` with no `VANISHED`, and opening a folder
+  is `SELECT (CONDSTORE)`. Nothing reports a removal; a caller compares counts.
+- **Every read names the `UIDVALIDITY` it planned against** and fails `NeedsResync` when the
+  folder was renumbered, rather than reading one message's UID as another's.
+- **Bounded commands.** A UID list is sent at most 1,000 UIDs a command, and a body read
+  locates at most 50 Gmail ids a command (`UID SEARCH OR X-GM-MSGID …`), so no command line
+  passes RFC 7162 §4's 8192 octets however scattered the UIDs. Bodies stream off the wire one
+  at a time under the stall bound, as `fetch_batch` does.
+- **Live proof** is `provider-google`'s `tests/live_imap_parity.rs`, which syncs one account
+  over this reader and over the Gmail API and compares every message.
+
 ## Known limitations (documented, not bugs)
 
+- **Yahoo's OAuth is still unproven end to end.** Both *mechanisms* are proven live
+  against Gmail (below), and Yahoo advertises the same two. What has not run is Yahoo's
+  OAuth: its mail scope needs a developer-access review, so `tools/yahoo-oauth` cannot yet
+  mint a token. Yahoo with an **app password** is live-tested (`live_imap_password.rs`).
+  What a Yahoo account meets that the harnesses do not, all observed: it lists its inbox as
+  `Inbox`; it advertises **no `CONDSTORE`/`QRESYNC`** (a proprietary `XYMHIGHESTMODSEQ`
+  instead, which is why its `SELECT` still reports `HIGHESTMODSEQ`), answers
+  `ENABLE QRESYNC` with an empty `ENABLED` and `ENABLE CONDSTORE` with `ENABLED CONDSTORE`,
+  so it takes the reconciling delta above. Its documentation lists `CONDSTORE` and
+  `QRESYNC`, but once `ENABLE CONDSTORE` is confirmed a `CHANGEDSINCE` fetch is
+  `NO [CANNOT]`, so no form of incremental flag sync is open to it. It states
+  `MESSAGELIMIT=1000` and confirms `ENABLE UIDONLY`; its search and `PARTIAL` behaviour is
+  under **Message limits and UID mode** above. Its `IDLE` reports no expunges (documented),
+  which only the reconciling delta catches. `ENABLE UIDONLY QRESYNC`, the form Yahoo's
+  "IMAP Pagination and Mail Sync" document uses, enables `UIDONLY` alone, and its staging
+  server (`staging.imap.mail.yahoo.com`) answers the same. ⚠️ That document states that QRESYNC
+  on any folder but its virtual "All Mail" does not report deletions for `CHANGEDSINCE`,
+  so if Yahoo ever grants QRESYNC, its delta here would miss expunges and moves.
 - **CONDSTORE/QRESYNC fallback when unsupported.** The incremental delta (above) is
   **implemented** for servers that advertise QRESYNC (RFC 7162) — the common case
-  (Stalwart, Dovecot, Cyrus, Gmail). A server that advertises **neither** QRESYNC nor a
-  usable baseline falls back to the new-arrivals-only delta, where flag/expunge/move
-  changes to already-synced messages still reconcile via a periodic **snapshot** forced
-  with `Engine::clear_mail_cursors` (the targeted, mail-only counterpart of
-  `Engine::reset`). A **CONDSTORE-only** server (CONDSTORE without QRESYNC) is treated as
-  the non-incremental baseline too: we gate the delta on QRESYNC because the `VANISHED`
-  expunge half needs it, and a half-incremental path that detects flag changes but
-  silently misses expunges would be a worse, more confusing state than the honest
-  snapshot fallback. Wiring CONDSTORE-only flag deltas is a possible later refinement.
+  (Stalwart, Dovecot, Cyrus, Gmail). A server without QRESYNC takes the reconciling delta
+  above, which reads every held message's flags each pass. A **CONDSTORE-only** server
+  takes it too: we gate the incremental delta on QRESYNC because the `VANISHED` expunge half
+  needs it. Using `CHANGEDSINCE` for the flag half on such a server, beside the present set,
+  is a possible later refinement, though not for Yahoo, whose `CHANGEDSINCE` is refused.
+  Its present set is not paged: one `UID FETCH … (UID FLAGS)` group per `fetch_batch`
+  UIDs, all in one pass.
 - **QRESYNC delta is a single page.** The QRESYNC delta issues one
   `UID FETCH 1:* (CHANGEDSINCE … VANISHED)` and does **not** honor the `limit`/paging the
   snapshot path uses: a bulk server-side change — "mark all read" — returns every changed
@@ -672,8 +1098,8 @@ folders into Trash is proven offline only: all three servers file a folder insid
 - **STARTTLS is implemented** for both IMAP (`ImapConfig::with_starttls`, port 143)
   and SMTP submission (`with_smtp_starttls`, port 587), alongside implicit TLS. Both
   connect in the clear, verify the peer advertises `STARTTLS`, upgrade the socket, and
-  only then log in / authenticate — refusing to proceed (never sending credentials in
-  the clear) if it is not advertised. Because a STARTTLS dial is byte-for-byte an
+  only then authenticate — refusing to proceed (never sending a password *or* a bearer
+  token in the clear) if it is not advertised. Because a STARTTLS dial is byte-for-byte an
   implicit-TLS one *after* the upgrade, the provider stays generic over a single
   `TlsStream` type — the upgrade happens on the raw socket before it becomes the
   session stream (`Connection::start_tls` / `into_inner_stream` / `resume`).
@@ -686,7 +1112,7 @@ folders into Trash is proven offline only: all three servers file a folder insid
 - **Charset coverage.** RFC 2047 decoding covers UTF-8, ISO-8859-1, and Windows-1252
   (ISO-8859-1 read as its CP1252 superset); other charsets fall back to a UTF-8-lossy
   read (a full charset table is a later refinement). `References` *is* fetched (a
-  separate `BODY.PEEK[HEADER.FIELDS (REFERENCES)]` item — see Normalization above).
+  field of the `BODY.PEEK[HEADER.FIELDS (…)]` item; see Normalization above).
   Outbound non-ASCII subjects/display names are RFC 2047 `B`-encoded but **not folded**
   into 75-octet words (a later refinement).
 - **Server literals are capped at 64 MiB.** A `{n}` larger than the cap is rejected
@@ -733,6 +1159,7 @@ whole rule:
   need announcing, in a single command.
 - **QRESYNC is not folded in.** rev2 took only its `CLOSED` response code (item 9), so
   CONDSTORE/QRESYNC keeps its own capability and its own `ENABLE`.
+- **Neither is UIDONLY** (RFC 9586), which needs its own `ENABLE` on either dialect.
 - **Folded in ≠ will arrive.** rev2 folds in SPECIAL-USE's *attributes* and makes them base
   `LIST` data (§7.3.1) — it defines **no** `RETURN (SPECIAL-USE)` option of its own, which
   reads like a rev2 session never has to ask. **Dovecot's rev2 disproves that**: it
@@ -765,6 +1192,11 @@ whole rule:
 | Mailbox names in `LIST` rows | always quoted | unquoted atoms where quoting is unnecessary | quoted only where needed |
 | `* ENABLED` casing | `IMAP4rev2` | — | `IMAP4REV2` (atoms are case-insensitive) |
 | Tagged completion | `LIST completed` | `List completed (0.028 + 0.000 secs).` | same prose form |
+| Shared stores (RFC 2342) | *Other Users'*, prefix `Shared Folders` | *Other Users'*, prefix `shared/` (trailing delimiter) | same |
+| A shared store's inbox | `…/support@test.local/INBOX` below a `\Noselect` root | **the root itself**, selectable; `…/INBOX` an unlisted alias | same |
+| Roles in a shared store | the owner's SPECIAL-USE, as for their own | none — `harness.conf` configures them on the personal namespace only | same |
+| How rights are read | pipelined `MYRIGHTS` (`ACL` only), completed **out of order** | `LIST-MYRIGHTS`: on the folder `LIST` | same |
+| Full rights as reported | `rliteswkxpa` | `lrwstipekxacd` — RFC 2086's `c`/`d` alongside the members | same |
 
 Three asymmetries decide where a new test belongs.
 
@@ -796,7 +1228,14 @@ behaviour broke; if the answer is none, the test is not proving what it claims.
   unit-tested, including a panic/hang/overflow-resistance pass over adversarial
   input. A **mock async stream** replays full IMAP and SMTP transcripts to exercise
   the real transport, command sequencing, literal handling, snapshot/delta paging,
-  UIDVALIDITY reset, per-recipient rejection, and post-`DATA` ambiguity. An
+  UIDVALIDITY reset, per-recipient rejection, and post-`DATA` ambiguity. The **SASL
+  OAuth** exchanges are covered the same way on both protocols: the two initial-response
+  vectors are the **published ones** (RFC 7628 §4.1's and Google's, decoded and
+  re-encoded byte for byte, so the code is pinned to the specifications rather than to
+  itself), plus the mechanism choice from an advertised set, the `SASL-IR` and prompted
+  forms, and — the branch that matters most — a rejected token's challenge being
+  acknowledged (`AQ==` / an empty line) so the failure arrives as an error instead of a
+  stall. An
   **engine-sync integration** drives `ImapProvider` over the mock through
   `sync_mail` into a real `SqliteStore` (container-before-member, per-chunk
   commit/progress, FTS search). The `needs_confirmation` → `NeedsConfirmation` bridge is
@@ -829,6 +1268,15 @@ behaviour broke; if the answer is none, the test is not proving what it claims.
   (which is the encode half). rev2, across **both** rev2 servers: a UTF-8 name needing no
   decoding, a `SELECT` sending it unencoded, and the roles surviving the dialect — which
   Stalwart cannot fail and Dovecot's rev2 fails the moment the client stops asking.
+- **Live, shared mailboxes (`tests/live_imap_shared_contract.rs`, every server;
+  `tests/live_shared.rs`, Stalwart):** the contract half — discovery, the credential's own list
+  holding none of a shared store, a full share reading like an account, a read-only share
+  saying so on its one folder, a non-ASCII folder inside a store, a draft landing in the
+  store's own Drafts, and a top-level folder made in a store never becoming the credential's
+  own — runs against Stalwart and both Dovecots, whose sharing differs in nearly
+  every detail (the table above). The Stalwart half needs what only that harness has: SMTP, to
+  prove a message sent as the group is filed in the group's Sent; a store that refuses a
+  qualified `CREATE`; and bob's credential, which nothing is shared with.
 
   A third gated file,A third gated file,
   `tests/live_imap_tls.rs`, covers the **TLS transports beyond that baseline** —
@@ -848,11 +1296,36 @@ behaviour broke; if the answer is none, the test is not proving what it claims.
   mutation from the count-asserted INBOX/Archive/Projects. The `stalwart` CI job runs
   both files; they are excluded from the offline coverage metric, like the harness
   probes and `provider-jmap/tests/`.
+- **Live OAuth, gated on a real provider (`tests/live_imap_oauth.rs`):** the one thing a
+  mock cannot show — that a real server accepts these bytes. Gated on
+  `IMAP_OAUTH_HOST`/`USER`/`TOKEN`, over a **verifying** connector (bundled Mozilla
+  roots), not the harness's trust-nothing one. Three assertions: the token authenticates
+  *and* the session is usable (a `LIST` proves the server really moved into the
+  authenticated state rather than answering `OK` in place); a **corrupted token fails as
+  `FailureClass::Authentication` within a timeout**, which is what proves the challenge
+  acknowledgement works against a real implementation — without it that test hangs rather
+  than fails; and, with `IMAP_OAUTH_SMTP_HOST` set, a submission authenticated the same
+  way. **Run and green against Gmail** (`tools/google-oauth`'s default scope is already
+  `https://mail.google.com/`, the Gmail IMAP/SMTP scope), which exercises `OAUTHBEARER`
+  — the preferred mechanism. `XOAUTH2` was proven on the same server by sending this
+  crate's exact blob for it by hand (`AUTHENTICATE XOAUTH2 <base64>` over `openssl
+  s_client`), which Gmail also answered `OK`; so both mechanisms are confirmed against a
+  real server even though only one runs through the adapter. Yahoo is the same three
+  environment variables via `tools/yahoo-oauth`, once Yahoo approves developer access to
+  the mail scope.
+- **Live auth probe (`tests/live_imap_probe.rs`, harness-gated):** the offline suite pins
+  the classification against captured capability lines; only a live server shows that a
+  **STARTTLS** probe reads the post-upgrade capability rather than the cleartext one, on
+  both protocols. It also probes ten times in a row against one server, because Stalwart
+  caps concurrent connections per account: a probe that leaked a session would surface
+  there as a refused dial rather than as a leak nobody notices until a user has retyped
+  their address a few times.
 - **Real-provider exploration:** `examples/imap_explore.rs` connects to a *real*
   IMAP server over a verifying TLS connector (Mozilla roots) and lists folders +
   recent mail (read-only; opt-in `IMAP_QRESYNC` verifies the CONDSTORE/QRESYNC delta,
-  `IMAP_DRAFT` saves a draft, and `IMAP_SEND` submits over SMTP `AUTH PLAIN` + implicit
-  TLS). Validated against a real Dovecot server — read, UTF-8 subjects, and draft
+  `IMAP_DRAFT` saves a draft, and `IMAP_SEND` submits over SMTP + implicit TLS). Setting
+  `IMAP_TOKEN` instead of `IMAP_PASS` runs the whole exploration on an OAuth credential,
+  so pointing it at a new provider is an env var rather than an edit. Validated against a real Dovecot server — read, UTF-8 subjects, and draft
   creation; authenticated SMTP send is implemented and offline-tested, exercisable via
   `IMAP_SEND`. The **CONDSTORE/QRESYNC delta** was validated read-only against
   **Soverin** (Dovecot): it advertises `CONDSTORE QRESYNC` post-auth, `SELECT (CONDSTORE)`

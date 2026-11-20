@@ -14,10 +14,12 @@
 //! # Usage
 //!
 //! ```text
-//! dav [--profile NAME] [--url U --user U --pass P] [--calendar C] <command>
+//! dav [--profile NAME] [--url U --user U --pass P] [--calendar C] [--start URL] <command>
 //!
 //!   profiles                      what is configured, and where it came from
 //!   info                          connect, and print what discovery concluded
+//!   calendars                     every calendar under the home, with its collection tag
+//!   sync                          the engine's whole calendar pass, twice, per calendar
 //!   list                          events, with each one's stored reply verdict
 //!   get <uid>                     the stored iCalendar document, verbatim
 //!   store <file.eml|.ics>         put an invitation on the calendar (guarded create)
@@ -37,6 +39,7 @@
 mod commands;
 mod profile;
 mod raw;
+mod sync;
 
 use engine_provider::RsvpResponse;
 
@@ -89,7 +92,7 @@ fn list_profiles() {
 /// Pulls the connection flags off the front of the argument list.
 fn parse_invocation(args: Vec<String>) -> Result<Invocation, String> {
     let mut named: Option<String> = None;
-    let (mut url, mut user, mut pass, mut calendar) = (None, None, None, None);
+    let (mut url, mut user, mut pass, mut calendar, mut start) = (None, None, None, None, None);
     let mut rest = Vec::new();
 
     let mut iter = args.into_iter();
@@ -101,6 +104,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Invocation, String> {
             "--user" => user = Some(take("user")?),
             "--pass" => pass = Some(take("pass")?),
             "--calendar" => calendar = Some(take("calendar")?),
+            "--start" => start = Some(take("start")?),
             _ => rest.push(arg),
         }
     }
@@ -113,6 +117,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Invocation, String> {
             user: String::new(),
             pass: String::new(),
             calendar: None,
+            start: None,
         },
     };
     if let Some(value) = url {
@@ -126,6 +131,9 @@ fn parse_invocation(args: Vec<String>) -> Result<Invocation, String> {
     }
     if calendar.is_some() {
         profile.calendar = calendar;
+    }
+    if start.is_some() {
+        profile.start = start;
     }
     if profile.url.is_empty() || profile.user.is_empty() {
         return Err(
@@ -152,6 +160,9 @@ async fn run(args: Vec<String>) -> Result<(), String> {
     if let Some(calendar) = &profile.calendar {
         println!("calendar  {calendar}");
     }
+    if let Some(start) = &profile.start {
+        println!("start     {start}");
+    }
     println!();
 
     // `raw` deliberately skips discovery: it exists for servers where discovery is the thing
@@ -176,14 +187,23 @@ async fn run(args: Vec<String>) -> Result<(), String> {
             commands::describe(&provider);
             Ok(())
         }
+        Some("calendars") => {
+            let (calendars, tags) = commands::calendars(&provider).await?;
+            commands::print_calendars(&calendars, &tags);
+            Ok(())
+        }
+        Some("sync") => sync::sync(&provider).await,
         Some("list") => {
-            let events = commands::events(&provider).await?;
+            let calendar = commands::calendar(&provider, &profile).await?;
+            println!("calendar  {}\n", calendar.as_str());
+            let events = commands::events(&provider, &calendar).await?;
             commands::print_events(&events, &profile.user);
             Ok(())
         }
         Some("get") => {
             let uid = argument(1).ok_or("get needs a UID")?;
-            let events = commands::events(&provider).await?;
+            let calendar = commands::calendar(&provider, &profile).await?;
+            let events = commands::events(&provider, &calendar).await?;
             let event = events
                 .iter()
                 .find(|event| event.uid.as_str() == uid)
@@ -196,7 +216,8 @@ async fn run(args: Vec<String>) -> Result<(), String> {
         }
         Some("store") => {
             let path = argument(1).ok_or("store needs a file")?;
-            commands::store(&provider, path).await
+            let calendar = commands::calendar(&provider, &profile).await?;
+            commands::store(&provider, &calendar, path).await
         }
         Some("rsvp") => {
             let uid = argument(1).ok_or("rsvp needs a UID")?;
@@ -211,7 +232,8 @@ async fn run(args: Vec<String>) -> Result<(), String> {
                     ));
                 }
             };
-            let events = commands::events(&provider).await?;
+            let calendar = commands::calendar(&provider, &profile).await?;
+            let events = commands::events(&provider, &calendar).await?;
             commands::rsvp(&provider, &events, uid, response, &profile.user).await
         }
         other => Err(format!(

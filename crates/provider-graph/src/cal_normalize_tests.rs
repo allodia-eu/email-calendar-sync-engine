@@ -2,7 +2,10 @@
 //! Graph responses (`tests/fixtures/calendar/`).
 
 use engine_core::{
-    calendar::{EventStatus, Frequency, ParticipantRole, RecurrenceBound, Weekday},
+    calendar::{
+        ConferenceOrigin, ConferenceService, DetectedIn, EventStatus, Frequency, ParticipantRole,
+        RecurrenceBound, Weekday,
+    },
     time::{CalendarDateTime, Duration, TimeZoneId},
 };
 use serde_json::Value;
@@ -14,7 +17,10 @@ const MASTER: &str = include_str!("../tests/fixtures/calendar/event_series_maste
 const SINGLE: &str = include_str!("../tests/fixtures/calendar/event_single.json");
 const ALLDAY: &str = include_str!("../tests/fixtures/calendar/event_allday.json");
 const ONLINE: &str = include_str!("../tests/fixtures/calendar/event_online_meeting.json");
+const ONLINE_TEXT: &str =
+    include_str!("../tests/fixtures/calendar/event_online_meeting_text_body.json");
 const CALENDARS: &str = include_str!("../tests/fixtures/calendar/calendars.json");
+const CALENDARS_WORK: &str = include_str!("../tests/fixtures/calendar/calendars_work.json");
 const EXTRA_EVENT: &str = include_str!("../tests/fixtures/calendar/event_extra_calendar.json");
 const INVITATION: &str = include_str!("../tests/fixtures/calendar/event_invitation.json");
 const EXTERNAL_INVITATION: &str =
@@ -115,31 +121,138 @@ fn all_day_event_is_a_zoneless_date_with_a_day_duration() {
 }
 
 #[test]
-fn an_online_meeting_projects_its_join_url_and_preserves_the_teams_payload() {
-    // This fixture is a real Teams "for business" meeting. The join URL is already
-    // projected as a virtual location; the online-meeting *provider identity*
-    // (`onlineMeetingProvider`/`isOnlineMeeting`) is not modelled yet (staged), so the
-    // preserved raw payload is what a future provider-typing mapper reads.
+fn an_online_meeting_projects_its_conference_and_preserves_the_teams_payload() {
+    // This fixture is a real Teams "for business" meeting; `cal_conference` pins its mapping.
     let event = event(ONLINE);
     assert_eq!(event.title, "PIM fixture: Teams online meeting");
     assert!(!event.is_recurring());
     assert!(matches!(event.start, CalendarDateTime::Zoned { .. }));
 
-    // The join URL is surfaced as a virtual location today.
-    assert_eq!(event.virtual_locations.len(), 1);
+    // The body's join link is the same meeting, so it adds no second conference.
+    assert_eq!(event.conferences.len(), 1);
     assert!(
-        event.virtual_locations[0]
-            .uri
-            .starts_with("https://teams.live.com/meet/")
+        event.conferences[0]
+            .join()
+            .is_some_and(|uri| uri.as_str().starts_with("https://teams.live.com/meet/"))
     );
+    // "Microsoft Teams-vergadering" is the meeting, not a place; the preview is all block.
+    assert_eq!(event.locations, []);
+    assert_eq!(event.notes(|_| true), None);
 
-    // The provider-typed fields ride the preserved raw payload until they are modelled.
+    // The raw payload rides beside the projection.
     let raw = event
         .extended
         .get("microsoft.graph/event")
         .expect("raw Graph event preserved");
     assert_eq!(raw["isOnlineMeeting"], Value::Bool(true));
     assert_eq!(raw["onlineMeetingProvider"], "teamsForBusiness");
+}
+
+#[test]
+fn a_body_read_as_text_is_the_whole_description_with_the_teams_block() {
+    // Read as text, Exchange renders the whole body: the notes past the preview's 255
+    // characters, each link's target as `label<url>`, and Teams' block whole. A notes edit
+    // written back from this keeps the meeting on the event.
+    let event = event(ONLINE_TEXT);
+    let description = event.description.as_deref().unwrap();
+    assert!(description.len() > 255, "{description}");
+    assert!(description.starts_with("Agenda for the quarterly review"));
+    assert!(description.contains("Q3 report<https://example.com/q3-report>"));
+    assert!(description.contains(
+        "Deelnemen: https://teams.microsoft.com/meet/9990000000000016?p=EXAMPLEpasscode000"
+    ));
+
+    assert_eq!(event.conferences.len(), 1);
+    assert!(matches!(
+        event.conferences[0].origin,
+        ConferenceOrigin::Native { .. }
+    ));
+    let notes = event.notes(|_| true).unwrap();
+    assert!(notes.ends_with("decisions and owners."), "{notes}");
+}
+
+#[test]
+fn a_meeting_link_in_an_html_body_is_detected_and_a_typed_location_kept() {
+    let mut value = json(SINGLE);
+    value["isOnlineMeeting"] = Value::Bool(false);
+    value["body"] = serde_json::json!({
+        "contentType": "html",
+        "content": "<p>Agenda</p><a href=\"https://us02web.zoom.us/j/123?pwd=abc&amp;uname=x\">Join Zoom Meeting</a>"
+    });
+    value["locations"] =
+        serde_json::json!([{ "displayName": "Room 4", "uniqueIdType": "private" }]);
+    let event = event_from_json(&value, &calendar_id()).unwrap();
+    let found: Vec<_> = event
+        .conferences
+        .iter()
+        .map(|c| {
+            (
+                c.join().map(ToString::to_string),
+                c.service.clone(),
+                c.origin,
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [(
+            Some("https://us02web.zoom.us/j/123?pwd=abc&uname=x".to_owned()),
+            Some(ConferenceService::Zoom),
+            ConferenceOrigin::Detected {
+                place: DetectedIn::Description
+            }
+        )]
+    );
+    assert_eq!(event.locations.len(), 1);
+}
+
+fn native(fixture: &str) -> Vec<Vec<ConferenceService>> {
+    json(fixture)["value"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| calendar_from_json(c).unwrap().native_conferences)
+        .collect()
+}
+
+#[test]
+fn a_work_calendar_makes_teams_meetings_and_a_subscribed_one_none() {
+    // Captured on a work tenant: the user's own calendar lists `teamsForBusiness`, the two
+    // calendars subscribed from elsewhere list nothing.
+    assert_eq!(
+        native(CALENDARS_WORK),
+        [vec![ConferenceService::Teams], vec![], vec![]]
+    );
+}
+
+#[test]
+fn a_personal_calendar_makes_no_meeting_and_a_retired_service_is_left_out() {
+    // A personal account lists `unknown` (captured).
+    assert_eq!(native(CALENDARS), [vec![], vec![]]);
+    // Skype for Business and Skype are retired; a server that still names them makes no
+    // meeting through either.
+    let mut value = json(CALENDAR);
+    value["allowedOnlineMeetingProviders"] =
+        serde_json::json!(["skypeForConsumer", "skypeForBusiness"]);
+    assert_eq!(calendar_from_json(&value).unwrap().native_conferences, []);
+}
+
+#[test]
+fn a_calendar_graph_says_may_not_be_edited_is_read_only() {
+    // `canEdit` is the signed-in user's right to change the calendar's events: false on a
+    // calendar shared read-only and on a subscribed one, true on the user's own (the captured
+    // fixtures).
+    assert!(
+        calendar_from_json(&json(CALENDAR))
+            .unwrap()
+            .access
+            .may_write
+    );
+    let mut shared = json(CALENDAR);
+    shared["canEdit"] = Value::Bool(false);
+    let shared = calendar_from_json(&shared).unwrap();
+    assert!(!shared.access.may_write);
+    assert!(shared.access.may_read);
 }
 
 #[test]

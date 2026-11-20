@@ -1,4 +1,4 @@
-# Deterministic Stalwart protocol test harness (Stalwart v0.16).
+# Deterministic Stalwart protocol test harness (Stalwart v1).
 #
 # `docker compose up -d --wait` brings up a Stalwart server that self-bootstraps
 # through its management API, creates the test accounts, and seeds one shared
@@ -23,31 +23,31 @@ name: stalwart-harness
 
 services:
   stalwart:
-    # stalwartlabs/stalwart v0.16.21, pinned by multi-arch digest (linux/amd64 +
+    # stalwartlabs/stalwart v1.0.2, pinned by multi-arch digest (linux/amd64 +
     # linux/arm64). Bump deliberately: re-resolve the digest and update CI too.
     #
-    # Bumped from v0.16.15 in its own change, after running the whole gated suite on both
-    # (see docs/agent-guidance/stalwart-harness.md → "The pinned version"). Every live
-    # test passed unchanged on both pins, so nothing the engine sends today behaves
-    # differently. What v0.16.16–v0.16.21 changed *near* this repo:
+    # Bumped from v0.16.24 in its own change, after reading every release note from
+    # v0.16.25 to v1.0.2 and running the whole gated suite from a wiped volume (see
+    # docs/agent-guidance/stalwart-harness.md → "The v0.16.24 → v1.0.2 bump"). What it
+    # changed *near* this repo:
     #
-    #   - v0.16.21 rejects a `CalendarEvent/set` that asks for scheduling with a
-    #     `forbidden` `SetError` when the account cannot schedule (iTIP disabled, no
-    #     calendar address, or no `CalendarSchedulingSend`) — where earlier versions
-    #     ignored the request and stored the change. `provider-jmap` asks on *every*
-    #     calendar write, so on such an account every write now fails; the harness
-    #     accounts can schedule, which is why the suite is unaffected. Tracked as an
-    #     engine-side exposure, not a harness one (`docs/agent-guidance/jmap.md`).
-    #   - v0.16.18 made `CalendarEvent/set` schedule when an event is *created* with
-    #     participants. Unreachable from here: `EventDraft` cannot name one.
-    #   - v0.16.17 moved the server's own iTIP `text/calendar` part inside the
-    #     `multipart/alternative`, and stopped sending raw UTF-8 in IMAP `ENVELOPE`/
-    #     `BODYSTRUCTURE` to sessions that never enabled `UTF8=ACCEPT`. `engine-mime`
-    #     and `provider-imap` already read both shapes.
+    #   - v1 renamed two registry fields entrypoint.sh relies on: `NetworkListener.tlsImplicit`
+    #     (now `implicitTls`), which it sends, and `Bootstrap.serverHostname` (now
+    #     `defaultHostname`), which its bootstrap-mode check used to look for.
+    #     v1's new database layout does not matter here: the harness always bootstraps
+    #     from an empty volume, so there is nothing to migrate.
+    #   - A share whose every folder is read-only now reports `isReadOnly: true` and lists
+    #     no `submission`, so a client bound to it offers neither writes nor sending.
+    #   - JMAP Calendars moved to draft-33 / jscalendarbis-22: `version: "2.0"` is now
+    #     returned on every event, and `organizerCalendarAddress` is inferred on create.
+    #     Nothing the engine sends or reads changed shape.
     #
-    # `ifInState` enforcement (v0.16.14) is unchanged through v0.16.21, and the engine
-    # still sends no precondition.
-    image: stalwartlabs/stalwart:v0.16.21@sha256:93c574e52249c1ebf90061da2c4c0756a7b72abfcc1fec34506a03c2e38b5977
+    # Still true from earlier pins: `ifInState` is enforced (since v0.16.14, re-verified on
+    # v1.0.2), and the engine still sends no precondition. From v0.16.21 a `CalendarEvent/set`
+    # that asks for scheduling is refused `forbidden` when the account cannot schedule; the
+    # harness accounts can, so no test covers it and it was not re-observed on v1.0.2
+    # (`docs/agent-guidance/jmap.md`).
+    image: stalwartlabs/stalwart:v1.0.2@sha256:154e55adecadfcc4a67044b9b94d482a20286e1101c97a2b322224bb596053d5
     # Self-bootstrapping wrapper: bootstrap via API, restart to full server,
     # create accounts, seed, then run the server in the foreground.
     entrypoint: ["/bin/sh", "/harness/entrypoint.sh"]
@@ -60,6 +60,7 @@ services:
       HARNESS_ALICE_PW: "harness-alice-pw"
       HARNESS_BOB_PW: "harness-bob-pw"
       HARNESS_CAROL_PW: "harness-carol-pw"
+      HARNESS_DAVE_PW: "harness-dave-pw"
     volumes:
       - ./entrypoint.sh:/harness/entrypoint.sh:ro
       - ./seed.sh:/harness/seed.sh:ro

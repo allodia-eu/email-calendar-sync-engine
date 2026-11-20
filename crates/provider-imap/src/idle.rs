@@ -59,7 +59,7 @@ fn classify(line: &[u8]) -> IdleLine {
     if first.eq_ignore_ascii_case("VANISHED") {
         return IdleLine::Changed;
     }
-    // The numeric forms: `* <n> EXISTS|EXPUNGE|FETCH` are changes; `* <n> RECENT`
+    // The numeric forms: `* <n> EXISTS|EXPUNGE|FETCH|UIDFETCH` are changes; `* <n> RECENT`
     // (and anything else) is informational. A non-numeric, non-VANISHED/BYE head
     // (`OK`, `FLAGS`, `CAPABILITY`, …) is informational.
     if first.parse::<u64>().is_ok() {
@@ -67,7 +67,8 @@ fn classify(line: &[u8]) -> IdleLine {
             Some(kind)
                 if kind.eq_ignore_ascii_case("EXISTS")
                     || kind.eq_ignore_ascii_case("EXPUNGE")
-                    || kind.eq_ignore_ascii_case("FETCH") =>
+                    || kind.eq_ignore_ascii_case("FETCH")
+                    || kind.eq_ignore_ascii_case("UIDFETCH") =>
             {
                 IdleLine::Changed
             }
@@ -78,28 +79,29 @@ fn classify(line: &[u8]) -> IdleLine {
 }
 
 /// Sends `<tag> IDLE` and consumes the server's `+ ` continuation, returning the tag
-/// (so [`idle_done`] can match the command's eventual completion). Untagged responses
-/// the server interleaves before the continuation are skipped — a change in that
-/// sub-second window is reconciled by the host's sync-on-start and the keep-alive
-/// backstop (`crate::watch`), never lost silently into the store.
+/// (so [`idle_done`] can match the command's eventual completion) and whether an untagged
+/// response the server interleaved before the continuation was a change. The server will
+/// not repeat that change once idling, so the watcher reports it.
 ///
 /// # Errors
 ///
 /// [`ImapError::Protocol`] if the server answers with a tagged line instead of a
 /// continuation (it refused `IDLE`), or [`ImapError::Io`] on a transport failure.
-pub(crate) async fn idle_start<S>(conn: &mut Connection<S>) -> ImapResult<String>
+pub(crate) async fn idle_start<S>(conn: &mut Connection<S>) -> ImapResult<(String, bool)>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let tag = conn.next_tag();
     conn.send_raw(format!("{tag} IDLE\r\n").as_bytes()).await?;
+    let mut saw_change = false;
     loop {
         let line = conn.read_line().await?;
         if strip_ascii_prefix(&line, b"+ ").is_some() {
-            return Ok(tag);
+            return Ok((tag, saw_change));
         }
         if strip_ascii_prefix(&line, b"* ").is_some() {
-            continue; // an untagged status before the continuation; tolerated
+            saw_change |= classify(&line) == IdleLine::Changed;
+            continue;
         }
         return Err(ImapError::protocol(format!(
             "IDLE expected a continuation, got: {}",
@@ -109,9 +111,10 @@ where
 }
 
 /// Reads untagged responses until one signals a change, returning then while the
-/// connection **stays in IDLE** (informational lines are consumed and ignored). The
-/// caller bounds the wait with a keep-alive timeout (`crate::watch`); because
-/// [`Connection::read_line`](crate::transport) is cancel-safe, a timeout that drops
+/// connection **stays in IDLE** (informational lines are consumed and ignored). The one
+/// read in the crate with no bound of its own: a connection in `IDLE` is silent on
+/// purpose, and the caller bounds the wait with its keep-alive (`crate::watch`) instead.
+/// Because [`Connection::read_line`](crate::transport) is cancel-safe, a timeout that drops
 /// this future loses no buffered bytes.
 ///
 /// # Errors
@@ -123,7 +126,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     loop {
-        let line = conn.read_line().await?;
+        let line = conn.read_line_within(None).await?;
         match classify(&line) {
             IdleLine::Changed => return Ok(()),
             IdleLine::Informational => {} // consume and keep reading the IDLE stream

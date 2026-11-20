@@ -21,18 +21,23 @@
 
 mod http;
 mod imap;
+mod shared_stores;
 mod smtp;
 
 use std::time::{Duration, Instant};
 
 pub use http::{HttpResponse, base64_encode};
 pub use imap::{ImapProbe, run_probe};
+pub use shared_stores::{
+    CALENDAR_SHARE_OWNER, GROUP_CALENDAR_EVENT_UID, SHARED_CALENDAR_EVENT_UID,
+    SHARED_CALENDAR_NAME, dav_propfind,
+};
 
 /// Environment variable whose presence gates all Stalwart-dependent tests.
 pub const GATE_VAR: &str = "STALWART_HTTP_ADDR";
 
 // Defaults match the host port mapping in docker/stalwart/docker-compose.yml.
-// IMAP is implicit-TLS (Stalwart's v0.16 default), so its address is the TLS
+// IMAP is implicit-TLS (Stalwart's default since v0.16), so its address is the TLS
 // port; SMTP is plaintext.
 const DEFAULT_IMAP_ADDR: &str = "127.0.0.1:11993";
 const DEFAULT_SMTP_ADDR: &str = "127.0.0.1:11025";
@@ -50,6 +55,17 @@ const DEFAULT_PASSWORD: &str = "harness-alice-pw";
 pub const ONE_OFF_EVENT_UID: &str = "oneoff-2001";
 /// Stable file name of the seeded person card.
 pub const CONTACT_UID: &str = "contact-3001";
+/// Address of the credential-less **group** mailbox the seeded account belongs to — the
+/// vendor-neutral analogue of a Microsoft 365 shared mailbox. It has no password: it is
+/// reached through a member's credential, never its own.
+///
+/// Not env-overridable, like [`Harness::scratch`]: it exists only because the bundled
+/// entrypoint provisions it, so another address could only ever fail to resolve.
+pub const SHARED_GROUP_ACCOUNT: &str = "support@test.local";
+/// `Message-ID` of the one message seeded into the group mailbox (`12-shared.eml`) —
+/// content the harness controls, so a shared-mailbox sync is asserted on it rather than on
+/// a server-assigned id.
+pub const SHARED_MESSAGE_ID: &str = "shared-9001@test.local";
 
 /// Errors raised by the harness probes.
 #[derive(Debug, thiserror::Error)]
@@ -183,6 +199,21 @@ impl Harness {
                 ScratchAccount::new("carol@test.local", "harness-carol-pw"),
             ],
         })
+    }
+
+    /// The account that grants [`account`](Self::account) **read-only** (`lr`) access to
+    /// its own INBOX — the half of the shared-mailbox fixture that differs in *rights*.
+    /// Since v1 Stalwart reports that share as `isReadOnly: true` in the JMAP session (v0.16
+    /// said `false`), while the group share, writable throughout, says `false`; the smoke
+    /// suite pins both. The folder is still where rights live: a share mixing writable and
+    /// read-only folders says `false` at the account.
+    ///
+    /// It is [`scratch`](Self::scratch)`[0]`: the grant is about rights, so its INBOX's
+    /// contents — which the scheduling suite adds to — matter to no assertion made through
+    /// it.
+    #[must_use]
+    pub fn read_only_share_owner(&self) -> &ScratchAccount {
+        &self.scratch[0]
     }
 
     /// Path of the seeded account's default calendar collection.

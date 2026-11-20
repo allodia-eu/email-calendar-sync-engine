@@ -1,4 +1,4 @@
-//! Href arithmetic: binding a calendar argument to a collection id, and the canonical
+//! Href arithmetic: the collection href a calendar id names, and the canonical
 //! percent-encoding a minted resource href must use.
 //!
 //! Split out of `provider.rs` — these are pure string functions with no transport and no
@@ -6,44 +6,15 @@
 //! always ends in a slash, and a minted href must be encoded the way the server
 //! canonicalizes it or a later `If-Match`/`DELETE` misses the resource.
 
-use engine_core::{
-    calendar::Calendar,
-    ids::{CalendarId, DavCollectionId},
-};
-
 use crate::error::CalDavError;
 
-/// Binds a calendar argument to a collection id: an absolute path or full URL is
-/// used as-is (a discovered calendar href), otherwise a bare name is joined onto
-/// the calendar home. All end in a trailing slash (CalDAV collections are
-/// directories).
-///
-/// # Errors
-///
-/// Returns [`CalDavError`] if the resolved href is not a valid provider key.
-pub(crate) fn bind_collection(
-    home_href: &str,
-    calendar: &str,
-) -> Result<DavCollectionId, CalDavError> {
-    let href = resolve_collection(home_href, calendar);
-    DavCollectionId::try_from(href.as_str())
-        .map_err(|e| CalDavError::protocol(format!("bad collection href {href:?}: {e}")))
-}
-
-/// Adds a minimal [`Calendar`] for the bound collection when the home listing did
-/// not include it, so the container snapshot always covers the events' membership.
-pub(crate) fn ensure_bound_present(calendars: &mut Vec<Calendar>, bound: &CalendarId) {
-    if calendars.iter().any(|c| &c.id == bound) {
-        return;
+/// Where discovery starts for `base_url`: the path it names, or `well_known` when it names
+/// only a server. A person who entered a path entered the resource to ask.
+pub(crate) fn discovery_start(base_url: &str, well_known: &str) -> String {
+    match reqwest::Url::parse(base_url) {
+        Ok(url) if url.path() != "/" => url.path().to_owned(),
+        _ => well_known.to_owned(),
     }
-    let name = bound
-        .as_str()
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or(bound.as_str())
-        .to_owned();
-    calendars.push(Calendar::new(bound.clone(), name));
 }
 
 /// Resolves a discovery redirect's `Location` against the href that issued it.
@@ -67,16 +38,45 @@ pub(crate) fn redirect_href(current: &str, location: &str) -> Option<String> {
     Some(location.to_owned())
 }
 
-/// Resolves the bound collection href (see [`bind_collection`]).
-pub(crate) fn resolve_collection(home_href: &str, calendar: &str) -> String {
-    if calendar.starts_with('/') || calendar.contains("://") {
-        return with_trailing_slash(calendar);
+/// Resolves `reference`, an href a response carried, against `at`, the URL of the request
+/// that returned it (RFC 4918 §8.3; RFC 3986 §5).
+///
+/// An absolute `reference` stands as it is. Against an absolute `at` a path resolves onto
+/// `at`'s origin, which is how a principal named as `/123/principal/` by one host stays on that
+/// host after discovery has moved on to another. Against a bare path (a replay fake, which has
+/// no origin) a path stays a path.
+///
+/// # Errors
+///
+/// Returns [`CalDavError`] when `reference` cannot be resolved against `at`.
+pub(crate) fn resolve_reference(at: &str, reference: &str) -> Result<String, CalDavError> {
+    let Ok(base) = reqwest::Url::parse(at) else {
+        return Ok(reference.to_owned());
+    };
+    if reqwest::Url::parse(reference).is_ok() {
+        return Ok(reference.to_owned());
     }
-    format!(
-        "{}{}/",
-        with_trailing_slash(home_href),
-        calendar.trim_matches('/')
-    )
+    base.join(reference)
+        .map(String::from)
+        .map_err(|e| CalDavError::protocol(format!("bad href {reference:?}: {e}")))
+}
+
+/// The collection href a calendar id names: the href the listing gave the calendar, ending in
+/// the slash every collection path ends in.
+///
+/// A calendar is named by that href alone, because its event scope and its events are keyed on
+/// the id: a second spelling of one calendar would sync it twice. A bare name is refused.
+///
+/// # Errors
+///
+/// Returns [`CalDavError::Protocol`] when `calendar` is neither an absolute path nor a URL.
+pub(crate) fn collection_href(calendar: &str) -> Result<String, CalDavError> {
+    if calendar.starts_with('/') || calendar.contains("://") {
+        return Ok(with_trailing_slash(calendar));
+    }
+    Err(CalDavError::protocol(format!(
+        "{calendar:?} is not a calendar's href"
+    )))
 }
 
 /// Ensures `href` ends with a single trailing slash.
@@ -119,4 +119,36 @@ fn is_unreserved(byte: u8) -> bool {
 /// The upper-case hex digit for a 0–15 nibble.
 fn hex_upper(nibble: u8) -> char {
     char::from_digit(u32::from(nibble), 16).map_or('0', |c| c.to_ascii_uppercase())
+}
+
+/// `url` with every `%25` that is followed by two hex digits decoded once, so `%2540` becomes
+/// `%40`; `None` when there is none.
+///
+/// Yahoo lists the events it names after their `UID` with the `%` of `%40` encoded again, then
+/// refuses a request to that href with a `400` (`docs/spec-deviations.md`, YAHOO-8). The resource
+/// answers once the extra layer is removed.
+pub(crate) fn single_encoded(url: &reqwest::Url) -> Option<reqwest::Url> {
+    let path = url.path();
+    let bytes = path.as_bytes();
+    let mut out = String::with_capacity(path.len());
+    let mut changed = false;
+    let mut at = 0;
+    while at < bytes.len() {
+        let doubled = bytes[at..].starts_with(b"%25")
+            && bytes.get(at + 3).is_some_and(u8::is_ascii_hexdigit)
+            && bytes.get(at + 4).is_some_and(u8::is_ascii_hexdigit);
+        if doubled {
+            out.push('%');
+            at += 3;
+            changed = true;
+        } else {
+            out.push(char::from(bytes[at]));
+            at += 1;
+        }
+    }
+    changed.then(|| {
+        let mut once = url.clone();
+        once.set_path(&out);
+        once
+    })
 }

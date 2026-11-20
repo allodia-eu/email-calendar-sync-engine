@@ -148,3 +148,67 @@ pub(crate) fn status(status: u16, body: &str) -> HttpResponse {
         retry_after: None,
     }
 }
+
+/// A blocking mock HTTP server answering one canned response per connection — the
+/// same shape `provider-jmap`'s tests use.
+pub(crate) fn mock_server(responses: Vec<String>) -> String {
+    mock_server_bytes(responses.into_iter().map(String::into_bytes).collect())
+}
+
+pub(crate) fn mock_server_bytes(responses: Vec<Vec<u8>>) -> String {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    std::thread::spawn(move || {
+        for response in responses {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let _ = engine_http::test_server::read_request_blocking(&mut stream);
+            let _ = stream.write_all(&response);
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// Serves canned responses and hands back every request as it arrived (head and body), so a
+/// test can assert on the headers that actually went out (notably `Authorization`).
+pub(crate) fn mock_server_capturing(
+    responses: Vec<String>,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for response in responses {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let request = engine_http::test_server::read_request_blocking(&mut stream);
+            sink.lock()
+                .expect("seen lock")
+                .push(String::from_utf8_lossy_owned(request));
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (format!("http://{addr}"), seen)
+}
+
+/// A `207 Multi-Status` answer carrying `body`.
+pub(crate) fn multistatus(body: &str) -> String {
+    format!(
+        "HTTP/1.1 207 Multi-Status\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+/// The `OPTIONS` answer `connect` consumes after discovery: a `DAV` compliance-class
+/// header and no body (RFC 4918 §10.1).
+pub(crate) fn options_response(dav: &str) -> String {
+    format!("HTTP/1.1 200 OK\r\nDAV: {dav}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+}
+
+/// A `307` sending the request on to `location`.
+pub(crate) fn redirect(location: &str) -> String {
+    format!(
+        "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+}

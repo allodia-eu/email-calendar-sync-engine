@@ -111,9 +111,9 @@ mod tests {
     #[test]
     fn empty_input_fuses_to_nothing() {
         let fused = fuse::<&str>(&[], RrfK::DEFAULT);
-        assert!(fused.is_empty());
+        assert_eq!(fused, []);
         let fused = fuse::<&str>(&[&[][..]], RrfK::DEFAULT);
-        assert!(fused.is_empty());
+        assert_eq!(fused, []);
     }
 
     #[test]

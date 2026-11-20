@@ -86,6 +86,8 @@ struct SimProvider {
     fail_after: AtomicUsize,
     /// The resume index each `stream_email` call started from (proves resumption).
     starts: Mutex<Vec<usize>>,
+    /// The keys whose source carries an attached PDF beside the same body text.
+    with_file: Mutex<Vec<String>>,
 }
 
 impl SimProvider {
@@ -99,7 +101,13 @@ impl SimProvider {
             offline: AtomicBool::new(false),
             fail_after: AtomicUsize::new(usize::MAX),
             starts: Mutex::new(Vec::new()),
+            with_file: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Makes `key`'s source carry an attached PDF; its body text stays `warmed body`.
+    fn attach_file(&self, key: &str) {
+        self.with_file.lock().unwrap().push(key.to_owned());
     }
 
     fn set_offline(&self, offline: bool) {
@@ -225,13 +233,18 @@ impl Provider for SimProvider {
         // sources identical across messages would dedupe to one file and hide anything a
         // test wants to say about per-message blobs — while the extracted body text (and
         // so the preview) must stay the same for every message.
-        Ok(RawMime::new(
+        let key = message.id.key().as_str();
+        let source = if self.with_file.lock().unwrap().iter().any(|k| k == key) {
             format!(
-                "Content-Type: text/plain\r\nX-Fixture-Key: {}\r\n\r\nwarmed body",
-                message.id.key().as_str()
+                "Content-Type: multipart/mixed; boundary=\"m\"\r\nX-Fixture-Key: {key}\r\n\r\n\
+                 --m\r\nContent-Type: text/plain\r\n\r\nwarmed body\r\n\
+                 --m\r\nContent-Type: application/pdf\r\n\
+                 Content-Disposition: attachment; filename=\"report.pdf\"\r\n\r\nPDF\r\n--m--\r\n"
             )
-            .into_bytes(),
-        ))
+        } else {
+            format!("Content-Type: text/plain\r\nX-Fixture-Key: {key}\r\n\r\nwarmed body")
+        };
+        Ok(RawMime::new(source.into_bytes()))
     }
 }
 

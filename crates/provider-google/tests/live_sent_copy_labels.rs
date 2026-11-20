@@ -37,6 +37,7 @@ fn provider(token: &str, names: Vec<KeywordName>) -> GmailProvider {
         token.to_owned(),
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     GmailProvider::new(client)
@@ -76,8 +77,11 @@ async fn mailboxes(provider: &GmailProvider) -> Vec<Mailbox> {
 
 async fn message(provider: &GmailProvider, key: &ProviderKey) -> Message {
     let sync = provider.sync_email(&account(), None).await.expect("sync");
-    let SyncUpdate::Snapshot { objects, .. } = sync.update else {
-        panic!("expected a message snapshot");
+    let SyncUpdate::Delta {
+        changed: objects, ..
+    } = sync.update
+    else {
+        panic!("a cursorless sync is an additive backfill");
     };
     objects
         .into_iter()
@@ -109,7 +113,11 @@ async fn live_the_sent_copy_carries_the_keyword_as_a_hidden_label_and_a_second_n
     let unnamed = provider(&token, Vec::new());
 
     let first = first_device
-        .submit_email(&account(), &draft(unique, "a"))
+        .submit_email(
+            &account(),
+            &draft(unique, "a"),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send");
     assert!(
@@ -117,7 +125,11 @@ async fn live_the_sent_copy_carries_the_keyword_as_a_hidden_label_and_a_second_n
         "the receipt keeps it"
     );
     let second = second_device
-        .submit_email(&account(), &draft(unique, "b"))
+        .submit_email(
+            &account(),
+            &draft(unique, "b"),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send");
     assert!(second.sent_copy_keywords.contains(&keyword()));

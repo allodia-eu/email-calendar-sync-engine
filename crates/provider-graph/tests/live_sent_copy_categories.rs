@@ -42,6 +42,7 @@ fn provider(token: &str, folder: &str, names: Vec<KeywordName>) -> GraphProvider
         token.to_owned(),
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
     GraphProvider::new(client, MailboxId::try_from(folder).unwrap()).with_keyword_names(names)
@@ -87,7 +88,11 @@ async fn await_in(provider: &GraphProvider, message_id: &MessageIdHeader) -> Mes
 /// would: again after each retryable answer, while the copy is not in Sent Items yet.
 async fn send_and_tag(provider: &GraphProvider, message_id: &MessageIdHeader) {
     let receipt = provider
-        .submit_email(&account(), &draft(message_id))
+        .submit_email(
+            &account(),
+            &draft(message_id),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
         .await
         .expect("send");
     assert!(

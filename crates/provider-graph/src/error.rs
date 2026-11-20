@@ -22,9 +22,10 @@ use serde_json::Value;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum GraphError {
-    /// The HTTP request itself failed (connect, timeout, TLS, or body decode).
+    /// The HTTP exchange itself failed (connect, TLS, a body, or a server that went quiet
+    /// for longer than the shared deadlines allow).
     #[error("Graph transport error: {0}")]
-    Transport(#[from] reqwest::Error),
+    Transport(#[from] engine_http::SendError),
 
     /// The server returned a non-success HTTP status. The Graph error `code` is
     /// captured when the body carried the standard envelope, and the raw body is
@@ -52,6 +53,12 @@ pub enum GraphError {
     /// an absent `value` array or `@odata.deltaLink`, …).
     #[error("malformed Graph response: {0}")]
     Protocol(String),
+
+    /// A mailbox address that cannot be put in a Graph URL path, refused before any
+    /// request (`crate::principal`). The reason names what was wrong and never repeats the
+    /// input.
+    #[error("invalid mailbox address: {0}")]
+    InvalidAddress(String),
 }
 
 impl GraphError {
@@ -93,26 +100,99 @@ impl GraphError {
         Self::Protocol(detail.into())
     }
 
+    /// What this error is as the failure of a submission: the class it always has, except
+    /// where the request may have reached the server and no answer of its own came back
+    /// ([`leaves_outcome_unknown`](Self::leaves_outcome_unknown)). That one may have sent the
+    /// message, so it needs confirming and is never retried
+    /// (`ProviderError::needs_confirmation`).
+    pub(crate) fn into_submission_error(self) -> ProviderError {
+        self.unless_unknown("the message may have been sent")
+    }
+
+    /// What this error is as the failure of a calendar or contact write: the class it always
+    /// has, which means the write was not applied, except where it may have been
+    /// ([`leaves_outcome_unknown`](Self::leaves_outcome_unknown)).
+    pub(crate) fn into_write_error(self) -> ProviderError {
+        self.unless_unknown("the change may have been applied")
+    }
+
+    /// Whether this error, ending a request that changes something, leaves unknown whether it
+    /// did: the exchange failed after the request may have reached the server, a gateway's
+    /// `502` or `504` says the server behind it gave no answer rather than that it refused,
+    /// or a success arrived whose body cannot be read. Every other status is the server's own
+    /// answer, and a connect or handshake that never completed sent nothing.
+    fn leaves_outcome_unknown(&self) -> bool {
+        match self {
+            Self::Transport(err) => err.may_have_been_received(),
+            Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
+            Self::Json(_) => true,
+            Self::Protocol(_) | Self::InvalidAddress(_) => false,
+        }
+    }
+
+    /// The body of a write's success, where the adapter needs nothing from it beyond the
+    /// status: the body when it reads, and none when it is not JSON, because the status
+    /// already says the write was done. Every failure is as
+    /// [`into_write_error`](Self::into_write_error).
+    pub(crate) fn optional_answer(
+        result: Result<Option<Value>, Self>,
+    ) -> Result<Option<Value>, ProviderError> {
+        match result {
+            // The transport makes this only from a success's body.
+            Err(Self::Json(_)) => Ok(None),
+            other => other.map_err(Self::into_write_error),
+        }
+    }
+
+    fn unless_unknown(self, outcome: &str) -> ProviderError {
+        if self.leaves_outcome_unknown() {
+            let detail = format!("{self}; {outcome}");
+            ProviderError::needs_confirmation(detail).with_source(self)
+        } else {
+            self.into()
+        }
+    }
+
+    /// Whether this is Exchange answering for a message it stored without converting it on
+    /// arrival (a meeting message whose MIME and iCalendar methods disagree is one): its MIME
+    /// can never be produced, so asking again only repeats the answer.
+    fn is_unconvertible_message(&self) -> bool {
+        matches!(
+            self,
+            Self::Status { status: 500, code: Some(code), .. }
+                if code == "ErrorMimeContentConversionFailed"
+        )
+    }
+
     /// The engine-neutral class this protocol error maps to.
     #[must_use]
     pub fn failure_class(&self) -> FailureClass {
         match self {
             Self::Transport(e) => transport_class(e),
+            _ if self.is_unconvertible_message() => FailureClass::Permanent,
             Self::Status { status, .. } => status_class(*status),
             // Malformed JSON or a structurally invalid response is a protocol-level
-            // incompatibility: retrying the same request will not fix it.
-            Self::Json(_) | Self::Protocol(_) => FailureClass::Permanent,
+            // incompatibility, and a malformed address is the caller's input: retrying the
+            // same request will not fix either.
+            Self::Json(_) | Self::Protocol(_) | Self::InvalidAddress(_) => FailureClass::Permanent,
         }
     }
 }
 
-/// Maps a reqwest transport error to a [`FailureClass`]: a body that did not decode
-/// is a permanent protocol mismatch; connect/timeout/request failures are transient.
-fn transport_class(err: &reqwest::Error) -> FailureClass {
+/// Maps a failed exchange to a [`FailureClass`]: a body that did not decode is a permanent
+/// protocol mismatch; every other failure, a server gone quiet included, is transient.
+fn transport_class(err: &engine_http::SendError) -> FailureClass {
     if err.is_decode() {
         FailureClass::Permanent
     } else {
         FailureClass::Retryable
+    }
+}
+
+/// A client error outside any exchange, such as a client that could not be built.
+impl From<reqwest::Error> for GraphError {
+    fn from(err: reqwest::Error) -> Self {
+        Self::Transport(err.into())
     }
 }
 
@@ -139,6 +219,14 @@ fn status_class(status: u16) -> FailureClass {
     }
 }
 
+/// A calendar or contact write the server said it performed, in an answer that does not say
+/// what it performed: a success with no body, or one missing the identity the caller needs.
+/// The write may have been applied, so it needs confirming
+/// (`ProviderError::needs_confirmation`).
+pub(crate) fn unread_answer(detail: &str) -> ProviderError {
+    ProviderError::needs_confirmation(format!("{detail}; the change may have been applied"))
+}
+
 impl From<GraphError> for ProviderError {
     fn from(err: GraphError) -> Self {
         let class = err.failure_class();
@@ -147,6 +235,8 @@ impl From<GraphError> for ProviderError {
         // instant outright, past its own derived cap, and a host schedules from it.
         let error = if class == FailureClass::RateLimited {
             ProviderError::rate_limited(detail, err.retry_after().map(Into::into))
+        } else if err.is_unconvertible_message() {
+            ProviderError::item_unavailable(detail)
         } else {
             ProviderError::new(class, detail)
         };
@@ -194,6 +284,35 @@ mod tests {
 
     const BAD_REQUEST: &str = include_str!("../tests/fixtures/error/bad_request.json");
     const UNAUTHORIZED: &str = include_str!("../tests/fixtures/error/unauthorized.json");
+    const MIME_CONVERSION_FAILED: &str =
+        include_str!("../tests/fixtures/error/mime_content_conversion_failed.json");
+
+    #[test]
+    fn only_a_message_exchange_cannot_convert_is_an_unavailable_item() {
+        use engine_provider::ProviderError;
+
+        let unavailable: ProviderError = GraphError::status(500, MIME_CONVERSION_FAILED).into();
+        assert!(unavailable.is_item_unavailable());
+        // Account-wide refusals are permanent too, but say nothing about one message.
+        for other in [
+            GraphError::status(403, r#"{"error":{"code":"ErrorAccessDenied"}}"#),
+            GraphError::status(500, r#"{"error":{"code":"generalException"}}"#),
+            GraphError::Protocol("missing id".into()),
+        ] {
+            let neutral: ProviderError = other.into();
+            assert!(!neutral.is_item_unavailable(), "{neutral}");
+        }
+    }
+
+    #[test]
+    fn a_message_exchange_cannot_convert_to_mime_is_a_permanent_failure_and_other_500s_are_not() {
+        // Captured from `$value` on a message Exchange stored without converting it on arrival:
+        // every later request for its MIME answers the same, so a retry only repeats it.
+        let unconvertible = GraphError::status(500, MIME_CONVERSION_FAILED);
+        assert_eq!(unconvertible.failure_class(), FailureClass::Permanent);
+        let other = GraphError::status(500, r#"{"error":{"code":"generalException"}}"#);
+        assert_eq!(other.failure_class(), FailureClass::Retryable);
+    }
 
     #[test]
     fn real_error_bodies_yield_their_code_and_class() {

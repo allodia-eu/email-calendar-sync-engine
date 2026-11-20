@@ -24,7 +24,8 @@ use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, IdentityControls,
     KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites,
     PageToken, PassMode, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
-    ScopeSync, SenderIdentity, SubmissionReceipt, SyncKind, split_page,
+    ScopeSync, SenderIdentity, SharedAccount, SharedAccounts, SubmissionReceipt, SyncKind,
+    split_page,
 };
 
 use crate::{categories::Categories, fetch, transport::GraphClient};
@@ -99,7 +100,11 @@ impl GraphProvider {
                 // Readable, never writable: the mailbox's display name is a directory
                 // attribute a tenant administrator owns, so an editor here would offer an
                 // edit that cannot land (`crate::identity`).
-                .with_sender_identities(IdentityControls::ReadOnly),
+                .with_sender_identities(IdentityControls::ReadOnly)
+                // Graph cannot list the mailboxes shared with a credential, only answer for
+                // one named by address (`crate::shared`). Unconditional: it is a property of
+                // the credential, and one granted nothing simply resolves nothing.
+                .with_shared_accounts(SharedAccounts::ByAddress),
             since: None,
             categories: Categories::default(),
         }
@@ -338,8 +343,9 @@ impl Provider for GraphProvider {
         &self,
         _account: &AccountId,
         draft: &Draft,
+        hand_over: &engine_provider::HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
-        crate::submit::send(&self.client, draft).await
+        crate::submit::send(&self.client, draft, hand_over).await
     }
 
     /// Applies a [`MailEdit`] to an already-synced message: mark-read/flag (a `PATCH` of
@@ -384,6 +390,14 @@ impl Provider for GraphProvider {
         report: &engine_provider::MessageReport,
     ) -> ProviderResult<engine_provider::ReportReceipt> {
         crate::report::report_message(&self.client, report).await
+    }
+
+    /// Checks that this credential can open the mailbox at `address`, and that it is not
+    /// the credential's own (`crate::shared`). The only discovery Graph offers: no route
+    /// lists the mailboxes shared with a credential, so enumeration stays at its rejecting
+    /// default.
+    async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
+        crate::shared::resolve(&self.client, address).await
     }
 }
 

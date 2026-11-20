@@ -3,15 +3,17 @@
 //! captured fixtures through the fixture-routing fake.
 
 use engine_core::{
+    error::FailureClass,
     ids::{MailboxId, MessageId},
     mail::{MailboxRole, Message},
     membership::Memberships,
     sync::SyncUpdate,
 };
+use futures_util::StreamExt;
 
 use super::*;
 use crate::test_support::{
-    capturing_replay_server, fake_client, fake_client_fallible, json, retry, tls,
+    capturing_replay_server, fake_client, fake_client_fallible, json, retry, tls, user_agent,
 };
 
 const LABELS: &str = include_str!("../tests/fixtures/mail/labels.json");
@@ -22,6 +24,7 @@ const META_LABELED: &str = include_str!("../tests/fixtures/mail/message_metadata
 const RAW: &str = include_str!("../tests/fixtures/mail/message_raw.json");
 const HISTORY: &str = include_str!("../tests/fixtures/mail/history_delta.json");
 const HISTORY_GONE: &str = include_str!("../tests/fixtures/error/history_gone.json");
+const QUOTA_EXCEEDED: &str = include_str!("../tests/fixtures/error/quota_exceeded_untimed.json");
 
 fn account() -> AccountId {
     AccountId::try_from("acct-1").unwrap()
@@ -82,28 +85,37 @@ async fn sync_mailboxes_snapshots_labels_with_roles_and_all_mail() {
 }
 
 #[tokio::test]
-async fn sync_email_snapshot_reconciles_and_persists_the_history_cursor() {
+async fn sync_email_backfills_and_reconciles_on_the_pass_after() {
     let mut routes = vec![
         ("/profile", json(PROFILE)),
+        (
+            "/history?startHistoryId",
+            serde_json::json!({ "historyId": "1988" }),
+        ),
         ("/messages?maxResults", json(LIST)),
     ];
     routes.extend(message_routes());
     let provider = GmailProvider::new(fake_client(routes));
-    let sync = provider.sync_email(&account(), None).await.unwrap();
-    // A first sync is a reconciling snapshot with the whole present set.
-    assert!(sync.is_snapshot());
-    let SyncUpdate::Snapshot { objects, present } = &sync.update else {
-        panic!("expected a message snapshot");
+
+    // A first sync fetches the window additively and leaves the reconcile to the next pass.
+    let backfill = provider.sync_email(&account(), None).await.unwrap();
+    let SyncUpdate::Delta { changed, .. } = &backfill.update else {
+        panic!("a backfill is additive");
     };
-    assert_eq!(objects.len(), 3);
+    assert_eq!(changed.len(), 3);
+    assert_eq!(backfill.next_cursor.as_str(), "reconcile;h=1988");
+
+    // The next pass lists the window's ids and ends on the historyId the backfill captured.
+    let reconcile = provider
+        .sync_email(&account(), Some(&backfill.next_cursor))
+        .await
+        .unwrap();
+    let SyncUpdate::Snapshot { objects, present } = &reconcile.update else {
+        panic!("a reconcile tombstones what is absent");
+    };
+    assert_eq!(objects.as_slice(), []);
     assert_eq!(present.len(), 3);
-    // The persisted cursor is the account historyId captured from the profile.
-    assert!(
-        sync.next_cursor
-            .as_str()
-            .chars()
-            .all(|c| c.is_ascii_digit())
-    );
+    assert_eq!(reconcile.next_cursor.as_str(), "1988");
 }
 
 #[tokio::test]
@@ -131,16 +143,22 @@ async fn sync_email_delta_is_additive_and_advances_the_cursor() {
         "message-1 was added, so it is fetched whole"
     );
     assert_eq!(patched.len(), 1, "message-2 only changed labels");
-    assert!(removed.is_empty());
+    assert_eq!(removed.as_slice(), []);
     assert_eq!(sync.next_cursor.as_str(), "1681");
 }
 
 #[tokio::test]
-async fn sync_email_restarts_as_a_snapshot_when_the_history_cursor_expired() {
-    // The stored historyId aged out (404 → HistoryExpired); the stream drops it and
-    // restarts as a full snapshot from the profile cursor.
-    let mut routes: Vec<(&str, crate::test_support::FakeRoute)> =
-        vec![("/history?startHistoryId", Err((404, json(HISTORY_GONE))))];
+async fn sync_email_backfills_again_when_the_history_cursor_expired() {
+    // The stored historyId aged out (404 → HistoryExpired); the stream drops it and fetches the
+    // window again from the profile cursor, leaving the reconcile to the next pass.
+    let mut routes: Vec<(&str, crate::test_support::FakeRoute)> = vec![
+        // The fresh cursor before the stale one, which is a prefix of it.
+        (
+            "/history?startHistoryId=1988",
+            Ok(serde_json::json!({ "historyId": "1988" })),
+        ),
+        ("/history?startHistoryId=1", Err((404, json(HISTORY_GONE)))),
+    ];
     routes.push(("/profile", Ok(json(PROFILE))));
     routes.push(("/messages?maxResults", Ok(json(LIST))));
     for (k, v) in message_routes() {
@@ -151,14 +169,42 @@ async fn sync_email_restarts_as_a_snapshot_when_the_history_cursor_expired() {
         .sync_email(&account(), Some(&SyncState::new("1")))
         .await
         .unwrap();
-    // Recovery yields a fresh snapshot, not an error.
-    assert!(sync.is_snapshot());
-    assert!(
-        sync.next_cursor
-            .as_str()
-            .chars()
-            .all(|c| c.is_ascii_digit())
-    );
+    // Recovery is a fresh backfill, not an error.
+    assert!(!sync.is_snapshot());
+    assert_eq!(sync.next_cursor.as_str(), "reconcile;h=1988");
+}
+
+#[tokio::test]
+async fn a_page_refused_partway_still_hands_on_what_it_fetched() {
+    // Gmail refuses once a user's per-minute quota is spent, which a backfill can meet partway
+    // through a page. The messages fetched before the refusal are passed on ahead of the error,
+    // so the pass stores them now rather than only once the page is fetched again.
+    let provider = GmailProvider::new(fake_client_fallible(vec![
+        ("/profile", Ok(json(PROFILE))),
+        (
+            "/history?startHistoryId",
+            Ok(serde_json::json!({ "historyId": "1988" })),
+        ),
+        ("/messages?maxResults", Ok(json(LIST))),
+        ("/messages/message-2", Ok(json(META_LABELED))),
+        ("/messages/message-1", Ok(json(META))),
+        ("/messages/message-0", Err((403, json(QUOTA_EXCEEDED)))),
+    ]));
+    let account = account();
+    let items: Vec<_> = provider
+        .stream_email(&account, None, SyncWindow::full(), 0, 0)
+        .collect()
+        .await;
+
+    let (last, chunks) = items.split_last().expect("the pass yields something");
+    let fetched: Vec<&str> = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.as_ref().expect("a chunk before the refusal").changed)
+        .map(|message| message.id.key().as_str())
+        .collect();
+    assert_eq!(fetched, ["message-2", "message-1"]);
+    let refusal = last.as_ref().expect_err("the pass still ends refused");
+    assert_eq!(refusal.class(), FailureClass::RateLimited);
 }
 
 #[test]
@@ -210,7 +256,14 @@ async fn edit_mail_and_submit_email_route_through_the_provider() {
         "Body",
     )
     .with_sent_copy_keyword(engine_core::mail::Keyword::new("project-x").unwrap());
-    let sent = provider.submit_email(&account(), &draft).await.unwrap();
+    let sent = provider
+        .submit_email(
+            &account(),
+            &draft,
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .unwrap();
     assert_eq!(sent.email_key.as_str(), "19f7sent0000abcd");
     // Gmail keeps no custom keyword, so the send goes out and says none were kept.
     assert!(sent.sent_copy_keywords.is_empty());
@@ -276,7 +329,7 @@ async fn setting_a_name_patches_the_send_as_resource_and_nothing_else() {
         "/settings/sendAs/",
         json(r#"{"sendAsEmail":"alice@example.com","displayName":"Alice Smith"}"#),
     )]);
-    let client = GoogleClient::with_base("tok", base, tls(), &retry()).unwrap();
+    let client = GoogleClient::with_base("tok", base, tls(), &retry(), &user_agent()).unwrap();
     let provider = GmailProvider::new(client);
 
     provider
@@ -322,4 +375,28 @@ fn gmail_advertises_a_writable_sender_name() {
         provider.connection_info().capabilities.sender_identities(),
         Some(IdentityControls::Writable)
     );
+}
+
+#[tokio::test]
+async fn gmail_offers_no_shared_mailbox_mechanism() {
+    use engine_core::error::FailureClass;
+    use engine_provider::SharedAccounts;
+
+    // A deliberate "no": reaching another user's mailbox over the Gmail API needs a service
+    // account with domain-wide delegation, not the user token this adapter holds. Anything
+    // else would offer a host an onboarding flow that could only fail.
+    let provider = GmailProvider::new(fake_client(vec![]));
+    assert_eq!(
+        provider.connection_info().capabilities.shared_accounts(),
+        SharedAccounts::Unsupported
+    );
+    for err in [
+        provider.list_shared_accounts().await.unwrap_err(),
+        provider
+            .resolve_shared_account("shared@example.test")
+            .await
+            .unwrap_err(),
+    ] {
+        assert_eq!(err.class(), FailureClass::InvalidState, "{err}");
+    }
 }

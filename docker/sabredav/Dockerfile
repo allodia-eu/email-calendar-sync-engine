@@ -21,7 +21,7 @@ WORKDIR /app
 COPY sabredav/composer.json sabredav/composer.lock ./
 RUN composer install --no-interaction --no-progress
 
-COPY sabredav/server.php sabredav/entrypoint.sh sabredav/seed.sh ./
+COPY sabredav/server.php sabredav/delegation.php sabredav/entrypoint.sh sabredav/seed.sh ./
 # SabreDAV's composer dist excludes examples/, so the schema is vendored here.
 COPY sabredav/sql ./sql
 COPY stalwart/seed/calendar ./seed/calendar

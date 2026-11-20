@@ -56,6 +56,15 @@ const SELF_ADDRESS: &str = "allodia.e2e@gmail.com";
 /// `sendUpdates=all` would reach nobody.
 const ORGANIZER: &str = "boss@example.test";
 
+/// A window wide enough to be the whole calendar.
+fn whole_calendar() -> engine_core::time::Horizon {
+    engine_core::time::Horizon::new(
+        "2000-01-01T00:00:00Z".parse().unwrap(),
+        "2100-01-01T00:00:00Z".parse().unwrap(),
+    )
+    .unwrap()
+}
+
 fn account() -> engine_core::ids::AccountId {
     engine_core::ids::AccountId::try_from("live").unwrap()
 }
@@ -66,8 +75,9 @@ fn token() -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
+/// The account's default calendar, by the id its listing gives it.
 fn calendar() -> CalendarId {
-    CalendarId::try_from("primary").unwrap()
+    CalendarId::try_from(SELF_ADDRESS).unwrap()
 }
 
 fn provider(token: String) -> GoogleCalendarProvider {
@@ -75,9 +85,10 @@ fn provider(token: String) -> GoogleCalendarProvider {
         token,
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
     )
     .expect("client");
-    GoogleCalendarProvider::new(client, calendar())
+    GoogleCalendarProvider::new(client)
 }
 
 /// An HTTP client for the seed calls, built through the engine's own TLS policy.
@@ -127,12 +138,12 @@ async fn import_invitation(token: &str, uid: &Uid, summary: &str) -> EventId {
     let status = response.status();
     let imported: serde_json::Value = response.json().await.expect("import response");
     assert!(status.is_success(), "import failed: {imported}");
-    EventId::try_from(imported["id"].as_str().expect("an imported event id")).unwrap()
+    in_primary(imported["id"].as_str().expect("an imported event id"))
 }
 
-/// Creates a meeting the **account itself** organizes, with one other guest — the shape the
-/// truncation gap needs, and one `EventDraft` cannot express (a draft states no attendees).
-/// `sendUpdates=none`, and the guest is a reserved domain, so nothing is mailed.
+/// Creates a meeting the **account itself** organises, with one other guest, which is the
+/// shape the truncation gap needs. The direct request selects `sendUpdates=none`; neutral
+/// meeting writes deliberately notify invitees. The guest is reserved, so nothing is mailed.
 async fn insert_with_guest(token: &str, summary: &str) -> EventId {
     let body = serde_json::json!({
         "summary": summary,
@@ -150,13 +161,18 @@ async fn insert_with_guest(token: &str, summary: &str) -> EventId {
     let status = response.status();
     let created: serde_json::Value = response.json().await.expect("insert response");
     assert!(status.is_success(), "insert failed: {created}");
-    EventId::try_from(created["id"].as_str().expect("an event id")).unwrap()
+    in_primary(created["id"].as_str().expect("an event id"))
+}
+
+/// The adapter's id for Google event `id` in the primary calendar, which names its calendar.
+fn in_primary(id: &str) -> EventId {
+    EventId::try_from(format!("{}/{id}", calendar().key().as_str()).as_str()).unwrap()
 }
 
 /// Re-reads `id` through the adapter's own sync — the projection a host would see.
 async fn read_event(provider: &GoogleCalendarProvider, id: &EventId) -> Event {
     let sync = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), &calendar(), None, whole_calendar())
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &sync.update else {
@@ -188,7 +204,7 @@ fn my_status(event: &Event) -> ParticipationStatus {
 
 async fn delete(provider: &GoogleCalendarProvider, event: &Event) {
     if let Err(error) = provider
-        .delete_event(&account(), None, &EventDeletion::of(event))
+        .delete_event(&account(), Some(event), &EventDeletion::of(event))
         .await
     {
         eprintln!("cleanup delete gave up (leaving a throwaway event): {error}");

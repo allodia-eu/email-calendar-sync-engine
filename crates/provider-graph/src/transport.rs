@@ -16,7 +16,7 @@
 
 use async_trait::async_trait;
 use engine_http::RetryConfig;
-use engine_provider::{HttpVersion, TlsVersion};
+use engine_provider::{HandOver, HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
 
@@ -63,6 +63,23 @@ pub(crate) trait GraphTransport: Send + Sync {
         content_type: &str,
         body: Vec<u8>,
     ) -> Result<Option<Value>, GraphError>;
+
+    /// [`post`](Self::post) for the one request that submits a message (`sendMail`): its reply
+    /// waits the submission bound, and its failure after it may have reached the server
+    /// leaves the send ambiguous (`crate::submit`). A fake has no wait to make, so it posts.
+    async fn submit(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+        hand_over: &HandOver<'_>,
+    ) -> Result<Option<Value>, GraphError> {
+        hand_over
+            .commit()
+            .await
+            .map_err(|err| engine_http::SendError::withheld(err.detail().to_owned()))?;
+        self.post(url, content_type, body).await
+    }
 
     /// `PATCH`es `body` with `content_type` to `url`, guarded by `if_match` (an
     /// `If-Match` ETag precondition; a stale one is `412` → [`FailureClass::Conflict`]).
@@ -127,13 +144,14 @@ impl GraphClient {
     ///
     /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`) and `retry` its
     /// throttling policy (`docs/agent-guidance/http-throttling.md`), both shared with the
-    /// account's other providers.
+    /// account's other providers; `user_agent` names the host's application in every request.
     pub fn connect(
         token: impl Into<String>,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
     ) -> Result<Self, GraphError> {
-        let transport = Box::new(HttpTransport::new(token.into(), tls, retry)?);
+        let transport = Box::new(HttpTransport::new(token.into(), tls, retry, user_agent)?);
         Ok(Self::with_transport(transport, GRAPH_BASE.to_owned()))
     }
 
@@ -152,8 +170,9 @@ impl GraphClient {
         principal: MailboxPrincipal,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
     ) -> Result<Self, GraphError> {
-        Ok(Self::connect(token, tls, retry)?.with_principal(principal))
+        Ok(Self::connect(token, tls, retry, user_agent)?.with_principal(principal))
     }
 
     /// Connects a real client to a custom base origin instead of the Graph root —
@@ -170,9 +189,10 @@ impl GraphClient {
         base: impl Into<String>,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
     ) -> Result<Self, GraphError> {
         Ok(Self::with_transport(
-            Box::new(HttpTransport::new(token.into(), tls, retry)?),
+            Box::new(HttpTransport::new(token.into(), tls, retry, user_agent)?),
             base.into(),
         ))
     }
@@ -199,6 +219,20 @@ impl GraphClient {
     /// rooting it at the principal (`/me` or `/users/{address}`).
     pub(crate) fn url(&self, path: &str) -> String {
         format!("{}{}{path}", self.base, self.principal.root())
+    }
+
+    /// Builds an absolute URL rooted at a mailbox **other than** this client's — the
+    /// shared-mailbox probe, which asks about an address the client is not bound to, and
+    /// then about the signed-in user's own (`crate::shared`).
+    pub(crate) fn principal_url(&self, principal: &MailboxPrincipal, path: &str) -> String {
+        format!("{}{}{path}", self.base, principal.root())
+    }
+
+    /// The mailbox this client's requests are rooted at — read by submission, which must
+    /// not send a message whose `From` names another mailbox than the one it posts to
+    /// (`crate::submit`).
+    pub(crate) fn principal(&self) -> &MailboxPrincipal {
+        &self.principal
     }
 
     /// Builds an absolute Graph URL that is not rooted at a mailbox principal
@@ -293,6 +327,23 @@ impl GraphClient {
             .await
     }
 
+    /// [`post`](Self::post) for the request that submits a message (`sendMail`).
+    ///
+    /// # Errors
+    ///
+    /// As [`post`](Self::post).
+    pub(crate) async fn submit(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+        hand_over: &HandOver<'_>,
+    ) -> Result<Option<Value>, GraphError> {
+        self.transport
+            .submit(&self.rebase(url), content_type, body, hand_over)
+            .await
+    }
+
     /// Authenticated `PATCH` guarded by `if_match`, rebasing links like [`get`]. Returns
     /// the updated object JSON Graph echoes.
     ///
@@ -359,6 +410,7 @@ mod tests {
             "super-secret-token",
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         assert_eq!(me.url("/messages"), format!("{GRAPH_BASE}/me/messages"));
@@ -366,9 +418,10 @@ mod tests {
         // `…/users/info@example.org/mailFolders('Inbox')/messages`.
         let shared = GraphClient::for_mailbox(
             "t",
-            MailboxPrincipal::user("info@example.org"),
+            MailboxPrincipal::user("info@example.org").unwrap(),
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         assert_eq!(
@@ -386,6 +439,7 @@ mod tests {
             "t",
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         let link = format!("{GRAPH_BASE}/me/messages/delta?$deltatoken=x");
@@ -396,6 +450,7 @@ mod tests {
             "http://127.0.0.1:9",
             crate::test_support::tls(),
             &crate::test_support::retry(),
+            &crate::test_support::user_agent(),
         )
         .unwrap();
         assert_eq!(

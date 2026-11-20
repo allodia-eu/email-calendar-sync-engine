@@ -216,12 +216,9 @@ async fn missing_body_work_list_shrinks_as_a_warm_pass_fetches() {
 
     // A fully-warm window returns an empty work list.
     warm(&engine, &provider, &rest).await;
-    assert!(
-        engine
-            .mail_missing_body(&[account()], 50)
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        engine.mail_missing_body(&[account()], 50).await.unwrap(),
+        []
     );
 }
 
@@ -407,11 +404,93 @@ pub(super) fn age_blobs(db: &std::path::Path) {
         .unwrap()
         .flatten()
     {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(entry.path())
-            .unwrap()
-            .set_modified(stale)
-            .unwrap();
+        std::fs::set_times(entry.path(), std::fs::FileTimes::new().set_modified(stale)).unwrap();
     }
+}
+
+/// The `has_attachment` of each listed row, by key.
+async fn paperclips(engine: &Engine) -> Vec<(String, bool)> {
+    let mut rows: Vec<(String, bool)> = engine
+        .mail_window(&[account()], 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.mail.key.as_str().to_owned(), row.mail.has_attachment))
+        .collect();
+    rows.sort();
+    rows
+}
+
+#[tokio::test]
+async fn every_road_that_reads_a_source_settles_the_rows_paperclip() {
+    // A provider's flag is a guess made without the bytes: Gmail's metadata read has no parts
+    // tree, so it never sets one, and a server's own rule may count what the opened message
+    // does not list. Whatever reads the source answers it, and it stays answered.
+    let mut guessed = messages(3);
+    guessed[2].has_attachment = true; // the server says m2 has one; its source has none
+    let engine = Engine::open_in_memory().unwrap();
+    let provider = SimProvider::new(guessed.clone(), 3);
+    for key in ["m0", "m1"] {
+        provider.attach_file(key);
+    }
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            responsive(),
+            &no_observer(),
+        )
+        .await;
+    // m0 is opened, m1 has its attachments listed, m2 is warmed in the background.
+    let m0 = engine
+        .messages_by_keys(&account(), &[key("m0")])
+        .await
+        .unwrap();
+    engine
+        .message_body(&provider, &account(), &m0[0])
+        .await
+        .unwrap();
+    let m1 = engine
+        .messages_by_keys(&account(), &[key("m1")])
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .message_attachments(&provider, &account(), &m1[0])
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let m2 = engine
+        .messages_by_keys(&account(), &[key("m2")])
+        .await
+        .unwrap();
+    let warmed: Vec<_> =
+        futures_util::StreamExt::collect(engine.warm_message_sources(&provider, &account(), &m2))
+            .await;
+    assert!(warmed.iter().all(|(_, outcome)| outcome.is_ok()));
+    let settled = vec![
+        ("m0".to_owned(), true),
+        ("m1".to_owned(), true),
+        ("m2".to_owned(), false),
+    ];
+    assert_eq!(paperclips(&engine).await, settled);
+
+    // The server sends its guesses again; the sources already answered.
+    for message in guessed {
+        provider.deliver(message);
+    }
+    engine
+        .sync_mail(
+            core::slice::from_ref(&provider),
+            &account(),
+            responsive(),
+            &no_observer(),
+        )
+        .await;
+    assert_eq!(paperclips(&engine).await, settled);
+    // An opened message agrees with its row, not with the payload's guess.
+    let opened = engine.messages_by_keys(&account(), &[key("m2")]).await;
+    assert!(!opened.unwrap()[0].has_attachment);
 }

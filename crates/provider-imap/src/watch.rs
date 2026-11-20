@@ -124,15 +124,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapWatcher<S> {
 
     /// Ensures the connection is idling, issuing `IDLE` (and recording its tag +
     /// keep-alive deadline) only when not already, so a watcher **stays** idling across
-    /// `Changed` events. Returns the current deadline.
-    async fn ensure_idling(&mut self) -> ProviderResult<Instant> {
+    /// `Changed` events. Returns the current deadline, and whether the server reported a
+    /// change before it accepted the `IDLE`.
+    async fn ensure_idling(&mut self) -> ProviderResult<(Instant, bool)> {
         match &self.state {
-            WatchState::Idling { deadline, .. } => Ok(*deadline),
+            WatchState::Idling { deadline, .. } => Ok((*deadline, false)),
             WatchState::NotIdling => {
-                let tag = idle::idle_start(&mut self.conn).await?;
+                let (tag, saw_change) = idle::idle_start(&mut self.conn).await?;
                 let deadline = Instant::now() + self.keepalive;
                 self.state = WatchState::Idling { tag, deadline };
-                Ok(deadline)
+                Ok((deadline, saw_change))
             }
         }
     }
@@ -145,7 +146,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapWatcher<S> {
     /// A classified [`ProviderError`] when the connection drops or the server errors
     /// (the host reconnects per its own policy).
     pub async fn next_event(&mut self) -> ProviderResult<WatchEvent> {
-        let deadline = self.ensure_idling().await?;
+        let (deadline, saw_change) = self.ensure_idling().await?;
+        if saw_change {
+            // Reported before the continuation: already idling, so stay there.
+            return Ok(WatchEvent::Changed);
+        }
         let remaining = deadline.saturating_duration_since(Instant::now());
         match timeout(remaining, idle::idle_wait_change(&mut self.conn)).await {
             // A change — report it but STAY idling, so a change arriving while the host

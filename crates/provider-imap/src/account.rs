@@ -12,12 +12,15 @@
 //! that borrow from the pool, so however many folders a host binds, the account's sockets stay
 //! under one budget.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
-use engine_core::ids::MailboxId;
+use engine_core::ids::{MailboxId, SharedAccountId};
 use engine_provider::{
     Capabilities, ConnectionInfo, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
-    TlsVersion,
+    SharedAccounts, TlsVersion,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -26,12 +29,15 @@ use tokio::{
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
 use crate::{
+    capability::Extension,
     config::ImapConfig,
-    connect::connect_session,
+    dial::connect_session,
     error::ImapError,
     filing::{SmtpSender, resolve_smtp},
+    gmail::GmailMail,
     pool::{DEFAULT_MAX_CONNECTIONS, Dial, ImapPool, VALIDATE_AFTER_REST},
     provider::ImapProvider,
+    store::Namespaces,
     transport::Connection,
     watch::ImapWatcher,
 };
@@ -40,7 +46,9 @@ use crate::{
 /// needs to know about the server.
 ///
 /// Build **one per account** and bind every folder through it. Two `ImapAccount`s for the same
-/// account are two budgets, which is the bug this type exists to prevent.
+/// account are two budgets, which is the bug this type exists to prevent. A mail store shared
+/// with the credential is no exception: it is opened by the same login, so it is reached
+/// through [`with_shared_account`](Self::with_shared_account), which spends the same budget.
 pub struct ImapAccount<S> {
     pool: Arc<ImapPool<S>>,
     /// Shared by every provider this account binds; each send dials its own SMTP connection.
@@ -50,6 +58,14 @@ pub struct ImapAccount<S> {
     /// The capabilities and TLS version the first connection negotiated. Every connection in
     /// the pool dials the same server as the same user, so this describes all of them.
     connection_info: ConnectionInfo,
+    /// The shared mail store this account's providers cover, or `None` for the credential's
+    /// own (`with_shared_account`).
+    shared_account: Option<SharedAccountId>,
+    /// The server's `NAMESPACE` answer, learned the first time a provider needs it
+    /// (`crate::folders`) and kept for every provider of the login, whichever store it covers.
+    namespaces: Arc<OnceLock<Namespaces>>,
+    /// Whether the session advertised Gmail's `X-GM-EXT-1` (`crate::gmail`).
+    gmail: bool,
 }
 
 impl<S> core::fmt::Debug for ImapAccount<S> {
@@ -58,14 +74,16 @@ impl<S> core::fmt::Debug for ImapAccount<S> {
             .field("pool", &self.pool)
             .field("since", &self.since)
             .field("connection_info", &self.connection_info)
+            .field("shared_account", &self.shared_account)
             .finish_non_exhaustive()
     }
 }
 
 impl ImapAccount<TlsStream<TcpStream>> {
-    /// Connects over TLS (implicit or STARTTLS, per the config) and logs in, proving the
-    /// credentials and reading the server's capabilities. The connection is kept for the first
-    /// folder that needs one.
+    /// Connects over TLS (implicit or STARTTLS, per the config) and authenticates with the
+    /// [`Credentials`](crate::Credentials) the config's source gives, a password or an OAuth
+    /// 2.0 access token, proving them and reading the server's capabilities. The connection is kept
+    /// for the first folder that needs one.
     ///
     /// The `connector` carries the host's trust policy — the library never bakes in a root
     /// store, so a mobile host (or the self-signed test fixture) injects its own
@@ -75,7 +93,7 @@ impl ImapAccount<TlsStream<TcpStream>> {
     ///
     /// # Errors
     ///
-    /// [`ImapError`] on a TCP/TLS/login failure or a bad server name.
+    /// [`ImapError`] on a TCP/TLS/authentication failure or a bad server name.
     pub async fn connect(config: &ImapConfig, connector: TlsConnector) -> Result<Self, ImapError> {
         let smtp = config
             .smtp
@@ -93,8 +111,10 @@ impl ImapAccount<TlsStream<TcpStream>> {
     }
 }
 
-/// The pool's dial for a live account: the same TCP + TLS + `LOGIN` sequence as the first
-/// connection, from the same config.
+/// The pool's dial for a live account: the same TCP, TLS and authentication sequence as the
+/// first connection, from the same config. Each dial asks the config's
+/// [`CredentialSource`](crate::CredentialSource) afresh, so a connection opened an hour after
+/// [`ImapAccount::connect`] presents a token that is valid then.
 fn dial_tls(config: ImapConfig, connector: TlsConnector) -> Dial<TlsStream<TcpStream>> {
     let config = Arc::new(config);
     Arc::new(move || {
@@ -120,6 +140,7 @@ impl<S> ImapAccount<S> {
         tls_version: Option<TlsVersion>,
     ) -> Self {
         let capabilities = capabilities(&connection, smtp.is_some());
+        let gmail = connection.negotiated.has(Extension::XGmExt1);
         let pool = ImapPool::new(dial, DEFAULT_MAX_CONNECTIONS, VALIDATE_AFTER_REST);
         pool.adopt(connection);
         Self {
@@ -130,6 +151,9 @@ impl<S> ImapAccount<S> {
                 tls_version,
                 ..ConnectionInfo::new(capabilities)
             },
+            shared_account: None,
+            namespaces: Arc::new(OnceLock::new()),
+            gmail,
         }
     }
 
@@ -151,6 +175,43 @@ impl<S> ImapAccount<S> {
         Self::build(connection, dial, smtp, None, None)
     }
 
+    /// The same account, covering a mail store shared **with** the credential rather than the
+    /// credential's own: `handle` is what
+    /// [`list_shared_accounts`](engine_provider::Provider::list_shared_accounts) or
+    /// [`resolve_shared_account`](engine_provider::Provider::resolve_shared_account) handed
+    /// back — the store's path under the server's shared namespace. Dials nothing.
+    ///
+    /// Its providers list that store's folders alone, re-rooted so they read like any
+    /// account's (its `INBOX` is the Inbox), and file a sent copy or a draft in *its* Sent and
+    /// Drafts. The mailbox a provider is bound to must be one of that store's folders, from
+    /// its own folder list; a host building the provider that lists folders may bind any
+    /// placeholder, exactly as it does for the credential's own store.
+    ///
+    /// The store is opened by the same login, so it borrows from this account's pool rather
+    /// than dialling a pool of its own: the server's connection limit is per login, and a
+    /// second budget would spend it twice.
+    #[must_use]
+    pub fn with_shared_account(&self, handle: SharedAccountId) -> Self {
+        Self {
+            pool: Arc::clone(&self.pool),
+            smtp: self.smtp.clone(),
+            since: self.since,
+            connection_info: self.connection_info,
+            shared_account: Some(handle),
+            namespaces: Arc::clone(&self.namespaces),
+            gmail: self.gmail,
+        }
+    }
+
+    /// The account's mail read as one Gmail store, when the server is Gmail: `None` unless the
+    /// session advertised `X-GM-EXT-1`, and for a shared mail store, which Gmail does not
+    /// offer over IMAP. Dials nothing.
+    #[must_use]
+    pub fn gmail(&self) -> Option<GmailMail<S>> {
+        (self.gmail && self.shared_account.is_none())
+            .then(|| GmailMail::new(Arc::clone(&self.pool)))
+    }
+
     /// A provider bound to `mailbox` for its email scope, drawing its connections from this
     /// account's pool. Dials nothing.
     #[must_use]
@@ -161,6 +222,8 @@ impl<S> ImapAccount<S> {
             self.smtp.clone(),
             self.since,
             self.connection_info,
+            self.shared_account.clone(),
+            Arc::clone(&self.namespaces),
         )
     }
 
@@ -249,6 +312,15 @@ fn capabilities<S>(connection: &Connection<S>, smtp: bool) -> Capabilities {
     // whether to offer an "as it comes in" strategy or fall back to polling.
     if connection.idle_available() {
         capabilities = capabilities.with_idle();
+    }
+    // Shares are listable where the server can say whose mail is whose (`NAMESPACE`) and can
+    // grant access at all (`ACL`, RFC 4314 — how one IMAP user shares with another). Gmail and
+    // Outlook.com advertise `NAMESPACE` alone; claiming a list there would offer a picker that
+    // can never fill. Unlike the folder list, this is read off the negotiation, so it costs no
+    // command (`crate::folders`).
+    if connection.negotiated.has(Extension::Namespace) && connection.negotiated.has(Extension::Acl)
+    {
+        capabilities = capabilities.with_shared_accounts(SharedAccounts::Enumerable);
     }
     capabilities
 }

@@ -42,6 +42,8 @@ tokio = { workspace = true, features = ["time"] }
 # `macros`/`rt` for `#[tokio::test]` and `test-util` for the paused clock the offline
 # category tests run on; `time` for the gated live send test's delivery poll.
 tokio = { workspace = true, features = ["time", "macros", "rt", "test-util"] }
+# The silent servers the deadline tests meet (`engine_http::test_server`).
+engine-http = { workspace = true, features = ["test-server"] }
 # `StreamExt` drains `stream_email` into its chunks in the offline tests.
 futures-util = { workspace = true }
 # The gated live test builds a (bundled) TlsClientConfig to pass into `connect`.

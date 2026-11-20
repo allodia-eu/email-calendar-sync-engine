@@ -106,6 +106,54 @@ async fn a_refusal_lowers_the_ceiling_so_the_pool_stops_asking() {
 }
 
 #[tokio::test]
+async fn a_temporary_refusal_at_sign_in_lowers_the_ceiling_too() {
+    // The credential was not judged, but other sessions hold it right now: what the server
+    // is short of is sessions, whichever code it chose to say so with.
+    let (dial, _dials) = limited_dialler(1, || {
+        ImapError::refused_sign_in("[UNAVAILABLE] Too many connections")
+    });
+    let pool = ImapPool::new(dial, 5, NEVER_CHECK);
+
+    let held = pool.acquire().await.unwrap();
+    let waiting = tokio::spawn({
+        let pool = Arc::clone(&pool);
+        async move { pool.acquire().await.map(drop) }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(pool.ceiling(), 4);
+
+    drop(held);
+    tokio::time::timeout(SOON, waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_lasting_refusal_during_a_dial_is_no_session_limit() {
+    // Only sign-in turns a temporary code into a session question; a lasting `NO` reached
+    // during a dial (a refused `STARTTLS`) says nothing about sessions.
+    let (dial, _dials) = limited_dialler(1, || ImapError::no("[CANNOT] STARTTLS refused"));
+    let pool = ImapPool::new(dial, 5, NEVER_CHECK);
+
+    let held = pool.acquire().await.unwrap();
+    let waiting = tokio::spawn({
+        let pool = Arc::clone(&pool);
+        async move { pool.acquire().await.map(drop) }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(pool.ceiling(), 5);
+
+    drop(held);
+    tokio::time::timeout(SOON, waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn a_network_change_restores_a_lowered_ceiling() {
     let (dial, _dials) = limited_dialler(1, login_refused);
     let pool = ImapPool::new(dial, 5, NEVER_CHECK);
@@ -206,4 +254,37 @@ async fn a_caller_naming_a_mailbox_gets_the_connection_that_has_it_open() {
     assert_eq!(handed.open_validity("INBOX"), Some(7));
     let next = pool.acquire().await.unwrap();
     assert_eq!(next.open_validity("INBOX"), None);
+}
+
+#[tokio::test]
+async fn a_watch_refused_under_a_lowered_ceiling_names_the_server_as_the_limit() {
+    // A server that gives this account one session leaves nothing for a watch, and the
+    // refusal has to say so rather than count watches that are not there.
+    let (dial, _dials) = limited_dialler(1, login_refused);
+    let pool = ImapPool::new(dial, 2, NEVER_CHECK);
+    let held = pool.acquire().await.unwrap();
+    let waiting = tokio::spawn({
+        let pool = Arc::clone(&pool);
+        async move { pool.acquire().await.map(drop) }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(pool.ceiling(), 1);
+
+    let refused = pool
+        .reserve_watch()
+        .await
+        .expect_err("the watch took the only connection");
+    assert_eq!(
+        refused.to_string(),
+        "InvalidState provider error: cannot watch another folder: this account may hold 1 \
+         connection(s) while the server is limiting it, 0 already watching a folder, and 1 \
+         must stay free to sync",
+    );
+
+    drop(held);
+    tokio::time::timeout(SOON, waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 }

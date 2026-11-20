@@ -17,6 +17,10 @@ use super::provider_test_support::*;
 async fn contact_snapshot_preserves_jscontact_property_ids_and_raw_json() {
     let response = json!({
         "methodResponses": [[
+            "ContactCard/query",
+            { "accountId": "c", "queryState": "q", "position": 0, "ids": ["card-1"], "total": 1 },
+            "0"
+        ], [
             "ContactCard/get",
             {
                 "accountId": "c",
@@ -44,7 +48,7 @@ async fn contact_snapshot_preserves_jscontact_property_ids_and_raw_json() {
                 }],
                 "notFound": []
             },
-            "0"
+            "1"
         ]]
     });
     let p = provider(vec![response]);
@@ -236,13 +240,17 @@ async fn expired_contact_state_reports_recovery_to_a_snapshot() {
     });
     let snapshot = json!({
         "methodResponses": [[
+            "ContactCard/query",
+            { "accountId": "c", "queryState": "q", "position": 0, "ids": ["card-1"], "total": 1 },
+            "0"
+        ], [
             "ContactCard/get",
             {
                 "accountId": "c",
                 "state": "fresh",
                 "list": [{"id": "card-1", "addressBookIds": {"book-1": true}}]
             },
-            "0"
+            "1"
         ]]
     });
     let result = provider(vec![expired, snapshot])

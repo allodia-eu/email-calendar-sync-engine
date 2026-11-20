@@ -25,7 +25,6 @@ use engine_provider::{
     CalendarWrites, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence,
     PatchTarget, Provider,
 };
-use provider_graph::GraphCalendarProvider;
 
 /// The series starts here and repeats weekly; the second Monday is the one overridden.
 const SERIES_START: &str = "2026-09-07T09:30:00";
@@ -39,7 +38,7 @@ async fn live_calendar_override_survival_is_what_the_adapter_advertises() {
         return;
     };
     let calendar_id = default_calendar(&token).await;
-    let provider = calendar_provider(&token, calendar_id.clone());
+    let provider = calendar_provider(&token);
     let declared = provider
         .connection_info()
         .capabilities
@@ -115,12 +114,7 @@ struct Outcome {
 
 /// Runs one experiment end to end: build a series, override its second occurrence, apply
 /// `edit` to the master, and read the occurrence back.
-async fn measure<F>(
-    provider: &GraphCalendarProvider,
-    calendar_id: &CalendarId,
-    label: &str,
-    edit: F,
-) -> Outcome
+async fn measure<F>(provider: &Windowed, calendar_id: &CalendarId, label: &str, edit: F) -> Outcome
 where
     F: FnOnce(&Event) -> EventPatch,
 {
@@ -134,7 +128,7 @@ where
         .await
         .expect("edit the series");
 
-    let overrides = overrides_of(provider, &created_id).await;
+    let overrides = overrides_of(provider, calendar_id, &created_id).await;
     let entry = overrides.get(&OVERRIDDEN.parse().unwrap());
     let outcome = Outcome {
         survived: entry.is_some(),
@@ -162,7 +156,7 @@ where
 /// A fresh weekly series whose second occurrence has been given its own title, at its own
 /// time. Returns the base to guard the next write with, and the series' id.
 async fn series_with_an_override(
-    provider: &GraphCalendarProvider,
+    provider: &Windowed,
     calendar_id: &CalendarId,
     label: &str,
 ) -> (Event, engine_core::ids::EventId) {
@@ -215,7 +209,7 @@ async fn series_with_an_override(
         .await
         .expect("override one occurrence");
     assert!(
-        overrides_of(provider, &created.event)
+        overrides_of(provider, calendar_id, &created.event)
             .await
             .contains_key(&OVERRIDDEN.parse().unwrap()),
         "the {label} experiment starts from an override that is actually there"
@@ -234,11 +228,12 @@ async fn series_with_an_override(
 
 /// The override map of one series, read back through the adapter's own sync path.
 async fn overrides_of(
-    provider: &GraphCalendarProvider,
+    provider: &Windowed,
+    calendar_id: &CalendarId,
     id: &engine_core::ids::EventId,
 ) -> std::collections::BTreeMap<engine_core::time::LocalDateTime, RecurrenceOverride> {
     let events = provider
-        .sync_events(&account(), None)
+        .sync_events(&account(), calendar_id, None)
         .await
         .expect("sync events");
     let SyncUpdate::Snapshot { objects, .. } = &events.update else {
@@ -254,11 +249,11 @@ async fn overrides_of(
 
 /// The account's default calendar.
 async fn default_calendar(token: &str) -> CalendarId {
-    let placeholder = CalendarId::try_from("placeholder").unwrap();
-    let calendars = calendar_provider(token, placeholder)
+    let calendars = calendar_provider(token)
         .sync_calendars(&account(), None)
         .await
-        .expect("sync calendars");
+        .expect("sync calendars")
+        .sync;
     let SyncUpdate::Snapshot { objects, .. } = &calendars.update else {
         panic!("expected a calendar snapshot");
     };

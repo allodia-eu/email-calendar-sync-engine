@@ -272,8 +272,7 @@ fn mock_server(responses: Vec<String>) -> String {
     std::thread::spawn(move || {
         for response in responses {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 8192];
-            let _ = std::io::Read::read(&mut stream, &mut buf);
+            let _ = engine_http::test_server::read_request_blocking(&mut stream);
             let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
         }
     });
@@ -299,8 +298,12 @@ async fn connect_reads_a_change_over_a_real_event_stream() {
     // The whole path: session discovery → open EventSource (URL substitution + status
     // check) → real reqwest streaming chunks → SSE parse → classify → Changed.
     let mut watcher = JmapWatcher::connect(
-        crate::JmapConfig::new(base, crate::Credentials::basic("a", "b"))
-            .with_session_path("/jmap/session"),
+        crate::JmapConfig::new(
+            base,
+            crate::Credentials::basic("a", "b"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_session_path("/jmap/session"),
         &[JmapDataType::Email],
         Duration::from_secs(30),
     )
@@ -319,8 +322,12 @@ async fn connect_with_no_types_subscribes_to_all() {
         http_response("text/event-stream", sse_body),
     ]);
     let mut watcher = JmapWatcher::connect(
-        crate::JmapConfig::new(base, crate::Credentials::basic("a", "b"))
-            .with_session_path("/jmap/session"),
+        crate::JmapConfig::new(
+            base,
+            crate::Credentials::basic("a", "b"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_session_path("/jmap/session"),
         &[],
         Duration::from_secs(30),
     )
@@ -336,12 +343,60 @@ async fn connect_without_event_source_url_is_not_watchable() {
     let session = r#"{"capabilities":{"urn:ietf:params:jmap:mail":{}},"primaryAccounts":{"urn:ietf:params:jmap:mail":"c"},"apiUrl":"https://mail.test.local/jmap/"}"#;
     let base = mock_server(vec![http_response("application/json", session)]);
     let err = JmapWatcher::connect(
-        crate::JmapConfig::new(base, crate::Credentials::basic("a", "b"))
-            .with_session_path("/jmap/session"),
+        crate::JmapConfig::new(
+            base,
+            crate::Credentials::basic("a", "b"),
+            engine_http::test_server::user_agent(),
+        )
+        .with_session_path("/jmap/session"),
         &[JmapDataType::Email],
         Duration::from_secs(30),
     )
     .await
     .unwrap_err();
     assert_eq!(err.class(), FailureClass::InvalidState);
+}
+
+#[tokio::test]
+async fn a_stream_that_pings_is_kept_and_one_that_stops_is_a_lost_connection() {
+    // A healthy stream is silent between events and pings on the interval it was asked for,
+    // so the stall bound a body read gets would cut it off. Its own bound is the interval
+    // and then a reply bound for the ping that is owed.
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n".to_owned();
+    let ping = "event: ping\ndata: {\"interval\":30}\n\n".to_owned();
+    let every = DEFAULT_EVENT_SOURCE_PING;
+    let url = engine_http::test_server::trickling(head, ping, 5, every).await;
+    let tls = engine_tls::TlsClientConfig::bundled();
+    let client = engine_http::client(&tls, &engine_http::test_server::user_agent())
+        .build()
+        .expect("client");
+    let response = engine_http::send_retrying(
+        client.get(url),
+        &engine_http::RetryConfig::default(),
+        engine_http::Exchange::Ordinary,
+    )
+    .await
+    .expect("stream")
+    .into_streaming();
+    let quiet = quiet_bound(every);
+    let source = Box::new(ResponseChunks { response, quiet });
+    let mut watcher = JmapWatcher::from_source(source, &[JmapDataType::Email]);
+    tokio::time::pause();
+
+    for _ in 0..5 {
+        assert_eq!(watcher.next_event().await.unwrap(), WatchEvent::KeepAlive);
+    }
+    let started = tokio::time::Instant::now();
+    let err = tokio::time::timeout(Duration::from_hours(1), watcher.next_event())
+        .await
+        .expect("hung: nothing bounded a silent event stream")
+        .expect_err("a stream that stops pinging is lost");
+
+    let elapsed = started.elapsed();
+    let bound = every + engine_provider::Deadlines::STANDARD.reply();
+    assert!(
+        elapsed >= bound && elapsed < bound + Duration::from_secs(1),
+        "expected {bound:?}, took {elapsed:?}"
+    );
+    assert_eq!(err.class(), FailureClass::Retryable);
 }

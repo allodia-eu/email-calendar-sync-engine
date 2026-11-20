@@ -4,8 +4,10 @@
 //! Three real-world subtleties this handles:
 //!
 //! - **The account id is looked up, not assumed.** The JMAP account id (e.g. `"c"`) is whatever the
-//!   server assigned and is read from `primaryAccounts` per capability; it is distinct from the
-//!   engine's host-assigned [`AccountId`](engine_core::ids::AccountId).
+//!   server assigned and is read from `primaryAccounts` per capability — or is the account a client
+//!   is *bound* to, when it opens a mailbox shared with the credential (`crate::session_accounts`).
+//!   Either way it is distinct from the engine's host-assigned
+//!   [`AccountId`](engine_core::ids::AccountId).
 //! - **The advertised `apiUrl` may point at a different origin** than the one the
 //!   client connected to (Stalwart advertises its configured public host,
 //!   `https://mail.test.local/`, while tests connect to `127.0.0.1:18080`). The
@@ -18,38 +20,17 @@
 //!   *own* advertised origin: a URL the server deliberately puts elsewhere is left alone
 //!   (`rebase_template`).
 
-use engine_provider::{OverrideSurvival, RsvpControls, WriteGuard};
+use engine_core::{ids::SharedAccountId, sync::SearchDomain};
+use engine_provider::{OverrideSurvival, SharedAccounts, StoreDomains, WriteGuard};
 use reqwest::Url;
 use serde_json::Value;
 
 use crate::{
     error::JmapError,
     request::capability,
+    session_accounts::{self, SessionAccount},
+    session_limits::{max_participants_per_event, parse_limits},
     session_urls::{origin_of, rebase_template, resolve_against},
-};
-
-/// What a JMAP RSVP can and cannot control.
-///
-/// **Silence is ours to give**, unlike on the other server-scheduled transport. JMAP
-/// schedules only when the request asks it to — `sendSchedulingMessages`, default `false` —
-/// so "answer without telling the organizer" is a per-request choice the adapter can honour
-/// verbatim, where an RFC 6638 CalDAV server emits the `REPLY` on its own and a client
-/// cannot stop it. This read `false` until #102, which was not a judgement about JMAP but a
-/// description of an adapter that never sent the argument at all: it advertised that it
-/// could not suppress the reply while in fact suppressing *every* reply.
-///
-/// The note is not ours. RFC 8984 defines a `participationComment`, but whether a given
-/// server carries it into the reply is unverified against any server we run, so it is
-/// advertised as absent rather than promised — a note that may go nowhere is worse than one
-/// never offered.
-///
-/// The guard is [`WriteGuard::Absent`] for the same reason every JMAP write is: a
-/// `CalendarEvent` carries no per-object revision. Declared once, and used both to advertise
-/// and to enforce, so the two can never disagree.
-pub(crate) const JMAP_RSVP: RsvpControls = RsvpControls {
-    comment: false,
-    suppress_notification: true,
-    guard: WriteGuard::Absent,
 };
 
 /// What a JMAP series edit costs the user: nothing.
@@ -132,7 +113,17 @@ pub struct Session {
     mail_account_id: Option<String>,
     submission_account_id: Option<String>,
     calendar_account_id: Option<String>,
+    pub(crate) max_participants_per_event: Option<usize>,
     contact_account_id: Option<String>,
+    /// Every account the session lists — the credential's own and each shared with it —
+    /// or `None` when it carries no `accounts` map at all.
+    accounts: Option<Vec<SessionAccount>>,
+    /// The domains the *server* serves, whatever this client is addressed at: what a shared
+    /// account can be asked about (`crate::shared`).
+    served: StoreDomains,
+    /// The account this client is bound to, when it opens a shared mailbox rather than
+    /// the credential's own.
+    bound: Option<String>,
     limits: CoreLimits,
     capabilities: engine_provider::Capabilities,
     /// Whether the mail account answers `Blob/get` (RFC 9404), so a body warm can read many
@@ -142,15 +133,18 @@ pub struct Session {
 }
 
 impl Session {
-    /// Parses the session document, resolving its URLs against `base` per `policy`.
+    /// Parses the session document, resolving its URLs against `base` per `policy`, and
+    /// addressing every domain at the `bound` account when there is one.
     ///
     /// # Errors
     ///
-    /// Returns [`JmapError::Session`] if `apiUrl` is absent or unparseable.
+    /// Returns [`JmapError::Session`] if `apiUrl` is absent or unparseable, or if `bound`
+    /// names an account the session does not list.
     pub(crate) fn parse(
         value: &Value,
         base: &Url,
         policy: SessionUrlPolicy,
+        bound: Option<&SharedAccountId>,
     ) -> Result<Self, JmapError> {
         let advertised_api = value
             .get("apiUrl")
@@ -175,31 +169,56 @@ impl Session {
         let upload_url = template("uploadUrl");
         let event_source_url = template("eventSourceUrl");
 
+        let accounts = session_accounts::parse_accounts(value);
+        let bound = bound
+            .map(|handle| {
+                session_accounts::bound_account(accounts.as_deref().unwrap_or(&[]), handle.as_str())
+            })
+            .transpose()?;
+
+        // Unbound, a domain is addressed at its `primaryAccounts` entry. Bound, it is
+        // addressed at the bound account — and only if that account exposes it, since a
+        // shared account need not carry every domain the server does.
         let primary = value.get("primaryAccounts");
-        let account_for = |urn: &str| {
-            primary
+        let account_for = |urn: &str| match bound {
+            Some(account) => account.supports(urn).then(|| account.id.clone()),
+            None => primary
                 .and_then(|p| p.get(urn))
                 .and_then(Value::as_str)
-                .map(str::to_owned)
+                .map(str::to_owned),
         };
         let mail_account_id = account_for(capability::MAIL);
         let calendar_account_id = account_for(capability::CALENDARS);
         let contact_account_id = account_for(capability::CONTACTS);
 
         let caps = value.get("capabilities");
-        let has = |urn: &str| caps.is_some_and(|c| c.get(urn).is_some());
+        let server_has = |urn: &str| caps.is_some_and(|c| c.get(urn).is_some());
+        // Offered by the account each domain is addressed at — the primary one, or the bound
+        // one, whose `account_for` is `None` for a domain it does not expose.
+        let has = |urn: &str| {
+            server_has(urn)
+                && session_accounts::account_offers(value, account_for(urn).as_deref(), urn)
+        };
         let mut capabilities = build_capabilities(has);
         // On-demand raw-source fetch (Tier-3 bodies) works whenever the server
         // exposes mail and a download template — see [`crate::fetch::message_source`].
         if capabilities.mail() && download_url.is_some() {
             capabilities = capabilities.with_message_source();
         }
-        // Mail writes (`Email/set`) work whenever the account exposes mail and is not
-        // read-only. RFC 8621 makes `Email/set` part of the mail capability itself;
-        // the only server-side gate is the account's `isReadOnly` flag (RFC 8620
-        // §2). A read-only account that is somehow written anyway rejects the set with
-        // a `forbidden` `SetError` (→ `Permanent`), so a mis-advertisement is safe.
-        if capabilities.mail() && !account_is_read_only(value, mail_account_id.as_deref()) {
+        // Mail writes (`Email/set`) are advertised whenever the account exposes mail and is
+        // not read-only as a whole (`accounts.<id>.isReadOnly`, RFC 8620 §2 — writable when
+        // the account or the flag is absent, the RFC's own default); RFC 8621 makes
+        // `Email/set` part of the mail capability itself. That gates only what the
+        // *account* permits: which folders take a write is each folder's `myRights`
+        // (`crate::mail`), and a write the server refuses anyway fails with a `forbidden`
+        // `SetError` (→ `Permanent`), so over-advertising is safe. Under-advertising would
+        // hide writes a folder allows, but RFC 8620 §2 reserves `isReadOnly` for "the entire
+        // account" (Stalwart v1.0.2 says `false` for a mixed share).
+        let read_only = |id: Option<&str>| {
+            id.and_then(|id| accounts.iter().flatten().find(|account| account.id == id))
+                .is_some_and(|account| account.read_only)
+        };
+        if capabilities.mail() && !read_only(mail_account_id.as_deref()) {
             capabilities = capabilities.with_mail_writes();
             // Storing a draft rides the same gate for the same reason: a draft is an
             // `Email/set` create into the Drafts mailbox, so an account that can write
@@ -235,8 +254,7 @@ impl Session {
         // the guard would refuse a write nothing conflicted with. A host that must detect a
         // concurrent edit on this transport has to do it above the engine, and
         // `calendar_write_guard` is what tells it so before it writes.
-        if capabilities.calendars() && !account_is_read_only(value, calendar_account_id.as_deref())
-        {
+        if capabilities.calendars() && !read_only(calendar_account_id.as_deref()) {
             // Scheduling is advertised because the adapter *asks* for it: every calendar
             // verb sends `sendSchedulingMessages` (`crate::calendar_write`), so the server
             // — not the caller — delivers the iTIP. That is what a caller needs to know
@@ -249,10 +267,11 @@ impl Session {
             // RFC 6638 §2 gives a discoverable answer and the adapter discovers it.
             capabilities = capabilities
                 .with_calendar_writes(WriteGuard::Absent, JMAP_OVERRIDE_SURVIVAL)
-                .with_calendar_rsvp(JMAP_RSVP)
-                .with_calendar_scheduling();
+                .with_calendar_rsvp(crate::calendar_rsvp::JMAP_RSVP)
+                .with_calendar_scheduling()
+                .with_conference_writes();
         }
-        if capabilities.contacts() && !account_is_read_only(value, contact_account_id.as_deref()) {
+        if capabilities.contacts() && !read_only(contact_account_id.as_deref()) {
             capabilities = capabilities.with_contact_writes(WriteGuard::Absent);
         }
         if capabilities.contacts() && download_url.is_some() {
@@ -267,18 +286,36 @@ impl Session {
             capabilities = capabilities.with_idle();
         }
 
+        // Discovery reads the accounts map, so it is there whenever the server serves a domain
+        // a store can hold and a map to read — whatever this client is bound to, because what
+        // a credential can reach is a fact about the credential (`crate::shared`).
+        let mut served = StoreDomains::none();
+        if server_has(capability::MAIL) {
+            served = served.with(SearchDomain::Mail);
+        }
+        if server_has(capability::CALENDARS) {
+            served = served.with(SearchDomain::Calendar);
+        }
+        if !served.is_empty() && accounts.is_some() {
+            capabilities = capabilities.with_shared_accounts(SharedAccounts::Enumerable);
+        }
+
         let limits = caps
             .and_then(|c| c.get(capability::CORE))
             .map(parse_limits)
             .unwrap_or_default();
+        let submission_account_id = account_for(capability::SUBMISSION);
         // RFC 9404 advertises the extension for the session and, per account, the accounts it
-        // covers; a blob read is scoped to an account, so it is the mail account's that counts.
-        let blob_get = has(capability::BLOB)
-            && mail_account_id.as_deref().is_some_and(|account| {
-                value
-                    .pointer(&format!("/accounts/{account}/accountCapabilities"))
-                    .is_some_and(|account_caps| account_caps.get(capability::BLOB).is_some())
+        // covers; a blob read is scoped to an account, so it is the mail account's that counts
+        // — the bound one, when this client opens a shared mailbox.
+        let blob_get = server_has(capability::BLOB)
+            && mail_account_id.as_deref().is_some_and(|id| {
+                accounts
+                    .iter()
+                    .flatten()
+                    .any(|account| account.id == id && account.supports(capability::BLOB))
             });
+        let bound = bound.map(|account| account.id.clone());
 
         Ok(Self {
             api_url,
@@ -286,9 +323,16 @@ impl Session {
             upload_url,
             event_source_url,
             mail_account_id,
-            submission_account_id: account_for(capability::SUBMISSION),
+            submission_account_id,
+            max_participants_per_event: max_participants_per_event(
+                value,
+                calendar_account_id.as_deref(),
+            ),
             calendar_account_id,
             contact_account_id,
+            accounts,
+            served,
+            bound,
             limits,
             capabilities,
             blob_get,
@@ -330,44 +374,69 @@ impl Session {
         self.event_source_url.as_deref()
     }
 
-    /// The JMAP account id for mail (the server's id, not the engine's).
+    /// The JMAP account id mail calls address (the server's id, not the engine's): the
+    /// bound account, or the `primaryAccounts` entry.
     ///
     /// # Errors
     ///
-    /// Returns [`JmapError::Session`] if the server advertised no mail account.
+    /// Returns [`JmapError::Session`] if no account for mail is available — the server
+    /// named no primary one, or the bound account does not expose mail.
     pub(crate) fn mail_account_id(&self) -> Result<&str, JmapError> {
-        self.mail_account_id
-            .as_deref()
-            .ok_or_else(|| JmapError::session("no primary mail account"))
+        self.addressed(self.mail_account_id.as_deref(), "mail")
     }
 
     /// The JMAP account id for submission (`Identity`/`EmailSubmission`).
     ///
     /// # Errors
     ///
-    /// Returns [`JmapError::Session`] if the server advertised no submission account.
+    /// As [`mail_account_id`](Self::mail_account_id), for submission.
     pub(crate) fn submission_account_id(&self) -> Result<&str, JmapError> {
-        self.submission_account_id
-            .as_deref()
-            .ok_or_else(|| JmapError::session("no primary submission account"))
+        self.addressed(self.submission_account_id.as_deref(), "submission")
     }
 
     /// The JMAP account id for calendars (`Calendar`/`CalendarEvent`).
     ///
     /// # Errors
     ///
-    /// Returns [`JmapError::Session`] if the server advertised no calendar account.
+    /// As [`mail_account_id`](Self::mail_account_id), for calendars.
     pub(crate) fn calendar_account_id(&self) -> Result<&str, JmapError> {
-        self.calendar_account_id
-            .as_deref()
-            .ok_or_else(|| JmapError::session("no primary calendar account"))
+        self.addressed(self.calendar_account_id.as_deref(), "calendar")
     }
 
     /// The JMAP account id for address books and contact cards.
+    ///
+    /// # Errors
+    ///
+    /// As [`mail_account_id`](Self::mail_account_id), for contacts.
     pub(crate) fn contact_account_id(&self) -> Result<&str, JmapError> {
-        self.contact_account_id
-            .as_deref()
-            .ok_or_else(|| JmapError::session("no primary contacts account"))
+        self.addressed(self.contact_account_id.as_deref(), "contacts")
+    }
+
+    /// Every account the session lists, the credential's own included — empty when it
+    /// carries no `accounts` map.
+    pub(crate) fn accounts(&self) -> &[SessionAccount] {
+        self.accounts.as_deref().unwrap_or(&[])
+    }
+
+    /// The shared account this client is bound to, or `None` for the credential's own.
+    pub(crate) fn bound_account(&self) -> Option<&SessionAccount> {
+        let bound = self.bound.as_deref()?;
+        self.accounts().iter().find(|account| account.id == bound)
+    }
+
+    /// The domains the server serves (`crate::shared`).
+    pub(crate) fn served(&self) -> StoreDomains {
+        self.served
+    }
+
+    /// One domain's account id, or the error that says why there is none.
+    fn addressed<'a>(&self, id: Option<&'a str>, domain: &str) -> Result<&'a str, JmapError> {
+        id.ok_or_else(|| match &self.bound {
+            Some(bound) => JmapError::session(format!(
+                "the shared account {bound:?} this client is bound to does not expose {domain}"
+            )),
+            None => JmapError::session(format!("no primary {domain} account")),
+        })
     }
 
     /// Whether the mail account answers `Blob/get` (RFC 9404).
@@ -381,7 +450,10 @@ impl Session {
         self.limits
     }
 
-    /// The data domains the server advertises.
+    /// What this account offers: each data domain its primary account lists in
+    /// `accountCapabilities`, where the server supports it too, plus what follows from those
+    /// (writes, push, raw sources). A host reads `mail()`, `submission()`, `calendars()` and
+    /// `contacts()` here to offer only the domains the signed-in account has.
     #[must_use]
     pub fn capabilities(&self) -> engine_provider::Capabilities {
         self.capabilities
@@ -394,22 +466,7 @@ impl Session {
     }
 }
 
-/// Whether the mail account is read-only (`accounts.<id>.isReadOnly`, RFC 8620 §2).
-/// Defaults to writable when the account object or the flag is absent, matching the
-/// RFC default (`isReadOnly` is optional and defaults to `false`).
-fn account_is_read_only(session: &Value, mail_account_id: Option<&str>) -> bool {
-    let Some(id) = mail_account_id else {
-        return false;
-    };
-    session
-        .get("accounts")
-        .and_then(|accounts| accounts.get(id))
-        .and_then(|account| account.get("isReadOnly"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-/// Builds the engine capability set from a "has this URN?" predicate.
+/// Builds the engine capability set from a "does this account offer this URN?" predicate.
 fn build_capabilities(has: impl Fn(&str) -> bool) -> engine_provider::Capabilities {
     let mut caps = engine_provider::Capabilities::none();
     if has(capability::MAIL) {
@@ -433,25 +490,10 @@ fn build_capabilities(has: impl Fn(&str) -> bool) -> engine_provider::Capabiliti
     caps
 }
 
-/// Reads the core-capability limit fields, falling back to [`CoreLimits::default`]
-/// per field.
-fn parse_limits(core: &Value) -> CoreLimits {
-    let defaults = CoreLimits::default();
-    let read = |name: &str, fallback: usize| {
-        core.get(name)
-            .and_then(Value::as_u64)
-            .and_then(|v| usize::try_from(v).ok())
-            .filter(|&v| v > 0)
-            .unwrap_or(fallback)
-    };
-    CoreLimits {
-        max_objects_in_get: read("maxObjectsInGet", defaults.max_objects_in_get),
-        max_objects_in_set: read("maxObjectsInSet", defaults.max_objects_in_set),
-        max_calls_in_request: read("maxCallsInRequest", defaults.max_calls_in_request),
-        max_concurrent_requests: read("maxConcurrentRequests", defaults.max_concurrent_requests),
-    }
-}
-
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "session_account_tests.rs"]
+mod account_tests;

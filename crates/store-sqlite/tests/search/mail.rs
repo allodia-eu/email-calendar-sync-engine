@@ -225,14 +225,14 @@ async fn search_is_account_scoped() {
         .search_mail(&[other], &parse_mail("secret"), 10)
         .await
         .unwrap();
-    assert!(results.hits.is_empty());
+    assert_eq!(results.hits, []);
 
     // No scopes at all → empty, still complete (nothing claimed to be missing).
     let none = store
         .search_mail(&[], &parse_mail("secret"), 10)
         .await
         .unwrap();
-    assert!(none.hits.is_empty());
+    assert_eq!(none.hits, []);
     assert!(none.coverage.is_complete());
 }
 
@@ -324,7 +324,7 @@ async fn sql_metacharacters_in_filter_values_are_data_not_code() {
         .search_mail(std::slice::from_ref(&scope), &parse_mail(injection), 10)
         .await
         .unwrap();
-    assert!(attack.hits.is_empty());
+    assert_eq!(attack.hits, []);
 
     // The table is intact — a normal query still succeeds and returns the message.
     // (If `DROP TABLE` had executed, this query would error on the missing table.)
@@ -367,7 +367,7 @@ async fn fts_syntax_in_text_is_literal_not_operators() {
         )
         .await
         .unwrap();
-    assert!(or.hits.is_empty());
+    assert_eq!(or.hits, []);
 
     // A column-filter payload in free text stays a literal phrase: `body:zzz` is
     // the phrase "body zzz" (quoted), which the body-only "zzz" message lacks — it
@@ -376,7 +376,7 @@ async fn fts_syntax_in_text_is_literal_not_operators() {
         .search_mail(std::slice::from_ref(&scope), &parse_mail("body:zzz"), 10)
         .await
         .unwrap();
-    assert!(column.hits.is_empty());
+    assert_eq!(column.hits, []);
 
     // The legitimate scoped operator still works.
     let legit = store

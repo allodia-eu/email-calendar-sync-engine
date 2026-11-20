@@ -124,7 +124,7 @@ fn end_date_range_is_an_until_at_end_of_day() {
 fn weekly_without_days_and_an_unknown_index_degrade_gracefully() {
     // A weekly pattern with no `daysOfWeek` yields no BYDAY (defensive; Graph always sends it).
     let weekly = rule(json!({ "type": "weekly" }), no_end());
-    assert!(weekly.by_day.is_empty());
+    assert_eq!(weekly.by_day, []);
     // An `index` Graph would never send leaves the nth unset rather than erroring.
     let relative = rule(
         json!({ "type": "relativeMonthly", "daysOfWeek": ["monday"], "index": "fifth" }),
@@ -136,7 +136,7 @@ fn weekly_without_days_and_an_unknown_index_degrade_gracefully() {
         json!({ "type": "absoluteYearly", "month": 13, "dayOfMonth": 1 }),
         no_end(),
     );
-    assert!(yearly.by_month.is_empty());
+    assert_eq!(yearly.by_month, [] as [String; 0]);
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! Unit tests for the draft verbs' rejecting defaults
 //! ([`Provider::put_draft`](super::Provider::put_draft) /
-//! [`delete_draft`](super::Provider::delete_draft)). A sibling file so `provider.rs`
+//! [`delete_draft`](super::Provider::delete_draft)). A sibling of `provider.rs` so it
 //! stays under the line limit.
 
 use engine_core::{

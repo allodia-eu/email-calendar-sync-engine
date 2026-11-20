@@ -1,0 +1,98 @@
+//! The page a printed message is drawn on: the message's own header as labelled text above its
+//! body, wrapped by [`render_document`](crate::render_document) so it carries the reading view's
+//! CSP, base stylesheet and remote-image choice unchanged (`html.md`, "Printing a message").
+
+use super::{
+    document::{RemoteImages, render_titled_document},
+    scheme::MessageScheme,
+};
+
+/// One labelled line of a printed message's header, such as `From` and the sender.
+///
+/// The label is the host's, already localised; this crate decides only how the lines are drawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrintHeaderLine {
+    label: String,
+    value: String,
+}
+
+impl PrintHeaderLine {
+    /// A line named `label`, as the host shows it (`From`, `Van`), saying `value`: what the
+    /// message says for it. A line whose value is empty is left out of the page.
+    #[must_use]
+    pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+        }
+    }
+}
+
+/// The printed header's stylesheet. Class selectors throughout, so a message's own rule for a
+/// bare `div` or `h1` does not outrank it, and `body` loses the reading view's inset because the
+/// printer's margins are the page's.
+const PRINT_CSS: &str = "@media print{body{padding:0}}\
+    .mailcal-print-header{margin:0 0 12px;padding:0 0 10px;border-bottom:1px solid #c8c8c8;\
+    font-size:13px;line-height:1.4}\
+    .mailcal-print-subject{font-size:18px;font-weight:600;margin:0 0 8px}\
+    .mailcal-print-line{margin:0}\
+    .mailcal-print-label{font-weight:600}\
+    .mailcal-print-plain{white-space:pre-wrap}";
+
+/// Builds the document a host prints for one message.
+///
+/// `html` is the **sanitised** fragment the reading view shows ([`sanitize`](crate::sanitize))
+/// and is used as is; `plain` is the
+/// plain-text body, escaped here and kept to its own line breaks. With neither, the page is the
+/// header alone. Every header value is escaped, so a subject or an address is always text and
+/// never markup. The subject is the page's `<title>` too, which is what WebView2 and WebKitGTK
+/// name the print job after. `remote_images` is the reader's choice for this message, so
+/// printing never loads what reading did not.
+#[must_use]
+pub fn render_print_document(
+    subject: &str,
+    lines: &[PrintHeaderLine],
+    html: Option<&str>,
+    plain: Option<&str>,
+    remote_images: RemoteImages,
+) -> String {
+    let mut fragment = format!("<style>{PRINT_CSS}</style><div class=\"mailcal-print-header\">");
+    fragment.push_str("<div class=\"mailcal-print-subject\">");
+    escape_text(subject, &mut fragment);
+    fragment.push_str("</div>");
+    for line in lines.iter().filter(|line| !line.value.is_empty()) {
+        fragment.push_str("<div class=\"mailcal-print-line\"><span class=\"mailcal-print-label\">");
+        escape_text(&line.label, &mut fragment);
+        fragment.push_str(":</span> ");
+        escape_text(&line.value, &mut fragment);
+        fragment.push_str("</div>");
+    }
+    fragment.push_str("</div>");
+    if let Some(html) = html {
+        fragment.push_str(html);
+    } else if let Some(plain) = plain {
+        fragment.push_str("<div class=\"mailcal-print-plain\">");
+        escape_text(plain, &mut fragment);
+        fragment.push_str("</div>");
+    }
+    let mut title = String::new();
+    escape_text(subject, &mut title);
+    // Light whatever the app is: a printout is paper, and the message was written for white paper.
+    render_titled_document(&title, &fragment, remote_images, MessageScheme::Light)
+}
+
+fn escape_text(value: &str, out: &mut String) {
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(ch),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "print_tests.rs"]
+mod print_tests;
