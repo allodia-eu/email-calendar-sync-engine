@@ -18,7 +18,7 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, Draft, DraftReceipt, EmailStream,
+    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Draft, DraftReceipt, EmailStream,
     IdentityControls, KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt,
     MailboxWrites, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
     ScopeSync, SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
@@ -398,6 +398,8 @@ impl Provider for GmailProvider {
         crate::report::report_message(&self.client, report).await
     }
 }
+
+impl CalendarSync for GmailProvider {}
 
 #[async_trait::async_trait]
 impl MailboxWrites for GmailProvider {

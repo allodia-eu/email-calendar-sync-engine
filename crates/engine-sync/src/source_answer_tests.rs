@@ -7,7 +7,9 @@ use engine_core::{
     membership::Memberships,
     raw::RawMime,
 };
-use engine_provider::{CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult};
+use engine_provider::{
+    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult,
+};
 use engine_store::{ManualClock, MessageBodyStore, MessageSourceCache};
 use store_sqlite::SqliteStore;
 
@@ -39,6 +41,8 @@ impl Provider for Source {
         Ok(RawMime::new(self.0.to_vec()))
     }
 }
+
+impl CalendarSync for Source {}
 
 impl engine_provider::MailboxWrites for Source {}
 impl CalendarWrites for Source {}

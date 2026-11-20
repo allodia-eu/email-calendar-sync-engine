@@ -23,10 +23,10 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    CalendarWrites, ConnectionInfo, Draft, DraftReceipt, EmailStream, MailEdit, MailEditReceipt,
-    MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport, Provider, ProviderError,
-    ProviderResult, ReportReceipt, ScopeSync, SharedAccount, SharedAccounts, SourceStream,
-    SubmissionReceipt,
+    CalendarSync, CalendarWrites, ConnectionInfo, Draft, DraftReceipt, EmailStream, MailEdit,
+    MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, MessageReport, Provider,
+    ProviderError, ProviderResult, ReportReceipt, ScopeSync, SharedAccount, SharedAccounts,
+    SourceStream, SubmissionReceipt,
 };
 use futures_util::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -416,6 +416,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
         connection.settle(found)
     }
 }
+
+impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> CalendarSync for ImapProvider<S> {}
 
 /// Changes the folder tree of the store this provider covers (`CREATE`, `RENAME`, `DELETE`)
 /// over a pooled session.

@@ -8,7 +8,7 @@
 //! through the adapter as a snapshot and then as a delta, and removes the collection again.
 
 use engine_core::sync::{SyncState, SyncUpdate};
-use engine_provider::{ContactSourceSync, ContactsProvider, Provider};
+use engine_provider::{CalendarSync, ContactSourceSync, ContactsProvider};
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use serde_json::{Value, json};
 use stalwart_harness::Harness;

@@ -174,6 +174,36 @@ impl Provider for FakeMail {
         }
     }
 
+    async fn edit_mail(
+        &self,
+        _account: &AccountId,
+        edit: &MailEdit,
+    ) -> ProviderResult<MailEditReceipt> {
+        if self.fails(Fault::WriteGuard) {
+            // The IMAP analogue of a CalDAV 412: a stale UID under a changed
+            // UIDVALIDITY (`imap-smtp.md`) — recompute after a re-sync.
+            return Err(ProviderError::conflict("UIDVALIDITY changed"));
+        }
+        if self.fails(Fault::ThrottledEdit) {
+            return Err(ProviderError::rate_limited("slow down", None));
+        }
+        Ok(MailEditReceipt::new(edit.target().clone()))
+    }
+
+    async fn report_message(
+        &self,
+        _account: &AccountId,
+        report: &MessageReport,
+    ) -> ProviderResult<ReportReceipt> {
+        if self.fails(Fault::Report) {
+            return Err(ProviderError::rate_limited("slow down", None));
+        }
+        Ok(ReportReceipt::new(report.target.clone()))
+    }
+}
+
+#[async_trait::async_trait]
+impl CalendarSync for FakeMail {
     async fn sync_calendars(
         &self,
         _account: &AccountId,
@@ -202,33 +232,6 @@ impl Provider for FakeMail {
             SyncUpdate::snapshot(self.events.clone(), present),
             self.cursor.clone(),
         ))
-    }
-
-    async fn edit_mail(
-        &self,
-        _account: &AccountId,
-        edit: &MailEdit,
-    ) -> ProviderResult<MailEditReceipt> {
-        if self.fails(Fault::WriteGuard) {
-            // The IMAP analogue of a CalDAV 412: a stale UID under a changed
-            // UIDVALIDITY (`imap-smtp.md`) — recompute after a re-sync.
-            return Err(ProviderError::conflict("UIDVALIDITY changed"));
-        }
-        if self.fails(Fault::ThrottledEdit) {
-            return Err(ProviderError::rate_limited("slow down", None));
-        }
-        Ok(MailEditReceipt::new(edit.target().clone()))
-    }
-
-    async fn report_message(
-        &self,
-        _account: &AccountId,
-        report: &MessageReport,
-    ) -> ProviderResult<ReportReceipt> {
-        if self.fails(Fault::Report) {
-            return Err(ProviderError::rate_limited("slow down", None));
-        }
-        Ok(ReportReceipt::new(report.target.clone()))
     }
 }
 impl engine_provider::MailboxWrites for FakeMail {}

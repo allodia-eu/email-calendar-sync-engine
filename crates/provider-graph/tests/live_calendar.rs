@@ -9,8 +9,8 @@ mod common;
 use common::*;
 use engine_core::{calendar::ParticipantRole, ids::Uid, sync::SyncUpdate, time::CalendarDateTime};
 use engine_provider::{
-    CalendarAddress, CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, Invitee,
-    InviteePatch, MeetingDraft, PatchTarget, Provider, SchedulingIdentity,
+    CalendarAddress, CalendarSync, CalendarWrites, EventDeletion, EventDraft, EventEdit,
+    EventPatch, Invitee, InviteePatch, MeetingDraft, PatchTarget, SchedulingIdentity,
 };
 
 #[tokio::test]

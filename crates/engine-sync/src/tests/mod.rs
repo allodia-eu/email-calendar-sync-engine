@@ -25,11 +25,11 @@ use engine_core::{
     write::{IdempotencyKey, PendingOp, PendingOpKind, PendingOutcome, ResourceKey},
 };
 use engine_provider::{
-    CalendarListing, CalendarWrites, Capabilities, ConnectionInfo, Draft, DraftReceipt, EmailChunk,
-    EmailStream, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
-    EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport, OverrideSurvival, PatchTarget,
-    Provider, ProviderError, ProviderResult, ReportReceipt, ReportVerdict, RsvpResponse, ScopeSync,
-    SubmissionReceipt, WriteGuard,
+    CalendarListing, CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Draft,
+    DraftReceipt, EmailChunk, EmailStream, EventDeletion, EventDraft, EventEdit, EventPatch,
+    EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport,
+    OverrideSurvival, PatchTarget, Provider, ProviderError, ProviderResult, ReportReceipt,
+    ReportVerdict, RsvpResponse, ScopeSync, SubmissionReceipt, WriteGuard,
 };
 use engine_recurrence::Horizon;
 use engine_store::{

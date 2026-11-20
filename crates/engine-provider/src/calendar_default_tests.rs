@@ -1,4 +1,4 @@
-//! The calendar half of the provider trait's defaults: the JMAP scopes it names, and the
+//! The calendar-sync trait's defaults: the JMAP scopes it names, and the
 //! calendar verbs a provider that serves no calendar rejects. A sibling of `tests.rs` so that file
 //! stays under the line limit.
 
@@ -8,7 +8,7 @@ use engine_core::{
 };
 
 use crate::{
-    Capabilities, ConnectionInfo, Provider,
+    CalendarSync, Capabilities, ConnectionInfo,
     tests::{FakeJmap, account, calendar},
 };
 

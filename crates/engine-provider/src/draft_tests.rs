@@ -98,6 +98,8 @@ impl Provider for FakeDrafts {
     }
 }
 
+impl crate::CalendarSync for FakeDrafts {}
+
 #[tokio::test]
 async fn a_boxed_adapter_reaches_its_own_draft_verbs() {
     let boxed: Box<dyn Provider> = Box::new(FakeDrafts);

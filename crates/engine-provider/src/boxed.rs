@@ -18,12 +18,12 @@ use engine_core::{
 };
 
 use crate::{
-    CalendarListing, CalendarUserAddresses, CalendarWrites, ConnectionInfo, ContactDestination,
-    ContactPhoto, ContactSourceSync, ContactWriteReceipt, ContactsProvider, Draft, DraftReceipt,
-    EmailStream, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, EventWriteReceipt,
-    HandOver, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites,
-    MessageReport, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity,
-    SenderIdentityId, SharedAccount, SourceStream, SubmissionReceipt,
+    CalendarListing, CalendarSync, CalendarUserAddresses, CalendarWrites, ConnectionInfo,
+    ContactDestination, ContactPhoto, ContactSourceSync, ContactWriteReceipt, ContactsProvider,
+    Draft, DraftReceipt, EmailStream, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite,
+    EventWriteReceipt, HandOver, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt,
+    MailboxWrites, MessageReport, Provider, ProviderResult, ReportReceipt, ScopeSync,
+    SenderIdentity, SenderIdentityId, SharedAccount, SourceStream, SubmissionReceipt,
 };
 
 /// A boxed provider is itself a [`Provider`], delegating every method to the box's
@@ -169,7 +169,12 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
     async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
         (**self).resolve_shared_account(address).await
     }
+}
 
+/// The calendar-sync half, delegated for the same reason and under the same `?Sized` bound
+/// as the [`Provider`] impl above.
+#[async_trait]
+impl<P: CalendarSync + ?Sized> CalendarSync for Box<P> {
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
         (**self).calendar_scope(account)
     }

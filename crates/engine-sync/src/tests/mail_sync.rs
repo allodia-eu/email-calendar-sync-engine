@@ -225,6 +225,8 @@ impl Provider for LeaseStealer {
     }
 }
 
+impl CalendarSync for LeaseStealer {}
+
 impl engine_provider::MailboxWrites for LeaseStealer {}
 impl CalendarWrites for LeaseStealer {}
 

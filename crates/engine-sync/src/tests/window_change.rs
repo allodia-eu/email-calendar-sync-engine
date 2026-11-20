@@ -6,7 +6,7 @@
 use std::sync::atomic::AtomicUsize;
 
 use engine_core::time::CalendarDate;
-use engine_provider::{CalendarWrites, EmailChunk};
+use engine_provider::{CalendarSync, CalendarWrites, EmailChunk};
 
 use super::*;
 
@@ -103,6 +103,8 @@ impl Provider for Backfill {
         })
     }
 }
+
+impl CalendarSync for Backfill {}
 
 impl engine_provider::MailboxWrites for Backfill {}
 impl CalendarWrites for Backfill {}

@@ -128,5 +128,7 @@ impl Provider for SubmittingProvider {
     }
 }
 
+impl CalendarSync for SubmittingProvider {}
+
 impl engine_provider::MailboxWrites for SubmittingProvider {}
 impl CalendarWrites for SubmittingProvider {}

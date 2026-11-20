@@ -179,6 +179,8 @@ impl Provider for Directory {
     }
 }
 
+impl CalendarSync for Directory {}
+
 impl engine_provider::MailboxWrites for Directory {}
 impl CalendarWrites for Directory {}
 

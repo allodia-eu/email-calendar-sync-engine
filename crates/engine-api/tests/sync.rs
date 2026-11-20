@@ -23,8 +23,8 @@ use engine_core::{
     time::{CalendarDateTime, LocalDateTime},
 };
 use engine_provider::{
-    CalendarListing, CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream,
-    MailEdit, MessageReport, Provider, ProviderError, ProviderResult, ReportControls,
+    CalendarListing, CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk,
+    EmailStream, MailEdit, MessageReport, Provider, ProviderError, ProviderResult, ReportControls,
     ReportEvidence, ReportVerdict, ReportVerdicts, ScopeSync, SubmissionReceipt,
 };
 use tokio::sync::oneshot;
@@ -206,7 +206,10 @@ impl Provider for FakeProvider {
         };
         Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }
+}
 
+#[async_trait::async_trait]
+impl CalendarSync for FakeProvider {
     async fn sync_calendars(
         &self,
         _account: &AccountId,
@@ -308,6 +311,8 @@ impl Provider for GateProvider {
     }
 }
 
+impl CalendarSync for GateProvider {}
+
 impl engine_provider::MailboxWrites for GateProvider {}
 impl CalendarWrites for GateProvider {}
 
@@ -385,6 +390,8 @@ impl Provider for ReconcilingProvider {
         Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }
 }
+
+impl CalendarSync for ReconcilingProvider {}
 
 impl engine_provider::MailboxWrites for ReconcilingProvider {}
 impl CalendarWrites for ReconcilingProvider {}

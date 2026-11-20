@@ -22,8 +22,8 @@ use engine_core::{
     sync::SyncUpdate,
 };
 use engine_provider::{
-    CalendarWrites, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, Occurrence,
-    PatchTarget, Provider,
+    CalendarSync, CalendarWrites, DraftRecurrence, EventDeletion, EventDraft, EventEdit,
+    EventPatch, Occurrence, PatchTarget, Provider,
 };
 
 /// The series starts here and repeats weekly; the second Monday is the one overridden.

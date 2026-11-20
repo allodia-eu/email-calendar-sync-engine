@@ -27,7 +27,8 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   implements just the domains it serves — mail providers override `sync_mailboxes`
   + the **streaming** `stream_email` (plus `default_sync_window`,
   `mailbox_scope`/`email_scope`); a calendar-only provider (`provider-caldav`)
-  overrides `sync_calendars`/`sync_events` and leaves the mail methods at their
+  overrides `sync_calendars`/`sync_events` (on the `CalendarSync` supertrait, with the
+  calendar scopes) and leaves the mail methods at their
   unsupported defaults. `sync_email` is a drain over `stream_email` (one streaming
   method gets both incremental streaming and whole-fetch); `submit_email` defaults to
   unsupported. `SyncPage`/`PageToken`/`SyncKind` survive as provider-**internal**

@@ -174,7 +174,9 @@ mod tests {
         membership::Memberships,
         raw::RawMime,
     };
-    use engine_provider::{CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult};
+    use engine_provider::{
+        CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult,
+    };
     use engine_store::{ManualClock, MessageSourceCache};
     use store_sqlite::SqliteStore;
 
@@ -201,6 +203,8 @@ mod tests {
             Ok(RawMime::new(self.raw.clone()))
         }
     }
+
+    impl CalendarSync for AttachmentProvider {}
 
     impl engine_provider::MailboxWrites for AttachmentProvider {}
     impl CalendarWrites for AttachmentProvider {}

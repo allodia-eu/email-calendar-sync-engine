@@ -145,6 +145,8 @@ impl Provider for Scripted {
     }
 }
 
+impl CalendarSync for Scripted {}
+
 const TTL: Duration = Duration::from_mins(1);
 
 /// Sends `id` until `die` resolves, as a process the OS ends at that moment.

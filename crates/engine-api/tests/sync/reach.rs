@@ -35,7 +35,10 @@ impl Provider for Windowed {
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo::new(Capabilities::none().with_calendars().with_windowed_events())
     }
+}
 
+#[async_trait::async_trait]
+impl CalendarSync for Windowed {
     async fn sync_calendars(
         &self,
         _account: &AccountId,

@@ -4,16 +4,14 @@ use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use engine_core::{
-    calendar::Event,
-    ids::{AccountId, CalendarId, ProviderKey},
+    ids::{AccountId, ProviderKey},
     mail::{Keyword, Mailbox, Message},
     raw::RawMime,
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
-    time::Horizon,
 };
 
 use crate::{
-    CalendarListing, CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, DraftReceipt,
+    CalendarSync, CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, DraftReceipt,
     EmailStream, HandOver, MailEdit, MailEditReceipt, MailboxWrites, MessageReport, ProviderError,
     ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SharedAccount,
     SourceStream, SubmissionReceipt, error::unsupported, sync::jmap_scope,
@@ -34,7 +32,7 @@ use crate::{
 /// scope granularity. Adapters own protocol pagination, batching, retries, and
 /// quirks; the store owns atomic application.
 #[async_trait]
-pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
+pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync {
     /// Everything this adapter learned about its connection once it was established:
     /// the data domains it can serve ([`ConnectionInfo::capabilities`]) and the
     /// transport versions the server negotiated.
@@ -432,63 +430,5 @@ pub trait Provider: CalendarWrites + MailboxWrites + Send + Sync {
     /// adapter with no mechanism at all.
     async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
         crate::shared::resolve_by_listing(self, address).await
-    }
-
-    /// The scope the account's calendars sync under. Defaults to the JMAP
-    /// `(account, Calendar)` scope; non-JMAP providers override.
-    fn calendar_scope(&self, account: &AccountId) -> SyncScope {
-        jmap_scope(account, JmapDataType::Calendar)
-    }
-
-    /// The scope `calendar`'s events sync under.
-    ///
-    /// One provider serves every calendar of the account it signed in to, so this is asked per
-    /// calendar. Where the protocol's event delta is per calendar (CalDAV, Graph, Google) each
-    /// calendar has a scope of its own; where it is account-wide (JMAP's `CalendarEvent` state)
-    /// every calendar answers the **same** scope, and the account's events sync once under it.
-    /// Defaults to that JMAP scope; non-JMAP providers override.
-    fn event_scope(&self, account: &AccountId, calendar: &CalendarId) -> SyncScope {
-        let _ = calendar;
-        jmap_scope(account, JmapDataType::CalendarEvent)
-    }
-
-    /// Fetches the account's calendar collections since `cursor`. Providers
-    /// advertising [`Capabilities::calendars`] override this.
-    ///
-    /// # Errors
-    ///
-    /// Returns a classified [`ProviderError`]; the default returns
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
-    async fn sync_calendars(
-        &self,
-        account: &AccountId,
-        cursor: Option<&SyncState>,
-    ) -> ProviderResult<CalendarListing> {
-        let _ = (account, cursor);
-        Err(unsupported("calendar sync"))
-    }
-
-    /// Fetches the events of the scope [`event_scope`](Self::event_scope) names for `calendar`,
-    /// since `cursor`. Where several calendars share one scope, any of them answers for all.
-    /// Providers advertising [`Capabilities::calendars`] override this.
-    ///
-    /// `window` is the date range the engine wants the scope to hold. A transport that fetches
-    /// inside one ([`Capabilities::windowed_events`]) opens any cursor it must open (none yet, or
-    /// one the server expired) over it, and a delta keeps the window its cursor was opened over;
-    /// one that fetches a calendar whole ignores it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a classified [`ProviderError`]; the default returns
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
-    async fn sync_events(
-        &self,
-        account: &AccountId,
-        calendar: &CalendarId,
-        cursor: Option<&SyncState>,
-        window: Horizon,
-    ) -> ProviderResult<ScopeSync<Event>> {
-        let _ = (account, calendar, cursor, window);
-        Err(unsupported("calendar sync"))
     }
 }

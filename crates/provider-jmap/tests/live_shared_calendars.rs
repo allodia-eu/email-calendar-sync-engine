@@ -19,8 +19,8 @@ use engine_core::{
     time::{CalendarDateTime, TimeZoneId, UtcDateTime},
 };
 use engine_provider::{
-    CalendarAddress, CalendarUserAddresses, CalendarWrites, EventDeletion, EventDraft, Invitee,
-    MeetingDraft, Provider, SchedulingIdentity, SharedAccount,
+    CalendarAddress, CalendarSync, CalendarUserAddresses, CalendarWrites, EventDeletion,
+    EventDraft, Invitee, MeetingDraft, Provider, SchedulingIdentity, SharedAccount,
 };
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use stalwart_harness::{

@@ -43,7 +43,7 @@ use engine_core::{
     sync::SyncUpdate,
     time::Horizon,
 };
-use engine_provider::{CalendarWrites, EventRsvp, Provider, RsvpResponse};
+use engine_provider::{CalendarSync, CalendarWrites, EventRsvp, RsvpResponse};
 use provider_graph::{GraphCalendarProvider, GraphClient};
 
 const GRAPH: &str = "https://graph.microsoft.com/v1.0";

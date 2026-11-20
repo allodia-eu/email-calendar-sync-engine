@@ -8,7 +8,7 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, ContactDestination, ContactPhoto,
+    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, ContactDestination, ContactPhoto,
     ContactSourceSync, ContactWriteReceipt, ContactsProvider, Provider, ProviderResult, ScopeSync,
     WriteGuard,
 };
@@ -221,6 +221,8 @@ impl Provider for GoogleContactProvider {
         }
     }
 }
+
+impl CalendarSync for GoogleContactProvider {}
 
 impl engine_provider::MailboxWrites for GoogleContactProvider {}
 impl CalendarWrites for GoogleContactProvider {}

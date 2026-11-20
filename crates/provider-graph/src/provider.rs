@@ -21,11 +21,11 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, Draft, DraftReceipt, EmailChunk, EmailStream,
-    IdentityControls, KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt,
-    MailboxWrites, PageToken, PassMode, Provider, ProviderResult, ReportControls, ReportEvidence,
-    ReportVerdicts, ScopeSync, SenderIdentity, SharedAccount, SharedAccounts, SubmissionReceipt,
-    SyncKind, split_page,
+    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Draft, DraftReceipt, EmailChunk,
+    EmailStream, IdentityControls, KeywordName, MailEdit, MailEditReceipt, MailboxEdit,
+    MailboxEditReceipt, MailboxWrites, PageToken, PassMode, Provider, ProviderResult,
+    ReportControls, ReportEvidence, ReportVerdicts, ScopeSync, SenderIdentity, SharedAccount,
+    SharedAccounts, SubmissionReceipt, SyncKind, split_page,
 };
 
 use crate::{categories::Categories, fetch, transport::GraphClient};
@@ -406,6 +406,8 @@ impl Provider for GraphProvider {
         crate::shared::resolve(&self.client, address).await
     }
 }
+
+impl CalendarSync for GraphProvider {}
 
 /// Folder changes are account-level, like submission: any of an account's folder-bound
 /// providers can make one (`crate::mailbox_write`).

@@ -32,6 +32,7 @@
 //! the provider-neutral scopes.
 
 mod boxed;
+mod calendar_sync;
 mod calendar_user;
 mod calendar_write;
 mod capability;
@@ -66,6 +67,7 @@ mod submit;
 mod sync;
 mod watch;
 
+pub use calendar_sync::CalendarSync;
 pub use calendar_user::CalendarUserAddresses;
 pub use calendar_write::{
     AttachedConference, CalendarAddress, CalendarWrites, ConferenceEdit, DeleteTarget,

@@ -16,7 +16,7 @@ use engine_core::{
     sync::{SearchDomain, SyncUpdate},
 };
 use engine_provider::{
-    CalendarUserAddresses, CalendarWrites, Provider, SharedAccount, SharedAccounts,
+    CalendarSync, CalendarUserAddresses, CalendarWrites, Provider, SharedAccount, SharedAccounts,
 };
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials};
 use stalwart_harness::{

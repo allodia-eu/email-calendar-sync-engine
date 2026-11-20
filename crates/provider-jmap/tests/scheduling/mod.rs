@@ -10,8 +10,8 @@ use engine_core::{
     time::{CalendarDateTime, TimeZoneId, UtcDateTime},
 };
 use engine_provider::{
-    CalendarAddress, CalendarWrites, EventDeletion, EventDraft, Invitee, MeetingDraft, Provider,
-    SchedulingIdentity,
+    CalendarAddress, CalendarSync, CalendarWrites, EventDeletion, EventDraft, Invitee,
+    MeetingDraft, SchedulingIdentity,
 };
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials as DavCredentials};
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};

@@ -11,22 +11,20 @@
 
 use async_trait::async_trait;
 use engine_core::{
-    calendar::Event,
-    ids::{AccountId, AddressBookId, CalendarId},
+    ids::{AccountId, AddressBookId},
     mail::{Mailbox, Message},
     raw::RawMime,
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
 };
 use engine_provider::{
-    CalendarListing, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HandOver,
-    MessageReport, PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity,
-    SenderIdentityId, SharedAccount, SourceStream, SubmissionReceipt, SyncKind, split_page,
+    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HandOver, MessageReport,
+    PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
+    SharedAccount, SourceStream, SubmissionReceipt, SyncKind, split_page,
 };
 use serde_json::json;
 
 use crate::{
     JmapClient, JmapConfig,
-    calendar::{calendar_from_json, event_from_json},
     error::JmapError,
     executor::Executor,
     fetch,
@@ -271,43 +269,6 @@ impl Provider for JmapProvider {
                 }
             };
         })
-    }
-
-    async fn sync_calendars(
-        &self,
-        _account: &AccountId,
-        cursor: Option<&SyncState>,
-    ) -> ProviderResult<CalendarListing> {
-        let account = self.calendar_account()?;
-        Ok(fetch_scope::container_sync(
-            self.executor.as_ref(),
-            &account,
-            &[capability::CORE, capability::CALENDARS],
-            "Calendar",
-            cursor,
-            calendar_from_json,
-        )
-        .await?
-        .into())
-    }
-
-    /// Every calendar's events under the account-wide `CalendarEvent` state, whichever asks.
-    async fn sync_events(
-        &self,
-        _account: &AccountId,
-        _calendar: &CalendarId,
-        cursor: Option<&SyncState>,
-        _window: engine_core::time::Horizon,
-    ) -> ProviderResult<ScopeSync<Event>> {
-        let account = self.calendar_account()?;
-        let fetch = MemberFetch {
-            executor: self.executor.as_ref(),
-            account: &account,
-            using: &[capability::CORE, capability::CALENDARS],
-            type_name: "CalendarEvent",
-            properties: None,
-        };
-        Ok(fetch_scope::member_sync(&fetch, cursor, event_from_json).await?)
     }
 
     // `put_event` is deliberately **not** implemented: replacing a whole stored document is

@@ -10,7 +10,7 @@ use engine_core::{
     error::FailureClass,
     sync::{Keyed, SyncState, SyncUpdate},
 };
-use engine_provider::Provider;
+use engine_provider::{CalendarSync, Provider};
 use serde_json::Value;
 
 use super::{

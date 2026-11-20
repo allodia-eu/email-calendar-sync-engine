@@ -21,7 +21,7 @@ use engine_core::{
     time::Horizon,
 };
 use engine_provider::{
-    CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget, Provider,
+    CalendarSync, CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget,
 };
 
 /// How long a delta is polled for a change Graph has accepted but not yet reported.

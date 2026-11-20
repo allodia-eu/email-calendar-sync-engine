@@ -2,11 +2,11 @@
 //! into the engine's generic calendar sync.
 //!
 //! One `CalDavProvider` serves **every calendar** under the calendar home its discovery
-//! found: [`sync_calendars`](Provider::sync_calendars) lists them under the per-account
+//! found: [`sync_calendars`](CalendarSync::sync_calendars) lists them under the per-account
 //! [`DavCollectionList`](engine_core::sync::SyncScope::DavCollectionList) container scope,
 //! each with the collection tag the same `PROPFIND` reads, and each calendar's events sync
 //! under its own [`DavCollection`](engine_core::sync::SyncScope::DavCollection) scope
-//! ([`event_scope`](Provider::event_scope)). The collection list is re-snapshotted each pass
+//! ([`event_scope`](CalendarSync::event_scope)). The collection list is re-snapshotted each pass
 //! (no list cursor), exactly as IMAP re-`LIST`s its folders. A create lands in the calendar
 //! its draft names. The provider advertises
 //! [`Capabilities::calendars`] **and** [`Capabilities::calendar_writes`] — it both
@@ -20,9 +20,9 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    CalendarListing, CalendarUserAddresses, CalendarWrites, Capabilities, ConnectObserver,
-    ConnectStep, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite,
-    EventWriteReceipt, IgnoreConnectSteps, OverrideSurvival, Provider, ProviderResult,
+    CalendarListing, CalendarSync, CalendarUserAddresses, CalendarWrites, Capabilities,
+    ConnectObserver, ConnectStep, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp,
+    EventWrite, EventWriteReceipt, IgnoreConnectSteps, OverrideSurvival, Provider, ProviderResult,
     RsvpControls, ScopeSync, SharedAccount, SharedAccounts, WriteGuard,
 };
 
@@ -254,6 +254,21 @@ impl Provider for CalDavProvider {
         }
     }
 
+    /// The other principals' calendar homes the credential may read (`crate::shared`): the
+    /// same answer whichever store this provider is bound to, since it starts from the
+    /// credential's own principal.
+    async fn list_shared_accounts(&self) -> ProviderResult<Vec<SharedAccount>> {
+        let Some(user) = &self.user else {
+            return Err(engine_provider::ProviderError::invalid_state(
+                "the server named no principal to look for shared calendars from",
+            ));
+        };
+        Ok(crate::shared::list(self.executor.as_ref(), user).await?)
+    }
+}
+
+#[async_trait]
+impl CalendarSync for CalDavProvider {
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
         SyncScope::DavCollectionList {
             account: account.clone(),
@@ -317,18 +332,6 @@ impl Provider for CalDavProvider {
             cursor,
         )
         .await?)
-    }
-
-    /// The other principals' calendar homes the credential may read (`crate::shared`): the
-    /// same answer whichever store this provider is bound to, since it starts from the
-    /// credential's own principal.
-    async fn list_shared_accounts(&self) -> ProviderResult<Vec<SharedAccount>> {
-        let Some(user) = &self.user else {
-            return Err(engine_provider::ProviderError::invalid_state(
-                "the server named no principal to look for shared calendars from",
-            ));
-        };
-        Ok(crate::shared::list(self.executor.as_ref(), user).await?)
     }
 }
 impl engine_provider::MailboxWrites for CalDavProvider {}

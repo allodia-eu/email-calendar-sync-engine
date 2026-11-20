@@ -71,6 +71,8 @@ impl Provider for Overtaken {
     }
 }
 
+impl CalendarSync for Overtaken {}
+
 /// An edit whose lease another process recovered while it ran cannot record its outcome, and
 /// that is the other worker's business, not a reason to stop: the pass defers it and drains
 /// the rest of the queue.

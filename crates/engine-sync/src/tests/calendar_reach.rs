@@ -73,7 +73,10 @@ impl Provider for FakeWindowed {
             caps
         })
     }
+}
 
+#[async_trait::async_trait]
+impl CalendarSync for FakeWindowed {
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
         SyncScope::DavCollectionList {
             account: account.clone(),

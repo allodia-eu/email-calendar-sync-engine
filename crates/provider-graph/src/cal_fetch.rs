@@ -52,7 +52,7 @@ const PENDING_CURSOR: &str = "graph-cal-pending";
 /// The date window a calendar sync covers: `calendarView` requires an explicit range,
 /// and the returned `deltaLink` encodes it, so it is applied only to the request that opens a
 /// cursor. The engine names it per fetch
-/// ([`Provider::sync_events`](engine_provider::Provider::sync_events)).
+/// ([`CalendarSync::sync_events`](engine_provider::CalendarSync::sync_events)).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CalendarWindow {
     /// The inclusive lower bound (00:00:00 UTC of this date).
@@ -72,7 +72,7 @@ impl CalendarWindow {
 impl From<Horizon> for CalendarWindow {
     /// The whole UTC days covering `horizon` ([`Horizon::covering_dates`]): the window the
     /// engine names in
-    /// [`Provider::sync_events`](engine_provider::Provider::sync_events).
+    /// [`CalendarSync::sync_events`](engine_provider::CalendarSync::sync_events).
     fn from(horizon: Horizon) -> Self {
         let (start, end) = horizon.covering_dates();
         Self::new(start, end)

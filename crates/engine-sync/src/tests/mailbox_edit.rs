@@ -96,6 +96,8 @@ impl Provider for Tree {
     }
 }
 
+impl CalendarSync for Tree {}
+
 impl CalendarWrites for Tree {}
 
 #[async_trait::async_trait]

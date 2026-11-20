@@ -32,7 +32,10 @@ impl Provider for BlockingSync {
     fn email_scope(&self, account: &AccountId) -> SyncScope {
         self.inner.email_scope(account)
     }
+}
 
+#[async_trait::async_trait]
+impl CalendarSync for BlockingSync {
     async fn sync_events(
         &self,
         account: &AccountId,
@@ -75,7 +78,10 @@ impl Provider for UnreadableEvents {
     fn email_scope(&self, account: &AccountId) -> SyncScope {
         self.0.email_scope(account)
     }
+}
 
+#[async_trait::async_trait]
+impl CalendarSync for UnreadableEvents {
     async fn sync_events(
         &self,
         _account: &AccountId,

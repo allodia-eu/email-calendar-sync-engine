@@ -73,6 +73,8 @@ impl Provider for CutOffProvider {
     }
 }
 
+impl CalendarSync for CutOffProvider {}
+
 impl CalendarWrites for CutOffProvider {}
 
 /// The failure recovery exists for. Before it, the op stayed `InFlight`, claimable again once
