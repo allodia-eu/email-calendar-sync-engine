@@ -128,7 +128,7 @@ async fn a_sent_copy_not_there_yet_is_retryable_and_patches_nothing() {
         .unwrap_err();
 
     assert_eq!(err.class(), FailureClass::Retryable);
-    assert!(patched(&requests).is_empty());
+    assert_eq!(patched(&requests), [] as [(String, Value); 0]);
 }
 
 #[tokio::test]

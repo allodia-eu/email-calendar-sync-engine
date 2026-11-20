@@ -71,7 +71,10 @@ async fn an_adapter_that_keeps_them_within_the_send_records_no_edit() {
 
     send(&provider, &store, "tag-2@test.local").await;
 
-    assert!(follow_ups(&store).await.is_empty());
+    assert_eq!(
+        follow_ups(&store).await,
+        [] as [engine_store::PendingOpRow; 0]
+    );
 }
 
 #[tokio::test]
@@ -90,7 +93,10 @@ async fn a_draft_asking_for_no_keyword_records_no_edit() {
     .await
     .unwrap();
 
-    assert!(follow_ups(&store).await.is_empty());
+    assert_eq!(
+        follow_ups(&store).await,
+        [] as [engine_store::PendingOpRow; 0]
+    );
 }
 
 #[tokio::test]
