@@ -158,7 +158,12 @@ impl Provider for FakeMail {
                 draft.message_id.clone(),
                 &handed_over,
             )
-            .with_sent_copy_keywords(draft.sent_copy_keywords.clone()))
+            .with_sent_copy_keywords(if self.caps.sent_copy_keywords_deferred() {
+                // Kept after the send, by the edit the outbox records.
+                BTreeSet::new()
+            } else {
+                draft.sent_copy_keywords.clone()
+            }))
         }
     }
 

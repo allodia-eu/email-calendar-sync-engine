@@ -126,11 +126,16 @@ impl GraphProvider {
     /// ([`Draft::sent_copy_keywords`]) is kept only when it has a name here, and sync reports
     /// a message carrying any of a keyword's names as carrying the keyword. With at least one
     /// name, the adapter advertises
-    /// [`sent_copy_keywords`](Capabilities::sent_copy_keywords).
+    /// [`sent_copy_keywords`](Capabilities::sent_copy_keywords), kept after the send rather
+    /// than within it ([`sent_copy_keywords_deferred`](Capabilities::sent_copy_keywords_deferred)),
+    /// and a [`MailEdit::SetKeywords`] can set or clear such a keyword on any message.
     #[must_use]
     pub fn with_keyword_names(mut self, names: Vec<KeywordName>) -> Self {
         if !names.is_empty() {
-            self.capabilities = self.capabilities.with_sent_copy_keywords();
+            self.capabilities = self
+                .capabilities
+                .with_sent_copy_keywords()
+                .with_sent_copy_keywords_deferred();
         }
         self.categories = Categories::new(names);
         self
@@ -341,7 +346,7 @@ impl Provider for GraphProvider {
         draft: &Draft,
         hand_over: &engine_provider::HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
-        crate::submit::send(&self.client, draft, &self.categories, hand_over).await
+        crate::submit::send(&self.client, draft, hand_over).await
     }
 
     /// Applies a [`MailEdit`] to an already-synced message: mark-read/flag (a `PATCH` of
@@ -373,7 +378,7 @@ impl Provider for GraphProvider {
         _account: &AccountId,
         edit: &MailEdit,
     ) -> ProviderResult<MailEditReceipt> {
-        crate::mutate::edit_mail(&self.client, edit).await
+        crate::mutate::edit_mail(&self.client, &self.categories, edit).await
     }
 
     async fn sender_identities(&self, _account: &AccountId) -> ProviderResult<Vec<SenderIdentity>> {

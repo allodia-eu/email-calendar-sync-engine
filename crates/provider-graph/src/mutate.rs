@@ -4,9 +4,10 @@
 //! three provider-neutral edits (`modeling.md`) map onto three *different* Graph shapes:
 //!
 //! - [`MailEdit::SetKeywords`] → `PATCH /messages/{id}` toggling `isRead` (`$seen`) and
-//!   `flag.flagStatus` (`$flagged`) — the only two writable keyword-like properties Graph exposes.
-//!   Any other keyword is **rejected**, never silently dropped: `$draft` is read-only, and Graph
-//!   categories are a different concept.
+//!   `flag.flagStatus` (`$flagged`), and `categories` for a keyword the host gave a name
+//!   (`crate::categories`), which is also how a sent copy's keywords are kept. Any other keyword is
+//!   **rejected**, never silently dropped: `$draft` is read-only, and Graph keeps no free-form
+//!   keyword.
 //! - [`MailEdit::MoveTo`] → `POST /messages/{id}/move { destinationId }`. Immutable ids are stable
 //!   across a move (live-verified — the moved copy keeps its id), so the receipt key is the
 //!   unchanged target and the next sync of the destination folder reconciles the new membership,
@@ -29,7 +30,7 @@ use engine_core::{
 use engine_provider::{MailEdit, MailEditReceipt, ProviderError, ProviderResult};
 use serde_json::{Map, Value, json};
 
-use crate::{error::GraphError, transport::GraphClient};
+use crate::{categories::Categories, error::GraphError, transport::GraphClient};
 
 /// Applies `edit` to its target message, returning a receipt carrying the (immutable,
 /// so unchanged) target key.
@@ -43,27 +44,48 @@ use crate::{error::GraphError, transport::GraphClient};
 /// [`InvalidState`]: engine_core::error::FailureClass::InvalidState
 pub(crate) async fn edit_mail(
     client: &GraphClient,
+    categories: &Categories,
     edit: &MailEdit,
 ) -> ProviderResult<MailEditReceipt> {
     let target = edit.target();
     match edit {
         MailEdit::SetKeywords { add, remove, .. } => {
-            set_keywords(client, target, add, remove).await
+            set_keywords(client, categories, target, add, remove).await
         }
         MailEdit::MoveTo { destination, .. } => move_to(client, target, destination).await,
         MailEdit::Delete { .. } => delete(client, target).await,
     }
 }
 
-/// `PATCH /messages/{id}` toggling `isRead`/`flag` from the neutral keyword sets. An empty
-/// patch (both sides empty) is a no-op — no request, receipt resolves the pending op.
+/// `PATCH /messages/{id}` toggling `isRead`/`flag` from the neutral keyword sets, and the
+/// message's categories for a named keyword. An empty patch (both sides empty) is a no-op: no
+/// request, and the receipt resolves the pending op.
 async fn set_keywords(
     client: &GraphClient,
+    categories: &Categories,
     target: &ProviderKey,
     add: &BTreeSet<Keyword>,
     remove: &BTreeSet<Keyword>,
 ) -> ProviderResult<MailEditReceipt> {
-    let body = keyword_patch(add, remove)?;
+    let named = |set: &BTreeSet<Keyword>| -> Vec<_> {
+        set.iter()
+            .filter_map(|keyword| categories.named(keyword))
+            .collect()
+    };
+    let (named_add, named_remove) = (named(add), named(remove));
+    let unnamed = |set: &BTreeSet<Keyword>| -> BTreeSet<Keyword> {
+        set.iter()
+            .filter(|keyword| categories.named(keyword).is_none())
+            .cloned()
+            .collect()
+    };
+    let body = keyword_patch(&unnamed(add), &unnamed(remove))?;
+    if !named_add.is_empty() || !named_remove.is_empty() {
+        let key = categories
+            .apply(client, target, &named_add, &named_remove, body)
+            .await?;
+        return Ok(MailEditReceipt::new(key));
+    }
     if body.is_empty() {
         return Ok(MailEditReceipt::new(target.clone()));
     }
@@ -96,9 +118,9 @@ fn keyword_patch(
 }
 
 /// Sets (`set`) or clears the one Graph property a system keyword maps to. `$seen`→`isRead`
-/// bool; `$flagged`→`flag.flagStatus` (`flagged`/`notFlagged`). Any other keyword is
-/// rejected: Graph exposes no writable property for it (`$draft` is read-only, categories
-/// are a separate concept), so applying it would be a silent no-op the caller reads as done.
+/// bool; `$flagged`→`flag.flagStatus` (`flagged`/`notFlagged`). Any other keyword without a
+/// registered name is rejected: Graph exposes no writable property for it (`$draft` is
+/// read-only), so applying it would be a silent no-op the caller reads as done.
 fn apply_keyword(
     body: &mut Map<String, Value>,
     keyword: &Keyword,

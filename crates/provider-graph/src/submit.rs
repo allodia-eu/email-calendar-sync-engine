@@ -20,16 +20,13 @@ use engine_core::ids::ProviderKey;
 use engine_provider::{Draft, HandOver, ProviderResult, SubmissionReceipt};
 use time::OffsetDateTime;
 
-use crate::{
-    categories::{Categories, FIND_SCHEDULE},
-    transport::GraphClient,
-};
+use crate::transport::GraphClient;
 
 /// Sends `draft`: assembles the RFC 5322 message, base64-encodes it, and `POST`s it to
 /// `sendMail` in MIME format, committing `hand_over` before the end of that request's body
-/// (the one request that can deliver). Once it is accepted, the filed copy is given the category of
-/// each keyword the draft asks for that `categories` has a name for (`crate::categories`);
-/// that step never fails the send.
+/// (the one request that can deliver). The receipt keeps none of the draft's
+/// [`sent_copy_keywords`](Draft::sent_copy_keywords): `sendMail` files the copy a moment later,
+/// so they are kept by an edit the outbox records after the send (`crate::categories`).
 ///
 /// # Errors
 ///
@@ -39,7 +36,6 @@ use crate::{
 pub(crate) async fn send(
     client: &GraphClient,
     draft: &Draft,
-    categories: &Categories,
     hand_over: &HandOver<'_>,
 ) -> ProviderResult<SubmissionReceipt> {
     check_from_matches_principal(client, draft)?;
@@ -57,12 +53,11 @@ pub(crate) async fn send(
         .map_err(crate::error::GraphError::into_submission_error)?;
     // Recorded by the request that just went out; this only fetches the proof.
     let handed_over = hand_over.commit().await?;
-    let kept = categories.tag_sent_copy(client, draft, FIND_SCHEDULE).await;
-    let key = sent_placeholder_key(draft);
-    Ok(
-        SubmissionReceipt::filed(key, draft.message_id.clone(), &handed_over)
-            .with_sent_copy_keywords(kept),
-    )
+    Ok(SubmissionReceipt::filed(
+        sent_placeholder_key(draft),
+        draft.message_id.clone(),
+        &handed_over,
+    ))
 }
 
 /// Refuses a draft whose `From` names another mailbox than the one this client posts to.
@@ -127,7 +122,7 @@ mod tests {
         draft: &Draft,
     ) -> ProviderResult<SubmissionReceipt> {
         let hand_over = engine_provider::HandOver::new(&engine_provider::Unrecorded);
-        send(client, draft, &Categories::default(), &hand_over).await
+        send(client, draft, &hand_over).await
     }
 
     #[tokio::test]
@@ -162,7 +157,6 @@ mod tests {
         let receipt = send(
             &client,
             &draft(),
-            &Categories::default(),
             &engine_provider::HandOver::new(&engine_provider::Unrecorded),
         )
         .await
@@ -176,23 +170,29 @@ mod tests {
         assert_eq!(receipt.message_id.as_str(), "graph-send-0001@test.local");
     }
 
-    /// Graph keeps a keyword only as a named category, so a draft asking for one with no
-    /// name registered is still sent and filed, and the receipt says it was not kept.
+    /// The send answers as soon as `sendMail` accepts the message: it does not wait for the
+    /// copy to be filed, and keeps none of the draft's keywords itself. The outbox's follow-up
+    /// edit keeps them (`crate::categories`).
     #[tokio::test]
-    async fn a_keyword_without_a_name_is_reported_not_kept() {
-        let client = fake_client_fallible(vec![("/sendMail", Ok(serde_json::Value::Null))]);
+    async fn a_send_answers_without_looking_for_its_copy() {
+        let (client, _, requests) = crate::test_support::fake_client_logged(vec![(
+            "/sendMail",
+            Ok(serde_json::Value::Null),
+        )]);
         let draft =
             draft().with_sent_copy_keyword(engine_core::mail::Keyword::new("project-x").unwrap());
-        let receipt = send(
-            &client,
-            &draft,
-            &Categories::default(),
-            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
-        )
-        .await
-        .unwrap();
+        let receipt = send_unrecorded(&client, &draft).await.unwrap();
         assert!(receipt.sent_copy.is_filed());
         assert!(receipt.sent_copy_keywords.is_empty());
+        assert_eq!(
+            receipt.email_key.as_str(),
+            "sent:graph-send-0001@test.local"
+        );
+        assert_eq!(
+            requests.lock().unwrap().len(),
+            1,
+            "sendMail and nothing else"
+        );
     }
 
     #[tokio::test]
@@ -206,7 +206,6 @@ mod tests {
         let err = send(
             &client,
             &draft(),
-            &Categories::default(),
             &engine_provider::HandOver::new(&engine_provider::Unrecorded),
         )
         .await
@@ -225,7 +224,6 @@ mod tests {
         let err = send(
             &client,
             &poisoned,
-            &Categories::default(),
             &engine_provider::HandOver::new(&engine_provider::Unrecorded),
         )
         .await
@@ -261,7 +259,6 @@ mod tests {
         let receipt = send(
             &client,
             &draft,
-            &Categories::default(),
             &engine_provider::HandOver::new(&engine_provider::Unrecorded),
         )
         .await

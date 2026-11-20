@@ -189,3 +189,19 @@ fn sent_copy_keywords_is_its_own_promise() {
     assert!(caps.sent_copy_keywords());
     assert!(!Capabilities::none().with_submission().sent_copy_keywords());
 }
+
+#[test]
+fn keeping_the_copy_s_keywords_after_the_send_is_its_own_promise() {
+    assert!(!Capabilities::none().sent_copy_keywords_deferred());
+    let caps = Capabilities::none()
+        .with_submission()
+        .with_sent_copy_keywords()
+        .with_sent_copy_keywords_deferred();
+    assert!(caps.sent_copy_keywords_deferred());
+    assert!(
+        !Capabilities::none()
+            .with_sent_copy_keywords()
+            .sent_copy_keywords_deferred(),
+        "keeping them is not the same promise as keeping them later"
+    );
+}
