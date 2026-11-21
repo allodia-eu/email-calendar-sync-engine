@@ -1,5 +1,5 @@
 //! The IMAP pass over an in-memory Gmail: a first sync, mail arriving and changing, a move to
-//! Trash, a deletion for good, and a folder renumbered.
+//! Trash, a deletion for good, a folder renumbered, and a label standing for a keyword.
 
 use std::{
     collections::BTreeMap,
@@ -9,12 +9,12 @@ use std::{
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, MailboxId, MessageId, ProviderKey},
-    mail::Message,
+    mail::{Keyword, Message},
     membership::Memberships,
     sync::{MailboxWindows, SyncState, SyncWindow},
     time::CalendarDate,
 };
-use engine_provider::{EmailChunk, PassMode, Provider, ProviderResult};
+use engine_provider::{EmailChunk, KeywordName, PassMode, Provider, ProviderResult};
 use futures_util::StreamExt;
 use provider_imap::{GmailFolder, GmailFolderState, GmailMessage, GmailQuery, GmailState};
 use serde_json::json;
@@ -380,6 +380,47 @@ async fn a_renumbered_folder_or_an_api_cursor_starts_afresh() {
     let after_api = pass(&provider, Some(&SyncState::new("234042"))).await;
     assert_eq!(after_api[0].total, Some(3));
     assert!(after_api.last().unwrap().is_reconcile_final());
+}
+
+#[tokio::test]
+async fn a_label_under_a_registered_name_reaches_the_rows_as_its_keyword() {
+    let keyword = Keyword::new("project-x").unwrap();
+    let gmail = FakeGmail::new();
+    let uid = gmail.deliver(
+        GmailFolder::All,
+        held(0xe5, vec!["\\Sent", "Project X", "Work"]),
+    );
+    let client = fake_client(vec![(
+        "/labels",
+        json!({ "labels": [
+            { "id": "Label_7", "name": "Work" },
+            { "id": "Label_9", "name": "Project X", "labelListVisibility": "labelHide" },
+        ] }),
+    )]);
+    let provider = GmailProvider::new(client)
+        .with_keyword_names(vec![
+            KeywordName::new(keyword.clone(), "project x").unwrap(),
+        ])
+        .with_imap_mail(Arc::new(gmail.clone()));
+
+    let chunks = pass(&provider, None).await;
+    let sent = chunks.iter().flat_map(|c| &c.changed).next().unwrap();
+    assert!(sent.keywords.contains(&keyword), "{:?}", sent.keywords);
+    assert_eq!(places(sent), ["Label_7", "SENT"]);
+
+    gmail.mark_read(uid);
+    let delta = pass(&provider, Some(&last_cursor(&chunks))).await;
+    let read = delta.iter().flat_map(|c| &c.patched).next().unwrap();
+    assert!(read.state.keywords.contains(&keyword));
+    let filed: Vec<&str> = read
+        .state
+        .mailboxes
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(MailboxId::as_str)
+        .collect();
+    assert_eq!(filed, ["Label_7", "SENT"]);
 }
 
 #[tokio::test]
