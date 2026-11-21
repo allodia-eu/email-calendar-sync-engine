@@ -37,6 +37,9 @@ time = { workspace = true }
 [features]
 # Exposes `fuzz_parse` for the `fuzz/` cargo-fuzz target; off in normal builds.
 fuzzing = []
+# Importing into a mailbox (`engine_provider::import::MailImporter` for `ImapProvider`):
+# `APPEND` with the message's flags, keywords and arrival time. A migration host turns it on.
+import = ["engine-provider/import"]
 
 [dev-dependencies]
 # Tests add the blocking/macro pieces and `test-util` for `start_paused` — so the

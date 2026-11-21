@@ -233,9 +233,9 @@ that can import implements the trait; there is no capability flag.
   `categories` is next) is added to the metadata in the same change, so a source's state maps
   onto an import one to one. It and the import types are `#[non_exhaustive]`, built through
   constructors and `with_*` methods, so a new field breaks no caller.
-- **Not yet:** no adapter implements it yet (IMAP `APPEND` and JMAP `Email/import` are next), and
-  calendar and contact import (CalDAV and CardDAV `PUT` without scheduling) come with their first
-  adapter.
+- **Who implements it:** IMAP (`APPEND`, `imap-smtp.md` → "Import"). JMAP `Email/import` is
+  next; Graph and Gmail are sources only. Calendar and contact import (CalDAV and CardDAV `PUT`
+  without scheduling) come with their first adapter.
 
 ## Stalwart Test Spine
 

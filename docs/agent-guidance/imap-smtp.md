@@ -745,6 +745,22 @@ credential.
   `PERMANENTFLAGS`, reported in `DraftReceipt::keywords` either way. Unlike Sent placement an `APPEND` failure surfaces: saving the
   draft is the whole op. `ImapProvider::save_draft` remains as the first-save
   convenience the example and the live suite use, and is the same code path.
+- **Import (`MailImporter`, the `import` feature, `import.rs`).** `APPEND` with the message's
+  flags, keywords and `INTERNALDATE` (`"dd-Mon-yyyy hh:mm:ss +0000"`, the arrival time in UTC),
+  into the mailbox the message names: one per message, so `max_mailboxes` is 1 and more is
+  refused before anything is sent. The four system flags ride every `APPEND`; a custom keyword
+  only where a `SELECT` of the folder shows `\*` in `PERMANENTFLAGS` (once per folder per
+  batch, and only when a custom keyword is asked for), and `ImportedMessage::kept` says which.
+  The stated size is `APPENDLIMIT=<n>` (a bare `APPENDLIMIT` is per mailbox and states none).
+  A tagged `NO` in place of the continuation is a refusal of that message alone, and `TOOBIG`
+  (RFC 7889) is `item_unavailable`. `APPEND` is not idempotent, so the transport says which side
+  of the point of no return a failure fell on (`AppendFailure`): until the literal's closing CRLF
+  is written nothing is stored; after it, a lost answer is `requires_confirmation`. Either ends
+  the batch, and every later message is answered "not sent". `import_cursor` is the folder's
+  sync cursor from the `SELECT` a pass opens it with, so a delta from it through a provider
+  bound to the folder lists what was stored after it (`live_imap_import.rs`, Stalwart and both
+  Dovecot revisions). A server may add keywords of its own: Stalwart files every stored message
+  `$hasattachment` or `$hasnoattachment`.
 - **A re-save is `APPEND` then `UID STORE +FLAGS (\Deleted)` + `UID EXPUNGE`, in that
   order, and the removal may fail without failing the save.** An IMAP message is
   immutable, so "replace" is two commands with nothing around them; appending first
