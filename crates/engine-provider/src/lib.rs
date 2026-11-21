@@ -63,6 +63,7 @@ mod report;
 mod shared;
 mod sources;
 mod stream;
+mod stream_update;
 mod submit;
 mod sync;
 mod watch;
