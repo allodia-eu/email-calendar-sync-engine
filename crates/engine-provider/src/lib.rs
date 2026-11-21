@@ -50,6 +50,8 @@ mod draft_receipt;
 mod error;
 mod hand_over;
 mod identity;
+#[cfg(feature = "import")]
+pub mod import;
 mod keyword_name;
 mod mail_edit;
 mod mailbox_edit;

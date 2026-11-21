@@ -31,6 +31,9 @@ url = { workspace = true, optional = true }
 # (and their `http`/`url` dependencies). Enabled by the reqwest-backed adapters:
 # `provider-jmap`, `provider-caldav`, `provider-graph`, `provider-google`.
 http = ["dep:http", "dep:url"]
+# The import seam (`engine_provider::import`): storing another system's objects in a target as
+# they were. A migration host turns it on; a sync host never compiles it.
+import = []
 
 [dev-dependencies]
 tokio = { workspace = true }
