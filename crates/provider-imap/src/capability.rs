@@ -223,6 +223,16 @@ impl Negotiated {
             .find_map(|atom| atom.strip_prefix("messagelimit=")?.parse().ok())
     }
 
+    /// The largest message, in bytes, the server takes for any mailbox: `APPENDLIMIT=<n>`
+    /// (RFC 7889 §2). A bare `APPENDLIMIT` means the limit differs per mailbox and is asked
+    /// through `STATUS`, so it states none here.
+    #[cfg(feature = "import")]
+    pub(crate) fn append_limit(&self) -> Option<u64> {
+        self.advertised
+            .iter()
+            .find_map(|atom| atom.strip_prefix("appendlimit=")?.parse().ok())
+    }
+
     /// `requested` UIDs per `FETCH` (`0` for no cap), lowered to the server's message limit
     /// where it states one, since a server may refuse a set naming more.
     pub(crate) fn within_message_limit(&self, requested: usize) -> usize {
