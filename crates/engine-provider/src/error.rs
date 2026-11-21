@@ -101,7 +101,8 @@ impl ProviderError {
 
     /// The provider can never serve this one item, however often it is asked, while the
     /// account and its other items are unaffected ([`FailureClass::Permanent`]): a message
-    /// the server stored but cannot give back. A caller may stop asking for it. A permanent
+    /// the server stored but cannot give back, or one a target will never import (too large,
+    /// filed in too many mailboxes). A caller may stop asking for it. A permanent
     /// failure without this flag may be about the whole account or the request, and says
     /// nothing about the item.
     #[must_use]

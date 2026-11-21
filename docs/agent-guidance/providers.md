@@ -210,6 +210,33 @@ If product pressure changes the order, the domain model tests still need JMAP an
 - Sync cursors are provider-specific (state strings, MODSEQ, sync-tokens, history ids, delta tokens); calendar sync may be inherently time-windowed (a date-bounded view). Such an adapter advertises `Capabilities::windowed_events` and takes the window from the engine (the `window` of `CalendarSync::sync_events`, which a transport fetching whole ignores), which records the window each cursor was opened over and reopens it over a wider one when a host reaches past it (`store-and-sync.md` → "The fetch window is the store's too"). Graph and Google are windowed; CalDAV and JMAP fetch a calendar whole.
 - Providers that support push or idle signals emit wake hints; the engine still performs pull sync to fetch changes. This is a **provider-neutral** capability: the `idle` capability flag advertises it, and a `Watch` session (`engine-provider`) yields a `WatchEvent` stream (`Changed` | `KeepAlive`) for one scope. A watch event carries **no data** and is never a source of truth — it means only "run the scope's normal sync," which is the authoritative, idempotent reconciliation. So a missed/coalesced/spurious notification cannot corrupt the store; push only lowers the *latency* of seeing a change, and a poll-only host is fully correct. (**Implemented** for IMAP `IDLE` — `imap-smtp.md` — and for **JMAP EventSource** (`StateChange`, RFC 8620 §7.3) via `JmapWatcher` — `jmap.md`; a Graph webhook is a later slice over the same `Watch` contract.)
 
+## Import
+
+Importing stores an object that already exists elsewhere in a target, as it was: the bytes the
+source held, the state it had there (keywords, mailboxes, arrival time), and no scheduling
+message to anyone. It is not a sync write. A sync write is a user's change, made through the
+outbox; it may re-assemble the object (a draft gets a fresh `Date:`) and it schedules meetings.
+A migration host is what needs import, so it lives behind the `import` feature in traits of its
+own (`engine_provider::import`), and the sync `Provider` contract is unchanged by it. An adapter
+that can import implements the trait; there is no capability flag.
+
+- **Mail: `MailImporter`.** `import_messages` takes a batch of `MessageImport` (raw bytes,
+  mailboxes, and a `MessageMetadata`: keywords and arrival time today) and answers each message
+  in order. An answer is `Ok` (stored, or already there, with the metadata the target kept, so
+  a target that keeps less says so per field), `requires_confirmation` (sent, unanswered: it may be stored), or
+  any other error (not stored; `item_unavailable` when the target will never take that message).
+  `import_cursor` reads the target's cursor for a mailbox before a batch's first write, so a host
+  that crashed mid-batch finds what was stored through the target's own `stream_email` delta.
+  `mail_import_limits` is what the target states (largest message, mailboxes per message);
+  `MailImportLimits::check` is the one rule every adapter refuses an over-limit message by.
+- **`MessageMetadata` follows `MailState`.** A field added to the state a sync reads (Graph's
+  `categories` is next) is added to the metadata in the same change, so a source's state maps
+  onto an import one to one. It and the import types are `#[non_exhaustive]`, built through
+  constructors and `with_*` methods, so a new field breaks no caller.
+- **Not yet:** no adapter implements it yet (IMAP `APPEND` and JMAP `Email/import` are next), and
+  calendar and contact import (CalDAV and CardDAV `PUT` without scheduling) come with their first
+  adapter.
+
 ## Stalwart Test Spine
 
 Use Stalwart Docker for deterministic local and CI tests across JMAP, IMAP, SMTP, CalDAV, and CardDAV. **Implemented** as build-order step 3 under `docker/stalwart/` (compose + a self-bootstrapping entrypoint that drives Stalwart's registry setup (v0.16 onward; the harness pins v1.0.2) through its management API, plus a curl seeder) and `crates/stalwart-harness` (readiness + gated smoke suite); `stalwart-harness.md` is authoritative for its design, the bootstrap flow, the per-fixture invariants, the gating contract, and the determinism rules. The harness must seed one shared dataset that every protocol sees:
