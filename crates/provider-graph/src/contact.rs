@@ -13,7 +13,7 @@ use engine_core::{
     sync::{SyncScope, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, ContactDestination, ContactPhoto,
+    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, ContactDestination, ContactPhoto,
     ContactSourceSync, ContactUnavailable, ContactWriteReceipt, ContactsProvider, Provider,
     ProviderResult, ScopeSync, WriteGuard,
 };
@@ -266,6 +266,8 @@ impl Provider for GraphContactProvider {
         }
     }
 }
+
+impl CalendarSync for GraphContactProvider {}
 
 impl engine_provider::MailboxWrites for GraphContactProvider {}
 impl CalendarWrites for GraphContactProvider {}

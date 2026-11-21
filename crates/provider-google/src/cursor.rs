@@ -14,6 +14,7 @@ use engine_provider::PageToken;
 
 const BACKFILL: &str = "backfill;h=";
 const RECONCILE: &str = "reconcile;h=";
+const LABEL: &str = ";l=";
 const PAGE: &str = ";p=";
 
 /// Where a Gmail message sync stands.
@@ -23,9 +24,11 @@ pub(crate) enum GmailCursor {
     /// historyId, the shape every cursor had before backfills existed.
     Delta { history: SyncState },
     /// Fetching the window a page at a time: deltas from `history` keep what is already stored
-    /// current, and the listing continues from `page` (`None` is its first page).
+    /// current, and the listing of `label` (`None` is the account's, `crate::window_listing`)
+    /// continues from `page` (`None` is its first page).
     Backfill {
         history: SyncState,
+        label: Option<String>,
         page: Option<PageToken>,
     },
     /// Every page fetched; the next pass lists the window's ids to tombstone what the server no
@@ -39,9 +42,15 @@ impl GmailCursor {
     pub(crate) fn read(state: &SyncState) -> Option<Self> {
         let raw = state.as_str();
         if let Some(rest) = raw.strip_prefix(BACKFILL) {
-            let (history, page) = rest.split_once(PAGE)?;
+            let (head, page) = rest.split_once(PAGE)?;
+            let (history, label) = match head.split_once(LABEL) {
+                Some((history, label)) if !label.is_empty() => (history, Some(label.to_owned())),
+                Some(_) => return None,
+                None => (head, None),
+            };
             return Some(Self::Backfill {
                 history: history_id(history)?,
+                label,
                 page: (!page.is_empty()).then(|| PageToken::new(page)),
             });
         }
@@ -59,9 +68,16 @@ impl GmailCursor {
     pub(crate) fn state(&self) -> SyncState {
         match self {
             Self::Delta { history } => history.clone(),
-            Self::Backfill { history, page } => SyncState::new(format!(
-                "{BACKFILL}{}{PAGE}{}",
+            Self::Backfill {
+                history,
+                label,
+                page,
+            } => SyncState::new(format!(
+                "{BACKFILL}{}{}{PAGE}{}",
                 history.as_str(),
+                label
+                    .as_ref()
+                    .map_or_else(String::new, |label| format!("{LABEL}{label}")),
                 page.as_ref().map_or("", PageToken::as_str),
             )),
             Self::Reconcile { history } => {

@@ -11,7 +11,7 @@ use engine_core::{
 use serde::Serialize;
 
 use super::{
-    Inner, MemStore, ObservationCell, OpCell, ScopeCell, expiry_after, is_live, threading,
+    Inner, MemStore, OpCell, ScopeCell, expiry_after, is_live, record_observation, threading,
 };
 use crate::{
     apply::{ApplyBatch, DerivedWrite, SyncApplied},
@@ -133,15 +133,7 @@ impl<C: Clock> Store for MemStore<C> {
         }
 
         for observation in batch.recipient_observations {
-            let key = (
-                observation.account.clone(),
-                observation.source_message.clone(),
-                observation.email.clone(),
-            );
-            observations.entry(key).or_insert_with(|| ObservationCell {
-                observation: observation.clone(),
-                suppressed: false,
-            });
+            record_observation(observations, observation);
         }
 
         if is_contact && (applied.upserted > 0 || applied.tombstoned > 0) {

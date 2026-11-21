@@ -3,7 +3,7 @@
 //!
 //! The calendar list syncs under the per-account [`SyncScope::GraphCalendarList`], and each
 //! calendar's events under a [`SyncScope::GraphCalendar`] of its own
-//! ([`event_scope`](Provider::event_scope)), through that calendar's `calendarView/delta`.
+//! ([`event_scope`](CalendarSync::event_scope)), through that calendar's `calendarView/delta`.
 //! A create lands in the calendar its draft names. It advertises calendar read/sync **and**
 //! writes guarded by `If-Match` ([`WriteGuard::Enforced`]).
 
@@ -18,10 +18,10 @@ use engine_core::{
     time::{Horizon, TimeZoneId},
 };
 use engine_provider::{
-    CalendarListing, CalendarUserAddresses, CalendarWrites, Capabilities, ConnectionInfo,
-    EventDeletion, EventDraft, EventEdit, EventRsvp, EventWriteReceipt, OverrideSurvival,
-    PageToken, Provider, ProviderResult, RsvpControls, ScopeSync, SharedAccount, SharedAccounts,
-    SyncKind, WriteGuard,
+    CalendarListing, CalendarSync, CalendarUserAddresses, CalendarWrites, Capabilities,
+    ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWriteReceipt,
+    OverrideSurvival, PageToken, Provider, ProviderResult, RsvpControls, ScopeSync, SharedAccount,
+    SharedAccounts, SyncKind, WriteGuard,
 };
 
 use crate::{
@@ -64,7 +64,7 @@ const GRAPH_OVERRIDE_SURVIVAL: OverrideSurvival = OverrideSurvival {
 /// Construct one with [`GraphCalendarProvider::new`] from a connected
 /// [`GraphClient`](crate::GraphClient). Graph calendar sync is inherently time-windowed: each
 /// calendar's `calendarView` covers the window the engine names in
-/// [`Provider::sync_events`].
+/// [`CalendarSync::sync_events`].
 pub struct GraphCalendarProvider {
     client: GraphClient,
     display_zone: TimeZoneId,
@@ -127,6 +127,16 @@ impl Provider for GraphCalendarProvider {
         }
     }
 
+    /// Checks that this credential can open the calendar of the mailbox at `address`, and that
+    /// it is not the credential's own (`crate::shared`). As for mail, no route lists the
+    /// stores shared with a credential, so enumeration stays at its rejecting default.
+    async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
+        crate::shared::resolve_calendar(&self.client, address).await
+    }
+}
+
+#[async_trait]
+impl CalendarSync for GraphCalendarProvider {
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
         SyncScope::GraphCalendarList {
             account: account.clone(),
@@ -163,13 +173,6 @@ impl Provider for GraphCalendarProvider {
         window: Horizon,
     ) -> ProviderResult<ScopeSync<Event>> {
         self.events(calendar, cursor, window.into()).await
-    }
-
-    /// Checks that this credential can open the calendar of the mailbox at `address`, and that
-    /// it is not the credential's own (`crate::shared`). As for mail, no route lists the
-    /// stores shared with a credential, so enumeration stays at its rejecting default.
-    async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
-        crate::shared::resolve_calendar(&self.client, address).await
     }
 }
 impl engine_provider::MailboxWrites for GraphCalendarProvider {}

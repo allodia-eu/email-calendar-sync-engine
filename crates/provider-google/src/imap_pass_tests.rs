@@ -11,7 +11,8 @@ use engine_core::{
     ids::{AccountId, MailboxId, MessageId, ProviderKey},
     mail::{Keyword, Message},
     membership::Memberships,
-    sync::{SyncState, SyncWindow},
+    sync::{MailboxWindows, SyncState, SyncWindow},
+    time::CalendarDate,
 };
 use engine_provider::{EmailChunk, KeywordName, PassMode, Provider, ProviderResult};
 use futures_util::StreamExt;
@@ -35,9 +36,16 @@ struct Folder {
     messages: BTreeMap<u32, Held>,
 }
 
+/// Every search the pass asked, by folder.
+type Searches = Arc<Mutex<Vec<(GmailFolder, GmailQuery)>>>;
+
 /// A Gmail account's three folders, changed between passes by the test.
 #[derive(Clone)]
-struct FakeGmail(Arc<Mutex<BTreeMap<GmailFolder, Folder>>>, Arc<Mutex<u64>>);
+struct FakeGmail(
+    Arc<Mutex<BTreeMap<GmailFolder, Folder>>>,
+    Arc<Mutex<u64>>,
+    Searches,
+);
 
 impl FakeGmail {
     fn new() -> Self {
@@ -54,7 +62,11 @@ impl FakeGmail {
                 )
             })
             .collect();
-        Self(Arc::new(Mutex::new(folders)), Arc::new(Mutex::new(100)))
+        Self(
+            Arc::new(Mutex::new(folders)),
+            Arc::new(Mutex::new(100)),
+            Arc::default(),
+        )
     }
 
     fn tick(&self) -> u64 {
@@ -135,11 +147,18 @@ impl ImapMail for FakeGmail {
         // Gmail's own search (`X-GM-RAW`) is what found the inbox categories, which the pass no
         // longer reads.
         assert_eq!(query.raw, None, "the pass asks Gmail's search nothing");
+        self.2.lock().unwrap().push((folder, query.clone()));
         Ok(self.with(folder, |f| {
             f.messages
                 .iter()
                 .filter(|(uid, _)| query.uids.as_ref().is_none_or(|uids| uids.contains(uid)))
                 .filter(|(uid, _)| query.from_uid.is_none_or(|from| **uid >= from))
+                .filter(|(_, held)| {
+                    query
+                        .label
+                        .as_ref()
+                        .is_none_or(|label| held.labels.contains(&label.as_str()))
+                })
                 .map(|(uid, _)| *uid)
                 .collect()
         }))
@@ -160,7 +179,6 @@ impl ImapMail for FakeGmail {
                         MessageId::new(ProviderKey::new(format!("imap:v1:u{uid}@x")).unwrap()),
                         Memberships::of_one(MailboxId::try_from("x").unwrap()),
                     ),
-                    date: None,
                 })
                 .collect()
         }))
@@ -218,9 +236,17 @@ fn provider(gmail: &FakeGmail) -> GmailProvider {
 }
 
 async fn pass(provider: &GmailProvider, cursor: Option<&SyncState>) -> Vec<EmailChunk> {
+    pass_under(provider, cursor, SyncWindow::full().into()).await
+}
+
+async fn pass_under(
+    provider: &GmailProvider,
+    cursor: Option<&SyncState>,
+    window: MailboxWindows,
+) -> Vec<EmailChunk> {
     let account = AccountId::try_from("a").unwrap();
     provider
-        .stream_email(&account, cursor, SyncWindow::full(), 0, 0)
+        .stream_email(&account, cursor, window, 0, 0)
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -404,4 +430,54 @@ async fn the_imap_side_reads_bodies_in_batches_over_several_connections() {
     assert_eq!((info.concurrent_fetches, info.sources_per_request), (4, 50));
     let api = GmailProvider::new(fake_client(Vec::new())).connection_info();
     assert_eq!((api.concurrent_fetches, api.sources_per_request), (20, 1));
+}
+
+fn day(year: i32) -> Option<time::Date> {
+    time::Date::from_calendar_date(year, time::Month::April, 1).ok()
+}
+
+#[tokio::test]
+async fn a_snapshot_searches_each_deepened_label_back_to_its_floor_in_every_folder() {
+    let gmail = FakeGmail::new();
+    gmail.deliver(GmailFolder::All, held(0xa1, vec!["\\Inbox"]));
+    gmail.deliver(GmailFolder::All, held(0xa2, vec!["\\Sent"]));
+    gmail.deliver(GmailFolder::Spam, held(0xb2, vec![]));
+    gmail.deliver(GmailFolder::Trash, held(0xc3, vec!["Work"]));
+    let since = |year| SyncWindow::since(CalendarDate::new(year, 4, 1).unwrap());
+    let label = |id: &str| MailboxId::try_from(id).unwrap();
+    let window = MailboxWindows::new(since(2026))
+        .deepen(label("SENT"), since(2020))
+        .deepen(label("Label_7"), SyncWindow::full())
+        .deepen(label("SPAM"), since(2024))
+        .deepen(label("Label_404"), since(2020));
+
+    let chunks = pass_under(&provider(&gmail), None, window).await;
+
+    let account = GmailQuery {
+        since: day(2026),
+        ..GmailQuery::default()
+    };
+    let older = |since: Option<time::Date>, label: Option<&str>| GmailQuery {
+        since,
+        before: day(2026),
+        label: label.map(str::to_owned),
+        ..GmailQuery::default()
+    };
+    let mut expected = Vec::new();
+    for folder in GmailFolder::ALL {
+        expected.push((folder, account.clone()));
+        expected.push((folder, older(None, Some("Work"))));
+        expected.push((folder, older(day(2020), Some("\\Sent"))));
+        if folder == GmailFolder::Spam {
+            expected.push((folder, older(day(2024), None)));
+        }
+    }
+    assert_eq!(*gmail.2.lock().unwrap(), expected);
+    // The fake answers each search whatever its days, so every message is listed once.
+    let present: Vec<&str> = chunks
+        .iter()
+        .flat_map(|c| &c.present)
+        .map(ProviderKey::as_str)
+        .collect();
+    assert_eq!(present, ["a1", "a2", "b2", "c3"]);
 }

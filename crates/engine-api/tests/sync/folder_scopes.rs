@@ -10,7 +10,7 @@
 //! the message actually is — not the same mail twice, and not the folder it just left.
 
 use engine_api::{Engine, StreamTuning};
-use engine_provider::{CalendarWrites, PassMode};
+use engine_provider::{CalendarSync, CalendarWrites, PassMode};
 use engine_sync::IgnoreCommits;
 
 use super::*;
@@ -71,7 +71,7 @@ impl Provider for FolderProvider {
         &'a self,
         _account: &'a AccountId,
         _cursor: Option<&'a SyncState>,
-        _window: SyncWindow,
+        _window: engine_core::sync::MailboxWindows,
         _fetch_batch: usize,
         _chunk_size: usize,
     ) -> EmailStream<'a> {
@@ -87,6 +87,8 @@ impl Provider for FolderProvider {
         Box::pin(futures_util::stream::iter(vec![Ok(chunk)]))
     }
 }
+
+impl CalendarSync for FolderProvider {}
 
 impl engine_provider::MailboxWrites for FolderProvider {}
 impl CalendarWrites for FolderProvider {}

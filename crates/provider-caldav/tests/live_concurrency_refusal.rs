@@ -38,7 +38,7 @@ use engine_core::{
     time::{CalendarDateTime, UtcDateTime},
 };
 use engine_http::{RetryConfig, ThrottleEvent};
-use engine_provider::{CalendarWrites, EventDeletion, EventDraft, Provider};
+use engine_provider::{CalendarSync, CalendarWrites, EventDeletion, EventDraft};
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials};
 use stalwart_harness::Harness;
 

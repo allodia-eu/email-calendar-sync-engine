@@ -17,7 +17,7 @@
 //! outcome travelling up *is* the diagnostic. What it must never do is fail the send: the
 //! mail is already gone, and a caller that treated filing as delivery would re-send it.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use engine_core::ids::ProviderKey;
 use engine_provider::{
@@ -396,7 +396,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         let mut connection = self.session().await?;
         let result = async {
             let store = self.store_on(&mut connection).await?;
-            crate::drafts::put_draft(&mut connection, &store, draft, None).await
+            let saved =
+                crate::drafts::put_draft(&mut connection, &store, draft, None, &BTreeSet::new())
+                    .await?;
+            Ok(saved.key)
         }
         .await;
         connection.settle(result)

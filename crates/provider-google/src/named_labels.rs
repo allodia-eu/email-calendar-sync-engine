@@ -15,6 +15,10 @@
 //! `messages.send` answers with the sent message's id, so the filed copy is labelled with one
 //! `messages.modify` straight after the send. Nothing here can fail the send: a label that
 //! cannot be found or made, or a refused modify, only leaves the keyword out of the receipt.
+//!
+//! A stored draft is labelled the same way, by the id of the message under it that
+//! `drafts.create`/`drafts.update` answers with. Each save replaces that message and the label
+//! goes with it (live), so every save labels the new one, and a save is never failed by it.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -164,10 +168,22 @@ impl Labels {
         sent: &ProviderKey,
         draft: &Draft,
     ) -> BTreeSet<Keyword> {
+        self.tag(client, sent.as_str(), &draft.sent_copy_keywords)
+            .await
+    }
+
+    /// Labels the message `message` with each of `wanted` that has a registered name, in one
+    /// `messages.modify`, returning the keywords it now carries.
+    pub(crate) async fn tag(
+        &self,
+        client: &GoogleClient,
+        message: &str,
+        wanted: &BTreeSet<Keyword>,
+    ) -> BTreeSet<Keyword> {
         let mut ids = Vec::new();
         let mut kept = BTreeSet::new();
         for named in &self.names {
-            if !draft.sent_copy_keywords.contains(named.keyword()) {
+            if !wanted.contains(named.keyword()) {
                 continue;
             }
             if let Ok(id) = self.label_for(client, named).await {
@@ -181,10 +197,7 @@ impl Labels {
         let body = json!({ "addLabelIds": ids, "removeLabelIds": [] });
         let modified = client
             .post(
-                &client.url(&format!(
-                    "/gmail/v1/users/me/messages/{}/modify",
-                    sent.as_str()
-                )),
+                &client.url(&format!("/gmail/v1/users/me/messages/{message}/modify")),
                 "application/json",
                 body.to_string().into_bytes(),
             )

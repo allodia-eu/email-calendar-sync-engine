@@ -206,7 +206,9 @@ mod tests {
         membership::Memberships,
         raw::RawMime,
     };
-    use engine_provider::{CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult};
+    use engine_provider::{
+        CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult,
+    };
 
     use crate::Engine;
 
@@ -230,6 +232,8 @@ mod tests {
             ))
         }
     }
+
+    impl CalendarSync for BodyProvider {}
 
     impl engine_provider::MailboxWrites for BodyProvider {}
     impl CalendarWrites for BodyProvider {}
@@ -274,6 +278,8 @@ mod tests {
             Ok(RawMime::new(self.raw.clone()))
         }
     }
+
+    impl CalendarSync for RelatedProvider {}
 
     impl engine_provider::MailboxWrites for RelatedProvider {}
     impl CalendarWrites for RelatedProvider {}

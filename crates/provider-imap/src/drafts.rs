@@ -12,22 +12,32 @@
 //! nobody has sent, a duplicate is recoverable and a loss is not. A removal that fails
 //! therefore returns the new key rather than an error: the alternative is an op the
 //! caller retries, appending a further copy each time.
+//!
+//! **A draft's keywords ride its `APPEND`**, like a Sent copy's, and only where the Drafts
+//! folder's `PERMANENTFLAGS` carries `\*` (`crate::place`). Every save appends a new message,
+//! so each one carries exactly the keywords that save asked for.
 
-use engine_core::ids::{MessageIdHeader, ProviderKey};
-use engine_provider::{Draft, ProviderResult};
+use std::collections::BTreeSet;
+
+use engine_core::{
+    ids::{MessageIdHeader, ProviderKey},
+    mail::Keyword,
+};
+use engine_provider::{Draft, DraftReceipt, ProviderResult};
 use engine_rfc5322::assemble_draft_message;
 use time::OffsetDateTime;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    place::{Filing, find_placed_copy, placed_key, resolve_filing_folder},
+    place::{Filing, append_to_role_folder, find_placed_copy, placed_key, resolve_filing_folder},
     store::MailStore,
     target::select_target,
     transport::Connection,
 };
 
-/// Stores `draft` in `store`'s Drafts folder, removing the copy named by `replacing`, and
-/// returns the new copy's key.
+/// Stores `draft` in `store`'s Drafts folder carrying whichever of `keywords` the folder
+/// keeps, removing the copy named by `replacing`, and returns the new copy's key and those
+/// keywords.
 ///
 /// The key is the real one from UIDPLUS `APPENDUID` where the server offers it, else a
 /// `Message-ID`-derived key the next Drafts sync resolves. A saved draft keeps its `Bcc`
@@ -43,27 +53,27 @@ pub(crate) async fn put_draft<S>(
     store: &MailStore,
     draft: &Draft,
     replacing: Option<&ProviderKey>,
-) -> ProviderResult<ProviderKey>
+    keywords: &BTreeSet<Keyword>,
+) -> ProviderResult<DraftReceipt>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let message = assemble_draft_message(draft, OffsetDateTime::now_utc())?;
-    let folder = resolve_filing_folder(connection, store, Filing::Drafts).await?;
-    let append_uid = connection
-        .append(&folder, Filing::Drafts.flags(), &message)
-        .await?;
+    let placed =
+        append_to_role_folder(connection, store, Filing::Drafts, &message, keywords).await?;
 
     if let Some(superseded) = replacing {
         // Best effort by design: the new copy is stored, and reporting this as a failure
         // would have the caller append another.
         let _ = remove(connection, store, superseded).await;
     }
-    Ok(placed_key(
-        &folder,
+    let key = placed_key(
+        &placed.folder,
         Filing::Drafts.key_prefix(),
-        append_uid,
+        placed.append_uid,
         &draft.message_id,
-    ))
+    );
+    Ok(DraftReceipt::stored(key).with_keywords(placed.keywords))
 }
 
 /// Removes a stored draft, reporting an absent one as done.

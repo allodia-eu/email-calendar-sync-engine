@@ -14,7 +14,7 @@
 use core::time::Duration;
 
 use engine_core::ids::AccountId;
-use engine_provider::{CalendarUserAddresses, CalendarWrites, Provider};
+use engine_provider::{CalendarSync, CalendarUserAddresses, CalendarWrites};
 use provider_caldav::{CalDavConfig, CalDavProvider, Credentials};
 
 /// Reads the SabreDAV harness coordinates, or `None` to skip (offline gate).

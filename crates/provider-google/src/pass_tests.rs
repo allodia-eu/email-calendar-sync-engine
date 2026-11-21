@@ -3,8 +3,9 @@
 //! stopped, and the reconcile that ends it.
 
 use engine_core::{
-    ids::{AccountId, ProviderKey},
-    sync::{SyncState, SyncWindow},
+    ids::{AccountId, MailboxId, ProviderKey},
+    sync::{MailboxWindows, SyncState, SyncWindow},
+    time::CalendarDate,
 };
 use engine_provider::{EmailChunk, PassMode, Provider};
 use futures_util::StreamExt;
@@ -64,10 +65,19 @@ fn two_pages() -> Vec<(&'static str, FakeRoute)> {
 
 /// Every chunk of one pass from `cursor`.
 async fn pass(provider: &GmailProvider, cursor: Option<&str>) -> Vec<EmailChunk> {
+    pass_under(provider, cursor, SyncWindow::full().into()).await
+}
+
+/// Every chunk of one pass from `cursor`, under `window`.
+async fn pass_under(
+    provider: &GmailProvider,
+    cursor: Option<&str>,
+    window: MailboxWindows,
+) -> Vec<EmailChunk> {
     let account = AccountId::try_from("acct-1").unwrap();
     let cursor = cursor.map(SyncState::new);
     provider
-        .stream_email(&account, cursor.as_ref(), SyncWindow::full(), 0, 0)
+        .stream_email(&account, cursor.as_ref(), window, 0, 0)
         .map(|chunk| chunk.expect("a chunk"))
         .collect()
         .await
@@ -275,5 +285,131 @@ async fn a_fresh_backfill_asks_for_no_history_before_its_first_page() {
     assert!(
         !requests.iter().any(|r| r.url.contains("/history")),
         "{requests:?}"
+    );
+}
+
+/// The account keeps a year from 2026-04-01; Sent is held back to 2020-04-01.
+fn sent_deepened() -> MailboxWindows {
+    let since = |year| SyncWindow::since(CalendarDate::new(year, 4, 1).unwrap());
+    MailboxWindows::new(since(2026)).deepen(MailboxId::try_from("SENT").unwrap(), since(2020))
+}
+
+/// Sent's own listing, back to its floor and up to the account's, then the account's; the
+/// first key a URL contains answers it.
+fn sent_listing() -> Vec<(&'static str, FakeRoute)> {
+    vec![
+        (
+            "labelIds=SENT",
+            Ok(json!({ "messages": [{ "id": "old-sent", "threadId": "old-sent" }] })),
+        ),
+        (
+            "/messages/old-sent",
+            Ok(json!({ "id": "old-sent", "threadId": "old-sent", "labelIds": ["SENT"] })),
+        ),
+        ("/messages?maxResults", Ok(fixture(LIST))),
+    ]
+}
+
+#[tokio::test]
+async fn a_backfill_lists_the_account_then_each_deepened_label_back_to_its_floor() {
+    let mut routes = vec![
+        ("/profile", Ok(fixture(PROFILE))),
+        ("/history?startHistoryId", Ok(quiet_history())),
+    ];
+    routes.extend(sent_listing());
+    routes.extend(messages());
+    let (client, log) = recording_client(routes);
+    let provider = GmailProvider::new(client);
+
+    let chunks = pass_under(&provider, None, sent_deepened()).await;
+
+    assert_eq!(
+        fetched(&chunks),
+        ["message-2", "message-1", "message-0", "old-sent"]
+    );
+    assert_eq!(
+        checkpoints(&chunks),
+        ["backfill;h=1988;l=SENT;p=", "reconcile;h=1988"]
+    );
+    let listings: Vec<String> = log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.contains("/messages?"))
+        .map(|r| r.url.clone())
+        .collect();
+    // Midnight 2026-04-01 UTC = 1775001600, 2020-04-01 = 1585699200.
+    assert_eq!(listings.len(), 2, "{listings:?}");
+    assert!(
+        listings[0].contains("q=after:1775001600") && !listings[0].contains("labelIds"),
+        "{listings:?}"
+    );
+    assert!(
+        listings[1].contains("labelIds=SENT")
+            && listings[1].contains("q=after:1585699200%20before:1775001600"),
+        "{listings:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_backfill_stopped_in_a_labels_listing_picks_up_there() {
+    let mut routes = vec![("/history?startHistoryId", Ok(quiet_history()))];
+    routes.extend(sent_listing());
+    let (client, log) = recording_client(routes);
+    let provider = GmailProvider::new(client);
+
+    let chunks = pass_under(
+        &provider,
+        Some("backfill;h=1988;l=SENT;p="),
+        sent_deepened(),
+    )
+    .await;
+
+    assert_eq!(fetched(&chunks), ["old-sent"]);
+    assert_eq!(checkpoints(&chunks), ["reconcile;h=1988"]);
+    let requests = log.lock().unwrap();
+    assert!(
+        requests
+            .iter()
+            .filter(|r| r.url.contains("/messages?"))
+            .all(|r| r.url.contains("labelIds=SENT")),
+        "the account's listing was fetched again: {requests:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_backfill_in_a_label_no_longer_deepened_goes_on_to_the_reconcile() {
+    let provider = routed(&[vec![("/history?startHistoryId", Ok(quiet_history()))]]);
+
+    let chunks = pass(&provider, Some("backfill;h=1988;l=SENT;p=page-2")).await;
+
+    assert_eq!(fetched(&chunks), [] as [&str; 0]);
+    assert_eq!(checkpoints(&chunks), ["reconcile;h=1988"]);
+}
+
+#[tokio::test]
+async fn the_reconcile_lists_every_listing_of_the_window() {
+    // A deepened label's older mail is in no account listing, so a reconcile that left its
+    // listing out would tombstone what the backfill just fetched.
+    let (client, log) = recording_client(sent_listing());
+    let provider = GmailProvider::new(client);
+
+    let chunks = pass_under(&provider, Some("reconcile;h=1681"), sent_deepened()).await;
+
+    let present: Vec<&str> = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.present)
+        .map(ProviderKey::as_str)
+        .collect();
+    assert_eq!(present, ["message-2", "message-1", "message-0", "old-sent"]);
+    assert_eq!(checkpoints(&chunks), ["1681"]);
+    assert!(chunks.last().unwrap().is_reconcile_final());
+    assert_eq!(
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.contains("labelIds=SENT"))
+            .count(),
+        1
     );
 }

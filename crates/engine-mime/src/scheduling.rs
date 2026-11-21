@@ -1,5 +1,5 @@
-//! Pulling the iMIP scheduling payload — and the addresses the message was delivered to
-//! — out of a raw RFC 5322 message.
+//! Pulling the iMIP scheduling payload, and who the message was delivered and addressed to,
+//! out of a raw RFC 5322 message.
 //!
 //! This is the mail side of the mail↔calendar bridge. It reads only what the calendar
 //! layer needs to decide "is this an invitation, and is it *for me*?", and it reads it from
@@ -100,52 +100,62 @@ pub fn extract_calendar_part(raw: &RawMime) -> Option<CalendarPart> {
     fallback
 }
 
-/// Extracts the addresses this message was **delivered to**, most-trusted first.
+/// The addresses a message names as its recipients, in the two kinds a host must trust
+/// differently.
 ///
-/// This is what makes an invitation to an alias work with no configuration at all: the
-/// message reached this mailbox, so an `ATTENDEE` matching an address it was delivered to is
-/// the user — even when the account's primary address is something else entirely. Outlook
-/// behaves the same way.
+/// `delivered_to` is what the final MTA recorded delivering this copy to, so an address there
+/// is **this mailbox**: an invitation to an alias is recognised through it with no
+/// configuration at all. `addressed_to` is what the sender wrote, so an address there is
+/// **someone** the message went to, not necessarily this mailbox: an organiser addresses an
+/// invitation to every attendee, so a host that took each `To:` address as the user's own would
+/// answer as whichever colleague's `ATTENDEE` it met first.
 ///
-/// The MTA delivery headers (`Delivered-To`, `X-Original-To`, `Envelope-To`) come first
-/// because they name the actual delivery target, then `To:` and `Cc:`. Addresses are
-/// returned verbatim; normalizing and comparing them is
-/// `engine_core::scheduling::addresses_match`'s job, so there is exactly one implementation
-/// of "is this cal-address me?".
+/// Addresses are returned verbatim; normalising and comparing them is
+/// `engine_core::scheduling::addresses_match`'s job, so there is exactly one implementation of
+/// "is this cal-address me?". Each list drops duplicates case-insensitively and keeps first-seen
+/// order; an address may appear in both.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MessageRecipients {
+    /// `Delivered-To`, then `X-Original-To`, then `Envelope-To`. Empty on mail that made no
+    /// MTA hop, such as an invitation sent inside one Exchange tenant.
+    pub delivered_to: Vec<String>,
+    /// `To:`, then `Cc:`, with any group flattened into its mailboxes.
+    pub addressed_to: Vec<String>,
+}
+
+/// Extracts who `raw` was delivered to and who it was addressed to.
 ///
-/// Duplicates are removed case-insensitively while preserving first-seen order. A message
-/// that cannot be parsed yields an empty `Vec`.
+/// A message that cannot be parsed yields two empty lists.
 #[must_use]
-pub fn extract_delivery_recipients(raw: &RawMime) -> Vec<String> {
+pub fn extract_recipients(raw: &RawMime) -> MessageRecipients {
     let Some(message) = MessageParser::default().parse(raw.as_bytes()) else {
-        return Vec::new();
+        return MessageRecipients::default();
     };
 
-    let mut out: Vec<String> = Vec::new();
-    let mut push = |address: &str| {
-        let trimmed = address.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-        if !out.iter().any(|seen| seen.eq_ignore_ascii_case(trimmed)) {
-            out.push(trimmed.to_owned());
-        }
-    };
-
+    let mut found = MessageRecipients::default();
     // Not address fields in RFC 5322, so mail-parser keeps them as text.
     for name in DELIVERY_HEADERS {
         for header in message.headers().all(*name) {
             if let Some(text) = header.value().as_text() {
-                push(strip_angle_brackets(text));
+                push_unique(&mut found.delivered_to, strip_angle_brackets(text));
             }
         }
     }
     for list in [message.to(), message.cc()].into_iter().flatten() {
         for email in list.mailboxes().filter_map(|mailbox| mailbox.address()) {
-            push(email);
+            push_unique(&mut found.addressed_to, email);
         }
     }
-    out
+    found
+}
+
+/// Appends `address`, trimmed, unless it is blank or already present in any case.
+fn push_unique(out: &mut Vec<String>, address: &str) {
+    let trimmed = address.trim();
+    if trimmed.is_empty() || out.iter().any(|seen| seen.eq_ignore_ascii_case(trimmed)) {
+        return;
+    }
+    out.push(trimmed.to_owned());
 }
 
 /// Strips the `<…>` a delivery header often wraps its address in.
@@ -285,7 +295,7 @@ mod tests {
         let msg = b"To: Team: one@test.local, two@test.local;, three@test.local\r\n\
             Content-Type: text/plain\r\n\r\nhi\r\n";
         assert_eq!(
-            extract_delivery_recipients(&raw(msg)),
+            extract_recipients(&raw(msg)).addressed_to,
             ["one@test.local", "two@test.local", "three@test.local"]
         );
     }
@@ -305,28 +315,41 @@ mod tests {
             &b"\xff\xfe\x00garbage"[..],
         ] {
             let _ = extract_calendar_part(&raw(bytes));
-            let _ = extract_delivery_recipients(&raw(bytes));
+            let _ = extract_recipients(&raw(bytes));
         }
     }
 
     // --- delivery recipients (the zero-configuration alias case) ------------------
 
     #[test]
-    fn delivery_headers_come_before_to_and_cc() {
+    fn delivery_headers_and_to_cc_are_reported_apart() {
         // The reported case: an invitation addressed to a list, delivered to an alias. The
         // alias appears *only* in Delivered-To, and it is the address that identifies the
-        // user — so it must be offered first.
+        // user; `To:` and `Cc:` name who the sender wrote to, which is not the same claim.
         let msg = b"Delivered-To: info@test.local\r\n\
             To: everyone@test.local\r\n\
             Cc: someone@test.local\r\n\
             Content-Type: text/plain\r\n\r\nhi\r\n";
+        let found = extract_recipients(&raw(msg));
+        assert_eq!(found.delivered_to, ["info@test.local"]);
         assert_eq!(
-            extract_delivery_recipients(&raw(msg)),
-            vec![
-                "info@test.local".to_owned(),
-                "everyone@test.local".to_owned(),
-                "someone@test.local".to_owned(),
-            ]
+            found.addressed_to,
+            ["everyone@test.local", "someone@test.local"]
+        );
+    }
+
+    #[test]
+    fn an_invitation_to_every_attendee_delivers_to_none_of_them_in_particular() {
+        // How Exchange addresses a meeting: every attendee in `To:`, nothing else naming the
+        // recipient inside the tenant. None of these addresses is evidence of which attendee
+        // this mailbox is, so none may come back as a delivery.
+        let msg = b"To: board@test.local, carol@test.local, me@test.local\r\n\
+            Content-Type: text/plain\r\n\r\nhi\r\n";
+        let found = extract_recipients(&raw(msg));
+        assert!(found.delivered_to.is_empty(), "{found:?}");
+        assert_eq!(
+            found.addressed_to,
+            ["board@test.local", "carol@test.local", "me@test.local"]
         );
     }
 
@@ -335,26 +358,26 @@ mod tests {
         let msg = b"X-Original-To: <original@test.local>\r\n\
             Envelope-To: envelope@test.local\r\n\
             Content-Type: text/plain\r\n\r\nhi\r\n";
-        let found = extract_delivery_recipients(&raw(msg));
-        assert!(
-            found.contains(&"original@test.local".to_owned()),
-            "{found:?}"
-        );
-        assert!(
-            found.contains(&"envelope@test.local".to_owned()),
-            "{found:?}"
-        );
+        let found = extract_recipients(&raw(msg)).delivered_to;
+        assert_eq!(found, ["original@test.local", "envelope@test.local"]);
     }
 
     #[test]
-    fn duplicates_are_removed_case_insensitively_keeping_first_seen_order() {
+    fn duplicates_are_removed_case_insensitively_within_each_list() {
         let msg = b"Delivered-To: Info@Test.Local\r\n\
-            To: info@test.local, other@test.local\r\n\
+            Delivered-To: info@test.local\r\n\
+            To: info@test.local, other@test.local, OTHER@test.local\r\n\
             Content-Type: text/plain\r\n\r\nhi\r\n";
+        let found = extract_recipients(&raw(msg));
         assert_eq!(
-            extract_delivery_recipients(&raw(msg)),
-            vec!["Info@Test.Local".to_owned(), "other@test.local".to_owned()],
-            "the delivery header's spelling wins, and the To: repeat is dropped"
+            found.delivered_to,
+            ["Info@Test.Local"],
+            "first spelling wins"
+        );
+        assert_eq!(
+            found.addressed_to,
+            ["info@test.local", "other@test.local"],
+            "an address delivered to is still one the sender wrote to"
         );
     }
 
@@ -378,12 +401,14 @@ mod tests {
     fn a_blank_delivery_header_names_no_one() {
         // mail-parser 1.0 gives a present but blank field the value "" rather than none.
         let msg = b"Delivered-To: \r\nTo: a@test.local\r\nContent-Type: text/plain\r\n\r\nhi\r\n";
-        assert_eq!(extract_delivery_recipients(&raw(msg)), ["a@test.local"]);
+        let found = extract_recipients(&raw(msg));
+        assert!(found.delivered_to.is_empty(), "{found:?}");
+        assert_eq!(found.addressed_to, ["a@test.local"]);
     }
 
     #[test]
     fn a_message_with_no_recipients_yields_empty() {
         let msg = b"From: a@test.local\r\nContent-Type: text/plain\r\n\r\nhi\r\n";
-        assert_eq!(extract_delivery_recipients(&raw(msg)), [] as [String; 0]);
+        assert_eq!(extract_recipients(&raw(msg)), MessageRecipients::default());
     }
 }

@@ -46,7 +46,8 @@ mod scheduling;
 
 pub use engine::{
     CalendarDelete, CalendarWrite, ContactDelete, ContactReconciled, ContactWrite, Engine,
-    MailboxWrite, PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled, queued_draft,
+    MailboxSpan, MailboxWrite, PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled,
+    queued_draft,
 };
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
@@ -110,8 +111,10 @@ pub use engine_core::{
     // scheduling payload needs to be able to name it.
     raw::RawIcal,
     recipient::{RecipientCoverage, RecipientInteraction, RecipientSuggestion},
-    // `SearchDomain` names what `Engine::forget_account_domain` forgets.
-    sync::{SearchDomain, SyncScope, SyncWindow},
+    // `MailboxWindows` is what `StreamTuning::within` and the local prune take when a mailbox
+    // is held further back than its account; `SearchDomain` names what
+    // `Engine::forget_account_domain` forgets.
+    sync::{MailboxWindows, SearchDomain, SyncScope, SyncWindow},
     // `CalendarDateTime` is the type of `Event::start` and `Event::recurrence_id`, and `Duration`
     // the type of `Event::duration` — both public fields on a type this facade returns.
     time::{
@@ -143,18 +146,18 @@ pub use engine_http::{
 /// it is. The engine adds no product of its own.
 pub use engine_http::{InvalidUserAgent, UserAgent};
 pub use engine_provider::{
-    AttachedConference, CalendarAddress, CalendarUserAddresses, CalendarWrites, Capabilities,
-    ConferenceEdit, ContactDestination, ContactPhoto, ContactsProvider, ContentIdHeader,
-    DeleteTarget, Draft, DraftAttachment, DraftAttachmentDisposition, DraftCalendar,
-    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
-    EventWriteReceipt, IdentityControls, InvitationError, Invitee, InviteePatch, InviteeRole,
-    JitsiMeetings, JitsiServerError, KeywordName, MailEdit, MailEditReceipt, MailboxEdit,
-    MailboxEditReceipt, MailboxWrites, MeetingDraft, MeetingKey, MeetingKeyError, MeetingRequest,
-    MeetingService, MessageReport, NewConference, Occurrence, OverrideSurvival, PatchTarget,
-    Provider, RecurrenceEdit, ReplyDelivery, ReportControls, ReportEvidence, ReportReceipt,
-    ReportVerdict, ReportVerdicts, RsvpControls, RsvpResponse, SchedulingIdentity, SenderIdentity,
-    SenderIdentityId, SentCopy, SharedAccount, SharedAccounts, SourceStream, StoreDomains,
-    SubmissionReceipt, TextEdit, WriteGuard, WritePrecondition,
+    AttachedConference, CalendarAddress, CalendarSync, CalendarUserAddresses, CalendarWrites,
+    Capabilities, ConferenceEdit, ContactDestination, ContactPhoto, ContactsProvider,
+    ContentIdHeader, DeleteTarget, Draft, DraftAttachment, DraftAttachmentDisposition,
+    DraftCalendar, DraftReceipt, DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch,
+    EventRsvp, EventWrite, EventWriteReceipt, IdentityControls, InvitationError, Invitee,
+    InviteePatch, InviteeRole, JitsiMeetings, JitsiServerError, KeywordName, MailEdit,
+    MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites, MeetingDraft, MeetingKey,
+    MeetingKeyError, MeetingRequest, MeetingService, MessageReport, NewConference, Occurrence,
+    OverrideSurvival, PatchTarget, Provider, RecurrenceEdit, ReplyDelivery, ReportControls,
+    ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts, RsvpControls, RsvpResponse,
+    SchedulingIdentity, SenderIdentity, SenderIdentityId, SentCopy, SharedAccount, SharedAccounts,
+    SourceStream, StoreDomains, SubmissionReceipt, TextEdit, WriteGuard, WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,

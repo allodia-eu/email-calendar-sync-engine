@@ -16,7 +16,7 @@ use engine_core::{
     calendar::{Calendar, Event, Frequency, Recurrence, RecurrenceBound, RecurrenceRule},
     error::FailureClass,
     ids::{CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid},
-    mail::{EmailAddress, MailStateChange, Mailbox, MailboxRole, Message},
+    mail::{EmailAddress, Keyword, MailStateChange, Mailbox, MailboxRole, Message},
     membership::Memberships,
     raw::RawIcal,
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
@@ -25,11 +25,11 @@ use engine_core::{
     write::{IdempotencyKey, PendingOp, PendingOpKind, PendingOutcome, ResourceKey},
 };
 use engine_provider::{
-    CalendarListing, CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream,
-    EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt,
-    MailEdit, MailEditReceipt, MessageReport, OverrideSurvival, PatchTarget, Provider,
-    ProviderError, ProviderResult, ReportReceipt, ReportVerdict, RsvpResponse, ScopeSync,
-    SubmissionReceipt, WriteGuard,
+    CalendarListing, CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Draft,
+    DraftReceipt, EmailChunk, EmailStream, EventDeletion, EventDraft, EventEdit, EventPatch,
+    EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport,
+    OverrideSurvival, PatchTarget, Provider, ProviderError, ProviderResult, ReportReceipt,
+    ReportVerdict, RsvpResponse, ScopeSync, SubmissionReceipt, WriteGuard,
 };
 use engine_recurrence::Horizon;
 use engine_store::{
@@ -52,6 +52,7 @@ mod calendar_reach;
 mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
+mod draft_keywords;
 mod drafts;
 pub(super) mod drain;
 mod durable_send;
@@ -61,9 +62,12 @@ mod mail_account;
 mod mail_edit;
 mod mail_sync;
 mod mailbox_edit;
+mod mailbox_windows;
+mod mailbox_windows_account;
 mod queued_edits;
 mod reconcile_state;
 mod sent_copy;
+mod sent_copy_keywords;
 mod state_change;
 mod streaming;
 mod streaming_resume;
@@ -96,6 +100,9 @@ enum Fault {
     CalendarFetch,
 }
 
+/// What [`FakeMail`] saw of one draft save: its `Message-ID` and the keywords it asked for.
+type DraftPutSeen = (String, BTreeSet<Keyword>);
+
 /// A configurable in-memory mail provider: a snapshot on first sync, an empty
 /// delta once a cursor exists.
 struct FakeMail {
@@ -126,9 +133,9 @@ struct FakeMail {
     failing_sends: Mutex<u32>,
     /// Draft saves left to refuse, for the same reason.
     failing_drafts: Mutex<u32>,
-    /// The `Message-ID` of every draft save that reached the provider, so a test can
-    /// count the writes a queue of saves actually cost.
-    draft_puts: Arc<Mutex<Vec<String>>>,
+    /// The `Message-ID` of every draft save that reached the provider, with the keywords it
+    /// asked for, so a test can count the writes a queue of saves actually cost.
+    draft_puts: Arc<Mutex<Vec<DraftPutSeen>>>,
     /// Every draft removal that reached the provider.
     draft_deletes: Arc<Mutex<Vec<ProviderKey>>>,
 }
@@ -166,6 +173,12 @@ impl FakeMail {
         self
     }
 
+    /// Keeps the keywords a draft save asks for.
+    fn keeping_draft_keywords(mut self) -> Self {
+        self.caps = self.caps.with_draft_keywords();
+        self
+    }
+
     /// Binds this provider to one folder — the IMAP shape, where a host builds one per folder
     /// and the engine fans them out. `log` is shared across the set so the order they were
     /// *started* in is visible to the test.
@@ -182,6 +195,16 @@ impl FakeMail {
             .state_delta
             .lock()
             .expect("keyword delta mutex poisoned") = changes;
+        self
+    }
+
+    /// Keeps a draft's sent-copy keywords after the send rather than within it: the shape of an
+    /// adapter whose server files the copy on its own a moment later.
+    fn keeping_keywords_after_the_send(mut self) -> Self {
+        self.caps = self
+            .caps
+            .with_sent_copy_keywords()
+            .with_sent_copy_keywords_deferred();
         self
     }
 

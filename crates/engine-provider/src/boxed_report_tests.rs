@@ -5,8 +5,8 @@ use engine_core::{
 
 use super::*;
 use crate::{
-    CalendarWrites, Capabilities, ConnectionInfo, MessageReport, Provider, ProviderResult,
-    ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
+    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, MessageReport, Provider,
+    ProviderResult, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
 };
 
 fn account() -> AccountId {
@@ -43,6 +43,8 @@ impl Provider for Reports {
     }
 }
 
+impl CalendarSync for Reports {}
+
 impl crate::MailboxWrites for Reports {}
 impl CalendarWrites for Reports {}
 
@@ -55,6 +57,8 @@ impl Provider for Silent {
         ConnectionInfo::new(Capabilities::none())
     }
 }
+
+impl CalendarSync for Silent {}
 
 impl crate::MailboxWrites for Silent {}
 impl CalendarWrites for Silent {}

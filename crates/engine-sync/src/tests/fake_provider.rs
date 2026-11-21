@@ -48,7 +48,7 @@ impl Provider for FakeMail {
         &'a self,
         _account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        _window: SyncWindow,
+        _window: engine_core::sync::MailboxWindows,
         _fetch_batch: usize,
         _chunk_size: usize,
     ) -> EmailStream<'a> {
@@ -99,7 +99,8 @@ impl Provider for FakeMail {
         _account: &AccountId,
         draft: &Draft,
         replacing: Option<&ProviderKey>,
-    ) -> ProviderResult<ProviderKey> {
+        keywords: &BTreeSet<Keyword>,
+    ) -> ProviderResult<DraftReceipt> {
         {
             let mut left = self.failing_drafts.lock().unwrap();
             if *left > 0 {
@@ -109,11 +110,17 @@ impl Provider for FakeMail {
         }
         let mut puts = self.draft_puts.lock().unwrap();
         let _ = replacing;
-        puts.push(draft.message_id.as_str().to_owned());
+        puts.push((draft.message_id.as_str().to_owned(), keywords.clone()));
         // A new key per save, so a test can see that the caller has to keep what comes
         // back rather than the key it passed in.
-        ProviderKey::new(format!("draft-{}", puts.len()))
-            .map_err(|e| ProviderError::permanent(e.to_string()))
+        let key = ProviderKey::new(format!("draft-{}", puts.len()))
+            .map_err(|e| ProviderError::permanent(e.to_string()))?;
+        let kept = if self.caps.draft_keywords() {
+            keywords.clone()
+        } else {
+            BTreeSet::new()
+        };
+        Ok(DraftReceipt::stored(key).with_keywords(kept))
     }
 
     async fn delete_draft(&self, _account: &AccountId, draft: &ProviderKey) -> ProviderResult<()> {
@@ -158,10 +165,45 @@ impl Provider for FakeMail {
                 draft.message_id.clone(),
                 &handed_over,
             )
-            .with_sent_copy_keywords(draft.sent_copy_keywords.clone()))
+            .with_sent_copy_keywords(if self.caps.sent_copy_keywords_deferred() {
+                // Kept after the send, by the edit the outbox records.
+                BTreeSet::new()
+            } else {
+                draft.sent_copy_keywords.clone()
+            }))
         }
     }
 
+    async fn edit_mail(
+        &self,
+        _account: &AccountId,
+        edit: &MailEdit,
+    ) -> ProviderResult<MailEditReceipt> {
+        if self.fails(Fault::WriteGuard) {
+            // The IMAP analogue of a CalDAV 412: a stale UID under a changed
+            // UIDVALIDITY (`imap-smtp.md`) — recompute after a re-sync.
+            return Err(ProviderError::conflict("UIDVALIDITY changed"));
+        }
+        if self.fails(Fault::ThrottledEdit) {
+            return Err(ProviderError::rate_limited("slow down", None));
+        }
+        Ok(MailEditReceipt::new(edit.target().clone()))
+    }
+
+    async fn report_message(
+        &self,
+        _account: &AccountId,
+        report: &MessageReport,
+    ) -> ProviderResult<ReportReceipt> {
+        if self.fails(Fault::Report) {
+            return Err(ProviderError::rate_limited("slow down", None));
+        }
+        Ok(ReportReceipt::new(report.target.clone()))
+    }
+}
+
+#[async_trait::async_trait]
+impl CalendarSync for FakeMail {
     async fn sync_calendars(
         &self,
         _account: &AccountId,
@@ -190,33 +232,6 @@ impl Provider for FakeMail {
             SyncUpdate::snapshot(self.events.clone(), present),
             self.cursor.clone(),
         ))
-    }
-
-    async fn edit_mail(
-        &self,
-        _account: &AccountId,
-        edit: &MailEdit,
-    ) -> ProviderResult<MailEditReceipt> {
-        if self.fails(Fault::WriteGuard) {
-            // The IMAP analogue of a CalDAV 412: a stale UID under a changed
-            // UIDVALIDITY (`imap-smtp.md`) — recompute after a re-sync.
-            return Err(ProviderError::conflict("UIDVALIDITY changed"));
-        }
-        if self.fails(Fault::ThrottledEdit) {
-            return Err(ProviderError::rate_limited("slow down", None));
-        }
-        Ok(MailEditReceipt::new(edit.target().clone()))
-    }
-
-    async fn report_message(
-        &self,
-        _account: &AccountId,
-        report: &MessageReport,
-    ) -> ProviderResult<ReportReceipt> {
-        if self.fails(Fault::Report) {
-            return Err(ProviderError::rate_limited("slow down", None));
-        }
-        Ok(ReportReceipt::new(report.target.clone()))
     }
 }
 impl engine_provider::MailboxWrites for FakeMail {}

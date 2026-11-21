@@ -32,6 +32,7 @@
 //! the provider-neutral scopes.
 
 mod boxed;
+mod calendar_sync;
 mod calendar_user;
 mod calendar_write;
 mod capability;
@@ -45,6 +46,7 @@ mod connection;
 mod contact;
 mod content_id;
 mod deadline;
+mod draft_receipt;
 mod error;
 mod hand_over;
 mod identity;
@@ -65,6 +67,7 @@ mod submit;
 mod sync;
 mod watch;
 
+pub use calendar_sync::CalendarSync;
 pub use calendar_user::CalendarUserAddresses;
 pub use calendar_write::{
     AttachedConference, CalendarAddress, CalendarWrites, ConferenceEdit, DeleteTarget,
@@ -85,6 +88,7 @@ pub use contact::{
     ContactsProvider,
 };
 pub use deadline::Deadlines;
+pub use draft_receipt::DraftReceipt;
 pub use error::{ProviderError, ProviderResult};
 pub use hand_over::{HandOver, HandOverLog, HandedOver, Unrecorded};
 pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};

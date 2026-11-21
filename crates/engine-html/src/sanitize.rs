@@ -167,6 +167,9 @@ pub(crate) fn sanitizer() -> &'static Builder<'static> {
             .add_tag_attributes("font", ["color", "face", "size"])
             .add_tag_attributes("blockquote", ["type"])
             .add_tag_attributes("a", ["name"])
+            // Thunderbird quotes a plain-text message as `<pre wrap>` and draws it wrapped; the
+            // reading document's base sheet wraps it too (`document.rs`).
+            .add_tag_attributes("pre", ["wrap"])
             .add_generic_attributes([
                 "style",
                 "class",

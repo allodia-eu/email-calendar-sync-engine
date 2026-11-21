@@ -113,8 +113,9 @@ async fn live_imap_a_drafts_importance_reads_back() {
         )
         .with_importance(importance);
         let key = provider
-            .put_draft(&account(), &draft, None)
+            .put_draft(&account(), &draft, None, &std::collections::BTreeSet::new())
             .await
+            .map(|stored| stored.key)
             .expect("save");
 
         let read = stored(&harness, &folder, &message_id).await;

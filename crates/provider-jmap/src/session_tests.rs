@@ -124,6 +124,8 @@ fn reads_capabilities_and_limits() {
     assert!(caps.message_source());
     // Mail + a writable account ⇒ mail writes (`Email/set`) are advertised.
     assert!(caps.mail_writes());
+    // ...and so are drafts, carrying keywords on their create.
+    assert!(caps.mail_drafts() && caps.draft_keywords());
     // An EventSource endpoint ⇒ push / change notification is advertised.
     assert!(caps.idle());
     assert_eq!(session.limits().max_objects_in_get, 500);
@@ -264,6 +266,7 @@ fn read_only_account_does_not_advertise_mail_writes() {
     assert!(session.capabilities().mail());
     assert!(!session.capabilities().mail_writes());
     assert!(!session.capabilities().mailbox_writes());
+    assert!(!session.capabilities().draft_keywords());
 }
 
 #[test]

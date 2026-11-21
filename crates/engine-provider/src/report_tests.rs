@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use engine_core::{error::FailureClass, ids::AccountId};
 
 use super::*;
-use crate::{CalendarWrites, Capabilities, Provider};
+use crate::{CalendarSync, CalendarWrites, Capabilities, Provider};
 
 fn key() -> ProviderKey {
     ProviderKey::new("imap:v1:u42@INBOX").unwrap()
@@ -104,6 +104,8 @@ async fn the_default_provider_impl_rejects_rather_than_pretending() {
             crate::ConnectionInfo::new(Capabilities::none())
         }
     }
+
+    impl CalendarSync for Unsupported {}
 
     impl crate::MailboxWrites for Unsupported {}
     impl CalendarWrites for Unsupported {}

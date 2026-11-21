@@ -46,7 +46,7 @@ use engine_core::{
     sync::SyncUpdate,
 };
 use engine_provider::{
-    CalendarWrites, EventDeletion, EventDraft, EventRsvp, Provider, RsvpResponse,
+    CalendarSync, CalendarWrites, EventDeletion, EventDraft, EventRsvp, Provider, RsvpResponse,
 };
 use provider_google::{GoogleCalendarProvider, GoogleClient};
 

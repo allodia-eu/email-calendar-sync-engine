@@ -44,7 +44,7 @@ impl Provider for Overtaken {
         &'a self,
         account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        window: SyncWindow,
+        window: engine_core::sync::MailboxWindows,
         fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
@@ -70,6 +70,8 @@ impl Provider for Overtaken {
         self.inner.edit_mail(account, edit).await
     }
 }
+
+impl CalendarSync for Overtaken {}
 
 /// An edit whose lease another process recovered while it ran cannot record its outcome, and
 /// that is the other worker's business, not a reason to stop: the pass defers it and drains

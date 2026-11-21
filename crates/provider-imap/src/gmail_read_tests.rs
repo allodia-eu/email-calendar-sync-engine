@@ -89,6 +89,24 @@ async fn a_search_joins_every_criterion_it_was_given() {
 }
 
 #[tokio::test]
+async fn a_search_for_one_label_between_two_days_names_both() {
+    let (mut connection, recorded) = logged_in(&["* SEARCH 4\r\na2 OK SEARCH completed\r\n"]).await;
+    let query = GmailQuery {
+        since: time::Date::from_calendar_date(2020, time::Month::April, 1).ok(),
+        before: time::Date::from_calendar_date(2026, time::Month::April, 1).ok(),
+        label: Some("\\Sent".to_owned()),
+        ..GmailQuery::default()
+    };
+    assert_eq!(search(&mut connection, &query).await.unwrap(), vec![4]);
+    assert!(
+        written(&recorded)
+            .contains(r#"a2 UID SEARCH SINCE 1-Apr-2020 BEFORE 1-Apr-2026 X-GM-LABELS "\\Sent""#),
+        "{}",
+        written(&recorded)
+    );
+}
+
+#[tokio::test]
 async fn a_search_within_no_uids_asks_the_server_nothing() {
     let (mut connection, recorded) = logged_in(&[]).await;
     let query = GmailQuery {
@@ -110,7 +128,7 @@ async fn metadata_carries_the_gmail_ids_and_the_labels_decoded() {
             "* 12 FETCH (X-GM-THRID 1402140321003522132 X-GM-MSGID 1402140321003522133 ",
             r#"X-GM-LABELS ("\\Inbox" "Reis/&AOk-t&AOk-") UID 5002 FLAGS (\Seen) "#,
             r#"INTERNALDATE "01-Oct-2026 10:00:00 +0000" RFC822.SIZE 420 "#,
-            r#"ENVELOPE ("Thu, 1 Oct 2026 10:00:00 +0000" "Hi" NIL NIL NIL NIL NIL NIL NIL "<m@example.com>") "#,
+            r#"ENVELOPE ("Thu, 1 Oct 2026 09:00:00 -0300" "Hi" NIL NIL NIL NIL NIL NIL NIL "<m@example.com>") "#,
             "BODY[HEADER.FIELDS (REFERENCES CONTENT-TYPE CONTENT-DISPOSITION)] {{{}}}\r\n{})\r\n",
             "a2 OK Success\r\n"
         ),
@@ -139,9 +157,18 @@ async fn metadata_carries_the_gmail_ids_and_the_labels_decoded() {
     assert_eq!(state.flags, vec!["\\Seen".to_owned()]);
     assert_eq!(got[0].message.envelope.subject.as_deref(), Some("Hi"));
     assert_eq!(got[0].message.size, Some(420));
+    // Sent when the `Date` header says, received when Gmail stored it.
     assert_eq!(
-        got[0].date.as_deref(),
-        Some("Thu, 1 Oct 2026 10:00:00 +0000")
+        got[0].message.sent_at.map(|at| at.to_string()).as_deref(),
+        Some("2026-10-01T12:00:00Z")
+    );
+    assert_eq!(
+        got[0]
+            .message
+            .received_at
+            .map(|at| at.to_string())
+            .as_deref(),
+        Some("2026-10-01T10:00:00Z")
     );
 }
 

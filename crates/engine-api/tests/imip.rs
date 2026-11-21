@@ -26,7 +26,9 @@ use engine_core::{
     raw::RawMime,
     scheduling::{ScheduleMethod, addresses_match},
 };
-use engine_provider::{CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult};
+use engine_provider::{
+    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult,
+};
 
 /// The captured invitation, byte-for-byte as committed.
 const INVITATION: &[u8] = include_bytes!("fixtures/stalwart-invitation.eml");
@@ -48,6 +50,8 @@ impl Provider for SourceProvider {
         Ok(RawMime::new(self.0.to_vec()))
     }
 }
+
+impl CalendarSync for SourceProvider {}
 
 impl engine_provider::MailboxWrites for SourceProvider {}
 impl CalendarWrites for SourceProvider {}
@@ -134,13 +138,13 @@ async fn the_attendee_folded_across_a_line_break_still_matches_the_delivery_addr
     // And the two-condition gate closes: the MTA's own `Delivered-To` names this mailbox,
     // and an ATTENDEE matches it.
     assert_eq!(
-        found.delivery_recipients.first().map(String::as_str),
+        found.delivered_to.first().map(String::as_str),
         Some("carol@test.local"),
-        "Delivered-To is the header the MTA wrote, and it comes first"
+        "Delivered-To is the header the MTA wrote"
     );
     assert!(attendees.iter().any(|attendee| {
         found
-            .delivery_recipients
+            .delivered_to
             .iter()
             .any(|mine| addresses_match(attendee, mine))
     }));

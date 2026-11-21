@@ -14,7 +14,6 @@ use tokio::{net::TcpListener, time::Instant};
 
 use crate::{
     GraphClient,
-    categories::Categories,
     test_support::{retry, tls, user_agent},
 };
 
@@ -71,12 +70,7 @@ async fn a_send_the_server_never_answers_needs_confirmation_and_is_never_retried
     let hand_over = engine_provider::HandOver::new(&engine_provider::Unrecorded);
     let (outcome, elapsed) = held_until(
         server.has_received(1),
-        timed(crate::submit::send(
-            &client,
-            &draft(),
-            &Categories::default(),
-            &hand_over,
-        )),
+        timed(crate::submit::send(&client, &draft(), &hand_over)),
     )
     .await;
 
@@ -99,7 +93,6 @@ async fn a_send_whose_connection_never_completes_is_retried() {
     let (outcome, elapsed) = timed(crate::submit::send(
         &client,
         &draft(),
-        &Categories::default(),
         &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     ))
     .await;
@@ -166,7 +159,7 @@ async fn the_hand_over_is_recorded_inside_the_send_request() {
     let log = Watch::on(&server, false);
     let hand_over = engine_provider::HandOver::new(&log);
 
-    crate::submit::send(&client, &draft(), &Categories::default(), &hand_over)
+    crate::submit::send(&client, &draft(), &hand_over)
         .await
         .expect("sent");
 
@@ -184,14 +177,9 @@ async fn a_hand_over_that_cannot_be_recorded_never_completes_the_send_request() 
     let client = client(server.url());
     let log = Watch::on(&server, true);
 
-    let err = crate::submit::send(
-        &client,
-        &draft(),
-        &Categories::default(),
-        &engine_provider::HandOver::new(&log),
-    )
-    .await
-    .expect_err("withheld");
+    let err = crate::submit::send(&client, &draft(), &engine_provider::HandOver::new(&log))
+        .await
+        .expect_err("withheld");
 
     assert!(err.is_retryable(), "{err}");
     assert!(!err.requires_confirmation(), "{err}");
@@ -218,7 +206,6 @@ async fn a_gateway_with_no_answer_asks_and_the_servers_own_refusal_does_not() {
         let err = crate::submit::send(
             &client,
             &draft(),
-            &Categories::default(),
             &engine_provider::HandOver::new(&engine_provider::Unrecorded),
         )
         .await

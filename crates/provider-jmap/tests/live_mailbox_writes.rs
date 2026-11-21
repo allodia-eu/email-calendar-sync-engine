@@ -122,8 +122,9 @@ async fn file_message(provider: &JmapProvider, folder: &MailboxId, label: &str) 
         "Filed by the live folder test.",
     );
     let key = provider
-        .put_draft(&account(), &draft, None)
+        .put_draft(&account(), &draft, None, &std::collections::BTreeSet::new())
         .await
+        .map(|stored| stored.key)
         .expect("draft");
     provider
         .edit_mail(&account(), &MailEdit::move_to(key.clone(), folder.clone()))

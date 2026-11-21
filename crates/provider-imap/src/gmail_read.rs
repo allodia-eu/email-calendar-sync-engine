@@ -117,6 +117,12 @@ where
     if let Some(since) = query.since {
         criteria.push(format!("SINCE {}", format_imap_date(since)));
     }
+    if let Some(before) = query.before {
+        criteria.push(format!("BEFORE {}", format_imap_date(before)));
+    }
+    if let Some(label) = &query.label {
+        criteria.push(format!("X-GM-LABELS {}", quote(label)));
+    }
     if let Some(raw) = &query.raw {
         criteria.push(format!("X-GM-RAW {}", quote(raw)));
     }
@@ -152,15 +158,7 @@ where
         connection.settle_attachments(&mut rows).await?;
         out.extend(rows.into_iter().filter_map(|row| {
             let message = message_from_fetch(&row, folder, validity);
-            let date = row
-                .envelope
-                .as_ref()
-                .and_then(|envelope| envelope.date.clone());
-            state_of(row, utf7).map(|state| GmailMessage {
-                state,
-                message,
-                date,
-            })
+            state_of(row, utf7).map(|state| GmailMessage { state, message })
         }));
     }
     Ok(out)

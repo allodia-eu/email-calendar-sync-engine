@@ -11,7 +11,7 @@ use engine_core::{
     sync::SyncUpdate,
     time::{CalendarDateTime, Horizon, LocalDateTime, TimeZoneId},
 };
-use engine_provider::{CalendarWrites, EventDeletion, Provider};
+use engine_provider::{CalendarSync, CalendarWrites, EventDeletion, Provider};
 use provider_graph::{GraphCalendarProvider, GraphClient, MailboxPrincipal};
 
 pub(crate) fn account() -> AccountId {

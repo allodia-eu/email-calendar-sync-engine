@@ -46,6 +46,8 @@ impl Provider for Writes<'_> {
     }
 }
 
+impl CalendarSync for Writes<'_> {}
+
 impl engine_provider::MailboxWrites for Writes<'_> {}
 
 #[async_trait::async_trait]

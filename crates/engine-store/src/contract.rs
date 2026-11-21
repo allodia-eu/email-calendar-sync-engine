@@ -31,6 +31,7 @@ use crate::{
 
 mod contact_cases;
 mod outbox_cases;
+mod recipient_cases;
 mod scope_cases;
 
 /// A trivial storable object the suite applies and reads back. Real domain types
@@ -180,6 +181,8 @@ where
     let (store, clock) = make();
     scope_cases::list_mail_by_keys_resolves_named_messages(&store, &clock).await;
     let (store, clock) = make();
+    scope_cases::a_mailbox_span_reads_one_mailbox_between_two_instants(&store, &clock).await;
+    let (store, clock) = make();
     scope_cases::a_resent_object_keeps_the_columns_no_provider_supplies(&store, &clock).await;
     let (store, clock) = make();
     scope_cases::a_reply_joins_its_original_across_scopes(&store, &clock).await;
@@ -302,6 +305,8 @@ where
     contact_cases::a_person_with_no_name_is_stored(&store).await;
     let (store, _) = make();
     contact_cases::recipient_idempotency_and_suppression(&store).await;
+    let (store, _) = make();
+    recipient_cases::a_replay_fills_a_missing_sent_instant(&store).await;
     let (store, _) = make();
     contact_cases::contact_photo_cache_is_fingerprint_bound(&store).await;
     contact_cases::contact_photo_cache_separates_resources_on_one_card(&store).await;

@@ -5,12 +5,19 @@
 //! name for it ([`KeywordName`]); sync reads such a category back as the keyword
 //! ([`crate::normalize_state::keywords_from_json`]).
 //!
-//! `sendMail` answers `202` with no body and files the copy itself, a moment later, so the copy
-//! is looked up in Sent Items by the `Message-ID` the MIME carried (Graph keeps it verbatim,
-//! `crate::submit`) and given the category with a `PATCH`. The lookup is repeated on a short
-//! schedule ([`FIND_SCHEDULE`]): a live mailbox has shown the copy within about three seconds.
-//! The message is delivered before any of it starts, and nothing here can fail the send: a copy
-//! not found, or a `PATCH` refused, only leaves the keyword out of the receipt.
+//! `sendMail` answers `202` with no body and files the copy itself, a moment later, so the send
+//! does not wait for it. The adapter keeps nothing within the send and says so
+//! ([`Capabilities::sent_copy_keywords_deferred`](engine_provider::Capabilities::sent_copy_keywords_deferred));
+//! the outbox then records a [`MailEdit::SetKeywords`](engine_provider::MailEdit::SetKeywords)
+//! on the copy's `sent:<Message-ID>` placeholder key, and draining it lands here
+//! ([`Categories::apply`]). A placeholder is resolved by looking the copy up in Sent Items by
+//! the `Message-ID` the MIME carried (Graph keeps it verbatim, `crate::submit`); a copy not
+//! there yet is a retryable failure, so the outbox tries again on its own schedule. A live
+//! mailbox has shown the copy within about three seconds.
+//!
+//! A stored draft carries its keywords the same way, set after each save
+//! ([`Categories::keep_on_draft`]). A re-save in place keeps the message and its categories
+//! (live), so a keyword the save no longer asks for is taken off as well.
 //!
 //! **One category per keyword, whatever the device's language.** Before the first tag the Sent
 //! Items folder is asked for a message already carrying any of the keyword's names, and the name
@@ -22,23 +29,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Mutex,
-    time::Duration,
 };
 
-use engine_core::mail::Keyword;
-use engine_provider::{Draft, KeywordName};
-use serde_json::{Value, json};
+use engine_core::{ids::ProviderKey, mail::Keyword};
+use engine_provider::{KeywordName, ProviderError, ProviderResult};
+use serde_json::{Map, Value, json};
 
 use crate::{error::GraphError, transport::GraphClient};
 
-/// The waits before each lookup of the filed copy: five tries over about five seconds.
-pub(crate) const FIND_SCHEDULE: &[Duration] = &[
-    Duration::from_millis(500),
-    Duration::from_millis(750),
-    Duration::from_secs(1),
-    Duration::from_millis(1250),
-    Duration::from_millis(1500),
-];
+/// The prefix of the key a sent copy goes by until Sent Items syncs it back (`crate::submit`).
+const SENT_PLACEHOLDER: &str = "sent:";
 
 /// The names a host registered, and the category name settled on for each keyword.
 #[derive(Debug, Default)]
@@ -60,46 +60,120 @@ impl Categories {
         &self.names
     }
 
-    /// Gives the copy of the just-sent `draft` the category of each keyword it asks for that
-    /// has a registered name, returning the keywords the copy now carries. Waits `schedule`
-    /// before each lookup of the copy.
-    pub(crate) async fn tag_sent_copy(
+    /// The registered name of `keyword`, if the host gave it one.
+    pub(crate) fn named(&self, keyword: &Keyword) -> Option<&KeywordName> {
+        self.names.iter().find(|named| named.keyword() == keyword)
+    }
+
+    /// Adds the category of each of `add` to `target` and takes every name of each of `remove`
+    /// off it, together with the rest of `body` (the `isRead`/`flag` half of the same edit), in
+    /// one `PATCH`. Returns the key of the message patched: the resolved id when `target` was a
+    /// sent copy's placeholder.
+    ///
+    /// # Errors
+    ///
+    /// A retryable [`ProviderError`] while a placeholder's copy is not in Sent Items yet;
+    /// otherwise the classification of the failed request.
+    pub(crate) async fn apply(
         &self,
         client: &GraphClient,
-        draft: &Draft,
-        schedule: &[Duration],
-    ) -> BTreeSet<Keyword> {
-        let wanted: Vec<&KeywordName> = self
-            .names
-            .iter()
-            .filter(|named| draft.sent_copy_keywords.contains(named.keyword()))
-            .collect();
-        if wanted.is_empty() {
-            return BTreeSet::new();
-        }
-        let Some((id, mut categories)) =
-            find_sent_copy(client, draft.message_id.as_str(), schedule).await
-        else {
-            return BTreeSet::new();
-        };
-        for named in &wanted {
-            let name = self.category_for(client, named).await;
+        target: &ProviderKey,
+        add: &[&KeywordName],
+        remove: &[&KeywordName],
+        mut body: Map<String, Value>,
+    ) -> ProviderResult<ProviderKey> {
+        let (id, mut categories) =
+            if let Some(message_id) = target.as_str().strip_prefix(SENT_PLACEHOLDER) {
+                find_sent_copy(client, message_id).await?.ok_or_else(|| {
+                    ProviderError::retryable("the sent copy is not in Sent Items yet")
+                })?
+            } else {
+                let doc = client
+                    .get(&client.url(&format!(
+                        "/messages/{}?$select=id,categories",
+                        target.as_str()
+                    )))
+                    .await?;
+                (target.as_str().to_owned(), categories(&doc))
+            };
+        categories.retain(|held| !remove.iter().any(|named| named.is_named(held)));
+        for named in add {
             if !categories.iter().any(|held| named.is_named(held)) {
-                categories.push(name);
+                categories.push(self.category_for(client, named).await);
             }
         }
-        let body = json!({ "categories": categories });
-        let patched = client
+        body.insert("categories".to_owned(), json!(categories));
+        client
             .patch(
                 &client.url(&format!("/messages/{id}")),
                 "application/json",
                 None,
-                body.to_string().into_bytes(),
+                serde_json::to_vec(&Value::Object(body)).map_err(GraphError::from)?,
             )
-            .await;
-        match patched {
-            Ok(_) => wanted.iter().map(|named| named.keyword().clone()).collect(),
-            Err(_) => BTreeSet::new(),
+            .await
+            .map_err(|err| match err {
+                // `ErrorIrresolvableConflict`, sent with no `If-Match` asked for: the message
+                // changed after the categories above were read. Exchange answers it for a Sent
+                // copy it is still writing a moment after the copy appears (live), so another
+                // attempt reads them again rather than settling the edit.
+                GraphError::Status { status: 412, .. } => {
+                    ProviderError::retryable("the message changed while its categories were set")
+                }
+                other => other.into(),
+            })?;
+        ProviderKey::new(id).map_err(|err| ProviderError::permanent(err.to_string()))
+    }
+
+    /// Makes the stored draft `key` carry the category of each of `wanted` that has a
+    /// registered name, and no name of any other registered keyword, keeping the person's own
+    /// categories. `held` is what the save answered the draft carries, read again when the
+    /// answer did not say. Returns the keywords the draft carries; nothing here fails the save.
+    pub(crate) async fn keep_on_draft(
+        &self,
+        client: &GraphClient,
+        key: &ProviderKey,
+        held: Option<Vec<String>>,
+        wanted: &BTreeSet<Keyword>,
+    ) -> BTreeSet<Keyword> {
+        if self.names.is_empty() {
+            return BTreeSet::new();
+        }
+        let url = client.url(&format!("/messages/{}", key.as_str()));
+        let held = match held {
+            Some(held) => held,
+            None => match client.get(&format!("{url}?$select=categories")).await {
+                Ok(doc) => categories(&doc),
+                Err(_) => return BTreeSet::new(),
+            },
+        };
+        let (named, unwanted): (Vec<&KeywordName>, Vec<&KeywordName>) = self
+            .names
+            .iter()
+            .partition(|named| wanted.contains(named.keyword()));
+        let mut target: Vec<String> = held
+            .iter()
+            .filter(|category| !unwanted.iter().any(|named| named.is_named(category)))
+            .cloned()
+            .collect();
+        for named in &named {
+            if !target.iter().any(|held| named.is_named(held)) {
+                target.push(self.category_for(client, named).await);
+            }
+        }
+        let carried = |categories: &[String]| -> BTreeSet<Keyword> {
+            named
+                .iter()
+                .filter(|named| categories.iter().any(|held| named.is_named(held)))
+                .map(|named| named.keyword().clone())
+                .collect()
+        };
+        if target == held {
+            return carried(&held);
+        }
+        let body = json!({ "categories": target }).to_string().into_bytes();
+        match client.patch(&url, "application/json", None, body).await {
+            Ok(_) => carried(&target),
+            Err(_) => carried(&held),
         }
     }
 
@@ -126,31 +200,25 @@ impl Categories {
 }
 
 /// The id and categories of the Sent Items message whose `internetMessageId` is `message_id`,
-/// looked for after each wait in `schedule`. `None` when it never turned up.
+/// or `None` when it is not there (yet).
 async fn find_sent_copy(
     client: &GraphClient,
     message_id: &str,
-    schedule: &[Duration],
-) -> Option<(String, Vec<String>)> {
+) -> Result<Option<(String, Vec<String>)>, GraphError> {
     let filter = format!(
         "internetMessageId eq {}",
         literal(&format!("<{message_id}>"))
     );
-    let url = client.url(&format!(
-        "/mailFolders/sentitems/messages?$filter={}&$select=id,categories&$top=1",
-        encode(&filter)
-    ));
-    for wait in schedule {
-        tokio::time::sleep(*wait).await;
-        let Ok(doc) = client.get(&url).await else {
-            continue;
-        };
-        if let Some(found) = first(&doc) {
-            let id = found.get("id").and_then(Value::as_str)?.to_owned();
-            return Some((id, categories(found)));
-        }
-    }
-    None
+    let doc = client
+        .get(&client.url(&format!(
+            "/mailFolders/sentitems/messages?$filter={}&$select=id,categories&$top=1",
+            encode(&filter)
+        )))
+        .await?;
+    Ok(first(&doc).and_then(|found| {
+        let id = found.get("id").and_then(Value::as_str)?.to_owned();
+        Some((id, categories(found)))
+    }))
 }
 
 /// Which of `named`'s names a Sent Items message already carries, if any.
@@ -179,6 +247,13 @@ async fn category_in_use(
 /// The first entry of a collection response.
 fn first(doc: &Value) -> Option<&Value> {
     doc.get("value").and_then(Value::as_array)?.first()
+}
+
+/// A message's `categories`, or `None` when `message` does not say.
+pub(crate) fn held_categories(message: Option<&Value>) -> Option<Vec<String>> {
+    message
+        .filter(|message| message.get("categories").is_some())
+        .map(categories)
 }
 
 /// A message's `categories`.
@@ -229,3 +304,7 @@ pub(crate) fn encode(value: &str) -> String {
 #[cfg(test)]
 #[path = "categories_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "categories_draft_tests.rs"]
+mod draft_tests;

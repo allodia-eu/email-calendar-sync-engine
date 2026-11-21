@@ -30,7 +30,7 @@ use crate::{
     error::GoogleError,
     json::opt_str,
     named_labels::NamedLabels,
-    normalize::{keywords_from_labels, memberships_of, parse_rfc2822},
+    normalize::{keywords_from_labels, memberships_of},
     transport::GoogleClient,
 };
 
@@ -110,6 +110,18 @@ pub(crate) fn label_ids(state: &GmailState, folder: GmailFolder, ids: &LabelIds)
     labels.into_iter().collect()
 }
 
+/// The name IMAP's `X-GM-LABELS` gives the label the API calls `id`: a system label's with a
+/// backslash, one of the user's by its name. `None` for a label the account does not have.
+pub(crate) fn imap_label_name(id: &str, ids: &LabelIds) -> Option<String> {
+    if let Some((name, _)) = SYSTEM.iter().find(|(_, system)| *system == id) {
+        return Some((*name).to_owned());
+    }
+    ids.0
+        .iter()
+        .find(|(name, label)| *label == id && !name.starts_with('\\'))
+        .map(|(name, _)| name.clone())
+}
+
 /// The key the API gives a message: its Gmail id in hex.
 pub(crate) fn key_of(gmail_id: u64) -> Result<ProviderKey, GoogleError> {
     ProviderKey::new(format!("{gmail_id:x}"))
@@ -131,7 +143,6 @@ pub(crate) fn message_of(
     let thread = ThreadId::try_from(format!("{:x}", read.state.thread_id).as_str())
         .map_err(|e| GoogleError::protocol(format!("gmail thread id: {e}")))?;
     message.thread = Some(ThreadRef::provider_assigned(thread));
-    message.sent_at = read.date.as_deref().and_then(parse_rfc2822);
     named.apply(&mut message);
     Ok(message)
 }

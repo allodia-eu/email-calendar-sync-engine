@@ -142,7 +142,9 @@ Gmail labels drive all three of the message's independent axes (`modeling.md`):
 re-grouped by local derivation. The `Message-Id` header (mixed-case in the wire, so
 lookup is case-insensitive) is preserved bracket-stripped as a threading **hint**, never
 identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) →
-`received_at`; the `Date` header (RFC 2822) → `sent_at`.
+`received_at`; the `Date` header (RFC 5322) → `sent_at`, through `engine_mime::date`. The IMAP
+pass reads the same header off `ENVELOPE` with the same parser inside `provider-imap`, so a
+message says it was sent at one instant whichever pass read it (`modeling.md`).
 
 ## Sync (backfill, reconcile, history delta)
 
@@ -181,7 +183,16 @@ part way; `reconcile;h=…` is a backfill finished and not yet reconciled.
   the account's `engine_http::RequestGate` to (`http-throttling.md`), so the ceiling now
   bounds everything the account does at once rather than one page's fan-out at a time — a
   body warm overlapping a backfill used to be able to exceed it. A `SyncWindow` floor windows
-  the enumeration to `q: after:<epoch>`.
+  the enumeration to `q: after:<epoch>`. A label the host holds further back (`MailboxWindows`)
+  is a listing of its own, after the account's: `labelIds=<label>` with
+  `q: after:<its floor> before:<the account's>` (`window_listing.rs`), so only that label's
+  older mail is fetched. The backfill cursor names the listing it is in
+  (`backfill;h=…;l=<label>;p=…`), and the reconcile lists every listing. Observed: an
+  unknown `labelIds` lists nothing rather than failing, and `after:` and `before:` both
+  include a message dated exactly on their epoch, so the boundary is listed twice rather
+  than missed. The IMAP pass searches each listing in every folder, a label by the name
+  `X-GM-LABELS` gives it with `SINCE` and `BEFORE`, and Spam and Trash as their own folders
+  (`store-and-sync.md`).
 
   It is **additive** and checkpointed after every page with the token of the next, because at
   20 units a message a large mailbox takes many passes (about 270 messages a minute under the
@@ -325,6 +336,13 @@ per user per minute, about 270 messages a minute, and IMAP bills nothing per mes
   than the key `put_draft` returned. That is safe only because the two draft verbs are the
   sole consumers of that key: nothing else addresses a message by it. Keying by the
   message id instead would have forced create-and-delete here too, for no gain.
+- **A draft's keywords are hidden named labels on the message under it**, as a Sent copy's
+  are, and the adapter advertises `draft_keywords` once a `KeywordName` is registered. The save
+  answers with that message's id, and one `messages.modify` labels it. Google's guide says a
+  draft's message takes no label; live, the label is put on and the draft carries it, and the
+  next `drafts.update` replaces the message and the label with it, so **every save labels the new
+  message again**. A save asking for none costs no request, and a refused modify leaves the draft
+  saved and the keyword out of `DraftReceipt::keywords`.
 - ⚠️ **Gmail rewrites the `Message-ID` on `drafts.create`, not only on send.** A draft
   written with `<local@test.local>` comes back as `<CALRU+…@mail.gmail.com>`
   (live-verified). This is the same behaviour as the send finding above, and it has a

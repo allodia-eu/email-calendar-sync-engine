@@ -9,8 +9,8 @@ use engine_core::{
     raw::RawMime,
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderError, ProviderResult,
-    SourceStream,
+    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderError,
+    ProviderResult, SourceStream,
 };
 use engine_store::{ManualClock, MessageBodyStore, MessageSourceCache};
 use futures_util::StreamExt;
@@ -54,6 +54,8 @@ impl Provider for BatchProvider {
     }
 }
 
+impl CalendarSync for BatchProvider {}
+
 impl CalendarWrites for BatchProvider {}
 impl engine_provider::MailboxWrites for BatchProvider {}
 
@@ -80,6 +82,8 @@ impl Provider for SingleProvider {
         ))
     }
 }
+
+impl CalendarSync for SingleProvider {}
 
 impl CalendarWrites for SingleProvider {}
 impl engine_provider::MailboxWrites for SingleProvider {}

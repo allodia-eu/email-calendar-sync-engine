@@ -210,18 +210,7 @@ impl<C: Clock> ContactStore for MemStore<C> {
             return Ok(false);
         }
         for observation in observations {
-            let key = (
-                observation.account.clone(),
-                observation.source_message.clone(),
-                observation.email.clone(),
-            );
-            inner
-                .observations
-                .entry(key)
-                .or_insert_with(|| super::ObservationCell {
-                    observation: observation.clone(),
-                    suppressed: false,
-                });
+            super::record_observation(&mut inner.observations, observation);
         }
         inner.recipient_versions.insert(account, version);
         Ok(true)

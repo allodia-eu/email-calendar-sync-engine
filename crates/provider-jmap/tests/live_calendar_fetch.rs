@@ -6,7 +6,7 @@ mod common;
 
 use common::*;
 use engine_core::calendar::{ConferenceOrigin, DetectedIn};
-use engine_provider::Provider;
+use engine_provider::CalendarSync;
 
 #[tokio::test]
 async fn live_calendar_fetch() {

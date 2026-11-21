@@ -2,7 +2,7 @@
 //! runs for as long as the mailbox is large, and a poll arriving partway must find the scope
 //! held rather than take it over.
 
-use engine_provider::{CalendarWrites, EmailChunk};
+use engine_provider::{CalendarSync, CalendarWrites, EmailChunk};
 use engine_store::{LeaseRequest, StoreError, WorkerId};
 
 use super::*;
@@ -57,7 +57,7 @@ impl Provider for SlowMail {
         &'a self,
         _account: &'a AccountId,
         _cursor: Option<&'a SyncState>,
-        _window: SyncWindow,
+        _window: engine_core::sync::MailboxWindows,
         _fetch_batch: usize,
         _chunk_size: usize,
     ) -> EmailStream<'a> {
@@ -71,6 +71,8 @@ impl Provider for SlowMail {
         })
     }
 }
+
+impl CalendarSync for SlowMail {}
 
 impl engine_provider::MailboxWrites for SlowMail {}
 impl CalendarWrites for SlowMail {}

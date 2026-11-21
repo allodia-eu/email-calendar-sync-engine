@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use engine_core::{error::FailureClass, ids::SharedAccountId, sync::SearchDomain};
 
 use super::*;
-use crate::{CalendarWrites, ConnectionInfo, ProviderError};
+use crate::{CalendarSync, CalendarWrites, ConnectionInfo, ProviderError};
 
 fn handle(value: &str) -> SharedAccountId {
     SharedAccountId::try_from(value).unwrap()
@@ -24,6 +24,8 @@ impl Provider for NoMechanism {
         ConnectionInfo::new(Capabilities::none().with_mail())
     }
 }
+
+impl CalendarSync for NoMechanism {}
 
 impl CalendarWrites for NoMechanism {}
 impl crate::MailboxWrites for NoMechanism {}
@@ -56,6 +58,8 @@ impl Provider for Lists {
     }
 }
 
+impl CalendarSync for Lists {}
+
 impl CalendarWrites for Lists {}
 impl crate::MailboxWrites for Lists {}
 
@@ -72,6 +76,8 @@ impl Provider for AnswersByAddress {
         Ok(SharedAccount::new(handle(address), address, mail()).with_address(address))
     }
 }
+
+impl CalendarSync for AnswersByAddress {}
 
 impl CalendarWrites for AnswersByAddress {}
 impl crate::MailboxWrites for AnswersByAddress {}

@@ -88,8 +88,6 @@ pub struct GmailMessage {
     /// The envelope, size, dates, references and attachment flag. Its id and memberships
     /// are IMAP's (the folder and UID it was read from), for the caller to replace.
     pub message: Message,
-    /// The `Date` header as the message gave it, for the caller to read as its sent time.
-    pub date: Option<String>,
 }
 
 /// Which messages of a folder a [`GmailMail::search`] asks for; every criterion given must
@@ -102,6 +100,11 @@ pub struct GmailQuery {
     pub from_uid: Option<u32>,
     /// Only messages that arrived on or after this day (`SINCE`).
     pub since: Option<time::Date>,
+    /// Only messages that arrived before this day (`BEFORE`).
+    pub before: Option<time::Date>,
+    /// Only messages carrying this label (`X-GM-LABELS`), named as IMAP names it: a system
+    /// label with a backslash (`\Sent`), one of the user's by its name.
+    pub label: Option<String>,
     /// Only messages Gmail's own search matches (`X-GM-RAW`), e.g. `category:social`.
     pub raw: Option<String>,
 }

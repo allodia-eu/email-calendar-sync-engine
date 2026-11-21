@@ -20,7 +20,7 @@ use engine_core::{
     time::{CalendarDateTime, TimeZoneId, UtcDateTime},
 };
 use engine_provider::{
-    CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget, Provider,
+    CalendarSync, CalendarWrites, EventDeletion, EventDraft, EventEdit, EventPatch, PatchTarget,
 };
 use provider_jmap::{Credentials, JmapConfig, JmapProvider};
 use stalwart_harness::Harness;

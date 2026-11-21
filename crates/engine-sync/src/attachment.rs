@@ -88,14 +88,14 @@ pub async fn fetch_message_scheduling<P, S>(
     store: &S,
     account: &AccountId,
     message: &Message,
-) -> Result<Option<(engine_mime::CalendarPart, Vec<String>)>, SyncError>
+) -> Result<Option<(engine_mime::CalendarPart, engine_mime::MessageRecipients)>, SyncError>
 where
     P: Provider,
     S: MessageSourceCache,
 {
     with_raw_source(provider, store, account, message, |raw| {
         engine_mime::extract_calendar_part(raw)
-            .map(|part| (part, engine_mime::extract_delivery_recipients(raw)))
+            .map(|part| (part, engine_mime::extract_recipients(raw)))
     })
     .await
 }
@@ -174,7 +174,9 @@ mod tests {
         membership::Memberships,
         raw::RawMime,
     };
-    use engine_provider::{CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult};
+    use engine_provider::{
+        CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult,
+    };
     use engine_store::{ManualClock, MessageSourceCache};
     use store_sqlite::SqliteStore;
 
@@ -201,6 +203,8 @@ mod tests {
             Ok(RawMime::new(self.raw.clone()))
         }
     }
+
+    impl CalendarSync for AttachmentProvider {}
 
     impl engine_provider::MailboxWrites for AttachmentProvider {}
     impl CalendarWrites for AttachmentProvider {}

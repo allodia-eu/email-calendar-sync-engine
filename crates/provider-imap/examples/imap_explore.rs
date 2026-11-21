@@ -173,7 +173,8 @@ async fn print_recent<P: Provider>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Pull just the newest group (the first streamed chunk), then stop — the stream
     // fetches newest-UID-first, so this needs only one round trip.
-    let mut stream = Box::pin(provider.stream_email(account, None, SyncWindow::full(), 20, 0));
+    let mut stream =
+        Box::pin(provider.stream_email(account, None, SyncWindow::full().into(), 20, 0));
     let mut recent: Vec<Message> = Vec::new();
     while let Some(item) = stream.next().await {
         let chunk = item?;
@@ -215,7 +216,8 @@ async fn drain_to_cursor<P: Provider>(
     account: &AccountId,
     cursor: Option<&SyncState>,
 ) -> Result<SyncState, Box<dyn std::error::Error>> {
-    let mut stream = Box::pin(provider.stream_email(account, cursor, SyncWindow::full(), 5, 0));
+    let mut stream =
+        Box::pin(provider.stream_email(account, cursor, SyncWindow::full().into(), 5, 0));
     let mut last = None;
     while let Some(item) = stream.next().await {
         if let Some(state) = item?.advance_to {
@@ -239,7 +241,7 @@ async fn qresync_check<P: Provider>(
     let mut removed = 0usize;
     let mut additive = true;
     let mut stream =
-        Box::pin(provider.stream_email(account, Some(&cursor), SyncWindow::full(), 5, 0));
+        Box::pin(provider.stream_email(account, Some(&cursor), SyncWindow::full().into(), 5, 0));
     while let Some(item) = stream.next().await {
         let chunk = item?;
         additive &= chunk.mode == PassMode::Additive;

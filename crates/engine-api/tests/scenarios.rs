@@ -34,8 +34,8 @@ use engine_core::{
     sync::{JmapDataType, SyncState, SyncUpdate},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider, ProviderError,
-    ProviderResult, ScopeSync,
+    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider,
+    ProviderError, ProviderResult, ScopeSync,
 };
 
 fn account() -> AccountId {
@@ -214,7 +214,7 @@ impl Provider for SimProvider {
         &'a self,
         _account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        _window: SyncWindow,
+        _window: engine_core::sync::MailboxWindows,
         _fetch_batch: usize,
         _chunk_size: usize,
     ) -> EmailStream<'a> {
@@ -247,6 +247,8 @@ impl Provider for SimProvider {
         Ok(RawMime::new(source.into_bytes()))
     }
 }
+
+impl CalendarSync for SimProvider {}
 
 impl engine_provider::MailboxWrites for SimProvider {}
 impl CalendarWrites for SimProvider {}

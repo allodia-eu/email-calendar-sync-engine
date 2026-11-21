@@ -29,7 +29,7 @@ mod common;
 
 use common::*;
 use engine_core::{calendar::CalendarAccess, sync::SyncUpdate};
-use engine_provider::Provider;
+use engine_provider::CalendarSync;
 use reqwest::Method;
 use serde_json::{Value, json};
 

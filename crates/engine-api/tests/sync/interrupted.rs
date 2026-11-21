@@ -45,7 +45,7 @@ impl Provider for CutOffProvider {
         &'a self,
         account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        window: SyncWindow,
+        window: engine_core::sync::MailboxWindows,
         fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
@@ -72,6 +72,8 @@ impl Provider for CutOffProvider {
         ))
     }
 }
+
+impl CalendarSync for CutOffProvider {}
 
 impl CalendarWrites for CutOffProvider {}
 

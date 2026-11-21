@@ -16,7 +16,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
 - Hosts call `Engine::open` / `open_in_memory`, then `sync_mail` / `sync_calendar`; build a mailbox
   list with `mail_window` (the projected rows a list renders, across any set of accounts
   in one ordered answer), complete its conversations with `mail_on_threads` and resolve
-  a named message with `mail_by_keys`; read `mailboxes` / `messages` /
+  a named message with `mail_by_keys`; read one mailbox's messages between two instants with
+  `mail_in_mailbox_between` (newest first, capped, with the oldest date the store holds for that
+  mailbox beside them, so a host can tell "nothing older exists here" from "nothing older was
+  synced"); read `mailboxes` / `messages` /
   `calendars` / `events` and `search_mail` / `search_calendar` (which now also
   matches fetched **body** text); open a message with `message_body` (fetch-on-demand;
   caches the raw bytes on disk and the extracted text in SQLite, so reopen is a fast
@@ -139,8 +142,11 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   `P: Provider`. A host that picks a concrete adapter at runtime can hold a
   `Box<dyn Provider>` and still call them: `engine-provider` provides a blanket
   `impl<P: Provider + ?Sized> Provider for Box<P>` that delegates every method to the
-  box's contents — kept there, not special-cased in `engine-api`. `ContactsProvider`
-  has the same blanket impl, and needs it for the same reason.)
+  box's contents — kept there, not special-cased in `engine-api`. `Provider`'s
+  supertraits (`CalendarSync`, `CalendarWrites`, `MailboxWrites`) and `ContactsProvider`
+  have the same blanket impl, and need it for the same reason. A host that wraps an
+  adapter in a `Provider` of its own implements each supertrait too, forwarding to the
+  inner adapter, or the wrapper answers with the rejecting defaults.)
 - **Host-config is hardcoded in this slice, by design (deferred seams).** An
   `Engine` stamps a fixed `WorkerId` (`"engine-api"`), uses a fixed `LEASE_TTL`
   (5 min — a generous safety bound, not a deadline; the sync loop re-claims and
@@ -190,9 +196,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   and `ApiError::is_shutting_down()` says so, so a host reports the process ending rather
   than a failed sync. Nothing ran and nothing was written; the next launch does the work.
 - **Re-export signature types.** Types that appear in the facade's own signatures
-  (`AccountId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
+  (`AccountId`, `MailboxId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
   streaming vocabulary — `StreamTuning`, `SyncObserver`, `SyncCommit`, `IgnoreCommits`,
-  `AccountProgress`, `ProgressSnapshot`, `SyncScope`, `SyncWindow`, `CalendarDate`) are
+  `AccountProgress`, `ProgressSnapshot`, `SyncScope`, `SyncWindow`, `MailboxWindows`,
+  `CalendarDate`) are
   re-exported so a host depends on `engine-api` alone. The concrete provider still
   comes from the adapter crate.
 - **Display-side timezone resolution.** `resolve_instant` / `resolve_instant_in` /
@@ -221,8 +228,11 @@ Step 6 lands in small, tested slices. Order and status:
 3. **Writes / outbox — _done_.** `Engine::submit_mail` drives `engine-sync`'s outbox
    `submit_mail` (durable op → claim → provider send → record), returning a
    `SubmitOutcome` (sent key, `Message-ID`, op id, what became of the Sent copy and
-   which of the draft's `sent_copy_keywords` it carries; a provider that keeps a keyword only as
-   a named category needs a `KeywordName`, re-exported here); a failed send is recorded
+   which of the draft's `sent_copy_keywords` it carries; `Engine::put_draft` takes the keywords a
+   stored draft should carry and its `PutDraftOutcome` says which it does; a provider that keeps a
+   keyword only as a named category needs a `KeywordName`, re-exported here, and one that keeps them after the
+   send (`Capabilities::sent_copy_keywords_deferred`) reports none and has the outbox record a
+   `MailEdit::SetKeywords` a later `drain_outbox` applies); a failed send is recorded
    `Failed` / `NeedsConfirmation` *before* surfacing as `ApiError::Sync`, so the
    outbox never blind-retries. `Engine::pending_op_state` exposes
    `StoreRead::pending_op_state` for polling an op's lifecycle (e.g. confirming an

@@ -117,10 +117,21 @@ The organiser identity has a different authority on each transport:
   no free-form keyword, only named categories the person sees, so it keeps a keyword only when the
   host registered a `KeywordName` for it (`GraphProvider::with_keyword_names`): the name to create
   it under and every name it may already exist under, which sync also reads back as the keyword
-  ([`graph.md`](agent-guidance/graph.md)). Gmail keeps it the same way, as a label hidden from its
-  label list, which sync reads as the keyword rather than as a folder
+  ([`graph.md`](agent-guidance/graph.md)). Graph files the copy on its own a moment after the send,
+  so it keeps them **after** it (`sent_copy_keywords_deferred`): the receipt reports none, the
+  outbox records a `MailEdit::SetKeywords` on the copy's key that the drainer applies, retrying
+  until the copy is there, and what the copy carries is read from sync. Gmail also needs a
+  `KeywordName`, and keeps the keyword within the send as a label hidden from its label list,
+  which sync reads as the keyword rather than as a folder
   (`GmailProvider::with_keyword_names`, [`google.md`](agent-guidance/google.md)). A keyword never
   fails a send.
+- **Keywords on a stored draft** (`draft_keywords`) is the same request, answered per save.
+  `put_draft` takes the whole set the draft should carry and `DraftReceipt::keywords` (surfaced as
+  `PutDraftOutcome::keywords`) says which it carries. IMAP puts them on the draft's `APPEND` where
+  Drafts allows new keywords, JMAP in the `Email/set` create; Graph and Gmail keep only those with
+  a `KeywordName`, as a category set after the save and as a label put on the message under the
+  draft after each save. A synced draft reads them back on every transport. A keyword never fails
+  a save.
 - **Server-side scheduling** (`calendar_scheduling`) means the *server* emits the iTIP, so the
   caller must not also send one. CalDAV **discovers** it (RFC 6638 §2 gives a probeable answer, and
   SabreDAV without its scheduling plugin is a real `false`). JMAP advertises it because the adapter
@@ -435,6 +446,8 @@ The `engine_provider::Capabilities` bitset tells the engine what a connected acc
 | `submission` | The account can submit/send new mail. |
 | `scheduling_submission` | Submission can carry an iTIP object as an iMIP scheduling part (RFC 6047), rather than as a plain calendar attachment. |
 | `sent_copy_keywords` | The adapter sets a draft's `sent_copy_keywords` on the filed Sent copy; the server may still decline, so the receipt says which were kept. |
+| `draft_keywords` | The adapter keeps `put_draft`'s keywords on the stored draft; the server may still decline, so the receipt says which were kept. |
+| `sent_copy_keywords_deferred` | The adapter keeps them after the send rather than within it: the receipt reports none, and the outbox records a `MailEdit::SetKeywords` for the drainer to apply. |
 | `idle` | The provider can watch for push notifications and emit `WatchEvent`s. |
 | `calendars` | The account can read/sync calendars and events. |
 | `calendar_writes` | The account can create/update/delete calendar events; query its guard strength. |

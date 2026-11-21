@@ -220,7 +220,8 @@ is authoritative for the `provider-caldav` calendar client.
   reset), so fetching a page whole before re-chunking is fine, and previews *are*
   hydrated there.
 - **Sync-depth window (per sync).** The sync-depth floor is now a **per-sync
-  argument** — `stream_email(…, window, …)` takes a `SyncWindow { since }` — so a host
+  argument** — `stream_email(…, window, …)` takes a `MailboxWindows`, of which the bound
+  mailbox fetches under its own `window_for` — so a host
   changes depth without reconnecting the provider; `ImapConfig::with_since(date)`
   survives only as the `default_sync_window` the whole-scope `sync_email` drain fetches
   under. Either way it bounds a **snapshot/backfill** to mail delivered on or after
@@ -354,7 +355,10 @@ is authoritative for the `provider-caldav` calendar client.
   `\Seen`/`\Flagged`/
   `\Answered`/`\Draft` map to their `$`-keywords; `\Deleted`/`\Recent` are
   deliberately not keywords (expunge/session model); custom keywords pass through.
-  `INTERNALDATE` → a UTC instant (offset applied). `ENVELOPE` → subject, flattened
+  `INTERNALDATE` → `received_at`, a UTC instant (offset applied). `ENVELOPE`'s first field, the
+  `Date` header → `sent_at`, through `engine_mime::date` (`mime.md`); an absent or unreadable
+  one is `None` (live-verified, `tests/live_imap_sent_at.rs`; captured,
+  `tests/fixtures/sent_at_fetch.txt`). `ENVELOPE` → subject, flattened
   addresses, and the `Message-ID`/`In-Reply-To` hints (the body-header item adds
   `References`) — the threading inputs; **RFC 2047 encoded-words** in
   the subject and display names are decoded (`B`/`Q`, UTF-8/ISO-8859-1/Windows-1252 —
@@ -736,7 +740,9 @@ credential.
 - **`put_draft` / `delete_draft` (no SMTP).** A draft is `APPEND`ed into the account's
   Drafts folder (resolved by `\Drafts` SPECIAL-USE, else creating `Drafts`) flagged
   `\Draft \Seen`, so keeping a draft works against any IMAP server even where SMTP
-  submission cannot. Unlike Sent placement an `APPEND` failure surfaces: saving the
+  submission cannot. The keywords `put_draft` is given ride the same `APPEND`, by the rule a
+  Sent copy's follow (`place.rs`): asked for only where a `SELECT` of Drafts shows `\*` in
+  `PERMANENTFLAGS`, reported in `DraftReceipt::keywords` either way. Unlike Sent placement an `APPEND` failure surfaces: saving the
   draft is the whole op. `ImapProvider::save_draft` remains as the first-save
   convenience the example and the live suite use, and is the same code path.
 - **A re-save is `APPEND` then `UID STORE +FLAGS (\Deleted)` + `UID EXPUNGE`, in that

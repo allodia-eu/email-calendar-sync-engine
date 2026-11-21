@@ -15,10 +15,12 @@
 //! [`encoded_word`] is the same decoding one level up, for RFC 2047 header text. It is
 //! here rather than in an adapter because two adapters read RFC 5322 headers themselves
 //! (IMAP's `ENVELOPE`, Gmail's `payload.headers`) and must agree with each other, and
-//! with a body, about what a charset label means.
+//! with a body, about what a charset label means. [`date`] is here for the same reason: those
+//! two adapters read the `Date` header themselves and must agree about when a message was sent.
 
 mod attachment;
 mod body;
+pub mod date;
 pub mod encoded_word;
 mod scheduling;
 mod structure;
@@ -30,7 +32,7 @@ use mail_parser::{ContentType, MessageParser, PartKind};
 // The mail side of the mail↔calendar bridge: the iMIP `text/calendar` payload, and the
 // addresses the message was delivered to (which is how an invitation to an alias is
 // recognized with no configuration).
-pub use scheduling::{CalendarPart, extract_calendar_part, extract_delivery_recipients};
+pub use scheduling::{CalendarPart, MessageRecipients, extract_calendar_part, extract_recipients};
 pub use structure::is_single_text_body;
 
 /// Renders `html` as text: tags removed, entities decoded, white space collapsed, and what

@@ -5,8 +5,8 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use engine_api::{
-    AccountId, ApiError, CalendarWrites, Capabilities, Engine, MailboxChange, MailboxEdit,
-    MailboxEditReceipt, MailboxPlace, MailboxWrites, Provider,
+    AccountId, ApiError, CalendarSync, CalendarWrites, Capabilities, Engine, MailboxChange,
+    MailboxEdit, MailboxEditReceipt, MailboxPlace, MailboxWrites, Provider,
 };
 use engine_core::{
     ids::MailboxId,
@@ -59,6 +59,8 @@ impl Provider for Tree {
         ))
     }
 }
+
+impl CalendarSync for Tree {}
 
 impl CalendarWrites for Tree {}
 

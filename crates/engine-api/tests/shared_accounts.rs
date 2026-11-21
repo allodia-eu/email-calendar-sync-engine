@@ -12,7 +12,9 @@ use engine_api::{
     ApiError, Capabilities, Engine, FailureClass, Mailbox, MailboxAccess, Provider, SearchDomain,
     SharedAccount, SharedAccountId, SharedAccounts, StoreDomains, SyncError,
 };
-use engine_provider::{CalendarWrites, ConnectionInfo, MailboxWrites, ProviderResult};
+use engine_provider::{
+    CalendarSync, CalendarWrites, ConnectionInfo, MailboxWrites, ProviderResult,
+};
 
 /// An enumerable adapter that counts how often it is asked, so a test can show a refused
 /// address never reached it.
@@ -43,6 +45,8 @@ impl Provider for Enumerable {
         ])
     }
 }
+
+impl CalendarSync for Enumerable {}
 
 impl CalendarWrites for Enumerable {}
 impl MailboxWrites for Enumerable {}

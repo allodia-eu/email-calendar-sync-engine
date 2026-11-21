@@ -21,8 +21,8 @@ use engine_core::{
     sync::SyncUpdate,
 };
 use engine_provider::{
-    CalendarWrites, ConferenceEdit, EventDeletion, EventEdit, EventPatch, NewConference,
-    PatchTarget, Provider,
+    CalendarSync, CalendarWrites, ConferenceEdit, EventDeletion, EventEdit, EventPatch,
+    NewConference, PatchTarget,
 };
 
 const JITSI: &str = "https://meet.example.org/pim-live-room-4321";

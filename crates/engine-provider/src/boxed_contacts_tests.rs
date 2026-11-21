@@ -6,7 +6,9 @@ use engine_core::{
 };
 
 use super::*;
-use crate::{CalendarWrites, Capabilities, ContactUnavailable, ScopeSync, WriteGuard};
+use crate::{
+    CalendarSync, CalendarWrites, Capabilities, ContactUnavailable, ScopeSync, WriteGuard,
+};
 
 fn account() -> AccountId {
     AccountId::try_from("account").unwrap()
@@ -32,6 +34,8 @@ impl Provider for Supported {
         ConnectionInfo::new(Capabilities::none().with_contacts())
     }
 }
+
+impl CalendarSync for Supported {}
 
 impl crate::MailboxWrites for Supported {}
 impl CalendarWrites for Supported {}

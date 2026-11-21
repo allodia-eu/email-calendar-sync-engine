@@ -11,22 +11,21 @@
 
 use async_trait::async_trait;
 use engine_core::{
-    calendar::Event,
-    ids::{AccountId, AddressBookId, CalendarId},
+    ids::{AccountId, AddressBookId},
     mail::{Mailbox, Message},
     raw::RawMime,
-    sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
+    sync::{JmapDataType, MailboxWindows, SyncScope, SyncState},
 };
 use engine_provider::{
-    CalendarListing, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HandOver,
-    MessageReport, PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity,
-    SenderIdentityId, SharedAccount, SourceStream, SubmissionReceipt, SyncKind, split_page,
+    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HandOver, MessageReport,
+    PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
+    SharedAccount, SourceStream, SubmissionReceipt, SyncKind, split_page,
 };
 use serde_json::json;
 
 use crate::{
     JmapClient, JmapConfig,
-    calendar::{calendar_from_json, event_from_json},
+    email_window::email_filter,
     error::JmapError,
     executor::Executor,
     fetch,
@@ -202,20 +201,13 @@ impl Provider for JmapProvider {
         &'a self,
         _account: &'a AccountId,
         cursor: Option<&'a SyncState>,
-        window: SyncWindow,
+        window: MailboxWindows,
         fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
         // Newest-first, so a fresh sync surfaces recent mail before it finishes.
         let sort = json!([{ "property": "receivedAt", "isAscending": false }]);
-        // A sync-depth window bounds a snapshot via `receivedAt` (RFC 8621 §4.4.1). A
-        // delta carries no filter — `Email/changes` takes none — so an old message moved
-        // into scope is reported as a change; the engine drops it on apply
-        // (`SyncWindow::admits`), which is where the delta's bound holds for every adapter.
-        // The snapshot's bound is this filter, and is not re-checked there.
-        let filter = window
-            .floor()
-            .map(|date| json!({ "after": format!("{date}T00:00:00Z") }));
+        let filter = email_filter(&window);
         Box::pin(async_stream::try_stream! {
             let account = self.mail_account()?;
             let fetch = MemberFetch {
@@ -273,43 +265,6 @@ impl Provider for JmapProvider {
         })
     }
 
-    async fn sync_calendars(
-        &self,
-        _account: &AccountId,
-        cursor: Option<&SyncState>,
-    ) -> ProviderResult<CalendarListing> {
-        let account = self.calendar_account()?;
-        Ok(fetch_scope::container_sync(
-            self.executor.as_ref(),
-            &account,
-            &[capability::CORE, capability::CALENDARS],
-            "Calendar",
-            cursor,
-            calendar_from_json,
-        )
-        .await?
-        .into())
-    }
-
-    /// Every calendar's events under the account-wide `CalendarEvent` state, whichever asks.
-    async fn sync_events(
-        &self,
-        _account: &AccountId,
-        _calendar: &CalendarId,
-        cursor: Option<&SyncState>,
-        _window: engine_core::time::Horizon,
-    ) -> ProviderResult<ScopeSync<Event>> {
-        let account = self.calendar_account()?;
-        let fetch = MemberFetch {
-            executor: self.executor.as_ref(),
-            account: &account,
-            using: &[capability::CORE, capability::CALENDARS],
-            type_name: "CalendarEvent",
-            properties: None,
-        };
-        Ok(fetch_scope::member_sync(&fetch, cursor, event_from_json).await?)
-    }
-
     // `put_event` is deliberately **not** implemented: replacing a whole stored document is
     // the verb of a document-oriented transport, and JMAP has none — a JSCalendar object is
     // not a file the client owns the bytes of, and `/set` `update` is already a patch. It
@@ -322,11 +277,11 @@ impl Provider for JmapProvider {
         _account: &AccountId,
         draft: &engine_provider::Draft,
         replacing: Option<&engine_core::ids::ProviderKey>,
-    ) -> ProviderResult<engine_core::ids::ProviderKey> {
-        // One `Email/set` carries the create and the destroy, so the replacement exists
-        // before the copy it supersedes goes (`crate::drafts`).
-        let account = self.mail_account()?;
-        Ok(crate::drafts::put_draft(self.executor.as_ref(), &account, draft, replacing).await?)
+        keywords: &std::collections::BTreeSet<engine_core::mail::Keyword>,
+    ) -> ProviderResult<engine_provider::DraftReceipt> {
+        // One `Email/set` creates the new copy before it destroys the old (`crate::drafts`).
+        let (account, executor) = (self.mail_account()?, self.executor.as_ref());
+        Ok(crate::drafts::put_draft(executor, &account, draft, replacing, keywords).await?)
     }
 
     async fn delete_draft(

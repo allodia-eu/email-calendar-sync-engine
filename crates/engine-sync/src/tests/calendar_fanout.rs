@@ -91,7 +91,10 @@ impl Provider for FakeDav {
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo::new(Capabilities::none().with_calendars())
     }
+}
 
+#[async_trait::async_trait]
+impl CalendarSync for FakeDav {
     fn calendar_scope(&self, account: &AccountId) -> SyncScope {
         SyncScope::DavCollectionList {
             account: account.clone(),

@@ -5,7 +5,7 @@
 //!
 //! A provider serves every calendar of the account it signed in to, and [`sync_calendar`]
 //! owns the fan-out: it reads the calendar list once, groups the calendars by the event scope
-//! each answers ([`Provider::event_scope`]), and syncs those scopes concurrently. Where a
+//! each answers ([`CalendarSync::event_scope`]), and syncs those scopes concurrently. Where a
 //! protocol's event delta is per calendar (CalDAV, Graph, Google) that is one scope per
 //! calendar; where it is account-wide (JMAP) every calendar shares one, synced once.
 //!
