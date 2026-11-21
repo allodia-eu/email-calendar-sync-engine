@@ -142,7 +142,9 @@ Gmail labels drive all three of the message's independent axes (`modeling.md`):
 re-grouped by local derivation. The `Message-Id` header (mixed-case in the wire, so
 lookup is case-insensitive) is preserved bracket-stripped as a threading **hint**, never
 identity — the Gmail message `id` is identity. `internalDate` (epoch-millis) →
-`received_at`; the `Date` header (RFC 2822) → `sent_at`.
+`received_at`; the `Date` header (RFC 5322) → `sent_at`, through `engine_mime::date`. The IMAP
+pass reads the same header off `ENVELOPE` with the same parser inside `provider-imap`, so a
+message says it was sent at one instant whichever pass read it (`modeling.md`).
 
 ## Sync (backfill, reconcile, history delta)
 

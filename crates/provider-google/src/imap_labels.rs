@@ -30,7 +30,7 @@ use crate::{
     error::GoogleError,
     json::opt_str,
     named_labels::NamedLabels,
-    normalize::{keywords_from_labels, memberships_of, parse_rfc2822},
+    normalize::{keywords_from_labels, memberships_of},
     transport::GoogleClient,
 };
 
@@ -143,7 +143,6 @@ pub(crate) fn message_of(
     let thread = ThreadId::try_from(format!("{:x}", read.state.thread_id).as_str())
         .map_err(|e| GoogleError::protocol(format!("gmail thread id: {e}")))?;
     message.thread = Some(ThreadRef::provider_assigned(thread));
-    message.sent_at = read.date.as_deref().and_then(parse_rfc2822);
     named.apply(&mut message);
     Ok(message)
 }

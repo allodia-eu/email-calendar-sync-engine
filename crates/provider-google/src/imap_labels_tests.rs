@@ -74,13 +74,15 @@ fn a_message_read_over_imap_is_the_one_the_api_reads() {
 
     // The API lists the inbox category and IMAP cannot: both drop it, so the two still agree.
     let placeholder = MessageId::new(ProviderKey::new("imap:v1:u5@[Gmail]/All Mail").unwrap());
+    let mut message = Message::new(
+        placeholder,
+        Memberships::of_one(MailboxId::try_from("[Gmail]/All Mail").unwrap()),
+    );
+    // What the IMAP read made of the same `Date` header, which the mapping must keep.
+    message.sent_at = engine_mime::date::parse("Thu, 1 Oct 2026 10:00:00 +0000");
     let read = GmailMessage {
         state: state(&["\\Inbox", "Reis/été"], &["\\Flagged"]),
-        message: Message::new(
-            placeholder,
-            Memberships::of_one(MailboxId::try_from("[Gmail]/All Mail").unwrap()),
-        ),
-        date: Some("Thu, 1 Oct 2026 10:00:00 +0000".to_owned()),
+        message,
     };
     let imap = message_of(read, GmailFolder::All, &ids(), &NamedLabels::default()).unwrap();
 
@@ -88,6 +90,7 @@ fn a_message_read_over_imap_is_the_one_the_api_reads() {
     assert_eq!(imap.thread, api.thread);
     assert_eq!(imap.mailboxes, api.mailboxes);
     assert_eq!(imap.keywords, api.keywords);
+    assert!(api.sent_at.is_some());
     assert_eq!(imap.sent_at, api.sent_at);
 }
 

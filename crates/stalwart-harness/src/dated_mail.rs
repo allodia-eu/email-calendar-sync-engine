@@ -3,7 +3,9 @@
 //! A sync-depth test needs mail older than the window it syncs under, and the seed holds none:
 //! an IMAP `APPEND` without a date is stamped with the moment of seeding. JMAP `Email/set` takes
 //! `receivedAt` on create (RFC 8621 §4.6), and Stalwart reports the same instant as the IMAP
-//! `INTERNALDATE`, so one plant serves both protocols' suites.
+//! `INTERNALDATE`, so one plant serves both protocols' suites. It takes `sentAt` too, which
+//! Stalwart writes as the message's `Date` header, so a plant can say it was sent at another
+//! instant than it was stored.
 
 use serde_json::{Value, json};
 
@@ -26,6 +28,24 @@ impl Harness {
         subject: &str,
         received_at: &str,
     ) -> Result<String, HarnessError> {
+        self.plant_email_sent_as(auth, role, subject, received_at, received_at)
+    }
+
+    /// Files a message like [`plant_dated_email_as`](Self::plant_dated_email_as), whose `Date`
+    /// header says it was sent at `sent_at` (RFC 3339, any offset) and which the server stored at
+    /// `received_at` (RFC 3339, UTC).
+    ///
+    /// # Errors
+    /// Returns [`HarnessError::Protocol`] when the account has no mailbox with that role or
+    /// the server refuses the message.
+    pub fn plant_email_sent_as(
+        &self,
+        auth: (&str, &str),
+        role: &str,
+        subject: &str,
+        sent_at: &str,
+        received_at: &str,
+    ) -> Result<String, HarnessError> {
         let account = self.mail_account_as(auth)?;
         let found = self.call_as(
             auth,
@@ -39,7 +59,7 @@ impl Harness {
             "mailboxIds": {mailbox: true},
             "keywords": {"$seen": true},
             "receivedAt": received_at,
-            "sentAt": received_at,
+            "sentAt": sent_at,
             "subject": subject,
             "from": [{"email": auth.0}],
             "to": [{"email": "planted@example.test"}],

@@ -14,6 +14,7 @@ pub fn extract_attachments(raw: &RawMime) -> Vec<MessageAttachment>
 pub fn extract_attachment(raw: &RawMime, id: AttachmentPartId) -> Option<MessageAttachmentContent>
 pub fn has_downloadable_attachment(raw: &RawMime) -> bool
 pub fn encoded_word::decode(input: &str) -> String
+pub fn date::parse(raw: &str) -> Option<UtcDateTime>
 pub fn html_to_text(html: &str) -> String
 ```
 
@@ -86,6 +87,17 @@ table is `mail-parser`'s, shared with body decoding. One label is overridden:
 what real mail means (without it an Outlook en-dash, `0x96`, is an unrenderable C1
 control). That override is stated in code rather than left to the table, which has already
 changed its answer once across a `mail-parser` release.
+
+`date::parse` reads a `Date` header value (RFC 5322 §3.3) as a UTC instant, for the same two
+adapters and the same reason: IMAP's `ENVELOPE` carries the header verbatim as its first field,
+Gmail's `payload.headers` returns it raw, and JMAP and Graph hand over `sentAt` and
+`sentDateTime` already parsed. The grammar is `time`'s RFC 2822 parser, which takes the obsolete
+forms RFC 5322 §4.3 tells a reader to accept: no day of the week, a two-digit year, the named
+zones and comments. A value it rejects is `None`, never an error, so one unreadable date cannot
+fail the message it is on. Stalwart re-renders a `Date` it could parse in the canonical form
+(`EST` comes back as `-0500`, a two-digit year as four) and passes one it could not through
+verbatim (`provider-imap/tests/fixtures/sent_at_fetch.txt`); another server may pass every form
+through, which is why the module's own tests cover the obsolete ones.
 
 The fetching and caching of the raw bytes are **not** this crate's job — the
 provider layer fetches (`Provider::fetch_message_source`) and the store caches

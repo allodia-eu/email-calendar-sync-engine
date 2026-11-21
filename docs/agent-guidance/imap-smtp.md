@@ -355,7 +355,10 @@ is authoritative for the `provider-caldav` calendar client.
   `\Seen`/`\Flagged`/
   `\Answered`/`\Draft` map to their `$`-keywords; `\Deleted`/`\Recent` are
   deliberately not keywords (expunge/session model); custom keywords pass through.
-  `INTERNALDATE` → a UTC instant (offset applied). `ENVELOPE` → subject, flattened
+  `INTERNALDATE` → `received_at`, a UTC instant (offset applied). `ENVELOPE`'s first field, the
+  `Date` header → `sent_at`, through `engine_mime::date` (`mime.md`); an absent or unreadable
+  one is `None` (live-verified, `tests/live_imap_sent_at.rs`; captured,
+  `tests/fixtures/sent_at_fetch.txt`). `ENVELOPE` → subject, flattened
   addresses, and the `Message-ID`/`In-Reply-To` hints (the body-header item adds
   `References`) — the threading inputs; **RFC 2047 encoded-words** in
   the subject and display names are decoded (`B`/`Q`, UTF-8/ISO-8859-1/Windows-1252 —

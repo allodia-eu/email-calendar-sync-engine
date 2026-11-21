@@ -88,8 +88,6 @@ pub struct GmailMessage {
     /// The envelope, size, dates, references and attachment flag. Its id and memberships
     /// are IMAP's (the folder and UID it was read from), for the caller to replace.
     pub message: Message,
-    /// The `Date` header as the message gave it, for the caller to read as its sent time.
-    pub date: Option<String>,
 }
 
 /// Which messages of a folder a [`GmailMail::search`] asks for; every criterion given must

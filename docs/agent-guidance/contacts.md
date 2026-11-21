@@ -404,7 +404,10 @@ message. The apply transaction commits message rows, sync state, and recipient
 observations atomically.
 
 Observations are keyed by `(account, source message, canonical email)`, so replay
-does not increase counts. Moving or deleting a message does not delete an
+does not increase counts. A replay changes nothing but a sent instant the stored observation
+lacks, which it fills in: the instant is the source message's and never changes, so a stored
+observation without one was recorded from a read that could not see it (an IMAP message before
+`NORMALIZER_VERSION` 17), and the re-snapshot that reads the message again is what dates it. Moving or deleting a message does not delete an
 observation. Self-addressed recipients are retained. Existing stored messages
 are backfilled once through an interaction-index version marker; no mail resync
 is forced.

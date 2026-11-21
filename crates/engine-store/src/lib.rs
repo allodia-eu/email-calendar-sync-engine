@@ -123,4 +123,9 @@ pub use store::Store;
 ///   from Graph's `importance`. A stored message reads as normal until the re-snapshot re-reads it;
 ///   a Graph delta link carries the `$select` it was minted with, so only a fresh snapshot asks for
 ///   the property at all.
-pub const NORMALIZER_VERSION: u32 = 16;
+/// - `17`: a message read over IMAP says when it was sent
+///   ([`Message::sent_at`](engine_core::mail::Message::sent_at)), read from the `Date` header
+///   ENVELOPE carries, as every other transport already did. A stored IMAP message has no sent
+///   instant until the re-snapshot re-reads it, and the recipients observed on it then gain the
+///   instant they were last written to.
+pub const NORMALIZER_VERSION: u32 = 17;

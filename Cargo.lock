@@ -539,6 +539,7 @@ dependencies = [
  "encodify",
  "engine-core",
  "mail-parser",
+ "time",
 ]
 
 [[package]]

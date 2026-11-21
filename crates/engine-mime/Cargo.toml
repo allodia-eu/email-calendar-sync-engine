@@ -11,6 +11,8 @@ license.workspace = true
 encodify = { workspace = true }
 engine-core = { workspace = true }
 mail-parser = { workspace = true }
+# The RFC 5322 `Date` grammar (`date`), and the offset arithmetic that brings it to UTC.
+time = { workspace = true }
 
 [lints]
 workspace = true

@@ -74,12 +74,13 @@ pub(crate) fn message_from_fetch(
     let mut message = Message::new(id, Memberships::of_one(mailbox.clone()));
     message.keywords = flags_to_keywords(&row.flags);
     message.size = row.size;
+    // INTERNALDATE is when this server stored the copy (RFC 9051 §2.3.3); the `Date` header,
+    // ENVELOPE's first field, is when the message says it was sent. A Sent copy filed or
+    // imported after the fact carries two different instants.
     message.received_at = row.internal_date.as_deref().and_then(parse_internaldate);
     if let Some(env) = &row.envelope {
         message.envelope = to_envelope(env);
-        // The `Date` header instant is not in ENVELOPE as a parsed value; the
-        // string form is, but normalizing it is a later refinement. INTERNALDATE
-        // (delivery time) is the reliable instant here.
+        message.sent_at = env.date.as_deref().and_then(engine_mime::date::parse);
     }
     message.has_attachment = row.has_attachment.unwrap_or(false);
     // `References` is not an ENVELOPE field; it rides the fetched header section (the
@@ -455,3 +456,7 @@ mod tests;
 #[cfg(test)]
 #[path = "mail_importance_tests.rs"]
 mod importance_tests;
+
+#[cfg(test)]
+#[path = "mail_dates_tests.rs"]
+mod date_tests;
