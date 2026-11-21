@@ -158,15 +158,7 @@ where
         connection.settle_attachments(&mut rows).await?;
         out.extend(rows.into_iter().filter_map(|row| {
             let message = message_from_fetch(&row, folder, validity);
-            let date = row
-                .envelope
-                .as_ref()
-                .and_then(|envelope| envelope.date.clone());
-            state_of(row, utf7).map(|state| GmailMessage {
-                state,
-                message,
-                date,
-            })
+            state_of(row, utf7).map(|state| GmailMessage { state, message })
         }));
     }
     Ok(out)

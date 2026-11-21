@@ -308,6 +308,27 @@ struct ObservationCell {
     suppressed: bool,
 }
 
+/// Records `observation` once per `(account, source message, email)`. A replay changes nothing
+/// but a sent instant the stored observation lacks: it is the source message's, which never
+/// changes, so the replay read what the first read could not.
+fn record_observation(
+    observations: &mut BTreeMap<(AccountId, MessageId, CanonicalEmail), ObservationCell>,
+    observation: &RecipientObservation,
+) {
+    let key = (
+        observation.account.clone(),
+        observation.source_message.clone(),
+        observation.email.clone(),
+    );
+    let cell = observations.entry(key).or_insert_with(|| ObservationCell {
+        observation: observation.clone(),
+        suppressed: false,
+    });
+    if cell.observation.sent_at.is_none() {
+        cell.observation.sent_at = observation.sent_at;
+    }
+}
+
 /// An in-memory [`Store`](crate::Store) + [`StoreRead`](crate::StoreRead),
 /// parameterized by an injected [`Clock`] for lease-expiry control.
 pub struct MemStore<C> {

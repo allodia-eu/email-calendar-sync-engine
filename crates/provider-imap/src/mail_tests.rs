@@ -41,22 +41,6 @@ fn flags_map_to_keywords_excluding_deleted_and_recent() {
 }
 
 #[test]
-fn internaldate_parses_and_applies_the_zone_offset() {
-    // UTC stays put.
-    let utc = parse_internaldate("18-Mar-2026 10:00:00 +0000").unwrap();
-    assert_eq!(utc.to_string(), "2026-03-18T10:00:00Z");
-    // A positive offset is subtracted to reach UTC.
-    let plus = parse_internaldate("18-Mar-2026 12:00:00 +0200").unwrap();
-    assert_eq!(plus.to_string(), "2026-03-18T10:00:00Z");
-    // A negative offset across midnight rolls the date.
-    let minus = parse_internaldate(" 1-Jan-2026 00:30:00 -0100").unwrap();
-    assert_eq!(minus.to_string(), "2026-01-01T01:30:00Z");
-    // Garbage yields None, never a panic.
-    assert!(parse_internaldate("not a date").is_none());
-    assert!(parse_internaldate("32-Xxx-2026 99:99:99 +0000").is_none());
-}
-
-#[test]
 fn message_from_fetch_builds_a_full_object() {
     let line = concat!(
         r#"1 FETCH (UID 1 FLAGS (\Seen \Flagged harness) "#,

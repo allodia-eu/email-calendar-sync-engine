@@ -179,7 +179,6 @@ impl ImapMail for FakeGmail {
                         MessageId::new(ProviderKey::new(format!("imap:v1:u{uid}@x")).unwrap()),
                         Memberships::of_one(MailboxId::try_from("x").unwrap()),
                     ),
-                    date: None,
                 })
                 .collect()
         }))

@@ -20,7 +20,7 @@
 //! Gmail returns header values as raw RFC 5322 strings (`From: Name <addr>`), unlike
 //! Graph's structured `{name,address}`, so [`parse_addresses`] does a pragmatic
 //! address-list parse. `internalDate` is epoch-millis (→ `received_at`); the `Date`
-//! header is RFC 2822 (→ `sent_at`).
+//! header is RFC 5322 (→ `sent_at`, through `engine_mime::date`, the parser IMAP reads it with).
 //!
 //! [`ThreadProvenance::ProviderAssigned`]: engine_core::mail::ThreadProvenance::ProviderAssigned
 
@@ -241,7 +241,7 @@ pub(crate) fn message_from_json(value: &Value) -> Result<Message, GoogleError> {
     envelope.importance = Importance::from_headers(ImportanceHeaders::from_lookup(|name| {
         last_header(headers, name)
     }));
-    message.sent_at = header(headers, "Date").and_then(parse_rfc2822);
+    message.sent_at = header(headers, "Date").and_then(engine_mime::date::parse);
 
     Ok(message)
 }
@@ -341,13 +341,6 @@ fn internal_date(value: &Value) -> Result<Option<UtcDateTime>, GoogleError> {
     let odt = time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(millis) * 1_000_000)
         .map_err(|e| GoogleError::protocol(format!("internalDate out of range: {e}")))?;
     utc_from_offset(odt).map(Some)
-}
-
-/// Parses an RFC 2822 `Date` header into a UTC instant, or `None` if unparseable.
-pub(crate) fn parse_rfc2822(raw: &str) -> Option<UtcDateTime> {
-    let odt =
-        time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc2822).ok()?;
-    utc_from_offset(odt).ok()
 }
 
 /// Converts a `time::OffsetDateTime` to the engine's [`UtcDateTime`] (normalizing to

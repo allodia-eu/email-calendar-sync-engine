@@ -65,7 +65,9 @@ pub struct Message {
     pub size: Option<u64>,
     /// The delivery/internal date (IMAP internal date, JMAP `receivedAt`).
     pub received_at: Option<UtcDateTime>,
-    /// The instant from the `Date` header (JMAP `sentAt`), normalized to UTC.
+    /// The instant from the `Date` header (JMAP `sentAt`), normalized to UTC; `None` when the
+    /// header is absent or does not parse. A message read over IMAP before `NORMALIZER_VERSION`
+    /// 17 has none until the re-snapshot re-reads it (`modeling.md` maps each transport).
     pub sent_at: Option<UtcDateTime>,
     /// When the object was last modified at the provider.
     ///

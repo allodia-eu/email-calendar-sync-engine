@@ -193,16 +193,20 @@ pub(crate) fn replace_people(
     Ok(true)
 }
 
-/// Inserts observations without reviving an existing suppressed identity.
+/// Inserts observations without reviving an existing suppressed identity. A replay changes
+/// nothing but a sent instant the stored observation lacks: it is the source message's, which
+/// never changes, so the replay read what the first read could not.
 pub(crate) fn insert_observations(
     tx: &Transaction<'_>,
     observations: &[RecipientObservation],
 ) -> Result<()> {
     for observation in observations {
         tx.execute(
-            "INSERT OR IGNORE INTO recipient_observation
+            "INSERT INTO recipient_observation
              (account, source_message, email, name, sent_at, suppressed)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)
+             ON CONFLICT (account, source_message, email) DO UPDATE
+             SET sent_at = excluded.sent_at WHERE recipient_observation.sent_at IS NULL",
             params![
                 observation.account.as_str(),
                 observation.source_message.as_str(),

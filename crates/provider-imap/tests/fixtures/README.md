@@ -18,6 +18,16 @@ that table; the test fails on a file without one.
 
 **Secrets:** none. The messages are synthetic and the server holds no real data.
 
+## `sent_at_fetch.txt`
+
+The five rows the **Stalwart harness** (v1.0.2) answered the metadata `UID FETCH` with
+(`FETCH_ITEMS`, one UID per command) for messages whose `Date` header was
+`Thu, 29 Oct 2026 10:00:00 +0100`, `Thu, 29 Oct 2026 10:00:00 EST`, `29 Oct 2026 10:00:00 GMT`,
+`Thu, 29 Oct 26 10:00:00 +0000 (UTC)` and `not a date`, `APPEND`ed to a scratch mailbox that was
+deleted afterwards. Stalwart re-renders the four it could parse in the canonical form and passes
+the fifth through verbatim. Stored LF; `src/mail_dates_tests.rs` restores the CRLF the literals'
+lengths count, and strips the untagged `* ` as the transport does.
+
 ## `importance_fetch.txt`
 
 The five rows the **Stalwart harness** (v1.0.2) answered the metadata `UID FETCH` with

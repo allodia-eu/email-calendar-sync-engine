@@ -3,7 +3,7 @@
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader},
     mail::{EmailAddress, MailboxRole},
-    sync::{SyncScope, SyncWindow},
+    sync::{SyncScope, SyncUpdate, SyncWindow},
 };
 use engine_provider::{Draft, EmailChunk, Provider};
 use futures_util::StreamExt;
@@ -214,6 +214,40 @@ async fn the_drain_default_merges_a_first_sync_into_a_reconciling_snapshot() {
         "a fresh backfill reconciles on completion"
     );
     assert_eq!(sync.next_cursor.as_str(), "v1000;n4;g1;r");
+}
+
+/// A synced message says it was sent when its `Date` header does and was received when the
+/// server stored it: the metadata fetch asks for ENVELOPE, whose first field is that header.
+#[tokio::test]
+async fn a_synced_message_is_sent_when_its_date_header_says() {
+    let select = "* 1 EXISTS\r\n* OK [UIDVALIDITY 1000] v\r\n\
+                  * OK [UIDNEXT 2] n\r\na2 OK [READ-WRITE] done\r\n";
+    let fetch = "* 1 FETCH (UID 1 FLAGS (\\Seen) INTERNALDATE \"20-Nov-2026 20:15:44 +0000\" \
+                 ENVELOPE (\"Thu, 29 Oct 2026 10:00:00 +0100\" \"Re: Planning\" NIL NIL NIL NIL \
+                 NIL NIL NIL \"<reply-0001@test.local>\") BODY[HEADER.FIELDS (REFERENCES \
+                 CONTENT-TYPE CONTENT-DISPOSITION)] \"\")\r\na3 OK FETCH done\r\n";
+    let (stream, recorded) = MockStream::new(script(&[GREETING, LOGIN_OK, select, fetch]));
+    let mut conn = Connection::open(stream).await.unwrap();
+    conn.login("alice", "pw").await.unwrap();
+    let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
+
+    let sync = provider.sync_email(&account(), None).await.unwrap();
+    let SyncUpdate::Snapshot { objects, .. } = sync.update else {
+        panic!("a first sync is a snapshot");
+    };
+    let sent = written(&recorded);
+    let fetch_line = sent.lines().find(|line| line.contains("FETCH")).unwrap();
+    assert!(fetch_line.contains(" ENVELOPE "), "{fetch_line}");
+    assert!(fetch_line.contains(" INTERNALDATE "), "{fetch_line}");
+    assert_eq!(objects.len(), 1);
+    assert_eq!(
+        objects[0].sent_at.map(|at| at.to_string()).as_deref(),
+        Some("2026-10-29T09:00:00Z")
+    );
+    assert_eq!(
+        objects[0].received_at.map(|at| at.to_string()).as_deref(),
+        Some("2026-11-20T20:15:44Z")
+    );
 }
 
 #[tokio::test]
