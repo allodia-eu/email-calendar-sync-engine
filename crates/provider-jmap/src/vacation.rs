@@ -2,19 +2,22 @@
 //! [`Vacation`] (`filters-and-out-of-office.md`, slice 1).
 //!
 //! - **Reached only where the account has it.** [`reachable`] is the session's own answer for
-//!   `urn:ietf:params:jmap:vacationresponse` ([`Session::has_capability`] and
-//!   [`Session::account_for`]), so a client bound to a read-only share, which lists no such
-//!   capability, has no reply.
+//!   `urn:ietf:params:jmap:vacationresponse` ([`Session::extension_account`]), so a client bound to
+//!   a read-only share, which lists no such capability, has no reply.
 //! - **A setting, written directly.** `VacationResponse/set` updates the singleton with every
-//!   modelled property, guarded by `ifInState` with the version the caller read (RFC 8620 §5.3): a
-//!   stale one is `stateMismatch`, a `Conflict`. A `VacationResponse` holds a window and a subject
-//!   and answers everyone with one reply ([`vocabulary`]).
+//!   modelled property. A guarded write sends `ifInState` with the version the caller read (RFC
+//!   8620 §5.3), and a stale one is `stateMismatch`, a `Conflict`; only an
+//!   [`Unconditional`](VacationPrecondition::Unconditional) write the caller spelled out sends
+//!   none. A `VacationResponse` holds a window and a subject and answers everyone with one reply
+//!   ([`vocabulary`]).
 //! - **What the write did to the account's own rules is observed, not assumed.** Where the account
-//!   also has JMAP Sieve, the same request lists the scripts before and after the update. Stalwart
-//!   runs the reply as a script of its own, and turning it on deactivates whatever script the user
-//!   had active (RFC 9661 §2.1 allows one), which the receipt reports as
-//!   [`RulesEffect::Deactivated`]. Without Sieve the rules cannot be seen, so the effect is
-//!   [`RulesEffect::Unknown`].
+//!   also has JMAP Sieve, the same request lists the scripts before and after the update, and an
+//!   effect is claimed only where the two listings' states are the write's `oldState` and
+//!   `newState`, so nothing else changed between them. Stalwart runs the reply as a script of its
+//!   own, and turning it on deactivates whatever script the user had active (RFC 9661 §2.1 allows
+//!   one), which the receipt reports as [`RulesEffect::Deactivated`]; turning it off switches
+//!   nothing back on, which it reports as [`RulesEffect::StillDeactivated`]. Without Sieve the
+//!   rules cannot be seen, so the effect is [`RulesEffect::Unknown`].
 //! - **No content in errors.** A failure names its method error or `SetError` type; the reply's
 //!   words never reach a message.
 
@@ -27,11 +30,13 @@ use engine_core::{
     time::UtcDateTime,
     vacation::{
         AutoReply, RulesEffect, VacationReceipt, VacationResponse, VacationVocabulary,
-        VacationWindow,
+        VacationWindow, WindowSupport,
     },
     version::VacationVersion,
 };
-use engine_provider::{ProviderResult, Vacation, WriteGuard, refuse_unheld_vacation};
+use engine_provider::{
+    ProviderResult, Vacation, VacationPrecondition, WriteGuard, refuse_unheld_vacation,
+};
 use serde_json::{Value, json};
 
 use crate::{
@@ -46,27 +51,33 @@ use crate::{
 /// The one `VacationResponse` an account has (RFC 8621 §8).
 const SINGLETON: &str = "singleton";
 
-/// Whether the session gives this client an account with a reply: the server speaks the
-/// capability and addresses its calls at an account of this client's.
+/// Whether the session gives this client an account with a reply
+/// ([`Session::extension_account`], the one lookup).
 pub(crate) fn reachable(session: &Session) -> bool {
-    session.has_capability(capability::VACATION_RESPONSE)
-        && session.account_for(capability::VACATION_RESPONSE).is_some()
+    session
+        .extension_account(capability::VACATION_RESPONSE)
+        .is_some()
 }
 
-/// What a `VacationResponse` holds: a window and a subject, one reply, to every sender.
-pub(crate) fn vocabulary() -> VacationVocabulary {
-    VacationVocabulary::everyone().with_window().with_subject()
+/// What a `VacationResponse` holds: a window with either end (`fromDate`, `toDate`), a subject,
+/// a text and an HTML body, one reply, to every sender. The same for every account, so asking
+/// costs no request.
+fn vocabulary() -> VacationVocabulary {
+    VacationVocabulary::everyone()
+        .with_window(WindowSupport::EitherEnd)
+        .with_subject()
+        .with_text_and_html()
 }
 
 #[async_trait]
 impl Vacation for JmapProvider {
-    fn vocabulary(&self) -> VacationVocabulary {
-        vocabulary()
+    async fn vocabulary(&self, _account: &AccountId) -> ProviderResult<VacationVocabulary> {
+        Ok(vocabulary())
     }
 
     /// `ifInState` on the `VacationResponse` type: the type has one object, so its state is the
     /// reply's own version, and a stale one is refused (proven live, `tests/live_vacation.rs`).
-    fn guard(&self) -> WriteGuard {
+    fn vacation_write_guard(&self) -> WriteGuard {
         WriteGuard::Enforced
     }
 
@@ -77,11 +88,12 @@ impl Vacation for JmapProvider {
     async fn set_vacation(
         &self,
         _account: &AccountId,
-        base: &VacationResponse,
+        precondition: VacationPrecondition<'_>,
         new: &VacationResponse,
     ) -> ProviderResult<VacationReceipt> {
         refuse_unheld_vacation(&vocabulary(), new)?;
-        Ok(write(self.executor(), base, new).await?)
+        let guard = precondition.version(self.vacation_write_guard())?;
+        Ok(write(self.executor(), guard, new).await?)
     }
 }
 
@@ -103,26 +115,25 @@ async fn read(executor: &dyn Executor) -> Result<VacationResponse, JmapError> {
                 .find(|object| object.get("id").and_then(Value::as_str) == Some(SINGLETON))
         })
         .ok_or_else(|| JmapError::protocol("VacationResponse/get answered no singleton"))?;
-    let mut reply = from_json(object)?;
-    if let Some(state) = result.get("state").and_then(Value::as_str) {
-        reply = reply.with_version(VacationVersion::new(state));
-    }
-    Ok(reply)
+    // The state is the version a write is guarded by; a reply read without one could only be
+    // written unguarded, so it is refused here rather than there.
+    let state = result
+        .get("state")
+        .and_then(Value::as_str)
+        .ok_or_else(|| JmapError::protocol("VacationResponse/get answered without a state"))?;
+    Ok(from_json(object)?.with_version(VacationVersion::new(state)))
 }
 
-/// Replaces the reply with `new`, guarded by `base`'s version, and lists the account's Sieve
-/// scripts around it where it can see them.
+/// Replaces the reply with `new`, guarded by `guard` where there is one, and lists the account's
+/// Sieve scripts around it where it can see them.
 async fn write(
     executor: &dyn Executor,
-    base: &VacationResponse,
+    guard: Option<&VacationVersion>,
     new: &VacationResponse,
 ) -> Result<VacationReceipt, JmapError> {
     let session = executor.session();
     let account = vacation_account(session)?;
-    let sieve = session
-        .has_capability(capability::SIEVE)
-        .then(|| session.account_for(capability::SIEVE))
-        .flatten();
+    let sieve = session.extension_account(capability::SIEVE);
 
     let mut using = vec![capability::CORE, capability::VACATION_RESPONSE];
     if sieve.is_some() {
@@ -140,7 +151,7 @@ async fn write(
         "accountId": account,
         "update": { SINGLETON: to_json(new) },
     });
-    if let Some(version) = &base.version {
+    if let Some(version) = guard {
         arguments["ifInState"] = json!(version.as_str());
     }
     let set = request.invoke("VacationResponse/set", arguments);
@@ -161,19 +172,23 @@ async fn write(
     {
         return Err(JmapError::unanswered(SINGLETON, "updated", "notUpdated"));
     }
-    let version = result
-        .get("newState")
-        .and_then(Value::as_str)
-        .map(VacationVersion::new);
+    let state = |key| result.get(key).and_then(Value::as_str);
+    let version = state("newState").map(VacationVersion::new);
 
     let rules = match (before, after) {
-        (Some(before), Some(after)) => match (
-            response.result(&before).ok().and_then(active_by_id),
-            response.result(&after).ok().and_then(active_by_id),
-        ) {
-            (Some(before), Some(after)) => effect(&before, &after, new.enabled),
-            _ => RulesEffect::Unknown,
-        },
+        (Some(before), Some(after)) => {
+            match (listing(&response, &before), listing(&response, &after)) {
+                // One counter for both types (Stalwart): the listings bracket the write exactly, so
+                // nothing came between them, and what changed is the write's doing.
+                (Some((before_state, before)), Some((after_state, after)))
+                    if Some(before_state) == state("oldState")
+                        && Some(after_state) == state("newState") =>
+                {
+                    effect(&before, &after, new.enabled)
+                }
+                _ => RulesEffect::Unknown,
+            }
+        }
         _ => RulesEffect::Unknown,
     };
     Ok(VacationReceipt::new(version, rules))
@@ -181,14 +196,22 @@ async fn write(
 
 /// The account `VacationResponse` calls address.
 fn vacation_account(session: &Session) -> Result<&JmapAccountId, JmapError> {
-    if !reachable(session) {
-        return Err(JmapError::session(
-            "this account has no out-of-office reply (no vacationresponse capability)",
-        ));
-    }
     session
-        .account_for(capability::VACATION_RESPONSE)
-        .ok_or_else(|| JmapError::session("no account for the out-of-office reply"))
+        .extension_account(capability::VACATION_RESPONSE)
+        .ok_or_else(|| {
+            JmapError::session(
+                "this account has no out-of-office reply (no vacationresponse capability)",
+            )
+        })
+}
+
+/// A `SieveScript/get` answer's state and scripts, or `None` where it failed or cannot be read.
+fn listing<'a>(
+    response: &'a crate::Response,
+    call: &crate::CallId,
+) -> Option<(&'a str, BTreeMap<String, bool>)> {
+    let result = response.result(call).ok()?;
+    Some((result.get("state")?.as_str()?, active_by_id(result)?))
 }
 
 /// Each script's id and whether it is active, from a `SieveScript/get` answer.
@@ -204,20 +227,31 @@ fn active_by_id(result: &Value) -> Option<BTreeMap<String, bool>> {
         .collect()
 }
 
-/// What the write did to the account's own scripts: a script active before that is still there
-/// and inactive after, while the reply is now on, was switched off for the reply. A reply
-/// switched off takes only its own script with it, so it deactivates nothing of the user's.
+/// What the write did to the account's own scripts, from the scripts that ran before it and are
+/// still there, inactive, after it.
+///
+/// - The reply went on: such a script was switched off for it ([`RulesEffect::Deactivated`]).
+/// - The reply went off: such a script is the reply's own. If nothing runs now while the account
+///   has other scripts, the user's rules stay off ([`RulesEffect::StillDeactivated`]).
+/// - No script went off: nothing of the user's was touched.
 fn effect(
     before: &BTreeMap<String, bool>,
     after: &BTreeMap<String, bool>,
     turned_on: bool,
 ) -> RulesEffect {
-    let switched_off = before
+    let went_off: Vec<&String> = before
         .iter()
-        .filter(|(_, active)| **active)
-        .any(|(id, _)| after.get(id) == Some(&false));
-    if turned_on && switched_off {
+        .filter(|(id, active)| **active && after.get(*id) == Some(&false))
+        .map(|(id, _)| id)
+        .collect();
+    let nothing_runs = !after.values().any(|active| *active);
+    let others = after.keys().any(|id| !went_off.contains(&id));
+    if went_off.is_empty() {
+        RulesEffect::Untouched
+    } else if turned_on {
         RulesEffect::Deactivated
+    } else if nothing_runs && others {
+        RulesEffect::StillDeactivated
     } else {
         RulesEffect::Untouched
     }
@@ -237,13 +271,13 @@ fn from_json(object: &Value) -> Result<VacationResponse, JmapError> {
         window = window.with_end(end);
     }
     let mut reply = AutoReply::default();
-    if let Some(subject) = text(object, "subject") {
+    if let Some(subject) = text(object, "subject")? {
         reply = reply.with_subject(subject);
     }
-    if let Some(body) = text(object, "textBody") {
+    if let Some(body) = text(object, "textBody")? {
         reply = reply.with_text(body);
     }
-    if let Some(body) = text(object, "htmlBody") {
+    if let Some(body) = text(object, "htmlBody")? {
         reply = reply.with_html(body);
     }
     let read = VacationResponse::default()
@@ -287,11 +321,22 @@ fn date(object: &Value, property: &str) -> Result<Option<UtcDateTime>, JmapError
     }
 }
 
-/// A `String|null` property.
-fn text(object: &Value, property: &str) -> Option<String> {
-    object.get(property)?.as_str().map(str::to_owned)
+/// A `String|null` property, `None` when null or absent. Anything else is refused, as a date
+/// is, naming the property and never its value: one leniency for every property.
+fn text(object: &Value, property: &str) -> Result<Option<String>, JmapError> {
+    match object.get(property) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text.clone())),
+        Some(_) => Err(JmapError::protocol(format!(
+            "a VacationResponse {property} that is not a string"
+        ))),
+    }
 }
 
 #[cfg(test)]
 #[path = "vacation_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "vacation_read_tests.rs"]
+mod read_tests;

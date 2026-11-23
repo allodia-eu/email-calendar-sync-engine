@@ -142,7 +142,7 @@ impl Session {
     /// ```no_run
     /// # fn example(session: &provider_jmap::Session) {
     /// use provider_jmap::capability::SIEVE;
-    /// let filters = session.has_capability(SIEVE) && session.account_for(SIEVE).is_some();
+    /// let speaks_sieve = session.has_capability(SIEVE);
     /// # }
     /// ```
     #[must_use]
@@ -174,6 +174,30 @@ impl Session {
     #[must_use]
     pub fn account_for(&self, urn: &str) -> Option<&JmapAccountId> {
         self.addressing.account_for(urn)
+    }
+
+    /// The account calls for extension `urn` address, where this client can make them at all:
+    /// the server lists `urn` ([`has_capability`](Self::has_capability)) and a call for it is
+    /// addressed ([`account_for`](Self::account_for)). The one lookup for an extension, so that
+    /// no two callers decide "can I use it here" differently.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn example(session: &provider_jmap::Session) {
+    /// use provider_jmap::capability::SIEVE;
+    /// if let Some(account) = session.extension_account(SIEVE) {
+    ///     println!("Sieve scripts live in account {account}");
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn extension_account(&self, urn: &str) -> Option<&JmapAccountId> {
+        if self.has_capability(urn) {
+            self.account_for(urn)
+        } else {
+            None
+        }
     }
 
     /// The account mail calls address: the bound account, or the `primaryAccounts` entry for

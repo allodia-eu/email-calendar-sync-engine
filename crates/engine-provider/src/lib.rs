@@ -70,6 +70,7 @@ mod submit;
 mod sync;
 mod vacation;
 mod watch;
+mod write_guard;
 
 pub use calendar_sync::CalendarSync;
 pub use calendar_user::CalendarUserAddresses;
@@ -82,7 +83,7 @@ pub use calendar_write::{
     refuse_native_conference,
 };
 pub use capability::Capabilities;
-pub use capability_calendar::{OverrideSurvival, RsvpControls, WriteGuard};
+pub use capability_calendar::{OverrideSurvival, RsvpControls};
 pub use connect_observer::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 pub use connection::{ConnectionInfo, HttpVersion, ObservedTlsVersion, TlsVersion};
 #[cfg(feature = "http")]
@@ -118,8 +119,9 @@ pub use submit::{
     DraftCalendar, SentCopy, SubmissionReceipt,
 };
 pub use sync::{CalendarListing, ScopeSync};
-pub use vacation::{Vacation, refuse_unheld_vacation};
+pub use vacation::{Vacation, VacationPrecondition, refuse_unheld_vacation};
 pub use watch::{Watch, WatchEvent};
+pub use write_guard::WriteGuard;
 
 /// Default page size [`Provider::sync_email`] uses to drain
 /// [`Provider::stream_email`]. Streaming callers pass their own, smaller limit

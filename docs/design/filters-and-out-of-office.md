@@ -232,32 +232,47 @@ pub struct VacationResponse {
     pub window: VacationWindow,        // start, end: Option<UtcDateTime>; both None = no window
     pub reply: AutoReply,              // subject: Option<String>, text: Option<String>, html: Option<String>
     pub audience: ReplyAudience,       // Everyone | Contacts | Organization | OrganizationAndContacts
+                                       // | ContactsInOrganization
     pub outside_reply: Option<AutoReply>, // a different reply for senders outside the organization
     pub version: Option<VacationVersion>, // as read; what a write built on it names
     pub raw: Option<RawVacation>,      // the provider's own form, as read
 }
 // replies_at(at): on, and at in [start, end) — RFC 8621 §8's "on or after" / "before".
 
-pub struct VacationVocabulary { pub window: bool, pub subject: bool,
-    pub audiences: BTreeSet<ReplyAudience>, pub outside_reply: bool }
-// lost_parts(&reply) -> Vec<VacationPart>   // Window | Subject | Audience | OutsideReply
+#[non_exhaustive]                      // private fields, read through accessors
+pub struct VacationVocabulary { window: WindowSupport, subject: bool, bodies: ReplyBodies,
+    audiences: BTreeSet<ReplyAudience>, outside_reply: bool }
+pub enum WindowSupport { None, EitherEnd, BothEnds }   // Graph's `scheduled` needs both ends
+pub enum ReplyBodies { One, TextAndHtml }              // Graph keeps one HTML string per message
+// lost_parts(&reply) -> Vec<VacationPart>  // Window | Subject | Bodies | Audience | OutsideReply
 
+#[must_use]
 pub struct VacationReceipt { pub version: Option<VacationVersion>, pub rules: RulesEffect }
-pub enum RulesEffect { Untouched, Deactivated, Unknown }
+pub enum RulesEffect { Untouched, Deactivated, StillDeactivated, Unknown }
 ```
 
-The version sits on the reply rather than beside it, so `set_vacation(base, new)` reads its guard
-from `base` as `replace_rules` will; `raw` is `None` on a reply a host built rather than read. The
-audiences are spelled `Organization`, as every other identifier in the engine is. `lost_parts` is
-the one rule for what a transport would drop, used by the edit (which refuses) and later by import
-(which reports). `RulesEffect` exists because of what slice 1 found live: turning the reply on can
-switch the user's own filter script off ("Settled by live tests"), and a host must be able to say
-so.
+The version sits on the reply, so a guarded write names the reply it read
+(`VacationPrecondition::IfUnchanged(&read)`) as `replace_rules` will name its base; `raw` is `None`
+on a reply a host built rather than read. The audiences are spelled `Organization`, as every other
+identifier in the engine is. `lost_parts` is the one rule for what a transport would drop, used by
+the edit (which refuses) and later by import (which reports). The vocabulary's fields are private
+and its window and bodies are enums, so Graph's shape (both ends, one body) and whatever a later
+transport needs are additions, not breaking changes. `RulesEffect` exists because of what slice 1
+found live: turning the reply on can switch the user's own filter script off, and turning it off
+leaves it off ("Settled by live tests"), and a host must be able to say so, and offer to switch the
+rules back on. The engine never does that itself.
 
 `audience` and `outside_reply` exist because Graph and Gmail both have them and a migration from
 either has to say when they are lost. Graph's `externalAudience` maps `all`→`Everyone`,
 `none`→`Organization`, `contactsOnly`→`OrganizationAndContacts`; Gmail's `restrictToContacts`→
-`Contacts`, `restrictToDomain`→`Organization` (both set is lossy: contacts inside the domain).
+`Contacts`, `restrictToDomain`→`Organization`, both→`ContactsInOrganization`. A read never maps
+an audience to a wider one; where a provider's setting has no exact audience, the adapter answers
+the narrowest one that contains it.
+
+Graph is canonicalised on read, so a reply that says the same thing reads the same way: an
+`externalReplyMessage` equal to the `internalReplyMessage`, or `externalAudience: none` (which sends
+no external reply at all), reads as `outside_reply: None`. Only a genuinely different external
+message is an outside reply.
 Graph's zoned schedule is read as instants (a cut-off, not a wall-clock event) and its zone stays in
 `raw`. The Sieve reply interval (`:days`, `:seconds`) is not modelled and is left to the server, as
 three of the four transports leave it; a Sieve source's value is preserved in the raw script.
@@ -302,20 +317,30 @@ pub trait MailRules: Send + Sync {
 
 #[async_trait]
 pub trait Vacation: Send + Sync {                       // implemented, slice 1
-    fn vocabulary(&self) -> VacationVocabulary;         // window? subject? audiences? outside reply?
-    fn guard(&self) -> WriteGuard;                      // Enforced on JMAP
+    async fn vocabulary(&self, account: &AccountId) -> ProviderResult<VacationVocabulary>;
+    fn vacation_write_guard(&self) -> WriteGuard;      // Enforced on JMAP
     async fn read_vacation(&self, account: &AccountId) -> ProviderResult<VacationResponse>;
-    async fn set_vacation(&self, account: &AccountId, base: &VacationResponse,
+    async fn set_vacation(&self, account: &AccountId, precondition: VacationPrecondition<'_>,
         new: &VacationResponse) -> ProviderResult<VacationReceipt>;
 }
+
+pub enum VacationPrecondition<'a> { IfUnchanged(&'a VacationResponse), Unconditional }
 ```
 
 The read is `read_vacation`, not `vacation`: an adapter implements both `Provider` and `Vacation`,
 and two methods named `vacation` would make every call on a concrete adapter ambiguous. The
-vocabulary is returned by value, since it is small and an adapter computes it. `set_vacation`
-refuses a reply that uses a part the vocabulary lacks (`refuse_unheld_vacation`, before anything is
-sent), because dropping one would change who gets which reply; a `base` with no version writes
-unguarded.
+vocabulary is asked per account, async and fallible, as `mail_import_limits` is: a Gmail account's
+audiences depend on whether it is a Workspace account, a ManageSieve account's window on the
+extensions its server lists. The guard is `vacation_write_guard`, beside `calendar_write_guard` and
+`contact_write_guard`, and `WriteGuard` now lives in a module of its own.
+
+The write's guard is spelled out at the call site and has one source. `IfUnchanged(&read)` guards
+by the read reply's version, and on a transport that enforces one, a reply with no version (built,
+not read) is refused rather than written unguarded. `Unconditional` is the deliberate overwrite (an
+administrator turning a reply off). `new`'s own version and raw form are never read. Refusals made
+before sending are never `InvalidState`, which is also how a write that may have landed reads: a
+part the account cannot hold, or a window that ends at or before its start, is `item_unavailable`
+(`refuse_unheld_vacation`), and a guarded write with no version is `Permanent`.
 
 `Some(..)` is the capability; `vocabulary()` is what it can express. JMAP answers `Some` only for
 an account listing the capability (so not on a read-only share). ManageSieve is a module of
@@ -507,12 +532,15 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 | Neutral | JMAP | Sieve | Graph | Gmail |
 |---|---|---|---|---|
 | `enabled` | ✓ | ✓ | ✓ `status` | ✓ |
-| `window` | ✓ | ✓ `currentdate` (ext `date`) | ✓ `scheduled` (zoned) | ✓ |
+| `window` | ✓ either end | ✓ `currentdate` (ext `date`) | ✓ `scheduled`, both ends (zoned) | ✓ |
 | `reply.subject` | ✓ | ✓ `:subject` | ✗ | ≈ prefix |
 | `reply.text` / `html` | ✓ / ✓ | ✓ / ≈ `:mime` | ≈ / ✓ (one HTML string) | ✓ / ✓ |
+| text **and** HTML kept apart | ✓ | ≈ `:mime` multipart | ✗ (`ReplyBodies::One`) | ✓ |
 | `audience` Everyone | ✓ | ✓ | ✓ external `all` | ✓ |
 | `audience` Organization | ✗ | ≈ sender-domain test (needs the domains) | ✓ external `none` | ✓ `restrictToDomain` (Workspace) |
 | `audience` Contacts | ✗ | ✗ | ≈ `contactsOnly` (external only) | ✓ `restrictToContacts` |
+| `audience` OrganizationAndContacts | ✗ | ✗ | ✓ external `contactsOnly` | ✗ |
+| `audience` ContactsInOrganization | ✗ | ✗ | ✗ | ✓ `restrictToContacts` and `restrictToDomain` |
 | `outside_reply` | ✗ | ≈ sender-domain branch | ✓ `externalReplyMessage` | ✗ |
 
 ## 6. Phasing and tests
@@ -602,8 +630,17 @@ then by `provider-jmap/tests/live_vacation.rs` (2026-11-23). Captured, scrubbed,
   own rendering: `require ["vacation", "relational", "date"];`, the window as two nested
   `currentdate :value "ge"` / `"le" "iso8601"` tests, and `vacation :mime :subject "…"` with a
   `multipart/alternative` body of the text and HTML parts. The `"le"` makes `toDate` inclusive to
-  the second, where RFC 8621 §8 says "before"; the neutral window keeps RFC 8621's exclusive end.
-  The script stays, inactive, when the reply is turned off.
+  the second, where RFC 8621 §8 says "before" (`docs/spec-deviations.md`, STALWART-4); the neutral
+  window keeps RFC 8621's exclusive end. Stalwart's `currentdate` runs in UTC: a probe script
+  filing by `currentdate :matches "zone"` filed a delivered message under `+0000`, with an
+  `iso8601` value ending in `Z`, so its comparisons with the `Z` dates it writes are sound. A reply
+  with only a start, no subject and only a text body renders as one `currentdate "ge"` test and
+  `vacation :mime` with a single `text/plain` part. The script stays, inactive, when the reply is
+  turned off.
+- **A part left out is cleared.** Writing a reply with no subject, only a start and no HTML over a
+  fully populated one (every property sent, the absent ones `null`) reads back without the
+  subject, the end and the HTML (`vacation_set_clears_response.json`,
+  `vacation_get_cleared_response.json`).
 - **It moves the `SieveScript` state, and the two types share one state.** Every
   `VacationResponse/set` moved the `SieveScript` state to the reply's new state, and a
   `SieveScript/set` moved the `VacationResponse` state; `get` on both answers the same string
@@ -616,12 +653,17 @@ then by `provider-jmap/tests/live_vacation.rs` (2026-11-23). Captured, scrubbed,
   reactivates them. Activating the user's script with `onSuccessActivateScript` while the reply
   was on deactivated the `vacation` script, and `VacationResponse/get` then answered
   `isEnabled: false`: Stalwart reads `isEnabled` from whether that script is the active one.
-  Slice 1 does not hide this: the receipt reports `RulesEffect::Deactivated`, observed from the
-  script list read before and after the write in the same request, so a host can tell the user.
+  Slice 1 does not hide this: the receipt reports `RulesEffect::Deactivated` when the reply goes on
+  and `RulesEffect::StillDeactivated` when it goes off with the user's script still off, observed
+  from the script list read before and after the write in the same request, so a host can tell the
+  user and offer to switch their rules back on. The engine never reactivates a script itself. An
+  effect is claimed only where the two listings' states are exactly the write's `oldState` and
+  `newState` (the one counter above), so nothing else changed between them; otherwise it is
+  `Unknown`.
 - **The reply's script is the reply's alone, mostly.** `SieveScript/set` updating its content is
   refused `forbidden` ("use VacationResponse/set instead"), as RFC 9661 §4 requires; destroying it
   while active is refused (`scriptIsActive`). Destroying it once inactive **succeeds**, which RFC
-  9661 §4 forbids (`docs/spec-deviations.md`, STALWART-2). The next `VacationResponse/set` makes a
+  9661 §4 forbids (`docs/spec-deviations.md`, STALWART-3). The next `VacationResponse/set` makes a
   new one.
 
 **What this changes for slice 2.** On a JMAP account whose server runs the reply as its own
@@ -639,8 +681,11 @@ found. Slice 2 must decide, live, between:
   rules, as on ManageSieve (slice 3), leaving `VacationResponse` off.
 
 Either way, `replace_rules` reports the same `RulesEffect` when it would stop a running reply, and
-neither ever destroys a script it did not create (STALWART-2). Until slice 2 lands, a host that
+neither ever destroys a script it did not create (STALWART-3). Until slice 2 lands, a host that
 turns the reply on over the user's script learns it from the receipt.
+
+**Still to settle:**
+
 - **The byte layout of Roundcube's dialect** (slice 2), including `if false # …` for a disabled
   rule, pinned from scripts the plugin wrote, scrubbed as fixtures.
 - **The Graph and Gmail items marked unverified** (slices 4 and 5): `@odata.etag` with `If-Match`

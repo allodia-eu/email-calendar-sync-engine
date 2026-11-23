@@ -85,8 +85,9 @@ Capture any provider-specific assumption in tests or fixtures. If a provider beh
   the union of what JMAP, Sieve, Graph and Gmail can say: on or off, a window (`[start, end)`,
   either end open), a reply (subject, text, HTML), an audience, and an optional second reply for
   senders outside the organization. What a transport cannot hold is stated per account
-  (`VacationVocabulary`) and refused by one rule (`lost_parts`), never dropped, because a dropped
-  audience widens who gets the reply. The version it was read at rides on it, and its provider
+  (`VacationVocabulary`: which windows, a subject, one body or text and HTML, which audiences, an
+  outside reply) and refused by one rule (`lost_parts`), never dropped, because a dropped
+  audience widens who gets the reply. A read never maps an audience to a wider one. The version it was read at rides on it, and its provider
   form is kept as `RawVacation`. It is a setting: no store table, no outbox
   (`docs/design/filters-and-out-of-office.md`). Its subject and bodies are content, so its `Debug`
   shows only their lengths.

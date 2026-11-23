@@ -11,7 +11,9 @@
 //! - `VacationResponse` and `SieveScript` share one state, so a write of either refuses a write of
 //!   the other guarded by a state read before it;
 //! - turning the reply on deactivates the user's own active script, and the receipt says so, while
-//!   a reply turned on with no script of the user's running says it touched nothing.
+//!   a reply turned on with no script of the user's running says it touched nothing;
+//! - turning it off again leaves the user's script off, and the receipt says that too, while a
+//!   reply turned off on an account with no script of the user's says it touched nothing.
 //!
 //! It runs as the scratch account `carol@`, never Alice, and restores Carol's reply and scripts
 //! whether it passes or not. About twenty requests a run.
@@ -26,9 +28,9 @@ use std::panic::{AssertUnwindSafe, resume_unwind};
 use engine_core::{
     error::FailureClass,
     ids::AccountId,
-    vacation::{AutoReply, RulesEffect, VacationResponse, VacationWindow},
+    vacation::{AutoReply, RulesEffect, VacationResponse, VacationWindow, WindowSupport},
 };
-use engine_provider::{Provider, Vacation, WriteGuard};
+use engine_provider::{Provider, Vacation, VacationPrecondition::IfUnchanged, WriteGuard};
 use futures_util::FutureExt;
 use provider_jmap::{
     Credentials, JmapAccountId, JmapClient, JmapConfig, JmapProvider, Request, capability,
@@ -144,7 +146,9 @@ async fn live_the_reply_is_written_guarded_and_says_what_it_did_to_the_user_s_ru
     let vacation = provider
         .vacation()
         .expect("an account listing vacationresponse has a reply");
-    assert_eq!(vacation.guard(), WriteGuard::Enforced);
+    assert_eq!(vacation.vacation_write_guard(), WriteGuard::Enforced);
+    let vocabulary = vacation.vocabulary(&account()).await.expect("vocabulary");
+    assert_eq!(vocabulary.window(), WindowSupport::EitherEnd);
 
     let prior = vacation.read_vacation(&account()).await.expect("read");
     let (prior_scripts, _) = scripts(&client).await;
@@ -153,10 +157,14 @@ async fn live_the_reply_is_written_guarded_and_says_what_it_did_to_the_user_s_ru
     let checked = AssertUnwindSafe(exercise(vacation, &client, &prior_scripts))
         .catch_unwind()
         .await;
-    restore(vacation, &client, &prior, &prior_scripts).await;
+    let restored = restore(vacation, &client, &prior, &prior_scripts).await;
     if let Err(failed) = checked {
+        if let Err(problem) = restored {
+            eprintln!("and restoring Carol failed too: {problem}");
+        }
         resume_unwind(failed);
     }
+    restored.expect("Carol is left as she was found");
 }
 
 async fn exercise(vacation: &dyn Vacation, client: &JmapClient, prior: &[(String, String, bool)]) {
@@ -170,7 +178,7 @@ async fn exercise(vacation: &dyn Vacation, client: &JmapClient, prior: &[(String
     let read = vacation.read_vacation(&account()).await.unwrap();
     let (_, sieve_state) = scripts(client).await;
     let receipt = vacation
-        .set_vacation(&account(), &read, &away("Away"))
+        .set_vacation(&account(), IfUnchanged(&read), &away("Away"))
         .await
         .expect("a reply guarded by the version just read");
     assert_eq!(receipt.rules, RulesEffect::Untouched);
@@ -216,7 +224,7 @@ async fn exercise(vacation: &dyn Vacation, client: &JmapClient, prior: &[(String
 
     // A write built on the first read is stale now, and refused, and does not land.
     let err = vacation
-        .set_vacation(&account(), &read, &away("Stale"))
+        .set_vacation(&account(), IfUnchanged(&read), &away("Stale"))
         .await
         .expect_err("a stale version is refused");
     assert_eq!(err.class(), FailureClass::Conflict);
@@ -227,15 +235,38 @@ async fn exercise(vacation: &dyn Vacation, client: &JmapClient, prior: &[(String
         "the refused write did not land"
     );
 
+    // Over that fully populated reply, one with no subject, only a start and no HTML: every part
+    // left out is cleared on the server, not kept from before.
+    let start = "2030-02-01T08:00:00Z".parse().unwrap();
+    let cleared = VacationResponse::default()
+        .turned_on()
+        .with_window(VacationWindow::default().with_start(start))
+        .with_reply(AutoReply::default().with_text("Away for a while."));
+    let receipt = vacation
+        .set_vacation(&account(), IfUnchanged(&unchanged), &cleared)
+        .await
+        .expect("a reply with parts left out");
+    let stored = vacation.read_vacation(&account()).await.unwrap();
+    assert_eq!(stored.version, receipt.version);
+    assert_eq!(stored.window.start, Some(start));
+    assert_eq!(stored.window.end, None, "the end is cleared");
+    assert_eq!(stored.reply.subject, None, "the subject is cleared");
+    assert_eq!(stored.reply.html, None, "the HTML body is cleared");
+    assert_eq!(stored.reply.text.as_deref(), Some("Away for a while."));
+
     // The user's own script, planted and activated: the reply's version read before it is
     // stale too, because the two types share one state.
     let (before_own, _) = scripts(client).await;
     let read = vacation.read_vacation(&account()).await.unwrap();
     let off = vacation
-        .set_vacation(&account(), &read, &away("Away").turned_off())
+        .set_vacation(&account(), IfUnchanged(&read), &away("Away").turned_off())
         .await
         .expect("off");
-    assert_eq!(off.rules, RulesEffect::Untouched, "{before_own:?}");
+    assert_eq!(
+        off.rules,
+        RulesEffect::Untouched,
+        "off, with no script of the user's to leave off: {before_own:?}"
+    );
     let read = vacation.read_vacation(&account()).await.unwrap();
     let planted = sieve_set(
         client,
@@ -249,7 +280,7 @@ async fn exercise(vacation: &dyn Vacation, client: &JmapClient, prior: &[(String
         .expect("the user's script is stored")
         .to_owned();
     let err = vacation
-        .set_vacation(&account(), &read, &away("Away"))
+        .set_vacation(&account(), IfUnchanged(&read), &away("Away"))
         .await
         .expect_err("a script write moves the reply's state");
     assert_eq!(err.class(), FailureClass::Conflict);
@@ -258,7 +289,7 @@ async fn exercise(vacation: &dyn Vacation, client: &JmapClient, prior: &[(String
     // the receipt does.
     let read = vacation.read_vacation(&account()).await.unwrap();
     let receipt = vacation
-        .set_vacation(&account(), &read, &away("Away"))
+        .set_vacation(&account(), IfUnchanged(&read), &away("Away"))
         .await
         .expect("on over the user's script");
     assert_eq!(receipt.rules, RulesEffect::Deactivated);
@@ -271,12 +302,14 @@ async fn exercise(vacation: &dyn Vacation, client: &JmapClient, prior: &[(String
     );
     assert_eq!(state(&reply_script), Some(true));
 
-    // Off again: the user's script stays off.
+    // Off again: the user's script stays off, and the receipt says so; nothing switches it
+    // back on for them.
     let read = vacation.read_vacation(&account()).await.unwrap();
-    vacation
-        .set_vacation(&account(), &read, &away("Away").turned_off())
+    let off = vacation
+        .set_vacation(&account(), IfUnchanged(&read), &away("Away").turned_off())
         .await
         .expect("off");
+    assert_eq!(off.rules, RulesEffect::StillDeactivated);
     let (after, _) = scripts(client).await;
     let own_now = after.iter().find(|(id, ..)| *id == own).map(|s| s.2);
     eprintln!("after the reply is off, the user's script is active: {own_now:?}");
@@ -288,23 +321,28 @@ async fn exercise(vacation: &dyn Vacation, client: &JmapClient, prior: &[(String
 }
 
 /// Puts Carol's reply back as it was, removes every script the suite added (the server's reply
-/// script included, which Stalwart lets a client destroy once inactive), and reactivates the
-/// script that ran before, if one did.
+/// script included, which Stalwart lets a client destroy once inactive: `spec-deviations.md`,
+/// STALWART-3), and reactivates the script that ran before, if one did. Then reads both back and
+/// answers what still differs.
 async fn restore(
     vacation: &dyn Vacation,
     client: &JmapClient,
     prior: &VacationResponse,
     prior_scripts: &[(String, String, bool)],
-) {
-    if let Ok(now) = vacation.read_vacation(&account()).await {
-        let mut back = VacationResponse::default()
-            .with_window(prior.window)
-            .with_reply(prior.reply.clone());
-        back.enabled = prior.enabled;
-        if let Err(err) = vacation.set_vacation(&account(), &now, &back).await {
-            eprintln!("restoring the reply failed: {err}");
-        }
-    }
+) -> Result<(), String> {
+    let account = account();
+    let mut back = VacationResponse::default()
+        .with_window(prior.window)
+        .with_reply(prior.reply.clone());
+    back.enabled = prior.enabled;
+    let now = vacation
+        .read_vacation(&account)
+        .await
+        .map_err(|err| format!("reading the reply: {err}"))?;
+    let _ = vacation
+        .set_vacation(&account, IfUnchanged(&now), &back)
+        .await
+        .map_err(|err| format!("restoring the reply: {err}"))?;
     let (now, _) = scripts(client).await;
     let added: Vec<&str> = now
         .iter()
@@ -316,8 +354,24 @@ async fn restore(
     if let Some((id, ..)) = active {
         arguments["onSuccessActivateScript"] = json!(id);
     }
-    let answer = sieve_set(client, json!({ "onSuccessDeactivateScript": true }), None).await;
-    eprintln!("deactivated: {answer}");
+    sieve_set(client, json!({ "onSuccessDeactivateScript": true }), None).await;
     let answer = sieve_set(client, arguments, None).await;
-    eprintln!("restored scripts: {answer}");
+    if answer.get("notDestroyed").is_some() {
+        return Err(format!("removing the suite's scripts: {answer}"));
+    }
+
+    let reply = vacation
+        .read_vacation(&account)
+        .await
+        .map_err(|err| format!("reading the restored reply: {err}"))?;
+    if parts(&reply) != parts(prior) {
+        return Err("the reply differs from what it was".to_owned());
+    }
+    let (scripts_now, _) = scripts(client).await;
+    if scripts_now != prior_scripts {
+        return Err(format!(
+            "the scripts differ: {scripts_now:?}, not {prior_scripts:?}"
+        ));
+    }
+    Ok(())
 }

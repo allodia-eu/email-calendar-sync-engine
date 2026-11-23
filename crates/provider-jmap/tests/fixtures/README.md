@@ -40,6 +40,9 @@ tests driven through a fake executor.
 | `vacation_get_response.json` | `[VacationResponse/get]` with `ids: ["singleton"]`, as `carol@` on v1.0.2, after the reply was set | Reading a reply: every property, `state` as the version, the window as `UTCDate`s. |
 | `vacation_set_response.json` | `[SieveScript/get, VacationResponse/set, SieveScript/get]` as the adapter sends it, `carol@` with no script of her own | Writing a reply: `newState`, and the server's own `vacation` script appearing, active, after the write (`RulesEffect::Untouched`: nothing of the user's ran before). |
 | `vacation_set_deactivates_response.json` | The same request, with a script of `carol@`'s own active | The server switching the user's script off to run the reply: `RulesEffect::Deactivated`. |
+| `vacation_set_off_response.json` | The same request turning the reply off, with `carol@`'s own script still off from the reply going on | `RulesEffect::StillDeactivated`: nothing runs after, though the account has a script of its own. |
+| `vacation_set_clears_response.json` | The same request writing a reply with no subject, only a start and no HTML over a full one | Every part left out is sent `null`; the reply's own script stays active (`Untouched`). |
+| `vacation_get_cleared_response.json` | `[VacationResponse/get]` right after | The cleared parts read back as `null`. |
 | `vacation_set_stale_response.json` | The same request with a superseded `ifInState` | `stateMismatch` as a method error between two script listings that still answer. |
 | `email_set_report_notfound_response.json` | `[Email/set]` response for an unknown id | The `notFound` `SetError` a stale report target produces → `Conflict`. |
 | `mailbox_set_refusals_response.json` | Six `[Mailbox/set]` refusals (scratch account `carol@`) | How a folder edit is refused: `alreadyExists` with `existingId` on a create and an update, `invalidProperties` for a missing parent and for a cycle, `notFound`, `mailboxHasChild`. |

@@ -186,36 +186,53 @@ counts against the upload quota for an hour, so the suite can run about six time
 
 `JmapProvider` implements `engine_provider::Vacation` (`src/vacation.rs`; `providers.md` →
 "Out-of-office"), and `Provider::vacation` answers it where the session addresses an account with
-`urn:ietf:params:jmap:vacationresponse`: `Session::has_capability` and `Session::account_for`, the
-one lookup, so a client bound to a read-only share (which lists none) has no reply, and one bound
-to a group share has the group's.
+`urn:ietf:params:jmap:vacationresponse`: `Session::extension_account`, the one lookup for an
+extension (the server lists it, and a call for it is addressed), used for Sieve too. A client
+bound to a read-only share (which lists none) has no reply, and one bound to a group share has
+the group's.
 
 - **Read**: `VacationResponse/get` with `ids: ["singleton"]`; the type's `state` is the
-  `VacationVersion`, and the object's JSON is kept as `RawVacation`. A missing `isEnabled` or a
-  date that is not a `UTCDate` is a protocol error naming the property, never its value.
+  `VacationVersion`, and the object's JSON is kept as `RawVacation`. A missing or non-string
+  `state` is a protocol error, since a reply without one could only be written unguarded; so is a
+  missing `isEnabled`, a date that is not a `UTCDate`, or a text property that is neither a string
+  nor `null`. Each names the property, never its value.
+- **Vocabulary**: a window with either end, a subject, a text and an HTML body, everyone, one
+  reply. The same for every account, so asking sends nothing.
 - **Write**: one `VacationResponse/set` updating the singleton with all six properties (a part the
-  reply leaves out is sent `null`, so it is cleared), `ifInState` set to the base's version when
-  it has one. Stalwart enforces it: a stale state is the method error `stateMismatch`, a
+  reply leaves out is sent `null`, so it is cleared), `ifInState` set to the read reply's version
+  under `VacationPrecondition::IfUnchanged`, and none only under an `Unconditional` the caller
+  spelled out. Stalwart enforces it: a stale state is the method error `stateMismatch`, a
   `Conflict`, and the write does not land. A `SetError` names its type and properties; an answer
   naming the singleton nowhere, or a request that failed once it may have reached the server, is
   `requires_confirmation`.
-- **The rules effect is observed in the same request.** Where the account also has
-  `urn:ietf:params:jmap:sieve`, the write is sandwiched between two `SieveScript/get` calls asking
-  only `isActive`; a script active before, present and inactive after, while the reply goes on, is
-  `RulesEffect::Deactivated`. A listing that fails, or no Sieve, is `Unknown`, and never fails the
-  write.
+- **The rules effect is observed in the same request.** Where the account also has JMAP Sieve,
+  the write is sandwiched between two `SieveScript/get` calls asking only `isActive`. The effect
+  is read only where the first listing's `state` is the write's `oldState` and the second's its
+  `newState` (one counter for both types, as on Stalwart), so nothing came between them. Then a
+  script active before and present but inactive after is `RulesEffect::Deactivated` while the
+  reply goes on; while it goes off, that script is the reply's own, and if nothing runs after
+  though the account has other scripts, it is `StillDeactivated`. A listing that fails, states
+  that do not bracket the write, or no Sieve, is `Unknown`, and never fails the write.
 - **What Stalwart does underneath** (live, `tests/live_vacation.rs`; the design note's "Settled
   by live tests"): the reply is a Sieve script named `vacation` that the first write creates and
   activates; `VacationResponse` and `SieveScript` share one state; turning the reply on
   deactivates the user's own script and turning it off does not reactivate it; `isEnabled` reads
   whether the `vacation` script is the active one; that script cannot be updated through
-  `SieveScript/set` but can be destroyed once inactive (`spec-deviations.md`, STALWART-2).
+  `SieveScript/set` but can be destroyed once inactive (`spec-deviations.md`, STALWART-3); its
+  `toDate` test is inclusive (STALWART-4), in UTC.
 
-Live: `tests/live_vacation.rs` runs as the scratch account `carol@`, writes a reply and reads it
-back, is refused with a stale version and accepted with the current one, plants a script of the
-user's and sees the receipt report it switched off, and restores Carol's reply and scripts
-whatever happens. Fixtures: `vacation_get_response.json`, `vacation_set_response.json`,
-`vacation_set_deactivates_response.json`, `vacation_set_stale_response.json`.
+Live: `tests/live_vacation.rs` runs as the scratch account `carol@`. It:
+- writes a reply and reads it back;
+- is refused with a stale version and accepted with the current one;
+- writes a reply with no subject, only a start and no HTML over a full one, and reads each part
+  back cleared;
+- plants a script of the user's and sees the receipt report it switched off, then still off;
+- restores Carol's reply and scripts whatever happens, and fails if they differ afterwards.
+
+Fixtures: `vacation_get_response.json`, `vacation_set_response.json`,
+`vacation_set_deactivates_response.json`, `vacation_set_off_response.json`,
+`vacation_set_stale_response.json`, `vacation_set_clears_response.json`,
+`vacation_get_cleared_response.json`.
 
 ## JMAP specifics implemented
 

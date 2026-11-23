@@ -16,8 +16,8 @@
 //!   cannot keep and a write refuses what it would otherwise drop.
 //! - [`VacationReceipt`] is what a write answers: the version the reply has now, and what the write
 //!   did to the account's own mail rules ([`RulesEffect`]), because on a JMAP server that runs the
-//!   reply as a Sieve script, turning the reply on switches the user's own filter script off (RFC
-//!   9661 §2.4: one active script; observed on Stalwart,
+//!   reply as a Sieve script, turning the reply on switches the user's own filter script off, and
+//!   turning it off leaves it off (RFC 9661 §2.1: at most one active script; observed on Stalwart,
 //!   `docs/design/filters-and-out-of-office.md`).
 //!
 //! The reply's subject and bodies are content: every type here that carries them has a redacted
@@ -32,7 +32,7 @@ mod vocabulary;
 
 pub use receipt::{RulesEffect, VacationReceipt};
 pub use reply::{AutoReply, ReplyAudience, VacationResponse, VacationWindow};
-pub use vocabulary::{VacationPart, VacationVocabulary};
+pub use vocabulary::{ReplyBodies, VacationPart, VacationVocabulary, WindowSupport};
 
 #[cfg(test)]
 mod tests;

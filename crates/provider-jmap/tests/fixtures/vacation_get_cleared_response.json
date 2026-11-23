@@ -1,0 +1,25 @@
+{
+  "methodResponses": [
+    [
+      "VacationResponse/get",
+      {
+        "accountId": "e",
+        "state": "sfu",
+        "list": [
+          {
+            "id": "singleton",
+            "isEnabled": true,
+            "fromDate": "2030-02-01T08:00:00Z",
+            "toDate": null,
+            "subject": null,
+            "textBody": "Away for a while.",
+            "htmlBody": null
+          }
+        ],
+        "notFound": []
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}

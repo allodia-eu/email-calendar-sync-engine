@@ -15,6 +15,9 @@
 //! - [`CollectionTag`] — a whole collection's marker (WebDAV `sync-token` or CalendarServer
 //!   `getctag`); it moves when any member does, so it revises the collection's contents rather than
 //!   one object.
+//! - [`VacationVersion`] — the version of an account's out-of-office reply, a setting with one
+//!   value per account; on JMAP the `VacationResponse` type's `state`, the only revision a
+//!   singleton has.
 //!
 //! JMAP objects carry **no** per-object token; their concurrency comes from the
 //! account-and-type `state` cursor instead, so a JMAP object has empty

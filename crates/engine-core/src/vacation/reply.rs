@@ -137,6 +137,13 @@ impl VacationWindow {
         self.start.is_none() && self.end.is_none()
     }
 
+    /// Whether it runs at no instant: both ends set, and the end not after the start. A write
+    /// refuses such a window before sending, since no server would ever send the reply.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        matches!((self.start, self.end), (Some(start), Some(end)) if end <= start)
+    }
+
     /// Whether `at` is inside: on or after the start, and before the end.
     fn contains(self, at: UtcDateTime) -> bool {
         self.start.is_none_or(|start| start <= at) && self.end.is_none_or(|end| at < end)
@@ -215,8 +222,13 @@ impl fmt::Debug for Length<'_> {
 /// (`filters-and-out-of-office.md`, §3): Graph's `externalAudience` `all` is
 /// [`Everyone`](Self::Everyone), `none` is [`Organization`](Self::Organization), and
 /// `contactsOnly` is [`OrganizationAndContacts`](Self::OrganizationAndContacts); Gmail's
-/// `restrictToContacts` is [`Contacts`](Self::Contacts) and `restrictToDomain` is
-/// [`Organization`](Self::Organization).
+/// `restrictToContacts` is [`Contacts`](Self::Contacts), `restrictToDomain` is
+/// [`Organization`](Self::Organization), and both together are
+/// [`ContactsInOrganization`](Self::ContactsInOrganization).
+///
+/// A read never maps a source's audience to a wider one: where a transport's setting has no exact
+/// audience here, the adapter answers the narrowest audience that contains it, and a write that
+/// cannot hold that one refuses rather than answering senders the user excluded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum ReplyAudience {
@@ -230,4 +242,7 @@ pub enum ReplyAudience {
     /// Senders inside the organization, and senders outside it who are in the account's
     /// contacts.
     OrganizationAndContacts,
+    /// Only senders who are both inside the organization and in the account's contacts (Gmail
+    /// with both `restrictToContacts` and `restrictToDomain`).
+    ContactsInOrganization,
 }
