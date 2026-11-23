@@ -72,6 +72,9 @@ pub struct Session {
     /// What the mail account states about the messages stored in it; only an import reads it.
     #[cfg(feature = "import")]
     pub(crate) mail_limits: crate::session_limits::MailLimits,
+    /// The addressed Sieve account's extensions and limits, where it has any
+    /// (`crate::session_sieve`).
+    pub(crate) sieve: Option<crate::session_sieve::SieveCapability>,
     /// Every account the session lists — the credential's own and each shared with it —
     /// or `None` when it carries no `accounts` map at all.
     pub(crate) accounts: Option<Vec<SessionAccount>>,
@@ -280,7 +283,15 @@ impl Session {
             blob_get,
         );
 
+        let sieve = crate::session_sieve::sieve_capability(
+            value,
+            addressing
+                .account_for(capability::SIEVE)
+                .map(JmapAccountId::as_str),
+        );
+
         Ok(Self {
+            sieve,
             api_url,
             download_url,
             upload_url,

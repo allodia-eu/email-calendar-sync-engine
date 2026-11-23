@@ -188,6 +188,10 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         (**self).vacation()
     }
 
+    fn mail_rules(&self) -> Option<&dyn crate::MailRules> {
+        (**self).mail_rules()
+    }
+
     #[cfg(feature = "import")]
     fn calendar_importer(&self) -> Option<&dyn crate::import::CalendarImporter> {
         (**self).calendar_importer()

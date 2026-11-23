@@ -1,0 +1,42 @@
+{
+  "methodResponses": [
+    [
+      "SieveScript/get",
+      {
+        "accountId": "e",
+        "state": "sxyaq",
+        "list": [
+          {
+            "name": "vacation",
+            "isActive": false,
+            "blobId": "ch9hvrrcchjvnbjfdh1wkipijyd9iojug0dq1b2ppolzkaqgp737wbafhiakqai",
+            "id": "b7"
+          },
+          {
+            "name": "rules",
+            "isActive": true,
+            "blobId": "ceatf79qwtdhlnli73023occ7i3l2foo3ljgy33l1qbv7dfahfxoobafhmad1",
+            "id": "b9"
+          }
+        ],
+        "notFound": []
+      },
+      "0"
+    ],
+    [
+      "VacationResponse/get",
+      {
+        "accountId": "e",
+        "state": "sxyaq",
+        "list": [
+          {
+            "id": "singleton"
+          }
+        ],
+        "notFound": []
+      },
+      "1"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}

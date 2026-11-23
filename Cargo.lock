@@ -1645,6 +1645,7 @@ dependencies = [
  "engine-recurrence",
  "engine-rfc5322",
  "engine-search",
+ "engine-sieve",
  "engine-store",
  "engine-sync",
  "engine-tls",

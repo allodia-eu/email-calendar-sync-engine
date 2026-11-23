@@ -260,3 +260,18 @@ pub(crate) fn message_with_blob(id: &str, blob: &str) -> engine_core::mail::Mess
     message.blob_id = Some(BlobId::try_from(blob).unwrap());
     message
 }
+
+/// Carol's scripts with the reply's state beside them, as the adapter lists them for the rules
+/// and the reply: the captured `SieveScript/get` (`sieve_get_rules_and_reply_response.json`, the
+/// rules running, the reply's script beside them) and the `VacationResponse/get` answer at the
+/// same state, as Stalwart answers both in one request
+/// (`sieve_listing_with_reply_state_response.json`).
+pub(crate) fn sieve_listing() -> Value {
+    let mut doc = fixture("sieve_get_rules_and_reply_response.json");
+    let state = doc["methodResponses"][0][1]["state"].clone();
+    let mut reply =
+        fixture("sieve_listing_with_reply_state_response.json")["methodResponses"][1].clone();
+    reply[1]["state"] = state;
+    doc["methodResponses"].as_array_mut().unwrap().push(reply);
+    doc
+}

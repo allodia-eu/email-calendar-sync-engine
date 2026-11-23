@@ -62,6 +62,7 @@ mod identity;
 pub mod import;
 mod keyword_name;
 mod mail_edit;
+mod mail_rules;
 mod mailbox_edit;
 mod mailbox_write;
 mod meeting;
@@ -112,6 +113,7 @@ pub use hand_over::{HandOver, HandOverLog, HandedOver, Unrecorded};
 pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};
 pub use keyword_name::{KeywordName, keyword_named};
 pub use mail_edit::{MailEdit, MailEditReceipt};
+pub use mail_rules::{MailRules, guard_version};
 pub use mailbox_edit::{MailboxEdit, MailboxEditReceipt};
 pub use mailbox_write::MailboxWrites;
 pub use meeting::{

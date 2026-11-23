@@ -1,14 +1,15 @@
 # Filters and out-of-office: design note
 
-Status: **design settled; slice 1 (the reply over JMAP) implemented; slice 2 (rules over JMAP
-Sieve) under way: `engine-sieve`, the rules model and `plan_rules` implemented.** Written
+Status: **design settled; slice 1 (the reply over JMAP) and slice 2 (rules over JMAP Sieve)
+implemented.** Written
 2026-11-23, when the owner moved message rules and automatic replies into scope; every question it
 raised was decided the same day (section 7). `north-star.md` records the scope and the accessor
 pattern (#378). Slice 1 landed `engine_core::vacation`, the `Vacation` trait and
 `Provider::vacation`, and `provider-jmap`'s `VacationResponse` get and set, and answered the
 questions it was to settle live ("Settled by live tests"). Slice 2 has landed `engine-sieve` (the
-segmenter, and the dialect reader, writer and vocabulary) and `engine_core::rules` with
-`plan_rules`. Where the code differs from a sketch below, the sketch has been brought up to date
+segmenter, and the dialect reader, writer and vocabulary), `engine_core::rules` with
+`plan_rules`, the `MailRules` trait and `Provider::mail_rules`, and `provider-jmap`'s rules over
+JMAP Sieve, with the reply kept running beside them, and settled live how the two coexist. Where the code differs from a sketch below, the sketch has been brought up to date
 and says why.
 
 Marks used below: **live** = observed against a harness server on 2026-11-23; **docs** = read from
@@ -149,11 +150,11 @@ in CRLF; several tests as `allof (a, b)` or `anyof (a, b)`; a rule for every mes
 a disabled rule as `if false # <its tests as they would be written>`. The segmenter splits each
 into one segment per rule, the name comment travelling with its `if`. Roundcube is the most
 widely used webmail on Sieve servers, so a user who also uses it reads and edits the same named
-rules there, and rules it wrote read back typed here. When the account has no active script, the engine creates
-one named `rules` and activates it; otherwise it edits the active script in place. On a JMAP
-server that runs the reply as a script of its own, the active script may be the reply's, which
-`SieveScript/set` may not change and which activating `rules` would switch off; slice 1 found this
-live, and slice 2 settles how the two coexist ("Settled by live tests").
+rules there, and rules it wrote read back typed here. The rules live in the script that runs; where
+none of the user's runs, in the engine's own script named `rules`, or the one script besides the
+reply's, and a first write creates `rules` and activates it. On a JMAP server that runs the reply
+as a script of its own, the rules script includes the reply's while the reply is on, so both run
+("Settled by live tests", slice 2).
 
 ### Types (`engine-core::rules`, implemented in slice 2)
 
@@ -613,8 +614,11 @@ Each slice is proven live before the next starts (`AGENTS.md`).
    tests").
 2. **Rules over JMAP Sieve.** The pure `engine-sieve` crate (segmenter, Roundcube dialect reader,
    renderer, fuzzed beside the existing MIME/iCalendar targets), `plan_rules`, `MailRules` on
-   `provider-jmap` (upload, `SieveScript/set` with `ifInState` and `onSuccessActivateScript`,
-   `SieveScript/validate` before storing; a new script is named `rules`). Live on Stalwart.
+   `provider-jmap` (upload, `SieveScript/set` with `ifInState` and `onSuccessActivateScript`; a new
+   script is named `rules`). **Implemented.** `SieveScript/validate` is not sent before storing:
+   `SieveScript/set` refuses an invalid script whole (proven live both ways), so validating first
+   adds a round trip and no safety, and Stalwart's validate cannot see a blob uploaded in the
+   same request. Live on Stalwart, which also settled how the rules and the reply coexist.
 3. **ManageSieve.** The harness publishes 4190 (Stalwart) and 34190 (Dovecot); a `managesieve`
    module of `provider-imap` over the adapter's TLS, SASL and connection budget, at a
    host-configured endpoint; vacation and rules in one script. Live on both, which exercises two
@@ -723,23 +727,57 @@ then by `provider-jmap/tests/live_vacation.rs` (2026-11-23). Captured, scrubbed,
   9661 §4 forbids (`docs/spec-deviations.md`, STALWART-3). The next `VacationResponse/set` makes a
   new one.
 
-**What this changes for slice 2.** On a JMAP account whose server runs the reply as its own
-script, rules in a separate active script and the reply cannot both run: whichever was activated
-last wins, and the server says nothing. So slice 2 cannot simply create a script named `rules` and
-activate it, as section 3 says; that would switch off a running reply, the mirror of what slice 1
-found. Slice 2 must decide, live, between:
+**Settled in slice 2**, live against Stalwart v1.0.2 as `carol@`, by hand with delivered mail
+(Bob sending, Bob's inbox checked for the auto-reply) and then by
+`provider-jmap/tests/live_rules.rs` and `live_rules_reply.rs`. Captured, scrubbed, as
+`provider-jmap/tests/fixtures/sieve_*.json` and `vacation_set_kept_off_response.json`.
 
-- the rules script `include`s the server's reply script (RFC 6609; Stalwart lists `include`), and
-  the engine keeps the rules script active, reading the reply as on when the included script would
-  run; this needs a delivery test that an included `vacation` action fires, and it changes what
-  `VacationResponse/get` answers (`isEnabled: false` while the rules script is active), so the JMAP
-  `Vacation` adapter would read the reply through the rules script on such an account;
-- or the reply is rendered into the rules script as a segment of its own whenever the account has
-  rules, as on ManageSieve (slice 3), leaving `VacationResponse` off.
+- **Rules and the reply both run through `include`.** On a JMAP account whose server runs the
+  reply as its own script, rules in a separate active script and the reply cannot both run. Of
+  the two ways out, the engine takes the first: its rules script starts with
+  `include :personal :optional "vacation";` while the reply is on. Delivery showed the included
+  `vacation` action fires, and the rules run beside it. The include is first, so a matched rule's
+  `stop`, or a `discard`, still leaves the message answered (delivered and seen). `:optional` keeps
+  a reply script someone destroyed (STALWART-3) from failing delivery.
+- **The server's flag is not the off switch under the include.** The reply's script keeps its
+  `vacation` action when `VacationResponse/set` turns it off; only the script stops being active.
+  A rules script that includes it runs the reply all the same: a delivery after
+  `isEnabled: false` was answered. So the engine turns the reply on and off by adding and removing
+  the include, and writes its words with `isEnabled: false`, which stores them and activates
+  nothing. A first such write creates the reply's script too (observed).
+- **What another JMAP client sees.** On such an account `VacationResponse/get` answers
+  `isEnabled: false` while the reply runs, and switching it off there does nothing. Switching it on
+  there switches the user's rules off, as before. Rendering the reply into the rules script would
+  show another client exactly the same, so it did not decide between the two. The include keeps
+  the reply's words in the one object every JMAP client reads, and gives the reply one home rather
+  than two. The engine's own read answers on where the reply's script is active, or the running
+  rules script includes it: one function (`sieve_scripts::reply_runs`) for the reply and the rules.
+- **The reply's script is called `vacation`.** RFC 9661 names none; Stalwart's first
+  `VacationResponse/set` creates it under that name. `live_rules_reply` pins it, so a server that
+  renames it turns the suite red instead of silently losing replies.
+- **The two writes cannot share one request.** Stalwart ignores a result reference for `ifInState`
+  (STALWART-7), so the include toggle goes in a second request, guarded by the `newState` the
+  reply's write answered. If the first lands and the second does not, the words are stored and
+  whether the reply runs is as it was: `requires_confirmation`, read before writing again.
+- **`SieveScript/set` is atomic, so nothing validates first.** An invalid create asking to be
+  activated stored and activated nothing and left the state; an invalid update of the running
+  script left its bytes and its flag (and Stalwart's validate cannot see a blob uploaded in the
+  same request, STALWART-6). Stalwart answers `invalidScript` where RFC 9661 says
+  `invalidSieve` (STALWART-5); both are `item_unavailable`. Stalwart accepts unknown names in
+  `require` silently (STALWART-8), so the proof that it enforces its list uses `imapsieve`,
+  which it knows and refuses.
+- **A flag after `fileinto` misses the filed copy** (RFC 5232 §3, delivered): the writer puts marks
+  first, and reads only that order typed.
 
-Either way, `replace_rules` reports the same `RulesEffect` when it would stop a running reply, and
-neither ever destroys a script it did not create (STALWART-3). Until slice 2 lands, a host that
-turns the reply on over the user's script learns it from the receipt.
+**Follow-ups from slice 2.**
+
+- **Switching stored rules on.** A write keeps rules where they are, running or not
+  (`RuleSet::activation`); the engine never activates a script the user left off, as it never
+  reactivates one the reply switched off. A host that wants to offer "switch your rules on" needs
+  a deliberate verb for it, not yet designed.
+- **The reply's script name.** The include names `vacation`, Stalwart's; RFC 9661 names none.
+  Another JMAP server with a reply script of another name leaves the include naming nothing
+  (`:optional`) until its name is known; the condition the adapter checks is in `jmap.md`.
 
 **Still to settle:**
 

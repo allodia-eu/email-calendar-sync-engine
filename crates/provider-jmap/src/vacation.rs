@@ -10,14 +10,21 @@
 //!   [`Unconditional`](VacationPrecondition::Unconditional) write the caller spelled out sends
 //!   none. A `VacationResponse` holds a window and a subject and answers everyone with one reply
 //!   ([`vocabulary`]).
-//! - **What the write did to the account's own rules is observed, not assumed.** Where the account
-//!   also has JMAP Sieve, the same request lists the scripts before and after the update, and an
-//!   effect is claimed only where the two listings' states are the write's `oldState` and
-//!   `newState`, so nothing else changed between them. Stalwart runs the reply as a script of its
-//!   own, and turning it on deactivates whatever script the user had active (RFC 9661 §2.1 allows
-//!   one), which the receipt reports as [`RulesEffect::Deactivated`]; turning it off switches
-//!   nothing back on, which it reports as [`RulesEffect::StillDeactivated`]. Without Sieve the
-//!   rules cannot be seen, so the effect is [`RulesEffect::Unknown`].
+//! - **While the user's rules run, the reply runs through them** (`crate::vacation_include`): where
+//!   a script of the user's runs and the condition holds (`jmap.md`, "the condition"), the words
+//!   are written with `isEnabled: false`, which activates nothing, and the rules script's `include`
+//!   of the reply's script switches it on and off, so the user's rules keep running
+//!   ([`RulesEffect::Untouched`]). A read lists the scripts in the same request and reads the reply
+//!   as on where that include runs it.
+//! - **Otherwise the server's own flag, and what it did to the rules is observed, not assumed.**
+//!   Where the account also has JMAP Sieve, the same request lists the scripts before and after the
+//!   update, and an effect is claimed only where the two listings' states are the write's
+//!   `oldState` and `newState`, so nothing else changed between them. Turning the reply on with the
+//!   flag deactivates whatever script ran (RFC 9661 §2.1 allows one), reported as
+//!   [`RulesEffect::Deactivated`]: on Stalwart only where the include path did not apply (the
+//!   condition failed, or the running script could not take the include). Turning it off switches
+//!   nothing back on, reported as [`RulesEffect::StillDeactivated`]. Without Sieve the rules cannot
+//!   be seen, so the effect is [`RulesEffect::Unknown`].
 //! - **No content in errors.** A failure names its method error or `SetError` type; the reply's
 //!   words never reach a message.
 
@@ -93,18 +100,38 @@ impl Vacation for JmapProvider {
     ) -> ProviderResult<VacationReceipt> {
         refuse_unheld_vacation(&vocabulary(), new)?;
         let guard = precondition.version(self.vacation_write_guard())?;
-        Ok(write(self.executor(), guard, new).await?)
+        let executor = self.executor();
+        // While the user's rules run, through their include where it can be; otherwise with the
+        // server's own flag, as without rules (`crate::vacation_include::path`).
+        match crate::vacation_include::path(executor, new.enabled).await? {
+            crate::vacation_include::Path::Include { prepared, toggled } => {
+                let account = vacation_account(executor.session())?;
+                let body = to_json(new);
+                crate::vacation_include::write(executor, account, guard, &prepared, toggled, body)
+                    .await
+            }
+            crate::vacation_include::Path::Flag => Ok(write(executor, guard, new).await?),
+        }
     }
 }
 
-/// The account's reply, and the state it was read at.
+/// The account's reply, and the state it was read at. Where the account has Sieve, the same
+/// request lists the scripts, and a reply its own flag calls off is on where the user's rules
+/// script runs it (`crate::vacation_include`, [`reply_runs`](crate::sieve_scripts::reply_runs)).
 async fn read(executor: &dyn Executor) -> Result<VacationResponse, JmapError> {
-    let account = vacation_account(executor.session())?;
-    let mut request = Request::new([capability::CORE, capability::VACATION_RESPONSE]);
+    let session = executor.session();
+    let account = vacation_account(session)?;
+    let sieve = session.extension_account(capability::SIEVE);
+    let mut using = vec![capability::CORE, capability::VACATION_RESPONSE];
+    if sieve.is_some() {
+        using.push(capability::SIEVE);
+    }
+    let mut request = Request::new(using);
     let get = request.invoke(
         "VacationResponse/get",
         json!({ "accountId": account, "ids": [SINGLETON] }),
     );
+    let listing = sieve.map(|sieve| crate::sieve_scripts::list_call(&mut request, sieve));
     let response = executor.execute(&request).await?;
     let result = response.result(&get)?;
     let object = result
@@ -121,7 +148,19 @@ async fn read(executor: &dyn Executor) -> Result<VacationResponse, JmapError> {
         .get("state")
         .and_then(Value::as_str)
         .ok_or_else(|| JmapError::protocol("VacationResponse/get answered without a state"))?;
-    Ok(from_json(object)?.with_version(VacationVersion::new(state)))
+    let reply = from_json(object)?.with_version(VacationVersion::new(state));
+    // A listing that failed says nothing about the rules: the reply reads as its flag says.
+    let scripts = listing
+        .filter(|_| !reply.enabled)
+        .and_then(|call| response.result(&call).ok())
+        .and_then(|result| crate::sieve_scripts::parse(result).ok());
+    // The include runs the reply at delivery whatever the counters are: on, as the server does.
+    if let Some(scripts) = scripts
+        && crate::vacation_include::runs(executor, &scripts).await
+    {
+        return Ok(reply.turned_on());
+    }
+    Ok(reply)
 }
 
 /// Replaces the reply with `new`, guarded by `guard` where there is one, and lists the account's

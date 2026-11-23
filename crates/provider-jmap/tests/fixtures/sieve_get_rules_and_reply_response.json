@@ -1,0 +1,28 @@
+{
+  "methodResponses": [
+    [
+      "SieveScript/get",
+      {
+        "accountId": "e",
+        "state": "steaq",
+        "list": [
+          {
+            "name": "vacation",
+            "isActive": false,
+            "blobId": "ch9hvrrcchjvnbjfdh1wkipijyd9iojug0dq1b2ppolzkaqgp737wbaffyakqai",
+            "id": "bo"
+          },
+          {
+            "name": "rules",
+            "isActive": true,
+            "blobId": "ceatf79qwtdhlnli73023occ7i3l2foo3ljgy33l1qbv7dfahfxoobaff2ad1",
+            "id": "bp"
+          }
+        ],
+        "notFound": []
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}

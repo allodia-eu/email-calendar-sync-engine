@@ -1,0 +1,20 @@
+{
+  "methodResponses": [
+    [
+      "SieveScript/set",
+      {
+        "accountId": "e",
+        "oldState": "steaq",
+        "newState": "steaq",
+        "notUpdated": {
+          "bp": {
+            "type": "invalidScript",
+            "description": "Invalid regular expression \"(: Parsing error at position 1: Opening parenthesis without closing parenthesis\" at line 2, column 32."
+          }
+        }
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}

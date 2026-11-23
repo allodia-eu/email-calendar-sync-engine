@@ -85,14 +85,26 @@ async fn a_read_carries_every_part_its_version_and_the_object_as_read() {
     assert_eq!(raw["id"], "singleton");
     assert_eq!(
         using(&exec),
-        json!([capability::CORE, capability::VACATION_RESPONSE])
+        json!([
+            capability::CORE,
+            capability::VACATION_RESPONSE,
+            capability::SIEVE
+        ])
     );
+    // The scripts are listed in the same request, to see whether the user's rules run the
+    // reply; the captured answer has no listing, which reads as the flag says.
     assert_eq!(
-        calls(&exec),
-        [(
-            "VacationResponse/get".to_owned(),
-            json!({ "accountId": "c", "ids": ["singleton"] })
-        )]
+        calls(&exec, 1),
+        [
+            (
+                "VacationResponse/get".to_owned(),
+                json!({ "accountId": "c", "ids": ["singleton"] })
+            ),
+            (
+                "SieveScript/get".to_owned(),
+                json!({ "accountId": "c", "ids": null, "properties": ["name", "isActive", "blobId"] })
+            )
+        ]
     );
 }
 

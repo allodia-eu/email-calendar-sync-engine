@@ -10,9 +10,11 @@
 //!   change (`forbidden`, as RFC 9661 §4 requires);
 //! - `VacationResponse` and `SieveScript` share one state, so a write of either refuses a write of
 //!   the other guarded by a state read before it;
-//! - turning the reply on deactivates the user's own active script, and the receipt says so, while
-//!   a reply turned on with no script of the user's running says it touched nothing;
-//! - turning it off again leaves the user's script off, and the receipt says that too, while a
+//! - turned on while a script of the user's runs, the reply runs through that script's include of
+//!   the reply's, and the user's script keeps running (`crate::vacation_include`); turned off, the
+//!   include goes; a reply turned on with no script of the user's says it touched nothing;
+//! - turned on by another client with the server's own flag, the reply deactivates the user's
+//!   script; turned off here then, the user's script stays off, and the receipt says so, while a
 //!   reply turned off on an account with no script of the user's says it touched nothing.
 //!
 //! It runs as the scratch account `carol@`, never Alice, and restores Carol's reply and scripts
@@ -285,25 +287,63 @@ async fn exercise(vacation: &dyn Vacation, client: &JmapClient, prior: &[(String
         .expect_err("a script write moves the reply's state");
     assert_eq!(err.class(), FailureClass::Conflict);
 
-    // On again, over the user's running script: the server switches it off, and says nothing;
-    // the receipt does.
+    // On again, over the user's running script: written with the server's flag off and run by
+    // the user's script including the reply's, so the user's rules keep running
+    // (`crate::vacation_include`). The receipt says nothing was switched off.
     let read = vacation.read_vacation(&account()).await.unwrap();
     let receipt = vacation
         .set_vacation(&account(), IfUnchanged(&read), &away("Away"))
         .await
         .expect("on over the user's script");
-    assert_eq!(receipt.rules, RulesEffect::Deactivated);
+    assert_eq!(receipt.rules, RulesEffect::Untouched);
     let (after, _) = scripts(client).await;
     let state = |id: &str| after.iter().find(|(was, ..)| was == id).map(|s| s.2);
+    assert_eq!(state(&own), Some(true), "the user's script still runs");
     assert_eq!(
-        state(&own),
+        state(&reply_script),
         Some(false),
-        "the user's script was switched off"
+        "the reply runs through it"
     );
-    assert_eq!(state(&reply_script), Some(true));
+    let on = vacation.read_vacation(&account()).await.unwrap();
+    assert!(on.enabled, "and reads as on");
+    assert_eq!(on.version, receipt.version);
 
-    // Off again: the user's script stays off, and the receipt says so; nothing switches it
-    // back on for them.
+    // Off again: the include goes, and the user's script keeps running.
+    let off = vacation
+        .set_vacation(&account(), IfUnchanged(&on), &away("Away").turned_off())
+        .await
+        .expect("off");
+    assert_eq!(off.rules, RulesEffect::Untouched);
+    let read = vacation.read_vacation(&account()).await.unwrap();
+    assert!(!read.enabled);
+    let (after, _) = scripts(client).await;
+    assert_eq!(
+        after.iter().find(|(id, ..)| *id == own).map(|s| s.2),
+        Some(true)
+    );
+
+    // Another client turns the reply on with the server's own flag: the server switches the
+    // user's script off. Turning it off here leaves it off, and the receipt says so; nothing
+    // switches it back on for them.
+    let reply_account = client
+        .session()
+        .account_for(capability::VACATION_RESPONSE)
+        .unwrap()
+        .clone();
+    let mut request = Request::new([capability::CORE, capability::VACATION_RESPONSE]);
+    request.invoke(
+        "VacationResponse/set",
+        json!({ "accountId": reply_account, "update": { "singleton": { "isEnabled": true } } }),
+    );
+    client
+        .execute(&request)
+        .await
+        .expect("another client's write");
+    let (after, _) = scripts(client).await;
+    assert_eq!(
+        after.iter().find(|(id, ..)| *id == own).map(|s| s.2),
+        Some(false)
+    );
     let read = vacation.read_vacation(&account()).await.unwrap();
     let off = vacation
         .set_vacation(&account(), IfUnchanged(&read), &away("Away").turned_off())
@@ -312,7 +352,6 @@ async fn exercise(vacation: &dyn Vacation, client: &JmapClient, prior: &[(String
     assert_eq!(off.rules, RulesEffect::StillDeactivated);
     let (after, _) = scripts(client).await;
     let own_now = after.iter().find(|(id, ..)| *id == own).map(|s| s.2);
-    eprintln!("after the reply is off, the user's script is active: {own_now:?}");
     assert_eq!(
         own_now,
         Some(false),

@@ -1,0 +1,19 @@
+{
+  "methodResponses": [
+    [
+      "SieveScript/set",
+      {
+        "accountId": "e",
+        "oldState": "stiaq",
+        "newState": "stmaq",
+        "updated": {
+          "bp": {
+            "blobId": "cgbc0t32uzxecg3fg1uzxnkoysyvjjiovskb0norxikfhw9pqam0wbaff2aao"
+          }
+        }
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}

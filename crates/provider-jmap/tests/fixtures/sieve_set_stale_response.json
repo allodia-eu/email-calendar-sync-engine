@@ -1,0 +1,13 @@
+{
+  "methodResponses": [
+    [
+      "error",
+      {
+        "type": "stateMismatch",
+        "description": "An \"ifInState\" argument was supplied, but it does not match the current state."
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}

@@ -1,0 +1,21 @@
+{
+  "methodResponses": [
+    [
+      "SieveScript/set",
+      {
+        "accountId": "e",
+        "oldState": "staaq",
+        "newState": "steaq",
+        "created": {
+          "r": {
+            "id": "bp",
+            "blobId": "ceatf79qwtdhlnli73023occ7i3l2foo3ljgy33l1qbv7dfahfxoobaff2ad1",
+            "isActive": true
+          }
+        }
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}
