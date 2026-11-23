@@ -22,6 +22,9 @@ use reqwest::Url;
 use serde_json::{Value, json};
 
 use super::*;
+// What the sibling test modules named through `provider`'s imports before the adapter handle
+// moved to `crate::adapter`; they reach them through this module's glob.
+pub(crate) use crate::{error::JmapError, executor::Executor, request::Request};
 use crate::{
     response::Response,
     session::{Session, SessionUrlPolicy},
