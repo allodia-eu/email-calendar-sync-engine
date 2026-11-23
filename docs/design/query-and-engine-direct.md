@@ -1,8 +1,9 @@
 # Design: a sorted, paged mail query, and the store-less facade `engine-direct`
 
-Status: **accepted**, not implemented. The owner's decisions are listed at the end
-("Decisions (2026-11-23)") and written into the body; no question is left open. Nothing here
-changes code or the guidance docs yet; the slice that ships each part updates `search.md`,
+Status: **accepted**. The public `provider-jmap` client is implemented ("What `provider-jmap`
+makes public"); the rest is not. The owner's decisions are listed at the end
+("Decisions (2026-11-23)") and written into the body; no question is left open. The slice that
+ships each part updates `search.md`,
 `search-coverage.md`, `engine-api.md`, `providers.md` and `jmap.md` in the same change
 (AGENTS.md, "Documentation Currency"). The host kinds and principles cited are those of
 `north-star.md` (#378); the credential side is the companion note `credential-source.md` (#381).
@@ -415,6 +416,10 @@ a server's extension capability), and because it is what the facade itself is bu
 | `JmapClient::download` (whole `Vec<u8>`) | public, plus a streaming variant the blob reads use |
 | `blob::download_url` (percent-encoding every substitution) | public |
 | `Session::{download_url, upload_url, event_source_url, mail_account_id, …}` | public, returning a JMAP account id newtype, not `&str`, so it cannot be mixed with the engine's `AccountId` |
+
+**Shipped** as the first part of phase 2, as the table says, plus `blob::upload_url` beside
+`download_url` (the one encoder for both templates) and one rule the public methods add: a blob
+request goes only to the origin of the session's own template (`jmap.md`, "The public client").
 
 Kept internal: `Walk` and the sync passes, the normalizers (reached through the neutral verbs),
 `Executor` (the test seam). A direct host's own JMAP client then reduces to calls of

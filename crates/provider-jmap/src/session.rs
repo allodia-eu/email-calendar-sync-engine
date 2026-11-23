@@ -28,7 +28,7 @@ use serde_json::Value;
 use crate::{
     error::JmapError,
     request::capability,
-    session_accounts::{self, SessionAccount},
+    session_accounts::{self, JmapAccountId, SessionAccount},
     session_limits::{max_participants_per_event, parse_limits},
     session_urls::{origin_of, rebase_template, resolve_against},
 };
@@ -110,20 +110,20 @@ pub struct Session {
     download_url: Option<String>,
     upload_url: Option<String>,
     event_source_url: Option<String>,
-    mail_account_id: Option<String>,
-    submission_account_id: Option<String>,
-    calendar_account_id: Option<String>,
+    pub(crate) mail_account_id: Option<JmapAccountId>,
+    pub(crate) submission_account_id: Option<JmapAccountId>,
+    pub(crate) calendar_account_id: Option<JmapAccountId>,
     pub(crate) max_participants_per_event: Option<usize>,
-    contact_account_id: Option<String>,
+    pub(crate) contact_account_id: Option<JmapAccountId>,
     /// Every account the session lists — the credential's own and each shared with it —
     /// or `None` when it carries no `accounts` map at all.
-    accounts: Option<Vec<SessionAccount>>,
+    pub(crate) accounts: Option<Vec<SessionAccount>>,
     /// The domains the *server* serves, whatever this client is addressed at: what a shared
     /// account can be asked about (`crate::shared`).
     served: StoreDomains,
     /// The account this client is bound to, when it opens a shared mailbox rather than
     /// the credential's own.
-    bound: Option<String>,
+    pub(crate) bound: Option<String>,
     limits: CoreLimits,
     capabilities: engine_provider::Capabilities,
     /// Whether the mail account answers `Blob/get` (RFC 9404), so a body warm can read many
@@ -181,11 +181,13 @@ impl Session {
         // shared account need not carry every domain the server does.
         let primary = value.get("primaryAccounts");
         let account_for = |urn: &str| match bound {
-            Some(account) => account.supports(urn).then(|| account.id.clone()),
+            Some(account) => account
+                .supports(urn)
+                .then(|| JmapAccountId::new(account.id.clone())),
             None => primary
                 .and_then(|p| p.get(urn))
                 .and_then(Value::as_str)
-                .map(str::to_owned),
+                .map(JmapAccountId::new),
         };
         let mail_account_id = account_for(capability::MAIL);
         let calendar_account_id = account_for(capability::CALENDARS);
@@ -197,7 +199,11 @@ impl Session {
         // one, whose `account_for` is `None` for a domain it does not expose.
         let has = |urn: &str| {
             server_has(urn)
-                && session_accounts::account_offers(value, account_for(urn).as_deref(), urn)
+                && session_accounts::account_offers(
+                    value,
+                    account_for(urn).as_ref().map(JmapAccountId::as_str),
+                    urn,
+                )
         };
         let mut capabilities = build_capabilities(has);
         // On-demand raw-source fetch (Tier-3 bodies) works whenever the server
@@ -214,11 +220,16 @@ impl Session {
         // `SetError` (→ `Permanent`), so over-advertising is safe. Under-advertising would
         // hide writes a folder allows, but RFC 8620 §2 reserves `isReadOnly` for "the entire
         // account" (Stalwart v1.0.2 says `false` for a mixed share).
-        let read_only = |id: Option<&str>| {
-            id.and_then(|id| accounts.iter().flatten().find(|account| account.id == id))
-                .is_some_and(|account| account.read_only)
+        let read_only = |id: Option<&JmapAccountId>| {
+            id.and_then(|id| {
+                accounts
+                    .iter()
+                    .flatten()
+                    .find(|account| account.id == id.as_str())
+            })
+            .is_some_and(|account| account.read_only)
         };
-        if capabilities.mail() && !read_only(mail_account_id.as_deref()) {
+        if capabilities.mail() && !read_only(mail_account_id.as_ref()) {
             capabilities = capabilities.with_mail_writes();
             // Storing a draft rides the same gate for the same reason: a draft is an
             // `Email/set` create into the Drafts mailbox, so an account that can write
@@ -255,7 +266,7 @@ impl Session {
         // the guard would refuse a write nothing conflicted with. A host that must detect a
         // concurrent edit on this transport has to do it above the engine, and
         // `calendar_write_guard` is what tells it so before it writes.
-        if capabilities.calendars() && !read_only(calendar_account_id.as_deref()) {
+        if capabilities.calendars() && !read_only(calendar_account_id.as_ref()) {
             // Scheduling is advertised because the adapter *asks* for it: every calendar
             // verb sends `sendSchedulingMessages` (`crate::calendar_write`), so the server
             // — not the caller — delivers the iTIP. That is what a caller needs to know
@@ -272,7 +283,7 @@ impl Session {
                 .with_calendar_scheduling()
                 .with_conference_writes();
         }
-        if capabilities.contacts() && !read_only(contact_account_id.as_deref()) {
+        if capabilities.contacts() && !read_only(contact_account_id.as_ref()) {
             capabilities = capabilities.with_contact_writes(WriteGuard::Absent);
         }
         if capabilities.contacts() && download_url.is_some() {
@@ -310,11 +321,11 @@ impl Session {
         // covers; a blob read is scoped to an account, so it is the mail account's that counts
         // — the bound one, when this client opens a shared mailbox.
         let blob_get = server_has(capability::BLOB)
-            && mail_account_id.as_deref().is_some_and(|id| {
+            && mail_account_id.as_ref().is_some_and(|id| {
                 accounts
                     .iter()
                     .flatten()
-                    .any(|account| account.id == id && account.supports(capability::BLOB))
+                    .any(|account| account.id == id.as_str() && account.supports(capability::BLOB))
             });
         let bound = bound.map(|account| account.id.clone());
 
@@ -327,7 +338,7 @@ impl Session {
             submission_account_id,
             max_participants_per_event: max_participants_per_event(
                 value,
-                calendar_account_id.as_deref(),
+                calendar_account_id.as_ref().map(JmapAccountId::as_str),
             ),
             calendar_account_id,
             contact_account_id,
@@ -350,94 +361,65 @@ impl Session {
         &self.api_url
     }
 
-    /// The connection-resolved blob **download** URI template (RFC 8620 §2), with
-    /// its `{accountId}`/`{blobId}`/`{type}`/`{name}` placeholders intact, or
-    /// `None` if the server advertised none. The provider substitutes the
-    /// placeholders to fetch a message's raw source
-    /// (`crate::fetch::message_source`).
-    pub(crate) fn download_url(&self) -> Option<&str> {
+    /// The blob **download** URI template (RFC 8620 §2), resolved against the connection per
+    /// the [`SessionUrlPolicy`], with its `{accountId}`, `{blobId}`, `{type}` and `{name}`
+    /// placeholders intact; `None` where the server advertised none.
+    /// [`blob::download_url`](crate::blob::download_url) fills it in.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn example(session: &provider_jmap::Session) {
+    /// if let Some(template) = session.download_url() {
+    ///     assert!(template.contains("{blobId}"));
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn download_url(&self) -> Option<&str> {
         self.download_url.as_deref()
     }
 
-    /// The connection-resolved blob **upload** URI template (RFC 8620 §6.1), with
-    /// its `{accountId}` placeholder intact, or `None` if the server advertised none.
-    /// The provider substitutes the placeholder to upload a draft attachment's bytes
-    /// before referencing the returned `blobId` in an `Email/set` (`crate::submit`).
-    pub(crate) fn upload_url(&self) -> Option<&str> {
+    /// The blob **upload** URI template (RFC 8620 §2), resolved as
+    /// [`download_url`](Self::download_url) is, with its `{accountId}` placeholder intact;
+    /// `None` where the server advertised none. [`blob::upload_url`](crate::blob::upload_url)
+    /// fills it in.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn example(session: &provider_jmap::Session) {
+    /// if let Some(template) = session.upload_url() {
+    ///     assert!(template.contains("{accountId}"));
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn upload_url(&self) -> Option<&str> {
         self.upload_url.as_deref()
     }
 
-    /// The connection-resolved **EventSource** URI template (RFC 8620 §7.3), with its
-    /// `{types}`/`{closeafter}`/`{ping}` placeholders intact, or `None` if the server
-    /// advertised no push endpoint. [`crate::watch::JmapWatcher`] substitutes the
-    /// placeholders to open the change-notification stream.
-    pub(crate) fn event_source_url(&self) -> Option<&str> {
+    /// The **EventSource** push URI template (RFC 8620 §7.3), resolved as
+    /// [`download_url`](Self::download_url) is, with its `{types}`, `{closeafter}` and `{ping}`
+    /// placeholders intact; `None` where the server advertised no push endpoint.
+    /// [`JmapWatcher`](crate::JmapWatcher) opens it.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn example(session: &provider_jmap::Session) {
+    /// let template = session.event_source_url();
+    /// assert!(template.is_none_or(|url| url.contains("{types}")));
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn event_source_url(&self) -> Option<&str> {
         self.event_source_url.as_deref()
-    }
-
-    /// The JMAP account id mail calls address (the server's id, not the engine's): the
-    /// bound account, or the `primaryAccounts` entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`JmapError::Session`] if no account for mail is available — the server
-    /// named no primary one, or the bound account does not expose mail.
-    pub(crate) fn mail_account_id(&self) -> Result<&str, JmapError> {
-        self.addressed(self.mail_account_id.as_deref(), "mail")
-    }
-
-    /// The JMAP account id for submission (`Identity`/`EmailSubmission`).
-    ///
-    /// # Errors
-    ///
-    /// As [`mail_account_id`](Self::mail_account_id), for submission.
-    pub(crate) fn submission_account_id(&self) -> Result<&str, JmapError> {
-        self.addressed(self.submission_account_id.as_deref(), "submission")
-    }
-
-    /// The JMAP account id for calendars (`Calendar`/`CalendarEvent`).
-    ///
-    /// # Errors
-    ///
-    /// As [`mail_account_id`](Self::mail_account_id), for calendars.
-    pub(crate) fn calendar_account_id(&self) -> Result<&str, JmapError> {
-        self.addressed(self.calendar_account_id.as_deref(), "calendar")
-    }
-
-    /// The JMAP account id for address books and contact cards.
-    ///
-    /// # Errors
-    ///
-    /// As [`mail_account_id`](Self::mail_account_id), for contacts.
-    pub(crate) fn contact_account_id(&self) -> Result<&str, JmapError> {
-        self.addressed(self.contact_account_id.as_deref(), "contacts")
-    }
-
-    /// Every account the session lists, the credential's own included — empty when it
-    /// carries no `accounts` map.
-    pub(crate) fn accounts(&self) -> &[SessionAccount] {
-        self.accounts.as_deref().unwrap_or(&[])
-    }
-
-    /// The shared account this client is bound to, or `None` for the credential's own.
-    pub(crate) fn bound_account(&self) -> Option<&SessionAccount> {
-        let bound = self.bound.as_deref()?;
-        self.accounts().iter().find(|account| account.id == bound)
     }
 
     /// The domains the server serves (`crate::shared`).
     pub(crate) fn served(&self) -> StoreDomains {
         self.served
-    }
-
-    /// One domain's account id, or the error that says why there is none.
-    fn addressed<'a>(&self, id: Option<&'a str>, domain: &str) -> Result<&'a str, JmapError> {
-        id.ok_or_else(|| match &self.bound {
-            Some(bound) => JmapError::session(format!(
-                "the shared account {bound:?} this client is bound to does not expose {domain}"
-            )),
-            None => JmapError::session(format!("no primary {domain} account")),
-        })
     }
 
     /// Whether the mail account answers `Blob/get` (RFC 9404).

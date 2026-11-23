@@ -22,7 +22,8 @@ use serde_json::{Map, Value, json};
 use crate::{
     error::JmapError,
     executor::Executor,
-    request::{Request, Response},
+    request::Request,
+    response::Response,
     session::{Session, SessionUrlPolicy},
 };
 

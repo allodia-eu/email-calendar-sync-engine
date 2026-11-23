@@ -24,7 +24,8 @@ use crate::{
     error::JmapError,
     executor::Executor,
     provider::provider_test_support::{FakeExecutor, account, provider},
-    request::{Request, Response},
+    request::Request,
+    response::Response,
     session::Session,
 };
 

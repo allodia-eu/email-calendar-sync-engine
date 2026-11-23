@@ -80,11 +80,11 @@ pub(crate) async fn resolve(
 
 /// The upload endpoint for this account.
 fn upload_url(executor: &dyn Executor, mail_account: &str) -> Result<String, JmapError> {
-    Ok(executor
+    let template = executor
         .session()
         .upload_url()
-        .ok_or_else(|| JmapError::session("server advertised no uploadUrl; cannot attach"))?
-        .replace("{accountId}", mail_account))
+        .ok_or_else(|| JmapError::session("server advertised no uploadUrl; cannot attach"))?;
+    Ok(crate::blob::fill_upload(template, mail_account))
 }
 
 /// The attachments on the draft being replaced.

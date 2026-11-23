@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::{
-    request::Response,
+    response::Response,
     session::{Session, SessionUrlPolicy},
 };
 

@@ -8,7 +8,7 @@ use super::*;
 fn method_errors_classify_per_rfc_8620() {
     assert_eq!(
         JmapError::Method {
-            call_id: "1".into(),
+            call_id: crate::request::CallId::from_wire("1"),
             error_type: "cannotCalculateChanges".into(),
         }
         .failure_class(),
@@ -16,7 +16,7 @@ fn method_errors_classify_per_rfc_8620() {
     );
     assert_eq!(
         JmapError::Method {
-            call_id: "0".into(),
+            call_id: crate::request::CallId::from_wire("0"),
             error_type: "rateLimit".into(),
         }
         .failure_class(),
@@ -24,7 +24,7 @@ fn method_errors_classify_per_rfc_8620() {
     );
     assert_eq!(
         JmapError::Method {
-            call_id: "0".into(),
+            call_id: crate::request::CallId::from_wire("0"),
             error_type: "stateMismatch".into(),
         }
         .failure_class(),
@@ -32,7 +32,7 @@ fn method_errors_classify_per_rfc_8620() {
     );
     assert_eq!(
         JmapError::Method {
-            call_id: "0".into(),
+            call_id: crate::request::CallId::from_wire("0"),
             error_type: "unknownMethod".into(),
         }
         .failure_class(),
@@ -260,7 +260,7 @@ fn http_status_maps_to_class() {
 #[test]
 fn converts_into_classified_provider_error_with_source() {
     let provider: ProviderError = JmapError::Method {
-        call_id: "2".into(),
+        call_id: crate::request::CallId::from_wire("2"),
         error_type: "cannotCalculateChanges".into(),
     }
     .into();
@@ -280,7 +280,7 @@ fn malformed_responses_are_permanent() {
         FailureClass::Permanent
     );
     assert_eq!(
-        JmapError::MissingResponse("9".into()).failure_class(),
+        JmapError::MissingResponse(crate::request::CallId::from_wire("9")).failure_class(),
         FailureClass::Permanent
     );
 }

@@ -98,7 +98,7 @@ impl JmapProvider {
     }
 
     pub(crate) fn contact_account(&self) -> Result<String, JmapError> {
-        Ok(self.executor.session().contact_account_id()?.to_owned())
+        Ok(self.executor.session().contact_account_id()?.to_string())
     }
 
     pub(crate) async fn contact_call(
@@ -126,7 +126,7 @@ impl JmapProvider {
         // `media_type` comes from the server's JSContact payload, not from a fixed
         // literal, so the substitution must be encoded: an unencoded `?`/`#`/`&`/`..`
         // in it would re-point or re-parameterize the download URL.
-        let url = crate::blob::download_url(
+        let url = crate::blob::fill_download(
             template,
             &account,
             blob,
@@ -138,12 +138,12 @@ impl JmapProvider {
 
     /// The JMAP (server-side) mail account id for mail method arguments.
     pub(crate) fn mail_account(&self) -> Result<String, JmapError> {
-        Ok(self.executor.session().mail_account_id()?.to_owned())
+        Ok(self.executor.session().mail_account_id()?.to_string())
     }
 
     /// The JMAP (server-side) calendar account id for calendar method arguments.
     pub(crate) fn calendar_account(&self) -> Result<String, JmapError> {
-        Ok(self.executor.session().calendar_account_id()?.to_owned())
+        Ok(self.executor.session().calendar_account_id()?.to_string())
     }
 }
 
@@ -342,8 +342,8 @@ impl Provider for JmapProvider {
         hand_over: &HandOver<'_>,
     ) -> ProviderResult<SubmissionReceipt> {
         crate::submit_body::reject_unsendable_calendar(draft)?;
-        let mail_account = self.executor.session().mail_account_id()?.to_owned();
-        let submission_account = self.executor.session().submission_account_id()?.to_owned();
+        let mail_account = self.executor.session().mail_account_id()?.to_string();
+        let submission_account = self.executor.session().submission_account_id()?.to_string();
         Ok(crate::submit::send(
             self.executor.as_ref(),
             &mail_account,
@@ -355,7 +355,7 @@ impl Provider for JmapProvider {
     }
 
     async fn sender_identities(&self, _acct: &AccountId) -> ProviderResult<Vec<SenderIdentity>> {
-        let account = self.executor.session().submission_account_id()?.to_owned();
+        let account = self.executor.session().submission_account_id()?.to_string();
         Ok(crate::identity::list(self.executor.as_ref(), &account).await?)
     }
 
@@ -365,7 +365,7 @@ impl Provider for JmapProvider {
         identity: &SenderIdentityId,
         name: &str,
     ) -> ProviderResult<()> {
-        let account = self.executor.session().submission_account_id()?.to_owned();
+        let account = self.executor.session().submission_account_id()?.to_string();
         let executor = self.executor.as_ref();
         Ok(crate::identity::set_name(executor, &account, identity, name).await?)
     }

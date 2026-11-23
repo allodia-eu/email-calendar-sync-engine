@@ -11,6 +11,8 @@ use engine_core::error::FailureClass;
 use engine_provider::ProviderError;
 use serde_json::Value;
 
+use crate::request::CallId;
+
 /// A JMAP protocol or transport failure.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -47,8 +49,8 @@ pub enum JmapError {
     /// RFC 8620 §3.6.2) instead of its result.
     #[error("JMAP method error '{error_type}' for call '{call_id}'")]
     Method {
-        /// The call id of the failed invocation.
-        call_id: String,
+        /// The call the server answered with the error.
+        call_id: CallId,
         /// The JMAP error `type` string.
         error_type: String,
     },
@@ -71,9 +73,9 @@ pub enum JmapError {
         properties: Vec<String>,
     },
 
-    /// The batched response carried no entry for a call id that was sent.
+    /// The batched response carried no answer to a call that was sent.
     #[error("no method response for call '{0}'")]
-    MissingResponse(String),
+    MissingResponse(CallId),
 
     /// A response was structurally not a valid JMAP envelope (e.g. `methodResponses`
     /// absent or not an array of triples).

@@ -21,11 +21,170 @@
 //! so the flag cannot say whether a given folder takes a write; the folder's own `myRights`
 //! does (`crate::mail`).
 
+use core::fmt;
 use std::collections::BTreeSet;
 
+use serde::Serialize;
 use serde_json::Value;
 
-use crate::error::JmapError;
+use crate::{error::JmapError, session::Session};
+
+/// A JMAP account id (RFC 8620 §1.6.2): the server's name for an account, which every method
+/// call's `accountId` argument carries.
+///
+/// The server assigns it, and the [`Session`] says which one each data domain is addressed at
+/// ([`Session::mail_account_id`] and its siblings). It is not the engine's host-assigned
+/// [`AccountId`](engine_core::ids::AccountId), and it is a type of its own so the two cannot be
+/// mixed up. It serializes as the bare string, so it goes into a call's arguments as it is.
+///
+/// # Examples
+///
+/// ```no_run
+/// use provider_jmap::{JmapClient, JmapError, Request, capability};
+/// use serde_json::json;
+///
+/// fn mailboxes(client: &JmapClient) -> Result<Request, JmapError> {
+///     let account = client.session().mail_account_id()?;
+///     let mut request = Request::new([capability::CORE, capability::MAIL]);
+///     request.invoke("Mailbox/get", json!({ "accountId": account }));
+///     Ok(request)
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct JmapAccountId(String);
+
+impl JmapAccountId {
+    /// An account id the server assigned, such as one a host kept from an earlier
+    /// [`Session`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use provider_jmap::JmapAccountId;
+    ///
+    /// let account = JmapAccountId::new("c");
+    /// assert_eq!(account.as_str(), "c");
+    /// assert_eq!(serde_json::to_value(&account)?, serde_json::json!("c"));
+    /// # Ok::<(), serde_json::Error>(())
+    /// ```
+    #[must_use]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// The id as the server assigned it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for JmapAccountId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Which account each data domain's calls address.
+impl Session {
+    /// The account mail calls address: the bound account, or the `primaryAccounts` entry for
+    /// mail.
+    ///
+    /// # Errors
+    ///
+    /// [`JmapError::Session`] when no account for mail is available: the server named no
+    /// primary one, or the bound account does not expose mail.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn example(session: &provider_jmap::Session) -> Result<(), provider_jmap::JmapError> {
+    /// let account = session.mail_account_id()?;
+    /// println!("mail lives in account {account}");
+    /// # Ok(()) }
+    /// ```
+    pub fn mail_account_id(&self) -> Result<&JmapAccountId, JmapError> {
+        self.addressed(self.mail_account_id.as_ref(), "mail")
+    }
+
+    /// The account submission calls (`Identity`, `EmailSubmission`) address.
+    ///
+    /// # Errors
+    ///
+    /// As [`mail_account_id`](Self::mail_account_id), for submission.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn example(session: &provider_jmap::Session) -> Result<(), provider_jmap::JmapError> {
+    /// let account = session.submission_account_id()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn submission_account_id(&self) -> Result<&JmapAccountId, JmapError> {
+        self.addressed(self.submission_account_id.as_ref(), "submission")
+    }
+
+    /// The account calendar calls (`Calendar`, `CalendarEvent`) address.
+    ///
+    /// # Errors
+    ///
+    /// As [`mail_account_id`](Self::mail_account_id), for calendars.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn example(session: &provider_jmap::Session) -> Result<(), provider_jmap::JmapError> {
+    /// let account = session.calendar_account_id()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn calendar_account_id(&self) -> Result<&JmapAccountId, JmapError> {
+        self.addressed(self.calendar_account_id.as_ref(), "calendar")
+    }
+
+    /// The account address-book and contact-card calls address.
+    ///
+    /// # Errors
+    ///
+    /// As [`mail_account_id`](Self::mail_account_id), for contacts.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn example(session: &provider_jmap::Session) -> Result<(), provider_jmap::JmapError> {
+    /// let account = session.contact_account_id()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn contact_account_id(&self) -> Result<&JmapAccountId, JmapError> {
+        self.addressed(self.contact_account_id.as_ref(), "contacts")
+    }
+
+    /// Every account the session lists, the credential's own included; empty when it carries
+    /// no `accounts` map.
+    pub(crate) fn accounts(&self) -> &[SessionAccount] {
+        self.accounts.as_deref().unwrap_or(&[])
+    }
+
+    /// The shared account this client is bound to, or `None` for the credential's own.
+    pub(crate) fn bound_account(&self) -> Option<&SessionAccount> {
+        let bound = self.bound.as_deref()?;
+        self.accounts().iter().find(|account| account.id == bound)
+    }
+
+    /// One domain's account id, or the error that says why there is none.
+    fn addressed<'a>(
+        &self,
+        id: Option<&'a JmapAccountId>,
+        domain: &str,
+    ) -> Result<&'a JmapAccountId, JmapError> {
+        id.ok_or_else(|| match &self.bound {
+            Some(bound) => JmapError::session(format!(
+                "the shared account {bound:?} this client is bound to does not expose {domain}"
+            )),
+            None => JmapError::session(format!("no primary {domain} account")),
+        })
+    }
+}
 
 /// One entry of the session's `accounts` map.
 #[derive(Debug, Clone)]

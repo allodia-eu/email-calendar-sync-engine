@@ -213,7 +213,7 @@ impl Executor for Overlapping {
     async fn execute(
         &self,
         request: &crate::request::Request,
-    ) -> Result<crate::request::Response, crate::error::JmapError> {
+    ) -> Result<crate::response::Response, crate::error::JmapError> {
         self.inner.execute(request).await
     }
 

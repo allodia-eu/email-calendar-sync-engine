@@ -26,7 +26,8 @@ use crate::{
     executor::Executor,
     mail::{IMPORTANCE_HEADER, X_PRIORITY_HEADER, mailbox_from_json},
     mutate::keyword_pointer,
-    request::{Request, capability},
+    request::{CallId, Request, capability},
+    response::Response,
     submit_body::body,
     sync_ops::objects,
 };
@@ -111,11 +112,11 @@ pub(crate) async fn upload_attachments(
     if draft.attachments.is_empty() {
         return Ok(Vec::new());
     }
-    let url = executor
+    let template = executor
         .session()
         .upload_url()
-        .ok_or_else(|| JmapError::session("server advertised no uploadUrl; cannot attach"))?
-        .replace("{accountId}", mail_account);
+        .ok_or_else(|| JmapError::session("server advertised no uploadUrl; cannot attach"))?;
+    let url = crate::blob::fill_upload(template, mail_account);
     let mut blob_ids = Vec::with_capacity(draft.attachments.len());
     for attachment in &draft.attachments {
         blob_ids.push(
@@ -354,17 +355,29 @@ fn address(addr: &EmailAddress) -> Value {
     }
 }
 
+/// The two answers a submission reads its receipt from, each with the call it answers.
+struct Answered<'a> {
+    email: &'a Value,
+    email_set: CallId,
+    submission: &'a Value,
+    submission_set: CallId,
+}
+
 /// Reads the submission's answer into a receipt.
 fn answer(
-    resp: &crate::request::Response,
-    email_set: &str,
-    submission_set: &str,
+    resp: &Response,
+    email_set: &CallId,
+    submission_set: &CallId,
     message_id: &MessageIdHeader,
     handed_over: &HandedOver,
 ) -> Result<SubmissionReceipt, JmapError> {
     parse_receipt(
-        resp.result(email_set)?,
-        resp.result(submission_set)?,
+        &Answered {
+            email: resp.result(email_set)?,
+            email_set: email_set.clone(),
+            submission: resp.result(submission_set)?,
+            submission_set: submission_set.clone(),
+        },
         message_id,
         handed_over,
     )
@@ -373,15 +386,18 @@ fn answer(
 /// Extracts the sent email's key, mapping a `SetError` on either create into a
 /// classified [`JmapError`].
 fn parse_receipt(
-    email_result: &Value,
-    submission_result: &Value,
+    answered: &Answered<'_>,
     message_id: &MessageIdHeader,
     handed_over: &HandedOver,
 ) -> Result<SubmissionReceipt, JmapError> {
-    let email_id = created_id(email_result, "draft")
-        .ok_or_else(|| set_error(email_result, "draft", "Email/set"))?;
-    if created_id(submission_result, "sub").is_none() {
-        return Err(set_error(submission_result, "sub", "EmailSubmission/set"));
+    let email_id = created_id(answered.email, "draft")
+        .ok_or_else(|| set_error(answered.email, "draft", &answered.email_set))?;
+    if created_id(answered.submission, "sub").is_none() {
+        return Err(set_error(
+            answered.submission,
+            "sub",
+            &answered.submission_set,
+        ));
     }
     let key = ProviderKey::new(email_id)
         .map_err(|e| JmapError::protocol(format!("bad created email id: {e}")))?;
@@ -408,8 +424,9 @@ pub(crate) fn created_id<'a>(result: &'a Value, creation_id: &str) -> Option<&'a
         .and_then(Value::as_str)
 }
 
-/// Turns a `notCreated` `SetError` (RFC 8620 §5.3) into a classified method error.
-pub(crate) fn set_error(result: &Value, creation_id: &str, method: &str) -> JmapError {
+/// Turns a `notCreated` `SetError` (RFC 8620 §5.3) in the answer to `call` into a classified
+/// method error.
+pub(crate) fn set_error(result: &Value, creation_id: &str, call: &CallId) -> JmapError {
     let error_type = result
         .get("notCreated")
         .and_then(|nc| nc.get(creation_id))
@@ -418,7 +435,7 @@ pub(crate) fn set_error(result: &Value, creation_id: &str, method: &str) -> Jmap
         .unwrap_or("unknown")
         .to_owned();
     JmapError::Method {
-        call_id: method.to_owned(),
+        call_id: call.clone(),
         error_type,
     }
 }

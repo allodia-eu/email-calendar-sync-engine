@@ -12,7 +12,8 @@ use engine_provider::{HandOver, HttpVersion, TlsVersion};
 use crate::{
     JmapClient,
     error::JmapError,
-    request::{Request, Response},
+    request::{CallId, Request},
+    response::Response,
     session::Session,
 };
 
@@ -64,7 +65,7 @@ pub(crate) trait Executor: Send + Sync {
 pub(crate) async fn write(
     executor: &dyn Executor,
     request: &Request,
-    call: &str,
+    call: &CallId,
 ) -> Result<serde_json::Value, JmapError> {
     let response = executor
         .execute(request)
@@ -76,7 +77,7 @@ pub(crate) async fn write(
 #[async_trait]
 impl Executor for JmapClient {
     async fn execute(&self, request: &Request) -> Result<Response, JmapError> {
-        JmapClient::execute(self, request, engine_http::Exchange::Ordinary).await
+        JmapClient::execute(self, request).await
     }
 
     async fn submit(
@@ -85,7 +86,7 @@ impl Executor for JmapClient {
         hand_over: &HandOver<'_>,
     ) -> Result<Response, JmapError> {
         let exchange = engine_http::Exchange::Submission(hand_over);
-        JmapClient::execute(self, request, exchange).await
+        JmapClient::send(self, request, exchange).await
     }
 
     async fn download(&self, url: &str) -> Result<Vec<u8>, JmapError> {
@@ -93,7 +94,8 @@ impl Executor for JmapClient {
     }
 
     async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<String, JmapError> {
-        JmapClient::upload(self, url, media_type, bytes).await
+        let blob = JmapClient::upload(self, url, media_type, bytes).await?;
+        Ok(blob.as_str().to_owned())
     }
 
     fn session(&self) -> &Session {

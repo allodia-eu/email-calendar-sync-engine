@@ -74,7 +74,7 @@ fn parsers_never_panic_on_hostile_json() {
         let _ = mail::message_from_json(case);
         let _ = calendar::calendar_from_json(case);
         let _ = calendar::event_from_json(case);
-        let _ = request::Response::parse(case);
+        let _ = response::Response::parse(case);
         let _ = sync_ops::Changes::parse(case);
     }
 }
@@ -160,9 +160,9 @@ async fn connect_and_execute_against_a_mock_server() {
     assert!(format!("{client:?}").contains("JmapClient"));
 
     let mut req = request::Request::new([request::capability::CORE]);
-    req.invoke("Mailbox/get", serde_json::json!({ "accountId": "c" }));
-    let resp = client.execute(&req, Exchange::Ordinary).await.unwrap();
-    assert!(resp.result("0").is_ok());
+    let get = req.invoke("Mailbox/get", serde_json::json!({ "accountId": "c" }));
+    let resp = client.execute(&req).await.unwrap();
+    assert!(resp.result(&get).is_ok());
 }
 
 #[tokio::test]
@@ -385,6 +385,9 @@ async fn upload_without_a_blob_id_is_a_protocol_error() {
 
 #[path = "lib_connect_steps_tests.rs"]
 mod connect_steps;
+
+#[path = "client_tests.rs"]
+mod client;
 
 #[path = "lib_submit_tests.rs"]
 mod submit;

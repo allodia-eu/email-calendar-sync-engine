@@ -74,9 +74,9 @@ fn each_domain_is_read_from_its_own_primary_account() {
     let caps = session.capabilities();
     assert!(caps.mail() && caps.submission() && caps.calendars() && caps.contacts());
     assert!(caps.calendar_writes() && caps.contact_writes());
-    assert_eq!(session.mail_account_id().unwrap(), "c");
-    assert_eq!(session.calendar_account_id().unwrap(), "d");
-    assert_eq!(session.contact_account_id().unwrap(), "d");
+    assert_eq!(session.mail_account_id().unwrap().as_str(), "c");
+    assert_eq!(session.calendar_account_id().unwrap().as_str(), "d");
+    assert_eq!(session.contact_account_id().unwrap().as_str(), "d");
 }
 
 #[test]
