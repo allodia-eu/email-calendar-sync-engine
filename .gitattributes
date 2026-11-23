@@ -9,3 +9,6 @@ crates/engine-api/tests/fixtures/stalwart-invitation.eml -text
 crates/provider-caldav/tests/fixtures/sync-initial.xml -text
 crates/provider-caldav/tests/fixtures/import/stalwart-uid-query.xml -text
 crates/provider-caldav/tests/fixtures/import/stalwart-card-uid-query.xml -text
+
+# Written by Roundcube's managesieve plugin, CRLF and all (the README there says how).
+crates/engine-sieve/tests/fixtures/roundcube/*.sieve -text

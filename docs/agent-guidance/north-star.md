@@ -121,6 +121,7 @@ email-calendar-sync-engine/
 │   ├── engine-rfc5322/       # Outbound message assembly.
 │   ├── engine-ical/          # iCalendar parse, serialize, patch.
 │   ├── engine-html/          # Mail HTML made safe to render.
+│   ├── engine-sieve/         # Sieve scripts split at their commands.
 │   ├── engine-recurrence/    # Recurrence expansion (bundled tzdb).
 │   ├── engine-search/        # Query AST and DSL, rank fusion, coverage.
 │   ├── engine-store/         # Store trait and contract tests.
