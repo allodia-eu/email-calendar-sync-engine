@@ -18,9 +18,7 @@ use std::{
 
 use engine_core::{
     ids::{MailboxId, MessageId, MessageIdHeader, ProviderKey},
-    mail::{
-        EmailAddress, Envelope, Importance, Keyword, Mailbox, MailboxRole, Message, SystemKeyword,
-    },
+    mail::{EmailAddress, Envelope, Importance, Keyword, Mailbox, MailboxRole, Message},
     membership::Memberships,
     time::UtcDateTime,
 };
@@ -181,45 +179,21 @@ pub(crate) fn is_hierarchy_level(attributes: &[String]) -> bool {
     has_attribute(attributes, "Noselect") || has_attribute(attributes, "NonExistent")
 }
 
-/// Maps IMAP flags to engine [`Keyword`]s. The four standard system flags map to
-/// their `$`-keywords; `\Deleted` and `\Recent` are deliberately **not** keywords
-/// (they belong to IMAP's expunge/session model, per `engine_core::mail::keyword`);
-/// other backslash flags are unmapped; a custom keyword passes through if valid.
+/// Maps IMAP flags to engine [`Keyword`]s, each by [`Keyword::from_flag`], the one rule Sieve's
+/// `imap4flags` reads by too: the four standard system flags are their `$`-keywords, `\Deleted`
+/// and `\Recent` are deliberately **not** keywords, other backslash flags are unmapped, and a
+/// custom keyword passes through if valid.
 pub(crate) fn flags_to_keywords(flags: &[String]) -> BTreeSet<Keyword> {
-    let mut set = BTreeSet::new();
-    for flag in flags {
-        if let Some(name) = flag.strip_prefix('\\') {
-            let system = match name.to_ascii_lowercase().as_str() {
-                "seen" => Some(SystemKeyword::Seen),
-                "flagged" => Some(SystemKeyword::Flagged),
-                "answered" => Some(SystemKeyword::Answered),
-                "draft" => Some(SystemKeyword::Draft),
-                _ => None,
-            };
-            if let Some(system) = system {
-                set.insert(Keyword::system(system));
-            }
-        } else if let Ok(keyword) = Keyword::new(flag.as_str()) {
-            set.insert(keyword);
-        }
-    }
-    set
+    flags
+        .iter()
+        .filter_map(|flag| Keyword::from_flag(flag))
+        .collect()
 }
 
-/// The inverse of [`flags_to_keywords`]: maps one engine [`Keyword`] to the IMAP
-/// flag a `UID STORE` sets. The four standard system keywords (`$seen`/`$flagged`/
-/// `$answered`/`$draft`) map back to their backslash system flags; every other
-/// keyword — another system keyword (`$forwarded`, …) or a custom one — is emitted
-/// as a bare IMAP keyword atom (`Keyword::as_str`, already a valid IMAP atom since
-/// the keyword grammar forbids the flag-illegal characters).
+/// The inverse of [`flags_to_keywords`]: the IMAP flag a `UID STORE` sets for one engine
+/// [`Keyword`] ([`Keyword::to_flag`]).
 pub(crate) fn keyword_to_flag(kw: &Keyword) -> String {
-    match kw.as_system() {
-        Some(SystemKeyword::Seen) => "\\Seen".to_owned(),
-        Some(SystemKeyword::Flagged) => "\\Flagged".to_owned(),
-        Some(SystemKeyword::Answered) => "\\Answered".to_owned(),
-        Some(SystemKeyword::Draft) => "\\Draft".to_owned(),
-        _ => kw.as_str().to_owned(),
-    }
+    kw.to_flag()
 }
 
 /// Parses an IMAP `INTERNALDATE` (`"dd-Mon-yyyy hh:mm:ss +zzzz"`, RFC 9051

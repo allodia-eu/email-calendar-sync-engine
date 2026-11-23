@@ -157,6 +157,14 @@ raw_text! {
     RawVacation
 }
 
+raw_text! {
+    /// A provider's own form of an account's mail rules, preserved verbatim: the active Sieve
+    /// script, or later the rules' JSON. A write copies from it every rule the caller did not
+    /// change, so a script someone wrote by hand keeps its comments and layout. It holds rule
+    /// values, so its `Debug` shows only the length.
+    RawRules
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

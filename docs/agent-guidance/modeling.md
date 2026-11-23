@@ -91,6 +91,20 @@ Capture any provider-specific assumption in tests or fixtures. If a provider beh
   form is kept as `RawVacation`. It is a setting: no store table, no outbox
   (`docs/design/filters-and-out-of-office.md`). Its subject and bodies are content, so its `Debug`
   shows only their lengths.
+- An account's mail rules are one neutral, ordered list (`engine_core::rules`): each rule typed
+  (`Match` of conditions and exceptions, `Action`s, stop) or carried as the provider wrote it
+  (`RuleBody::Opaque`, a Sieve command the dialect does not write), with its name and whether it
+  runs. A Sieve script is one rendering of the list (`engine-sieve`'s dialect, Roundcube's), and a
+  write copies every rule the caller did not change byte for byte from the script read
+  (`RawRules`, `RuleOrigin`). What a target can hold is a `RuleVocabulary` per account, and
+  `plan_rules` is the one rule for what it keeps: a lost condition or exception drops the whole
+  rule, because it would widen what the rule matches; a lost action reduces it; an imported rule
+  that sends mail out of the account is stored disabled. Like the reply, the rules are a setting
+  (no store table, no outbox), and their values are content: every type's `Debug` shows kinds,
+  counts and lengths (`docs/design/filters-and-out-of-office.md`).
+- A keyword and an IMAP flag (or a Sieve `imap4flags` flag, spelled the same) map one way only:
+  `Keyword::from_flag` and `Keyword::to_flag`, which `provider-imap` and the Sieve dialect both
+  call.
 - Raw provider payloads are preserved for lossless re-derivation: MIME, iCalendar, JSCalendar, vCard.
 - Provider-defined extended properties and extensions (Microsoft Graph extended properties and open extensions, Google Calendar `extendedProperties`) are preserved as normalized, namespaced key-value data — distinct from raw payloads and from first-class fields.
 - Provider object keys are stable across moves; where a provider's natural id is not (Graph default ids), the adapter uses its immutable-id form, with a version token (ETag, `changeKey`, MODSEQ) tracking revisions.

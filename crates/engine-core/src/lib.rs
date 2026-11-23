@@ -2,9 +2,9 @@
 //! sync engine.
 //!
 //! This crate is deliberately **I/O-free and async-free**. It defines the
-//! normalized mail, calendar, contact, people, recipient, and out-of-office types; identity
-//! newtypes that keep account, object, and collection keys from being mixed by accident, and the
-//! contract types (`SyncScope`, `SyncState`, `SyncUpdate`, `SearchCoverage`, `PendingOp`)
+//! normalized mail, calendar, contact, people, recipient, mail-rule and out-of-office types;
+//! identity newtypes that keep account, object, and collection keys from being mixed by accident,
+//! and the contract types (`SyncScope`, `SyncState`, `SyncUpdate`, `SearchCoverage`, `PendingOp`)
 //! that both stores and sync orchestration consume. Network access, runtime,
 //! storage, recurrence *expansion*, and text extraction live in other crates;
 //! this crate only models the data and the invariants.
@@ -45,6 +45,7 @@ pub mod patch;
 pub mod people;
 pub mod raw;
 pub mod recipient;
+pub mod rules;
 pub mod scheduling;
 pub mod search_index;
 pub mod sync;

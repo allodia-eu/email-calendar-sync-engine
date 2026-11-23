@@ -1,12 +1,15 @@
 # Filters and out-of-office: design note
 
-Status: **design settled; slice 1 (the reply over JMAP) implemented, rules not yet.** Written
+Status: **design settled; slice 1 (the reply over JMAP) implemented; slice 2 (rules over JMAP
+Sieve) under way: `engine-sieve`, the rules model and `plan_rules` implemented.** Written
 2026-11-23, when the owner moved message rules and automatic replies into scope; every question it
 raised was decided the same day (section 7). `north-star.md` records the scope and the accessor
 pattern (#378). Slice 1 landed `engine_core::vacation`, the `Vacation` trait and
 `Provider::vacation`, and `provider-jmap`'s `VacationResponse` get and set, and answered the
-questions it was to settle live ("Settled by live tests"). Where the code differs from a sketch
-below, the sketch has been brought up to date and says why.
+questions it was to settle live ("Settled by live tests"). Slice 2 has landed `engine-sieve` (the
+segmenter, and the dialect reader, writer and vocabulary) and `engine_core::rules` with
+`plan_rules`. Where the code differs from a sketch below, the sketch has been brought up to date
+and says why.
 
 Marks used below: **live** = observed against a harness server on 2026-11-23; **docs** = read from
 the RFC or vendor reference cited; **unverified** = believed, not yet checked, and must be proven
@@ -152,7 +155,52 @@ server that runs the reply as a script of its own, the active script may be the 
 `SieveScript/set` may not change and which activating `rules` would switch off; slice 1 found this
 live, and slice 2 settles how the two coexist ("Settled by live tests").
 
-### Types (sketch, `engine-core::rules`)
+### Types (`engine-core::rules`, implemented in slice 2)
+
+Implemented as sketched, with these differences, each for a reason the code met:
+
+- `RuleMailbox` also has `Path(MailboxPath)`: a Sieve `fileinto` names a folder by path, and a
+  rule read from a script must keep that name until something resolves it. `RuleMailbox::Role
+  (Inbox)` needs no role extension anywhere: every transport has the inbox by name.
+- Marking an importance is a typed `Action::MarkImportance(Importance)`, not `Native`: it crosses
+  kinds (Graph's `markImportance`, Sieve's `addheader "Importance"`, ≈), which `Native` never does.
+- A condition's header is `HeaderField::Subject` or `Named(String)`; addresses are
+  `RuleAddress`, names `RuleName`, folder paths `MailboxPath`, each with a `Debug` that shows only
+  a length. `RuleOrigin::ScriptSegment(index)` is the Sieve span.
+- `RulePart` adds `Rule` (an opaque rule as a whole) and `Mode` (how conditions combine), and
+  `RuleVocabulary` is a map from a `RuleFeature` (the grain where transports differ) to `Support`
+  (`Exact` or `Approximated`), plus the redirect limit and the kinds of opaque and native parts it
+  stores back.
+- The receipt is `RulesReceipt { version, outcomes }`; `RulesPlan.rules` pairs each written rule
+  with its source index (`PlannedRule`).
+- A `RawRule` carries what the reader learned of its text:
+  - the extensions it requires, from one table of command, test and tag, a tag read in the
+    context of its command (`:seconds` is `vacation-seconds` on `vacation` only), and where a
+    token is not in the table, everything the source script required (unknown, for a command a
+    host wrote);
+  - whether it may send mail: unless every command and test in it is known to send none, so
+    `redirect`, `notify`, `include` and anything unknown (`pipe`, `execute`) may;
+  - the name it holds;
+  - whether its strings hold `${`, and whether its source expanded them (`Expansion`).
+
+  The plan carries it only to a target that lists every extension it needs, never renames or
+  disables it (its text holds both), does not carry one that may send mail on an import that arms
+  no forwarding, and does not move one with `${` to another script (it means what its own script
+  made of it, and may use a variable another command there sets). The writer refuses one whose
+  `${` the script it writes over would read the other way, and a typed rule with `${` anywhere
+  over a script that expands it (`DialectErrorKind::Variable`). A `NativeAction` says whether it
+  sends mail too.
+- `RuleOrigin::ScriptSegment { script, index }`: `script` is a fingerprint of the text read, so a
+  rule read from one script is never copied as a segment of another.
+- A `TextTest` always has a value, and `RuleName`, `MailboxPath` and `RuleAddress` are never empty
+  and never hold a CR, LF or NUL: what no transport writes cannot be built. The plan answers
+  `NotExpressible` for what can still be built and not written (a role no transport names, a
+  redirect to nobody, no keyword to add).
+- The action order is not semantic. The writer adds keywords and an importance before it files,
+  redirects or discards, because a flag set after a `fileinto` does not reach the filed copy (RFC
+  5232 §3); a script in another order reads as carried whole.
+
+The sketch as written before the code:
 
 ```rust
 /// The account's rules, in evaluation order, as read.
@@ -475,14 +523,16 @@ rule 0  Reduced  Action(1) NotExpressible        # markImportance: no editheader
 rule 1  NotKept  Exception(0) NotExpressible     # dropping it would also move auto-replies
 ```
 
-Written script, in the Roundcube dialect (section 3; layout as slice 2 pins it):
+Written script, in the Roundcube dialect, as `engine_sieve::dialect::write_rules` writes it (every
+line ends in CRLF; the action is indented by a tab):
 
 ```sieve
-require ["fileinto", "mailbox"];
+require ["fileinto"];
 # rule:[Invoices]
-if header :contains "subject" "Invoice" {
-    fileinto "Finance";
-    stop;
+if header :contains "subject" "Invoice"
+{
+	fileinto "Finance";
+	stop;
 }
 ```
 
@@ -499,19 +549,19 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 | Neutral | Sieve | Graph | Gmail |
 |---|---|---|---|
 | `Match` All / Any | ✓ `allof` / `anyof` | All ✓ (predicates ANDed; values in one predicate ORed, **unverified**); Any ✗ | All ✓; Any ≈ (`query` with `OR`) |
-| `except` | ✓ `not anyof(…)` | ✓ `exceptions` (same predicates only) | ≈ `negatedQuery` |
+| `except` | ✓ `not e`, or `allof (c1, …, not e1, …)`; with any-of conditions `allof (anyof (c1, …), not e1, …)`; an `anyof` holding a `not`, or nested lists, read as carried whole | ✓ `exceptions` (same predicates only) | ≈ `negatedQuery` |
 | Subject contains | ✓ `header :contains "subject"` | ✓ `subjectContains` | ≈ `subject` (word match, not substring) |
 | Subject is / glob / regex | ✓ `:is` / `:matches` / `:regex` (ext `regex`) | ✗ | ✗ |
 | Named header contains | ✓ `header :contains "X-…"` | ≈ `headerContains` (any header) | ✗ |
 | From is / contains | ✓ `address :is` / `:contains "from"` | ✓ `fromAddresses` / `senderContains` | ≈ `from` (search semantics) |
 | From domain | ✓ `address :domain` | ≈ `senderContains "@example.com"` | ≈ `from:(@example.com)` |
 | To / Cc / to-or-cc | ✓ `address ["to","cc"]` | ✓ `recipientContains`, `sentToAddresses` | ≈ `to` (also matches Bcc) |
-| Sent to me (to, cc, only, not) | ≈ address tests over the account's addresses | ✓ `sentToMe`, `sentCcMe`, `sentOnlyToMe`, `notSentToMe`, `sentToOrCcMe` | ≈ `to:me` in `query` (only `to`) |
+| Sent to me (to, cc, only, not) | ✗ for now (≈ address tests over the account's addresses, which the writer does not have) | ✓ `sentToMe`, `sentCcMe`, `sentOnlyToMe`, `notSentToMe`, `sentToOrCcMe` | ≈ `to:me` in `query` (only `to`) |
 | Body contains | ✓ `body :text :contains` (ext `body`) | ✓ `bodyContains` | ≈ `query` |
 | Subject or body | ✓ `anyof(header…, body…)` | ✓ `bodyOrSubjectContains` | ≈ `query` |
 | Size over / under | ✓ `size :over` / `:under` | ≈ `withinSizeRange` (KB, a range) | ✓ `size` + `sizeComparison` |
-| Has attachment | ≈ `exists :mime :anychild` heuristics (ext `mime`) | ✓ `hasAttachments` | ✓ `hasAttachment` |
-| Importance | ≈ header tests over `Importance::HEADERS` | ✓ `importance` | ✗ (Gmail's `important` is its own classifier) |
+| Has attachment | ≈ `header :mime :anychild :contains "Content-Disposition" "attachment"` (ext `mime`) | ✓ `hasAttachments` | ✓ `hasAttachment` |
+| Importance | ✗ for now (≈ header tests over `Importance::HEADERS`, not yet written) | ✓ `importance` | ✗ (Gmail's `important` is its own classifier) |
 | `Native`: Exchange class (`isMeetingRequest`, `isAutomaticReply`, `sensitivity`, `categories`, `messageActionFlag`, …) | ✗ (a few ≈ through headers, not attempted) | ✓ | ✗ |
 | `Native`: unparsed Gmail `query` | ✗ | ✗ | ✓ |
 
@@ -521,17 +571,17 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 |---|---|---|---|
 | `FileInto` (move) | ✓ `fileinto`; by name, or `:mailboxid` (RFC 9042, survives a rename) where listed | ✓ `moveToFolder` | ✓ add label + remove `INBOX` (one user label per filter) |
 | `FileInto { copy }` | ✓ `fileinto :copy` (ext `copy`, RFC 3894) | ✓ `copyToFolder` | ✓ add label, keep `INBOX` |
-| `FileInto { Role(Trash / Junk) }` | ✓ `:specialuse` (RFC 8579) where listed, else by the folder's name | ✓ `delete` / move to Junk | ✓ `TRASH` / `SPAM` |
+| `FileInto { Role(Trash / Junk) }` | ✓ `:specialuse "\\Trash" "Trash"` (RFC 8579), the attribute's name as the fallback folder, for every role but the inbox (`"INBOX"`); ✗ where `special-use` is not listed (no fallback to a name alone) | ✓ `delete` / move to Junk | ✓ `TRASH` / `SPAM` |
 | `Discard` | ✓ `discard` | ✓ `permanentDelete` | ≈ `TRASH` (recoverable) |
-| `Redirect` | ✓ `redirect` (`:copy` keeps it), bounded by `maxNumberRedirects` | ✓ `redirectTo` (keeps a copy) | ≈ `forward`: one verified address, original sender kept |
+| `Redirect` | ✓ `redirect` (`:copy` keeps it), one per address; a rule's addresses together bounded by `maxNumberRedirects` (two rules that each fit can exceed it for one message; the server enforces that on delivery) | ✓ `redirectTo` (keeps a copy) | ≈ `forward`: one verified address, original sender kept |
 | `Forward` (as the account) | ≈ `redirect :copy` (From differs) | ✓ `forwardTo` | ≈ `forward` |
 | `AddKeywords` `$seen` / `$flagged` | ✓ `addflag "\\Seen"` / `"\\Flagged"` (ext `imap4flags`, RFC 5232) | ✓ `markAsRead` / ✗ (no flag action) | ✓ remove `UNREAD` / add `STARRED` |
 | `AddKeywords` named | ✓ `addflag "name"` | ≈ `assignCategories` | ≈ hidden named label (counts as the one user label) |
-| `Native`: mark importance | ≈ `addheader` (ext `editheader`) | ✓ `markImportance` | ≈ `IMPORTANT` |
+| Mark importance (`Action::MarkImportance`) | ≈ `addheader "Importance"` (ext `editheader`) | ✓ `markImportance` | ≈ `IMPORTANT` |
 | `Native`: forward as attachment | ✗ | ✓ `forwardAsAttachmentTo` | ✗ |
 | `stop` | ✓ `stop` | ✓ `stopProcessingRules` | ✗ (every filter applies) |
-| `enabled: false` | ≈ dialect: `if allof(false, …)` | ✓ `isEnabled` | ✗ |
-| `name` | ≈ dialect comment | ✓ `displayName` | ✗ |
+| `enabled: false` | ✓ in the dialect, `if false # <test>` (a client that does not know it sees a rule that never runs); ✗ where a value of the test spans lines (`RuleFeature::DisabledMultiLine`): no comment holds it, and Roundcube reads `allof (false, …)` as a rule that runs (observed, the fixture README) | ✓ `isEnabled` | ✗ |
+| `name` | ✓ in the dialect, `# rule:[name]` (a comment to any other client) | ✓ `displayName` | ✗ |
 | Order | ✓ script order | ✓ `sequence` | ✗ |
 
 ### Out-of-office

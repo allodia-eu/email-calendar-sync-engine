@@ -80,6 +80,25 @@ impl MailboxRole {
         }
     }
 
+    /// The IMAP `SPECIAL-USE` attribute (RFC 6154, RFC 8457) for this role, backslash included,
+    /// which Sieve's `special-use` extension names a folder by too (RFC 8579): the inverse of
+    /// [`from_imap_special_use`](Self::from_imap_special_use). `None` for the inbox, which has
+    /// none (it is `INBOX` by name), and for a role no attribute names.
+    #[must_use]
+    pub fn as_imap_special_use(&self) -> Option<&'static str> {
+        match self {
+            Self::Archive => Some("\\Archive"),
+            Self::Drafts => Some("\\Drafts"),
+            Self::Sent => Some("\\Sent"),
+            Self::Trash => Some("\\Trash"),
+            Self::Junk => Some("\\Junk"),
+            Self::All => Some("\\All"),
+            Self::Flagged => Some("\\Flagged"),
+            Self::Important => Some("\\Important"),
+            Self::Inbox | Self::Other(_) => None,
+        }
+    }
+
     /// Returns the canonical JMAP/IANA role name.
     #[must_use]
     pub fn as_jmap_role(&self) -> &str {
@@ -128,6 +147,25 @@ mod tests {
             MailboxRole::from_jmap_role("vendorspecific"),
             MailboxRole::Other("vendorspecific".into())
         );
+    }
+
+    #[test]
+    fn a_special_use_attribute_and_its_role_map_both_ways() {
+        for role in [
+            MailboxRole::Archive,
+            MailboxRole::Drafts,
+            MailboxRole::Sent,
+            MailboxRole::Trash,
+            MailboxRole::Junk,
+            MailboxRole::All,
+            MailboxRole::Flagged,
+            MailboxRole::Important,
+        ] {
+            let attribute = role.as_imap_special_use().unwrap();
+            assert_eq!(MailboxRole::from_imap_special_use(attribute), role);
+        }
+        assert_eq!(MailboxRole::Inbox.as_imap_special_use(), None);
+        assert_eq!(MailboxRole::Other("x".into()).as_imap_special_use(), None);
     }
 
     #[test]

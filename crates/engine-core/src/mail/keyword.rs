@@ -91,6 +91,43 @@ impl Keyword {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The keyword an IMAP flag stands for, or a Sieve `imap4flags` flag, which is spelled the
+    /// same (RFC 9051 §2.3.2, RFC 5232 §3).
+    ///
+    /// The four standard system flags (`\Seen`, `\Flagged`, `\Answered`, `\Draft`, in any
+    /// case) are their `$`-keywords. `\Deleted`, `\Recent` and any other backslash flag are no
+    /// keyword (see the module docs), and a flag the keyword grammar refuses is none either.
+    #[must_use]
+    pub fn from_flag(flag: &str) -> Option<Self> {
+        match flag.strip_prefix('\\') {
+            Some(name) => {
+                let system = match name.to_ascii_lowercase().as_str() {
+                    "seen" => SystemKeyword::Seen,
+                    "flagged" => SystemKeyword::Flagged,
+                    "answered" => SystemKeyword::Answered,
+                    "draft" => SystemKeyword::Draft,
+                    _ => return None,
+                };
+                Some(Self::system(system))
+            }
+            None => Self::new(flag).ok(),
+        }
+    }
+
+    /// The flag that stands for this keyword in IMAP and in Sieve `imap4flags`: the inverse of
+    /// [`from_flag`](Self::from_flag). The four standard system keywords are their backslash
+    /// flags; every other keyword is itself, already a valid flag atom.
+    #[must_use]
+    pub fn to_flag(&self) -> String {
+        match self.as_system() {
+            Some(SystemKeyword::Seen) => "\\Seen".to_owned(),
+            Some(SystemKeyword::Flagged) => "\\Flagged".to_owned(),
+            Some(SystemKeyword::Answered) => "\\Answered".to_owned(),
+            Some(SystemKeyword::Draft) => "\\Draft".to_owned(),
+            _ => self.as_str().to_owned(),
+        }
+    }
 }
 
 impl fmt::Display for Keyword {
@@ -183,6 +220,29 @@ impl SystemKeyword {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_flag_and_its_keyword_map_both_ways() {
+        for (flag, keyword) in [
+            ("\\Seen", "$seen"),
+            ("\\flagged", "$flagged"),
+            ("\\ANSWERED", "$answered"),
+            ("\\Draft", "$draft"),
+            ("$label1", "$label1"),
+            ("Work", "work"),
+        ] {
+            let read = Keyword::from_flag(flag).unwrap();
+            assert_eq!(read.as_str(), keyword);
+            assert!(read.to_flag().eq_ignore_ascii_case(flag));
+        }
+        for none in ["\\Deleted", "\\Recent", "\\Other", "a b", ""] {
+            assert_eq!(Keyword::from_flag(none), None, "{none}");
+        }
+        assert_eq!(
+            Keyword::system(SystemKeyword::Forwarded).to_flag(),
+            "$forwarded"
+        );
+    }
+
     use super::*;
 
     #[test]
