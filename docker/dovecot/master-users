@@ -1,0 +1,2 @@
+# The harness master user (master-user.conf). Throwaway, committed on purpose.
+master@test.local:{PLAIN}dovecot-master-pw
