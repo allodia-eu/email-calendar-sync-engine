@@ -289,9 +289,8 @@ offered" is `None` rather than a flag beside a rejecting default; and `engine-di
 adapter that is *only* these traits. The change is additive, so it breaks no adapter and no host.
 `north-star.md` (#378) records this as how new capabilities are reached and as the first step of
 the capability-trait split, which lands later as one planned migration, after this seam and the
-credential source. `providers.md` already describes the pattern under "Import"; its older
-"rejecting default, never a sub-trait" bullet is rewritten by the first slice here that adds a
-trait.
+credential source. `providers.md` describes the pattern, and #386 replaces its older
+"rejecting default, never a sub-trait" bullet with it.
 
 `engine-provider` depends on `engine-core` only. It gains a dependency on `engine-search`, which
 is pure (no I/O, no runtime), for `MailQuery` and the page types, which stay there.
@@ -508,8 +507,8 @@ The owner approved these. Each is written into the body above; none is open.
    `Box<dyn Provider>` impl: here `mail_queries()` and `mail_reads()`, as `mail_importer()` is
    (merged in #375) and as `north-star.md` records for every new capability (#378). It is
    additive, so not breaking, works through `Box<dyn Provider>`, and is the first step of the
-   capability-trait split. It supersedes the `providers.md` rule against sub-traits; that bullet
-   is rewritten by the first slice here that adds a trait.
+   capability-trait split. It supersedes the `providers.md` rule against sub-traits, which #386
+   rewrites.
 2. **`MailListRow` moves from `engine-store` to `engine-core` as `MailListItem`**, so the store
    and the server return one row type. `engine-store` keeps a deprecated `MailListRow` re-export
    for one host pin bump.
