@@ -41,6 +41,27 @@ reader and writer are written from the observed bytes. Values use reserved domai
   token after a block in a test starts on the next line.
 - `address` writes its part before its match type (`address :domain :is`), and leaves `:all` out.
 
+## The out-of-office reply: `reply_*.sieve`
+
+The `reply_*` sets are built as the plugin's vacation engine builds its rule
+(`rcube_sieve_vacation::set_vacation`, read in the same image): `currentdate` tests on the
+`iso8601` part with the zone given (`+0000`, the value then ending in `Z`), `allof` for two tests
+and `true` for none, the rule named `Out-of-Office`, and a disabled reply as any disabled rule. The
+engine's reply reader and writer (`engine_sieve::dialect::reply`) are pinned to them:
+
+- `reply_window`: both ends, `:days 7` and a subject, a two-line reason, then an ordinary rule;
+- `reply_start`: a start alone, no subject;
+- `reply_always`: no window (`if true`);
+- `reply_disabled`: switched off, `if false # allof (…)`;
+- `reply_date_zone`: the form the plugin's settings page writes when no time is given, the `date`
+  part in a zone of `+0100`;
+- `reply_redirect`: a reply that also redirects, which the engine reads as a reply it cannot show.
+
+The plugin takes as the reply the first rule whose first action is `vacation`, writes a new one
+first, and writes the end of the window with `le`, holding through the second it names. Its own
+`vacation_rule` set above has no `:zone`, so the date there is the server's local one: the engine
+does not read that window.
+
 ## A disabled rule whose test spans lines: not one Roundcube keeps disabled
 
 `if false # <test>` holds a test on one line. For a test with a value that spans lines (a

@@ -50,6 +50,38 @@ $sets['vacation_rule'] = [
     rule('Invoices', [['test' => 'header', 'not' => false, 'arg1' => 'subject', 'arg2' => 'Invoice', 'type' => 'contains']],
          [['type' => 'fileinto', 'target' => 'Finance']]),
 ];
+// Out-of-office replies as the plugin's vacation engine builds them (`rcube_sieve_vacation`'s
+// `set_vacation`): `currentdate` tests on the `iso8601` part with the zone given, `allof` for two,
+// `true` for none, and the rule named `Out-of-Office`.
+function window_test($type, $arg, $zone = '+0000', $part = 'iso8601') {
+    return ['test' => 'currentdate', 'not' => false, 'part' => $part, 'type' => 'value-' . $type, 'zone' => $zone, 'arg' => $arg];
+}
+$sets['reply_window'] = [
+    rule('Out-of-Office', [window_test('ge', '2030-01-02T09:00:00Z'), window_test('le', '2030-01-09T17:30:00Z')],
+         [['type' => 'vacation', 'days' => 7, 'subject' => 'Away', 'reason' => "I am away.\nBack on the ninth."]], true),
+    rule('Invoices', [['test' => 'header', 'not' => false, 'arg1' => 'subject', 'arg2' => 'Invoice', 'type' => 'contains']],
+         [['type' => 'fileinto', 'target' => 'Finance']]),
+];
+$sets['reply_start'] = [
+    rule('Out-of-Office', [window_test('ge', '2030-01-02T09:00:00Z')],
+         [['type' => 'vacation', 'reason' => 'Away from the second.']]),
+];
+$sets['reply_always'] = [
+    rule('Out-of-Office', [['test' => 'true']],
+         [['type' => 'vacation', 'subject' => 'Away', 'reason' => 'Away for now.']]),
+];
+$sets['reply_disabled'] = [
+    rule('Out-of-Office', [window_test('ge', '2030-01-02T09:00:00Z'), window_test('le', '2030-01-09T17:30:00Z')],
+         [['type' => 'vacation', 'subject' => 'Away', 'reason' => 'Away.']], true, true),
+];
+$sets['reply_date_zone'] = [
+    rule('Out-of-Office', [window_test('ge', '2030-01-02', '+0100', 'date'), window_test('le', '2030-01-09', '+0100', 'date')],
+         [['type' => 'vacation', 'reason' => 'Away.']], true),
+];
+$sets['reply_redirect'] = [
+    rule('Out-of-Office', [['test' => 'true']],
+         [['type' => 'vacation', 'reason' => 'Away.'], ['type' => 'redirect', 'copy' => true, 'target' => 'deputy@example.com']]),
+];
 foreach ($sets as $name => $rules) {
     $s = new rcube_sieve_script('', $caps);
     foreach ($rules as $r) { $s->add_rule($r); }

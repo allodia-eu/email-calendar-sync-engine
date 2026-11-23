@@ -15,6 +15,8 @@
 //!   rule is written as Roundcube writes one, keeping any comments that led it; a rule left out is
 //!   gone. One `require` names what the written rules need, added to what the script named, and is
 //!   the only other line that changes.
+//! - [`reply`] reads and writes the out-of-office reply where it is a rule of the script, as the
+//!   plugin's vacation engine writes it.
 //! - [`vocabulary`] says what the writer can write for an account, from its server's extensions,
 //!   for [`plan_rules`](engine_core::rules::plan_rules).
 //!
@@ -33,6 +35,8 @@ mod facts;
 mod matching;
 mod read;
 mod render;
+pub mod reply;
+mod reply_read;
 mod vocabulary;
 mod write;
 
@@ -133,6 +137,8 @@ pub enum DialectErrorKind {
         /// The rule's index in the list handed in.
         rule: usize,
     },
+    /// The out-of-office reply holds what its rule cannot ([`reply::write_reply`]).
+    Reply,
 }
 
 impl DialectError {
@@ -151,6 +157,12 @@ impl DialectError {
     fn variable(rule: usize) -> Self {
         Self {
             kind: DialectErrorKind::Variable { rule },
+        }
+    }
+
+    fn reply() -> Self {
+        Self {
+            kind: DialectErrorKind::Reply,
         }
     }
 
@@ -181,6 +193,9 @@ impl fmt::Display for DialectError {
             ),
             DialectErrorKind::Require(kind) => {
                 write!(f, "the script's require cannot be written ({kind:?})")
+            }
+            DialectErrorKind::Reply => {
+                f.write_str("the out-of-office reply holds what its Sieve rule cannot")
             }
         }
     }

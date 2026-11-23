@@ -7,9 +7,14 @@
 //! - when a script splits, each command segment split on its own is that one command again
 //!   (that the segments join back to the script holds by construction, so it is no test);
 //! - a value written as a quoted string, or as a `text:` block where one can hold it, reads back
-//!   as itself.
+//!   as itself;
+//! - an out-of-office reply read from a script, written back over it, reads back as the same reply.
 
-use engine_sieve::{SegmentKind, segment, segment_bytes, string, tokenize};
+use engine_sieve::{
+    SegmentKind,
+    dialect::reply::{ScriptReply, read_reply, write_reply},
+    segment, segment_bytes, string, tokenize,
+};
 use libfuzzer_sys::fuzz_target;
 
 fn written_values_read_back(value: &str) {
@@ -25,9 +30,25 @@ fn written_values_read_back(value: &str) {
     }
 }
 
+fn reply_reads_back(script: &str) {
+    let ScriptReply::Read { reply, .. } = read_reply(script) else {
+        return;
+    };
+    let Ok(written) = write_reply(script, &reply) else {
+        return;
+    };
+    let ScriptReply::Read { reply: back, .. } = read_reply(&written) else {
+        panic!("a reply written reads back as a reply");
+    };
+    assert_eq!(back.enabled, reply.enabled);
+    assert_eq!(back.window, reply.window);
+    assert_eq!(back.reply, reply.reply);
+}
+
 fuzz_target!(|data: &[u8]| {
     if let Ok(text) = core::str::from_utf8(data) {
         written_values_read_back(text);
+        reply_reads_back(text);
     }
     let Ok(segments) = segment_bytes(data) else {
         return;
