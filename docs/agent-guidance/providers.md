@@ -251,9 +251,18 @@ it. An adapter that can import implements the trait; there is no capability flag
   accessor on `Provider` that defaults to `None`, delegated by the `Box<dyn Provider>` impl.
   `Box<dyn MailImporter>` and `Arc<dyn MailImporter>` are importers too, for code generic over
   `I: MailImporter`.
-- **Who implements it:** IMAP (`APPEND`, `imap-smtp.md` → "Import"). JMAP `Email/import` is
-  next; Graph and Gmail are sources only. Calendar and contact import (CalDAV and CardDAV `PUT`
-  without scheduling) come with their first adapter.
+- **Who implements it:** IMAP (`APPEND`, `imap-smtp.md` → "Import") and JMAP (`Email/import`,
+  `jmap.md` → "Import"); Graph and Gmail are sources only. Calendar and contact import (CalDAV and
+  CardDAV `PUT` without scheduling) come with their first adapter.
+- **What every importer must do is checked once**: `engine_provider::import::conformance` (the
+  `import-conformance` feature, for live suites) imports a dated message with keywords and an
+  undated control, and reads both back through the sync seam: bytes, the mailbox asked for, a
+  message stored now rather than already there, the arrival time as sent (and the control's
+  within a day of the clock running the check), the receipt saying exactly which keywords were
+  stored, and a delta from the import cursor listing exactly the imports. Its own offline test
+  shows each claim fail, by name, against a target that breaks it. Each adapter's live suite runs it against its servers and adds only what is its
+  own. An adapter that imports runs it; a claim every importer makes belongs there, not in one
+  suite.
 - **When the target's own state refuses, the reason is named, once for every adapter and every
   kind of object.** `ProviderError::refused_by_target(TargetRefusal)` (`engine-provider`,
   `error.rs`) is `FailureClass::InvalidState`: not retryable as it stands, and with no wait,
@@ -273,6 +282,22 @@ it. An adapter that can import implements the trait; there is no capability flag
   | Adapter | `StorageFull` | `NoSuchContainer` | `ReadOnlyContainer` |
   |---|---|---|---|
   | IMAP (any `NO`, `error.rs`) | `NO [OVERQUOTA]` (RFC 9208) | `NO [TRYCREATE]` (RFC 3501), `NO [NONEXISTENT]` (RFC 5530) | `NO [NOPERM]` (RFC 5530) |
+  | JMAP (`Email/import`, `import/wire.rs`) | `overQuota`, as a `SetError` or a method error (RFC 8621 §4.8) | `invalidProperties` naming only `mailboxIds`; a mailbox the import cursor cannot find | `forbidden` |
+- **Every other situation an import meets has one class too**, the same on every adapter:
+
+  | Situation | Answer |
+  |---|---|
+  | Stored, or already there | `Ok`; `already_there` for a link (JMAP `alreadyExists`), with the key |
+  | Over a limit the target states, or the message refused as such (too large, too many mailboxes or keywords, not a message) | `item_unavailable` (`Permanent`) |
+  | The target's own state (above) | `refused_by_target`, `InvalidState` |
+  | Throttled, an upload quota included | `RateLimited`, with the server's wait |
+  | A refused credential | `Authentication` |
+  | Sent, and the answer lost | `requires_confirmation`: find it from the import cursor before sending again |
+  | Not sent, because an earlier failure ended the batch | `import::not_sent(ending)`: a throttle (with its wait) or a refused credential carries over, anything else is `Retryable` |
+  | A transient fault | `Retryable` |
+
+  A throttle or a refused credential ends the batch on every adapter, since it reaches every
+  message after it; a refusal of one message never does.
 
 ## Stalwart Test Spine
 

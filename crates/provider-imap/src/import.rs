@@ -24,7 +24,7 @@ use engine_core::{
 };
 use engine_provider::{
     ProviderError, ProviderResult,
-    import::{ImportedMessage, MailImportLimits, MailImporter, MessageImport},
+    import::{ImportedMessage, MailImportLimits, MailImporter, MessageImport, not_sent},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -66,36 +66,29 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> MailImporter for
         }
         let mut session = match self.session().await {
             Ok(session) => session,
-            Err(err) => {
-                return batch
-                    .iter()
-                    .map(|_| Err(ProviderError::new(err.class(), err.detail())))
-                    .collect();
-            }
+            Err(err) => return batch.iter().map(|_| Err(not_sent(&err))).collect(),
         };
         let limits = limits_of(&session);
         let mut folders = FolderKeywords::default();
         let mut answers = Vec::with_capacity(batch.len());
-        let mut broken = false;
+        let mut ended = None;
         for message in batch {
             match import_one(&mut session, &limits, &mut folders, message).await {
                 Ok(answer) => answers.push(answer),
                 Err(ending) => {
-                    answers.push(Err(ending));
-                    broken = true;
+                    ended = Some(ending);
                     break;
                 }
             }
         }
         // A connection that failed is never parked, even when the failure fell on the batch's
         // last message: the next borrower would inherit a dead socket.
-        if broken {
+        if let Some(ending) = ended {
             session.discard();
-            answers.resize_with(batch.len(), || {
-                Err(ProviderError::retryable(
-                    "not sent: the batch's connection failed before this message",
-                ))
-            });
+            let unsent = batch.len() - answers.len() - 1;
+            let rest: Vec<_> = (0..unsent).map(|_| Err(not_sent(&ending))).collect();
+            answers.push(Err(ending));
+            answers.extend(rest);
         }
         answers
     }

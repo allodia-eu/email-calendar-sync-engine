@@ -111,6 +111,74 @@ are what this replaces.
 
 Kept internal: `Walk` and the sync passes, the normalizers, and the `Executor` test seam.
 
+## Import (`Email/import`)
+
+`JmapProvider` implements `engine_provider::import::MailImporter` behind the `import` feature
+(`src/import/`), and `Provider::mail_importer` answers it wherever the account takes mail writes
+and a message's bytes: an `uploadUrl`, or the blob extension (`providers.md` → "Import"). An
+account with neither could send no message, so it imports nothing.
+
+- **The bytes travel inline where they fit.** RFC 9404 `Blob/upload` in the same request as the
+  `Email/import` that references each blob as `#b<n>`. On Stalwart this is not an optimisation:
+  it takes about 1,000 requests per account a minute, and one upload per message met that wall
+  within seconds, where inline batches imported 10,000 messages in 541 requests (measured on
+  Stalwart 1.0). A message goes to the `uploadUrl` instead, at most
+  `maxConcurrentUpload` at once, only when it cannot go inline: the account lacks the blob
+  extension, the message is larger than `maxSizeBlobSet`, or its base64 does not fit a request.
+- **A request is sized in its bytes on the wire**, base64 included, against `maxSizeRequest`,
+  since a request over it fails whole (`400`, `limit: maxSizeRequest`), and each call holds at
+  most `maxObjectsInSet` messages (`plan.rs`). Stalwart states `maxSizeBlobSet` as 7,499,488, so
+  that the largest blob's base64 still fits its 10 MB request. The offline suite sweeps message
+  sizes and checks every request it sends is within the limit and leaves no room for another
+  message beyond the budget's fixed slack.
+- **The limits are the session's.** `mail_import_limits` states `maxSizeUpload` (or, with no
+  `uploadUrl`, `maxSizeBlobSet`) and `maxMailboxesPerEmail` (`null` is no limit, RFC 8621
+  §1.3.1); `MailImportLimits::check` refuses a message over either before anything is sent.
+- **Each message is answered on its own** (`wire.rs`): `created` is stored, with the keywords and
+  `receivedAt` asked for kept (RFC 8621 §4.8 stores both as given; Stalwart keeps the time to the
+  second, the engine's precision); `alreadyExists` with its `existingId` is already there, a link
+  (RFC 8621 allows a server to refuse duplicates; **Stalwart never does**, so this arm is offline
+  only), and without the id it may be there (`requires_confirmation`: find it, do not resend);
+  `invalidEmail`, `tooLarge`, `tooManyMailboxes` and `tooManyKeywords` are `item_unavailable`;
+  the target's own state is its named `TargetRefusal` (`overQuota`, as a `SetError` or a method
+  error, is `StorageFull`; `invalidProperties` naming only `mailboxIds` is `NoSuchContainer`;
+  `forbidden` is `ReadOnlyContainer`); `blobNotFound` is retryable; a message named nowhere, or
+  a `serverPartialFail`, may be stored (`requires_confirmation`).
+- **A refused blob is its message's cause.** RFC 9404 refuses a blob on its own (`notCreated`),
+  and Stalwart then fails the whole `Email/import` with `invalidResultReference`. Only that
+  error says the other messages of the call were not stored, so only then are they answered
+  retryable; any other failure of the call (a `serverPartialFail`, a missing answer) says they
+  may be. Stalwart refuses a malformed `Blob/upload` as a whole method (`invalidArguments`,
+  captured in `email_import_blob_refused_response.json`), so then every message of the call
+  carries that refusal.
+- **The upload quota is a throttle that ends the batch.** A blob's `overQuota` from `Blob/upload`
+  is the upload quota, `RateLimited` (unlike `Email/import`'s, which is the account's storage),
+  and so is a `429` from the `uploadUrl`. Either reaches every message after it, as a refused
+  credential does: the uploads stop, nothing more is sent, and every message not yet answered
+  is `engine_provider::import::not_sent`, which carries the wait.
+- **A request that fails whole ends the batch.** Its messages are answered by whether it may have
+  reached the server, and every later message by `not_sent`. An upload that fails stored no
+  message, whatever the transport says. A failure's detail names its status or method error,
+  never the server's text.
+- **The import cursor is the account's `Email` state**, read in one request beside a
+  `Mailbox/get` that says the mailbox exists (`TargetRefusal::NoSuchContainer` when it does
+  not, as on IMAP). A delta from it lists what was stored in any mailbox. Its failure names its
+  code, never the server's text.
+- **Mailboxes are created by `MailboxWrites::edit_mailbox`**, the one `Mailbox/set` path; the
+  importer files into ids it is given.
+- **Stalwart's upload quota** (1,000 blobs or 50 MB per account, counted for an hour, blobs
+  imported or not) is not in the session. Past it, the `uploadUrl` answers `429` with a
+  `Retry-After` to the oldest blob's expiry, which reaches the host as `RateLimited` with that
+  wait: the shared funnel absorbs only stated waits up to five seconds. Its `RateLimit-Policy`
+  (`blob-upload-*` against `requests`) is not read: both are `RateLimited` with the server's own
+  wait, and naming which limit would need a neutral vocabulary every adapter shares.
+
+Live: `tests/live_import.rs` runs the shared conformance check as the scratch account `carol@`,
+then one message into two mailboxes with a custom keyword, a 7.6 MB message by the upload URL, a
+message refused for a mailbox that does not exist beside them, and one over
+`maxMailboxesPerEmail`, all read back from the import cursor and byte-compared. The 7.6 MB message
+counts against the upload quota for an hour, so the suite can run about six times an hour.
+
 ## JMAP specifics implemented
 
 - **The session's `maxConcurrentRequests` is a number the server states, so it is

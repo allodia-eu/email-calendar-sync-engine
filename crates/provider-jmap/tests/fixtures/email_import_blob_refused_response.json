@@ -1,0 +1,21 @@
+{
+  "methodResponses": [
+    [
+      "error",
+      {
+        "type": "invalidArguments",
+        "description": "Failed to decode base64 data at line 1 column 85"
+      },
+      "0"
+    ],
+    [
+      "error",
+      {
+        "type": "invalidResultReference",
+        "description": "blobId reference \"b0\" not found."
+      },
+      "1"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}

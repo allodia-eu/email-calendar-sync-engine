@@ -1,0 +1,50 @@
+{
+  "methodResponses": [
+    [
+      "Blob/upload",
+      {
+        "accountId": "e",
+        "created": {
+          "b1": {
+            "id": "edwgbgeana1nyn1bss0nbkvxt7i2spauwymp0bm0igmw0ybcef1oqbfk97inqbq",
+            "type": "message/rfc822",
+            "size": 243
+          },
+          "b0": {
+            "id": "ed2lyjuutzi773n1u7gcll3oeyqxonsvb39muyplnedyg3kxrpsvqbfk97inqbq",
+            "type": "message/rfc822",
+            "size": 243
+          }
+        }
+      },
+      "0"
+    ],
+    [
+      "Email/import",
+      {
+        "accountId": "e",
+        "oldState": "s22cq",
+        "newState": "s0ecq",
+        "created": {
+          "m0": {
+            "id": "2qaaaahe",
+            "threadId": "he",
+            "blobId": "cd2lyjuutzi773n1u7gcll3oeyqxonsvb39muyplnedyg3kxrpsvqbaa2qaq",
+            "size": 243
+          }
+        },
+        "notCreated": {
+          "m1": {
+            "type": "invalidProperties",
+            "description": "Mailbox bzzzzzz does not exist.",
+            "properties": [
+              "mailboxIds"
+            ]
+          }
+        }
+      },
+      "1"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}

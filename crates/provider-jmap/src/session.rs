@@ -27,6 +27,7 @@ use engine_provider::{OverrideSurvival, SharedAccounts, StoreDomains, WriteGuard
 use reqwest::Url;
 use serde_json::Value;
 
+pub use crate::session_limits::CoreLimits;
 use crate::{
     error::JmapError,
     request::capability,
@@ -56,55 +57,6 @@ pub enum SessionUrlPolicy {
     TrustAdvertised,
 }
 
-/// Server limits the client must respect when batching (RFC 8620 §1.5 core
-/// capability).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CoreLimits {
-    /// Max objects fetchable in a single `/get` (`maxObjectsInGet`).
-    pub max_objects_in_get: usize,
-    /// Max objects settable in a single `/set` (`maxObjectsInSet`).
-    pub max_objects_in_set: usize,
-    /// Max method calls in one request (`maxCallsInRequest`).
-    pub max_calls_in_request: usize,
-    /// Max requests the server will accept at once (`maxConcurrentRequests`).
-    ///
-    /// RFC 8620 §2 scopes this to the API endpoint, and defines no companion limit for
-    /// the download endpoint — but a server is free to apply one number to both, and
-    /// Stalwart does: exceeding it on a blob download is refused with a `400`
-    /// `urn:ietf:params:jmap:error:limit`, not queued. So this is what bounds a
-    /// concurrent body warm too. It defaults to `1` rather than to a guess, because the
-    /// cost of being wrong is asymmetric — too narrow is slow, too wide is refused
-    /// requests.
-    ///
-    /// Reading it rather than picking a number is what makes this right on both servers
-    /// seen so far. Stalwart says 4, and a hosted deployment refuses the downloads beyond it
-    /// with that `400`. Fastmail says 10 and queues rather than refuses, and paces an
-    /// account's downloads at about 25 a second whatever the width: measured over 500
-    /// uncached messages at each of 5, 10, 20, 50 and 100 in flight, on HTTP/2 and HTTP/1.1,
-    /// the rate stayed at 25 and each request simply waited longer. So a width past the
-    /// advertised number is refused on one server and buys nothing on the other.
-    ///
-    /// A Fastmail measurement taken through a download URL rebased onto the API origin is
-    /// not a measurement of downloads: that origin answers `200` with an HTML page for the
-    /// download path, which is quick. Fastmail serves blobs from an origin of its own, and this
-    /// adapter downloads from exactly the URL Fastmail advertised: it rewrites a template onto
-    /// the connection only when the template is on the API's own origin (`rebase_template`).
-    pub max_concurrent_requests: usize,
-}
-
-impl Default for CoreLimits {
-    fn default() -> Self {
-        // Conservative RFC-floor-ish fallbacks if the server omits the core
-        // capability (it never should). Keeps batching correct, just smaller.
-        Self {
-            max_objects_in_get: 100,
-            max_objects_in_set: 100,
-            max_calls_in_request: 16,
-            max_concurrent_requests: 1,
-        }
-    }
-}
-
 /// A parsed, connection-resolved JMAP session.
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -117,6 +69,9 @@ pub struct Session {
     /// Every capability URN the server lists (`capabilities`).
     pub(crate) server_capabilities: BTreeSet<String>,
     pub(crate) max_participants_per_event: Option<usize>,
+    /// What the mail account states about the messages stored in it; only an import reads it.
+    #[cfg(feature = "import")]
+    pub(crate) mail_limits: crate::session_limits::MailLimits,
     /// Every account the session lists — the credential's own and each shared with it —
     /// or `None` when it carries no `accounts` map at all.
     pub(crate) accounts: Option<Vec<SessionAccount>>,
@@ -318,6 +273,12 @@ impl Session {
             .and_then(Value::as_object)
             .map(|caps| caps.keys().cloned().collect())
             .unwrap_or_default();
+        #[cfg(feature = "import")]
+        let mail_limits = crate::session_limits::mail_limits(
+            value,
+            mail_account_id.as_ref().map(JmapAccountId::as_str),
+            blob_get,
+        );
 
         Ok(Self {
             api_url,
@@ -328,6 +289,8 @@ impl Session {
                 value,
                 calendar_account_id.as_ref().map(JmapAccountId::as_str),
             ),
+            #[cfg(feature = "import")]
+            mail_limits,
             accounts,
             served,
             limits,

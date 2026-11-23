@@ -336,3 +336,34 @@ fn a_provider_that_cannot_import_answers_none() {
 
     assert!(importer_of(&plain).is_none());
 }
+
+/// A message the batch never sent carries a throttle (with its wait) or a refused credential,
+/// which reach every message; any other ending was about the exchange or another message, so
+/// the unsent one is plainly retryable, and never may be stored or unavailable.
+#[test]
+fn a_message_the_batch_never_sent_carries_the_batch_s_reason_and_wait() {
+    let wait = Some(std::time::Duration::from_secs(1206));
+    let throttled = super::not_sent(&ProviderError::rate_limited("x", wait.map(Into::into)));
+    assert_eq!(throttled.class(), FailureClass::RateLimited);
+    assert_eq!(throttled.retry_after(), wait.map(Into::into));
+
+    let refused = super::not_sent(&ProviderError::authentication("x"));
+    assert_eq!(refused.class(), FailureClass::Authentication);
+
+    for about_one_message in [
+        ProviderError::needs_confirmation("x"),
+        ProviderError::item_unavailable("x"),
+    ] {
+        let unsent = super::not_sent(&about_one_message);
+        assert_eq!(unsent.class(), FailureClass::Retryable, "{unsent}");
+        assert!(!unsent.requires_confirmation() && !unsent.is_item_unavailable());
+    }
+    let unsent = super::not_sent(&ProviderError::permanent("a secret subject"));
+    assert_eq!(
+        unsent.class(),
+        FailureClass::Retryable,
+        "about the exchange, not this message"
+    );
+    assert!(unsent.detail().starts_with("not sent"), "{unsent}");
+    assert!(!unsent.detail().contains("secret"), "{unsent}");
+}

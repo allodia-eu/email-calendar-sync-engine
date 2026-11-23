@@ -74,7 +74,7 @@ impl JmapProvider {
     }
 
     /// Wraps an executor, snapshotting its advertised capabilities.
-    fn with_executor(executor: Box<dyn Executor>) -> Self {
+    pub(crate) fn with_executor(executor: Box<dyn Executor>) -> Self {
         let capabilities = executor.session().capabilities();
         Self {
             executor,
@@ -373,6 +373,16 @@ impl Provider for JmapProvider {
     /// The session's shared accounts, each asked what it holds (`crate::shared`).
     async fn list_shared_accounts(&self) -> ProviderResult<Vec<SharedAccount>> {
         Ok(crate::shared::list(self.executor.as_ref()).await?)
+    }
+
+    /// JMAP imports by `Email/import` (`crate::import`) into an account that takes mail writes
+    /// and blobs (an upload URL, or the blob extension), so a host holding this adapter as a
+    /// `dyn Provider` reaches it without knowing the adapter. An account that takes no blob has
+    /// no way to send a message's bytes, so it imports nothing.
+    #[cfg(feature = "import")]
+    fn mail_importer(&self) -> Option<&dyn engine_provider::import::MailImporter> {
+        let session = self.executor.session();
+        (self.capabilities.mail_writes() && crate::import::takes_blobs(session)).then_some(self)
     }
 
     async fn report_message(

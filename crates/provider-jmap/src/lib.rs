@@ -58,6 +58,8 @@ mod executor;
 mod fetch;
 mod fetch_scope;
 mod identity;
+#[cfg(feature = "import")]
+mod import;
 mod json;
 mod mail;
 mod mailbox_write;

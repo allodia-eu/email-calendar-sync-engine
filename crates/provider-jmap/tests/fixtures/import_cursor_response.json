@@ -1,0 +1,29 @@
+{
+  "methodResponses": [
+    [
+      "Mailbox/get",
+      {
+        "accountId": "e",
+        "state": "s0ecq",
+        "list": [
+          {
+            "id": "ec"
+          }
+        ],
+        "notFound": []
+      },
+      "0"
+    ],
+    [
+      "Email/get",
+      {
+        "accountId": "e",
+        "state": "s0ecq",
+        "list": [],
+        "notFound": []
+      },
+      "1"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}
