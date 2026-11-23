@@ -242,7 +242,8 @@ async fn a_windowed_backfill_fetches_only_the_in_window_uids() {
     let upserted: usize = chunks.iter().map(|c| c.changed.len()).sum();
     assert_eq!(upserted, 3, "exactly the three in-window messages");
     let sent = written(&recorded);
-    assert!(sent.contains("UID SEARCH SINCE 1-Jan-2026"));
+    // A day before the floor: the server's day can be a day off the UTC day the engine judges by.
+    assert!(sent.contains("UID SEARCH SINCE 31-Dec-2025"), "{sent}");
     assert!(
         !sent.contains("UID FETCH 1:"),
         "out-of-window UIDs never fetched"

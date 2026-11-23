@@ -264,12 +264,42 @@ is authoritative for the `provider-caldav` calendar client.
   `HIGHESTMODSEQ` a server reports without that capability is not trusted for this. Mail
   that aged out of a sync-depth window is dropped on the next pass that finds a change, as
   on the QRESYNC path.
+- **Widening a folder by band (`band.rs`).** A pass asked for more than its folder's cursor
+  covers runs its delta, then `widen_email`: one `UID SEARCH UID 1:<UIDNEXT−1> SINCE <day before
+  the new floor> BEFORE <day after the old floor>` (`SINCE` left out for a band reaching the whole
+  history, `transport_search::DatedSearch`), whose UIDs are fetched in the cold backfill's
+  descending groups as additive chunks that tombstone nothing. The UID bound is the kept cursor's
+  `UIDNEXT`, so mail arriving during the band comes through the next delta. Each group checkpoints
+  a **band watermark**, `;w<low>`, beside the kept cursor; the last chunk advances to the kept
+  cursor alone, so the `UIDNEXT` and `HIGHESTMODSEQ` the band started from replay every change made
+  to band mail afterwards. **The band continues below a watermark only when the caller says the
+  widening resumes** (`Widening::resumes`); otherwise it starts afresh. The watermark rides through
+  every delta on the same UID space, a reconciling one (no QRESYNC) included: the orchestrator asks
+  that delta under the depth the band widens to, so its reconcile lists, and keeps, every message
+  the band stored, and a band on a server without QRESYNC still continues. A `UIDVALIDITY` that
+  moved, or a cursor of an older sync, voids the cursor: the folder is fetched afresh under the
+  wider window.
+- **A window is searched one server day past each end.** `SINCE` and `BEFORE` compare the
+  server's day of a message's `INTERNALDATE`, and Dovecot reads that day in the server's zone,
+  while the engine judges mail by its UTC day (`MailboxWindows::admits`). UTC offsets run from −12
+  to +14 hours, so the two days differ by at most one, in either direction: a server ahead of UTC
+  dates a message near a floor a day later than the engine, one behind it a day earlier. So every
+  window search names the day **before** its floor (`stream::imap_since`, a fresh pass, a reconcile
+  and a band alike), and a band's `BEFORE` the day **after** the floor it stops at. What the extra
+  day adds is dropped by the window: an additive chunk by the caller's filter, a reconcile by the
+  adapter before it is yielded (`stream::within`), its key left present so nothing held is
+  tombstoned for it. Measured on the harness image run with `TZ=Pacific/Kiritimati` (UTC+14) and
+  `TZ=Etc/GMT+12` (UTC−12) (`live_imap_band.rs`): at UTC+14, a band ending exactly `BEFORE` the
+  old floor left out a message the first pass had fetched and the filter dropped; at UTC−12, a
+  first pass `SINCE` the floor missed the floor's first message, which the server dates the day
+  before.
 - **Message limits and UID mode** (RFC 9738, RFC 9586, RFC 9394). A server advertising
   `MESSAGELIMIT=<n>` may refuse or cut short a command over `n` messages. Every sync `FETCH`
   is capped at `n` (`Negotiated::within_message_limit`), including a page whose caller set no
   limit. A window search (`transport_search`) that returns `n` matches, or is refused with
-  `NO [LIMIT]`, is read as cut off: the window is then decided from each message's own
-  `INTERNALDATE`, compared by day as `SINCE` compares, fetched `PARTIAL 1:<n>` at a time
+  `NO [LIMIT]`, is read as cut off: the window (or a band, with its `BEFORE` and its UID bound
+  too) is then decided from each message's own `INTERNALDATE`, compared by day as `SINCE` and
+  `BEFORE` compare, fetched `PARTIAL 1:<n>` at a time
   where `PARTIAL` is advertised and in UID spans of width `n` otherwise. Yahoo is why: it
   answers `UID SEARCH SINCE` with the newest `n` matches by date and a plain `OK`, in either
   mode, and cuts before any other criterion, so narrowing by UID finds nothing more; its
@@ -1130,8 +1160,9 @@ label means is `provider-google`'s (`google.md`, "Mail read over IMAP"), which i
 - **`UID EXPUNGE` requires UIDPLUS** (RFC 4315). A server without it would need a
   plain `EXPUNGE` (which expunges every `\Deleted` message in the mailbox) — also a
   later refinement.
-- **`SEARCH` is implemented only for the sync-depth window** (`UID SEARCH SINCE`, see
-  Sync-depth window above), not yet as a general **provider-search fallback** (the
+- **`SEARCH` is implemented only for the sync-depth window and a widening's band**
+  (`UID SEARCH SINCE`, and `UID SEARCH UID 1:n SINCE … BEFORE …`; see above), not yet as a
+  general **provider-search fallback** (the
   `search-coverage.md` slice). `UID SEARCH SINCE` is parsed for both the classic
   `* SEARCH` and extended `* ESEARCH … ALL` replies; richer criteria and the
   full-text provider fallback remain a later refinement.

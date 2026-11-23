@@ -172,3 +172,18 @@ async fn an_empty_window_is_not_mistaken_for_a_cut_off_one() {
     assert_eq!(uids, [] as [u32; 0]);
     assert!(!sent.contains("FETCH"), "{sent}");
 }
+
+#[test]
+fn a_dated_search_names_only_the_bounds_it_has() {
+    use super::DatedSearch;
+    assert_eq!(DatedSearch::default().criteria(), "ALL");
+    let band = DatedSearch {
+        since: None,
+        before: Some("2-Apr-2026"),
+        highest: Some(39),
+    };
+    assert_eq!(band.criteria(), "UID 1:39 BEFORE 2-Apr-2026");
+    assert!(!band.names(1, None), "a message with no date is in no band");
+    assert!(band.names(39, Some("1-Apr-2026 23:00:00 +0000")));
+    assert!(!band.names(40, Some("1-Apr-2026 23:00:00 +0000")));
+}

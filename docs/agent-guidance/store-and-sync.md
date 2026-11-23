@@ -466,7 +466,7 @@ and the two are different jobs:
   orchestrator, not the adapter, decides whether the next pass continues it**
   (`Widening::resuming`): only when the band had begun toward a depth covering the one asked, so
   a pass under a narrower window in between, which may have dropped band mail, makes the next
-  widening start afresh. A band adapter
+  widening start afresh. A band adapter (IMAP)
   fetches only `Widening::bands()` as additive chunks that tombstone nothing and checkpoint the
   adapter's position in the band beside the kept delta cursor; the default **reopens**, a fresh
   pass over the wider window, which is what the clear used to cost and is still correct for

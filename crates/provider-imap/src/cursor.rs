@@ -56,13 +56,18 @@ pub(crate) struct MailboxCursor {
     pub reconciled: bool,
     /// The [`CURSOR_VERSION`] of the sync that wrote this cursor; `0` before there was one.
     pub version: u32,
+    /// **Band watermark:** while a widening's band is still descending, the lowest UID it has
+    /// committed, so a band the caller resumes continues below it (`crate::band`). `None` once the
+    /// band has ended, or when none ran. Whose band it is, is the caller's to know
+    /// (`Widening::resumes`), so the watermark names no band of its own.
+    pub band_low: Option<u32>,
 }
 
 impl MailboxCursor {
     /// Encodes the cursor as an opaque [`SyncState`]: `v<validity>;n<next>;g<version>`, then
     /// an optional `;m<modseq>` (`HIGHESTMODSEQ` baseline), `;r` when
-    /// [`reconciled`](Self::reconciled), and an optional `;b<low>` (in-progress backfill
-    /// watermark), in that order.
+    /// [`reconciled`](Self::reconciled), an optional `;b<low>` (in-progress backfill
+    /// watermark), and an optional `;w<low>` (in-progress band watermark), in that order.
     pub(crate) fn encode(self) -> SyncState {
         use core::fmt::Write as _;
 
@@ -79,6 +84,9 @@ impl MailboxCursor {
         if let Some(low) = self.backfill_low {
             let _ = write!(s, ";b{low}");
         }
+        if let Some(low) = self.band_low {
+            let _ = write!(s, ";w{low}");
+        }
         SyncState::new(s)
     }
 
@@ -87,6 +95,11 @@ impl MailboxCursor {
     /// each optional and independent, so an older cursor still decodes.
     pub(crate) fn decode(state: &SyncState) -> Option<Self> {
         let rest = state.as_str().strip_prefix('v')?;
+        // `;w<low>` is always the last suffix when present.
+        let (rest, band_low) = match rest.split_once(";w") {
+            Some((head, low)) => (head, Some(low.parse().ok()?)),
+            None => (rest, None),
+        };
         let (validity, rest) = rest.split_once(";n")?;
         // Split off `;b<low>` first (it is always the last suffix), then `;m<modseq>`.
         let (rest, backfill_low) = match rest.split_once(";b") {
@@ -112,6 +125,7 @@ impl MailboxCursor {
             backfill_low,
             reconciled,
             version,
+            band_low,
         })
     }
 
@@ -146,6 +160,7 @@ mod tests {
             backfill_low: None,
             reconciled: false,
             version: CURSOR_VERSION,
+            band_low: None,
         };
         let state = cursor.encode();
         assert_eq!(state.as_str(), "v1234567890;n42;g1");
@@ -161,6 +176,7 @@ mod tests {
             backfill_low: None,
             reconciled: false,
             version: CURSOR_VERSION,
+            band_low: None,
         };
         let state = cursor.encode();
         assert_eq!(state.as_str(), "v1000;n42;g1;m9223372036854775807");
@@ -178,6 +194,7 @@ mod tests {
             backfill_low: Some(120),
             reconciled: false,
             version: CURSOR_VERSION,
+            band_low: None,
         };
         let state = cursor.encode();
         assert_eq!(state.as_str(), "v1000;n500;g1;m77;b120");
@@ -190,6 +207,7 @@ mod tests {
             backfill_low: Some(120),
             reconciled: false,
             version: CURSOR_VERSION,
+            band_low: None,
         };
         let state = no_modseq.encode();
         assert_eq!(state.as_str(), "v1000;n500;g1;b120");
@@ -205,6 +223,7 @@ mod tests {
             backfill_low: Some(9),
             reconciled: true,
             version: CURSOR_VERSION,
+            band_low: None,
         };
         let state = cursor.encode();
         assert_eq!(state.as_str(), "v1000;n42;g1;m7;r;b9");
@@ -224,6 +243,26 @@ mod tests {
         let now = SyncState::new(format!("v1000;n42;g{CURSOR_VERSION};m7;r"));
         assert_eq!(MailboxCursor::current(&now).unwrap().uid_next, 42);
         assert_eq!(MailboxCursor::decode(&SyncState::new("v1000;n42;gx")), None);
+    }
+
+    #[test]
+    fn a_band_cursor_roundtrips_with_its_watermark() {
+        let cursor = MailboxCursor {
+            uid_validity: 1000,
+            uid_next: 500,
+            highest_modseq: Some(77),
+            backfill_low: None,
+            reconciled: true,
+            version: CURSOR_VERSION,
+            band_low: Some(120),
+        };
+        let state = cursor.encode();
+        assert_eq!(state.as_str(), "v1000;n500;g1;m77;r;w120");
+        assert_eq!(MailboxCursor::decode(&state), Some(cursor));
+        assert_eq!(
+            MailboxCursor::decode(&SyncState::new("v1000;n500;wx")),
+            None
+        );
     }
 
     #[test]

@@ -125,6 +125,7 @@ where
         backfill_low: None,
         reconciled: false,
         version: CURSOR_VERSION,
+        band_low: None,
     }
     .encode())
 }
