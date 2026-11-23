@@ -58,8 +58,8 @@ changes.
    states its point of no return: the step after which a failure means "may be stored".
 7. **Credentials are asked for, not held.** One neutral `CredentialSource` is asked on each dial
    or request.
-8. **Windows are neutral and widen without a re-read.** A window is one type for every provider
-   and host. Widening one fetches only what the wider window adds.
+8. **Windows are neutral and widen without a re-read.** A window is one type per domain (mail,
+   calendar) for every provider and host. Widening one fetches only what the wider window adds.
 9. **The three-host test.** Every engine pull request says how it serves a sync host, a transfer
    host, and a direct host, or why one does not apply.
 
