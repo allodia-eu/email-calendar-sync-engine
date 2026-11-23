@@ -3,21 +3,18 @@
 //! makes a host ask the user to sign in again.
 
 use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
-use engine_provider::Draft;
+use engine_provider::{Credential, Draft};
 use engine_rfc5322::assemble_message;
 use time::{OffsetDateTime, macros::datetime};
 
 use super::*;
-use crate::{
-    credentials::Credentials,
-    mock::{MockStream, script, written},
-};
+use crate::mock::{MockStream, script, written};
 
 /// The `SmtpAuth` a TLS submission presents. Taken by reference, so the credential is
 /// built by the caller and outlives it.
-fn auth(credentials: &Credentials) -> SmtpAuth<'_> {
+fn auth(credentials: &Credential) -> SmtpAuth<'_> {
     SmtpAuth {
-        credentials,
+        credential: credentials,
         host: "smtp.test.local",
         port: Some(465),
     }
@@ -66,7 +63,7 @@ async fn send_authenticates_with_auth_plain_over_the_stream() {
         "alice@test.local",
         &recipients(&["bob@test.local"]),
         &message,
-        Some(auth(&Credentials::password("alice@test.local", "s3cret"))),
+        Some(auth(&Credential::password("alice@test.local", "s3cret"))),
         &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
@@ -98,7 +95,7 @@ async fn an_auth_rejection_is_an_authentication_error() {
         "alice@test.local",
         &recipients(&["bob@test.local"]),
         &message,
-        Some(auth(&Credentials::password("alice@test.local", "wrong"))),
+        Some(auth(&Credential::password("alice@test.local", "wrong"))),
         &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
@@ -151,7 +148,7 @@ async fn auth_refused_with(reply: &str) -> ImapError {
         "alice@test.local",
         &recipients(&["bob@test.local"]),
         &message,
-        Some(auth(&Credentials::password("alice@test.local", "pw"))),
+        Some(auth(&Credential::password("alice@test.local", "pw"))),
         &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
@@ -170,7 +167,7 @@ async fn auth_without_esmtp_is_a_protocol_error() {
         "alice@test.local",
         &recipients(&["bob@test.local"]),
         &message,
-        Some(auth(&Credentials::password("user", "pass"))),
+        Some(auth(&Credential::password("user", "pass"))),
         &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await

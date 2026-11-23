@@ -21,7 +21,8 @@ use std::collections::HashSet;
 
 use engine_core::{ids::ProviderKey, mail::MessageMetadata};
 use engine_provider::{
-    Draft, HandOver, HandedOver, ProviderError, ProviderResult, SubmissionReceipt,
+    CredentialProtocol, Draft, HandOver, HandedOver, ProviderError, ProviderResult,
+    SubmissionReceipt,
 };
 use engine_rfc5322::{assemble_filed_message, assemble_message};
 use time::OffsetDateTime;
@@ -33,7 +34,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 
 pub(crate) use crate::smtp_sender::{SmtpSender, resolve_smtp};
 use crate::{
-    credentials::with_renewal,
+    credentials::{sign_in, with_credential},
     deadline,
     error::{ImapError, ImapResult},
     place::{Filing, Placed, append_to_role_folder, place_if_absent, placed_key},
@@ -83,17 +84,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                 let tcp = deadline::connect(addr).await?;
                 self.submit_over(tcp, draft, None, hand_over).await
             }
-            // An `AUTH` refusal comes before `MAIL FROM`, so nothing was sent when the
-            // renewal re-dials: a send is never repeated (`with_renewal`).
+            // An `AUTH` refusal comes before `MAIL FROM`, so nothing was sent when a
+            // replacement re-dials: a send is never repeated (`with_credential`).
             SmtpSender::ImplicitTls {
                 addr,
                 server_name,
                 connector,
                 credentials,
+                origin,
             } => {
                 let sub = Self::prepare(draft)?;
                 let prepared = &sub;
-                let result = with_renewal(credentials.as_ref(), |credentials| async move {
+                let (source, smtp) = (credentials.as_ref(), CredentialProtocol::Smtp);
+                let result = with_credential(source, smtp, origin, |credentials| async move {
+                    sign_in(&credentials)?;
                     let tcp = deadline::connect(addr).await?;
                     let tls = tls_connect(connector, server_name, tcp).await?;
                     let (ehlo, from, to) = (&prepared.ehlo, &prepared.from, &prepared.to);
@@ -108,10 +112,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                 server_name,
                 connector,
                 credentials,
+                origin,
             } => {
                 let sub = Self::prepare(draft)?;
                 let prepared = &sub;
-                let result = with_renewal(credentials.as_ref(), |credentials| async move {
+                let (source, smtp) = (credentials.as_ref(), CredentialProtocol::Smtp);
+                let result = with_credential(source, smtp, origin, |credentials| async move {
+                    sign_in(&credentials)?;
                     let tcp = deadline::connect(addr).await?;
                     // Cleartext STARTTLS handshake, then upgrade the socket and transmit
                     // (authenticating) over the now-established TLS.

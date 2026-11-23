@@ -41,10 +41,10 @@ use engine_core::{
     sync::SyncUpdate,
     version::RevisionTokens,
 };
-use engine_provider::{Draft, DraftCalendar, MailEdit, Provider};
+use engine_provider::{Credential, Draft, DraftCalendar, MailEdit, Provider};
 use engine_store::{ManualClock, StoreRead, WorkerId};
 use engine_sync::{IgnoreCommits, StreamTuning, submit_mail, sync_mail};
-use provider_imap::{Credentials, ImapAccount, ImapConfig, ImapProvider};
+use provider_imap::{ImapAccount, ImapConfig, ImapProvider};
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
 use tokio_rustls::{TlsConnector, client::TlsStream};
@@ -80,7 +80,7 @@ async fn connect(
     let mut config = ImapConfig::new(
         harness.imap_addr.as_str(),
         host,
-        Credentials::password(harness.account.as_str(), harness.password.as_str()),
+        Credential::password(harness.account.as_str(), harness.password.as_str()),
     );
     if submit {
         config = config.with_smtp(harness.smtp_addr.as_str());

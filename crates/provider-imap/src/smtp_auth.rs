@@ -12,10 +12,12 @@
 //! for a bearer token than for a password: a token grants an account's whole mailbox
 //! and is replayable until it expires.
 
+use engine_provider::Credential;
 use tokio::io::{AsyncRead, AsyncWrite};
+use zeroize::Zeroizing;
 
 use crate::{
-    credentials::Credentials,
+    credentials::{SignIn, sign_in},
     error::{ImapError, ImapResult},
     sasl::{self, Mechanism},
     smtp_stream::SmtpStream,
@@ -25,7 +27,7 @@ use crate::{
 /// SASL `OAUTHBEARER` response names (RFC 7628 §3.1). `port` is `None` when the
 /// configured address carried no parsable one, which drops the pair.
 pub(crate) struct SmtpAuth<'a> {
-    pub(crate) credentials: &'a Credentials,
+    pub(crate) credential: &'a Credential,
     pub(crate) host: &'a str,
     pub(crate) port: Option<u16>,
 }
@@ -36,9 +38,10 @@ pub(crate) struct SmtpAuth<'a> {
 /// # Errors
 ///
 /// [`ImapError::Auth`] if the server rejects the credential, or (for a token) if it
-/// advertises no OAuth mechanism; [`ImapError::RateLimited`] if it defers the attempt with a
-/// 4xx other than `432` — the message names what it did offer, because the
-/// usual cause is a token pointed at an account that only takes a password.
+/// advertises no OAuth mechanism; [`ImapError::Bad`] for a credential SMTP cannot present;
+/// [`ImapError::RateLimited`] if it defers the attempt with a 4xx other than `432` — the message
+/// names what it did offer, because the usual cause is a token pointed at an account that only
+/// takes a password.
 pub(crate) async fn authenticate<S>(
     smtp: &mut SmtpStream<S>,
     auth: &SmtpAuth<'_>,
@@ -47,22 +50,20 @@ pub(crate) async fn authenticate<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    match auth.credentials {
-        Credentials::Password { username, password } => {
+    match sign_in(auth.credential)? {
+        SignIn::Password { username, password } => {
             // `AUTH PLAIN` is sent whether or not the server listed it, which is how
             // this path has always behaved; the reply is the answer either way.
-            smtp.write_line(&format!("AUTH PLAIN {}", plain_token(username, password)))
-                .await?;
+            let token = plain_token(username, password);
+            let line = Zeroizing::new(format!("AUTH PLAIN {}", token.as_str()));
+            smtp.write_line(&line).await?;
             let (code, text) = smtp.read_reply().await?;
             if code != 235 {
                 return Err(refusal(code, &text));
             }
             Ok(())
         }
-        Credentials::OAuth2 {
-            username,
-            access_token,
-        } => {
+        SignIn::Token { username, token } => {
             let offered = advertised_mechanisms(extensions);
             let mechanism = sasl::select(offered.iter().copied()).ok_or_else(|| {
                 ImapError::auth(format!(
@@ -74,10 +75,9 @@ where
                     }
                 ))
             })?;
-            let initial =
-                mechanism.initial_response(username, access_token, auth.host, auth.port)?;
-            smtp.write_line(&format!("AUTH {} {initial}", mechanism.atom()))
-                .await?;
+            let initial = mechanism.initial_response(username, token, auth.host, auth.port)?;
+            let line = Zeroizing::new(format!("AUTH {} {}", mechanism.atom(), initial.as_str()));
+            smtp.write_line(&line).await?;
             finish(smtp, mechanism).await
         }
     }
@@ -155,13 +155,14 @@ pub(crate) fn advertised_mechanisms(extensions: &[String]) -> Vec<&str> {
         .collect()
 }
 
-/// The `AUTH PLAIN` SASL token: base64 of `\0user\0password` (RFC 4616).
-fn plain_token(username: &str, password: &str) -> String {
-    let mut credentials = vec![0u8];
+/// The `AUTH PLAIN` SASL token: base64 of `\0user\0password` (RFC 4616). Both copies of the
+/// password it makes are zeroed when dropped.
+fn plain_token(username: &str, password: &str) -> Zeroizing<String> {
+    let mut credentials = Zeroizing::new(vec![0u8]);
     credentials.extend_from_slice(username.as_bytes());
     credentials.push(0);
     credentials.extend_from_slice(password.as_bytes());
-    crate::base64::encode(&credentials)
+    Zeroizing::new(crate::base64::encode(&credentials))
 }
 
 #[cfg(test)]

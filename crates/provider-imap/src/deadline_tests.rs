@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use engine_core::error::FailureClass;
+use engine_provider::Credential;
 use tokio::{
     io::{AsyncWriteExt, duplex},
     net::{TcpListener, TcpStream},
@@ -18,7 +19,6 @@ use tokio_rustls::rustls::pki_types::ServerName;
 
 use super::{BOUNDS, handshake};
 use crate::{
-    credentials::Credentials,
     error::{ImapError, ImapResult},
     mock::{MockStream, script, written},
     smtp::{self, Disposition, SmtpResult},
@@ -113,9 +113,9 @@ async fn a_server_silent_before_the_message_is_handed_over_fails_retryable() {
 #[tokio::test(start_paused = true)]
 async fn a_server_silent_after_auth_fails_retryable() {
     let (stream, recorded) = MockStream::silent_after(script(&[GREETING, EHLO]));
-    let credentials = Credentials::password("alice", "pw");
+    let credentials = Credential::password("alice", "pw");
     let auth = SmtpAuth {
-        credentials: &credentials,
+        credential: &credentials,
         host: "mail.test.local",
         port: Some(465),
     };

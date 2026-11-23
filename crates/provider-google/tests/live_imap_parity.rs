@@ -21,10 +21,10 @@ use engine_core::{
     mail::{Message, ThreadRef},
     sync::SyncWindow,
 };
-use engine_provider::Provider;
+use engine_provider::{Credential, Provider};
 use futures_util::StreamExt;
 use provider_google::{GmailProvider, GoogleClient};
-use provider_imap::{Credentials, ImapAccount, ImapConfig};
+use provider_imap::{ImapAccount, ImapConfig};
 
 fn token() -> Option<String> {
     std::env::var("GOOGLE_ACCESS_TOKEN")
@@ -104,7 +104,7 @@ async fn an_imap_sync_writes_what_the_api_sync_writes() {
     let config = ImapConfig::new(
         "imap.gmail.com:993".to_owned(),
         "imap.gmail.com".to_owned(),
-        Credentials::oauth2(address(&token).await, token.clone()),
+        Credential::bearer_for(address(&token).await, token.clone()),
     );
     let account = ImapAccount::connect(&config, engine_tls::TlsClientConfig::bundled().connector())
         .await

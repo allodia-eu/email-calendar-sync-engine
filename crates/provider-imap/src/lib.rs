@@ -48,12 +48,12 @@
 //! - `mutate` — applying a [`MailEdit`](engine_provider::MailEdit) (`UID STORE`/`MOVE`/`EXPUNGE`)
 //!   to the bound mailbox.
 //! - `filing` — SMTP submission + `APPEND` filing of sent copies and drafts.
-//! - `config` — [`ImapConfig`]: the dial settings (address, TLS server name, [`Credentials`], SMTP
-//!   submission, sync depth, connect observer).
-//! - `credentials` / `sasl` — [`Credentials`] (a password, or an OAuth 2.0 access token) and the
-//!   two SASL mechanisms that carry a token: `OAUTHBEARER` (RFC 7628) and `XOAUTH2`. Which one is
-//!   negotiated from the server's advertised `AUTH=` set, so a host never has to know which
-//!   provider it is talking to.
+//! - `config` — [`ImapConfig`]: the dial settings (address, TLS server name, the
+//!   [`CredentialSource`] asked on every dial, SMTP submission, sync depth, connect observer).
+//! - `credentials` / `sasl` — how a [`Credential`](engine_provider::Credential) (a password, or an
+//!   OAuth 2.0 access token) is asked for and presented, and the two SASL mechanisms that carry a
+//!   token: `OAUTHBEARER` (RFC 7628) and `XOAUTH2`. Which one is negotiated from the server's
+//!   advertised `AUTH=` set, so a host never has to know which provider it is talking to.
 //! - `probe` — [`probe_imap_auth`] / [`probe_smtp_auth`]: what a server accepts, read off its
 //!   pre-authentication `CAPABILITY`/`EHLO` **before** a credential exists. The question account
 //!   setup asks first; no credential is sent, and nothing is attempted that a provider would record
@@ -151,7 +151,15 @@ mod unchanged_tests;
 
 pub use account::ImapAccount;
 pub use config::{ImapConfig, ImapSecurity};
-pub use credentials::{CredentialSource, Credentials};
+/// The trait an account's credentials are asked through, on every dial and every submission.
+/// It is the engine's own [`engine_provider::CredentialSource`], named here too so a host that
+/// wrote `provider_imap::CredentialSource` keeps compiling.
+pub use engine_provider::CredentialSource;
+
+/// What an IMAP or SMTP account signs in with. Now the engine's provider-neutral
+/// [`Credential`](engine_provider::Credential), whose `Bearer` variant replaces `OAuth2`.
+#[deprecated(note = "use `engine_provider::Credential`")]
+pub type Credentials = engine_provider::Credential;
 pub use error::ImapError;
 pub use gmail::{
     GmailFolder, GmailFolderState, GmailMail, GmailMessage, GmailQuery, GmailSources, GmailState,

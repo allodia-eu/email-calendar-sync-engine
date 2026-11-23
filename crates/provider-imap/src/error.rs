@@ -33,8 +33,9 @@ pub enum ImapError {
     #[error("server is limiting sign-ins for this account: {0}")]
     RateLimited(String),
 
-    /// The account's [`CredentialSource`](crate::CredentialSource) could not produce a
-    /// credential, so nothing was dialled. Classified as the source classified it.
+    /// The account's [`CredentialSource`](crate::CredentialSource) did not permit the server,
+    /// had no credential to give, or did not answer within the dial deadline, so nothing was
+    /// dialled. Classified as the source classified it; an unanswered ask is retryable.
     #[error("no credential to sign in with: {0}")]
     Credential(ProviderError),
 

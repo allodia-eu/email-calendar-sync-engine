@@ -22,10 +22,10 @@ use engine_core::{
     sync::{MailboxWindows, SyncState, SyncWindow},
     time::CalendarDate,
 };
-use engine_provider::{EmailChunk, Provider};
+use engine_provider::{Credential, EmailChunk, Provider};
 use futures_util::StreamExt;
 use provider_google::{GmailProvider, GoogleClient};
-use provider_imap::{Credentials, ImapAccount, ImapConfig};
+use provider_imap::{ImapAccount, ImapConfig};
 use serde_json::{Value, json};
 
 const API: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -214,7 +214,7 @@ async fn live_a_pass_reaches_a_deepened_label_and_no_other() {
     let config = ImapConfig::new(
         "imap.gmail.com:993".to_owned(),
         "imap.gmail.com".to_owned(),
-        Credentials::oauth2(address(&token).await, token.clone()),
+        Credential::bearer_for(address(&token).await, token.clone()),
     );
     let account = ImapAccount::connect(&config, engine_tls::TlsClientConfig::bundled().connector())
         .await

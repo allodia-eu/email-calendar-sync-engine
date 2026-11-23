@@ -20,8 +20,8 @@ use engine_core::{
     mail::Mailbox,
     sync::SyncUpdate,
 };
-use engine_provider::Provider;
-use provider_imap::{Credentials, ImapAccount, ImapConfig, ImapProvider};
+use engine_provider::{Credential, Provider};
+use provider_imap::{ImapAccount, ImapConfig, ImapProvider};
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
 /// A live IMAP server this suite can run against.
@@ -119,7 +119,7 @@ async fn dial(
     let config = ImapConfig::new(
         addr.as_str(),
         host,
-        Credentials::password(server.account, server.password),
+        Credential::password(server.account, server.password),
     );
     let mut account = ImapAccount::connect(&config, no_verify_connector())
         .await

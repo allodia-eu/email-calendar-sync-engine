@@ -1,7 +1,8 @@
 # Design note: one provider-neutral `CredentialSource`
 
-Status: accepted. The direction is principle 7 of `north-star.md`: **credentials are asked for,
-not held.** The owner settled every open question on 2026-11-23 ("Decisions", at the end), and
+Status: accepted; step 1 of "Phasing" has landed (`engine_provider::credential`, and IMAP/SMTP
+on it). The direction is principle 7 of `north-star.md`: **credentials are asked for, not
+held.** The owner settled every open question on 2026-11-23 ("Decisions", at the end), and
 the body below states each decision where it applies. One `CredentialSource` is a "Next" step in
 `north-star.md` ("Direction"); the capability-trait split comes after it and the query seam
 (`north-star.md`, "Key Decisions").
@@ -363,10 +364,17 @@ These live in `mail-calendar/crates/mailcal-account`, read-only here:
 
 ## Phasing
 
-1. **Slice 1: the neutral types, adopted by IMAP/SMTP.** `engine-provider::credential` plus the
-   replacement helper, with `provider-imap` moved onto them. IMAP goes first because it already has
-   exactly these semantics: the slice proves the neutral trait against existing tests and live
-   servers, and changes no request shape. The sync host re-implements `OAuthCredentialSource`.
+1. **Slice 1: the neutral types, adopted by IMAP/SMTP.** *Landed.* `engine-provider::credential`
+   plus the replacement helper, with `provider-imap` moved onto them. IMAP goes first because it
+   already has exactly these semantics: the slice proves the neutral trait against existing tests
+   and live servers, and changes no request shape. The sync host re-implements
+   `OAuthCredentialSource`. As built: the helper is `engine_provider::with_credential(source,
+   request, ask_limit, is_refusal, attempt)`, which also checks `permits` before the first ask
+   (a refusal is `Permanent`, and nothing is attempted); a source's own failure reaches the
+   adapter as a `CredentialFailure`, which the adapter converts into its error with the class
+   kept. A bearer token is built with `Credential::bearer(token)`, or `bearer_for(username,
+   token)` where SASL needs the account. IMAP and SMTP origins use RFC 8314's service names as
+   the scheme: `imaps`/`imap` (`STARTTLS`), `submissions`/`submission` (`STARTTLS`).
 2. **The authorization-identity variant for IMAP** (`AUTHENTICATE PLAIN` with an `authzid`), for
    transfer hosts. It is a new request shape, so the live Dovecot master-user test comes first and
    the variant ships only once that passes.

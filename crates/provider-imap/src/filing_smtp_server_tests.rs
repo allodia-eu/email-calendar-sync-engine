@@ -15,7 +15,10 @@ use std::{
 };
 
 use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
-use engine_provider::Draft;
+use engine_provider::{
+    Credential, CredentialProtocol, CredentialRequest, CredentialSource, CredentialSubject, Draft,
+    Origin,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     net::TcpListener,
@@ -29,7 +32,6 @@ use super::{SmtpSender, resolve_smtp};
 use crate::{
     ImapProvider,
     config::ImapConfig,
-    credentials::{CredentialSource, Credentials},
     mock::{MockStream, script},
     sasl::Mechanism,
     transport::Connection,
@@ -210,7 +212,7 @@ async fn submit_over_implicit_tls_dials_wraps_and_delivers() {
     let config = ImapConfig::new(
         "h:993",
         "127.0.0.1",
-        crate::credentials::Credentials::password("alice", "pw"),
+        engine_provider::Credential::password("alice", "pw"),
     )
     .with_smtp_tls(format!("127.0.0.1:{port}"), "127.0.0.1");
     let sender = resolve_smtp(
@@ -235,7 +237,7 @@ async fn submit_over_starttls_negotiates_upgrades_and_delivers() {
     let config = ImapConfig::new(
         "h:993",
         "127.0.0.1",
-        crate::credentials::Credentials::password("alice", "pw"),
+        engine_provider::Credential::password("alice", "pw"),
     )
     .with_smtp_starttls(format!("127.0.0.1:{port}"), "127.0.0.1");
     let sender = resolve_smtp(
@@ -284,33 +286,61 @@ async fn oauth_server(
     (cert, port, log)
 }
 
-/// Hands out the scripted tokens in turn, one per `credentials` call, and the refreshed one
-/// on `renew`.
+/// Hands out the scripted tokens in turn, one per `credential` call, and the refreshed one
+/// on `replace`. Records what each ask was told.
 #[derive(Debug)]
 struct Tokens {
+    subject: CredentialSubject,
     issued: Mutex<VecDeque<&'static str>>,
     refreshed: Option<&'static str>,
+    asked: Arc<Mutex<Vec<(CredentialProtocol, Origin)>>>,
+}
+
+impl Tokens {
+    fn new(issued: &[&'static str], refreshed: Option<&'static str>) -> Self {
+        Self {
+            subject: CredentialSubject::new("alice"),
+            issued: Mutex::new(issued.iter().copied().collect()),
+            refreshed,
+            asked: Arc::default(),
+        }
+    }
+
+    fn record(&self, request: &CredentialRequest<'_>) {
+        let asked = (request.protocol, request.origin.clone());
+        self.asked.lock().unwrap().push(asked);
+    }
 }
 
 #[async_trait::async_trait]
 impl CredentialSource for Tokens {
-    async fn credentials(&self) -> Result<Credentials, engine_provider::ProviderError> {
+    fn subject(&self) -> &CredentialSubject {
+        &self.subject
+    }
+
+    async fn credential(
+        &self,
+        request: &CredentialRequest<'_>,
+    ) -> Result<Credential, engine_provider::ProviderError> {
+        self.record(request);
         let token = self
             .issued
             .lock()
             .unwrap()
             .pop_front()
             .expect("a scripted token");
-        Ok(Credentials::oauth2("alice@test.local", token))
+        Ok(Credential::bearer_for("alice@test.local", token))
     }
 
-    async fn renew(
+    async fn replace(
         &self,
-        _refused: &Credentials,
-    ) -> Result<Option<Credentials>, engine_provider::ProviderError> {
+        _refused: &Credential,
+        request: &CredentialRequest<'_>,
+    ) -> Result<Option<Credential>, engine_provider::ProviderError> {
+        self.record(request);
         Ok(self
             .refreshed
-            .map(|token| Credentials::oauth2("alice@test.local", token)))
+            .map(|token| Credential::bearer_for("alice@test.local", token)))
     }
 }
 
@@ -335,7 +365,7 @@ fn auth_line(token: &str, port: u16) -> String {
     let blob = Mechanism::OAuthBearer
         .initial_response("alice@test.local", token, "127.0.0.1", Some(port))
         .expect("clean credential");
-    format!("AUTH OAUTHBEARER {blob}")
+    format!("AUTH OAUTHBEARER {}", blob.as_str())
 }
 
 #[tokio::test]
@@ -344,10 +374,7 @@ async fn each_submission_asks_the_source_so_a_later_send_presents_the_new_token(
     let provider = token_provider(
         cert,
         port,
-        Tokens {
-            issued: Mutex::new(VecDeque::from(["first-token", "second-token"])),
-            refreshed: None,
-        },
+        Tokens::new(&["first-token", "second-token"], None),
     );
 
     provider
@@ -382,10 +409,7 @@ async fn a_refused_token_is_renewed_once_before_anything_is_sent() {
     let provider = token_provider(
         cert,
         port,
-        Tokens {
-            issued: Mutex::new(VecDeque::from(["expired-token"])),
-            refreshed: Some("refreshed-token"),
-        },
+        Tokens::new(&["expired-token"], Some("refreshed-token")),
     );
 
     let receipt = provider
@@ -403,6 +427,33 @@ async fn a_refused_token_is_renewed_once_before_anything_is_sent() {
         vec![
             auth_line("expired-token", port),
             auth_line("refreshed-token", port)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn every_ask_names_smtp_and_the_submission_servers_tls_name() {
+    let (cert, port, _auths) =
+        oauth_server(vec!["535 5.7.8 token expired\r\n", "235 2.7.0 ok\r\n"]).await;
+    let source = Tokens::new(&["expired-token"], Some("refreshed-token"));
+    let asked = Arc::clone(&source.asked);
+    let provider = token_provider(cert, port, source);
+
+    provider
+        .submit(
+            &draft(),
+            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
+        )
+        .await
+        .expect("the replacement sends");
+
+    // The submission server, not the IMAP one the account reads from.
+    let origin = Origin::new("submissions", "127.0.0.1", port);
+    assert_eq!(
+        *asked.lock().unwrap(),
+        [
+            (CredentialProtocol::Smtp, origin.clone()),
+            (CredentialProtocol::Smtp, origin),
         ]
     );
 }

@@ -35,9 +35,9 @@ use engine_core::{
     mail::EmailAddress,
     sync::{SyncUpdate, SyncWindow},
 };
-use engine_provider::{Draft, Provider};
+use engine_provider::{Credential, Draft, Provider};
 use futures_util::StreamExt as _;
-use provider_imap::{Credentials, ImapAccount, ImapConfig};
+use provider_imap::{ImapAccount, ImapConfig};
 use tokio_rustls::TlsConnector;
 
 /// The account under test, from the environment; `None` skips.
@@ -71,7 +71,7 @@ impl Target {
         ImapConfig::new(
             format!("{}:{}", self.host, self.port),
             self.host.clone(),
-            Credentials::oauth2(self.user.clone(), token),
+            Credential::bearer_for(self.user.clone(), token),
         )
     }
 }

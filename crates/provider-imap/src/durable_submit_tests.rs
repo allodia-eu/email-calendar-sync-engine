@@ -120,7 +120,7 @@ impl Server {
         let config = ImapConfig::new(
             "h:993",
             "127.0.0.1",
-            crate::credentials::Credentials::password("alice", "pw"),
+            engine_provider::Credential::password("alice", "pw"),
         )
         .with_smtp_tls(format!("127.0.0.1:{}", self.port), "127.0.0.1");
         let connector = trusting_connector(self.cert.clone());

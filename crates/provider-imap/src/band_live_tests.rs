@@ -21,12 +21,12 @@ use engine_core::{
     time::UtcDateTime,
 };
 use engine_provider::{
-    MailboxEdit, MailboxWrites,
+    Credential, MailboxEdit, MailboxWrites,
     import::{MailImporter, MessageImport},
 };
 
 use crate::{
-    Credentials, ImapAccount, ImapConfig,
+    ImapAccount, ImapConfig,
     capability::{Extension, Negotiated},
     transport_search::DatedSearch,
 };
@@ -68,7 +68,7 @@ async fn the_message_limit_fallback_finds_what_the_servers_own_dated_search_find
             continue;
         };
         let host = addr.rsplit_once(':').map_or("localhost", |(host, _)| host);
-        let config = ImapConfig::new(addr.as_str(), host, Credentials::password(user, password));
+        let config = ImapConfig::new(addr.as_str(), host, Credential::password(user, password));
         let imap = ImapAccount::connect(
             &config,
             engine_tls::TlsClientConfig::dangerous_accept_any().connector(),

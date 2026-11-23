@@ -18,9 +18,9 @@ use std::{
 };
 
 use engine_core::ids::{AccountId, MailboxId};
-use engine_provider::{ConnectObserver, ConnectStep, Provider};
+use engine_provider::{ConnectObserver, ConnectStep, Credential, Provider};
 use futures_util::future::join_all;
-use provider_imap::{Credentials, DEFAULT_IDLE_KEEPALIVE, ImapAccount, ImapConfig};
+use provider_imap::{DEFAULT_IDLE_KEEPALIVE, ImapAccount, ImapConfig};
 use stalwart_harness::Harness;
 
 /// The account's budget (`provider_imap`'s `DEFAULT_MAX_CONNECTIONS`), restated because the
@@ -49,7 +49,7 @@ fn config(harness: &Harness, logins: &Arc<Logins>) -> ImapConfig {
     ImapConfig::new(
         harness.imap_addr.as_str(),
         host,
-        Credentials::password(harness.account.as_str(), harness.password.as_str()),
+        Credential::password(harness.account.as_str(), harness.password.as_str()),
     )
     .with_connect_observer(Arc::clone(logins) as Arc<dyn ConnectObserver>)
 }

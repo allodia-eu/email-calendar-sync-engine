@@ -7,7 +7,7 @@
 //! accepts the bytes — that is `tests/live_imap_oauth.rs`.
 
 use engine_core::{error::FailureClass, ids::MessageIdHeader, mail::EmailAddress};
-use engine_provider::Draft;
+use engine_provider::{Credential, Draft};
 use engine_rfc5322::assemble_message;
 use time::macros::datetime;
 
@@ -25,7 +25,7 @@ const CHALLENGE: &str = "334 eyJzdGF0dXMiOiJpbnZhbGlkX3Rva2VuIiwic2NoZW1lcyI6ImJ
 /// returning the outcome and the bytes the client wrote.
 async fn submit(
     server_script: Vec<u8>,
-    credentials: &Credentials,
+    credentials: &Credential,
 ) -> (ImapResult<crate::smtp::SmtpResult>, String) {
     let draft = Draft::new(
         MessageIdHeader::new("smtp-oauth@host").unwrap(),
@@ -43,7 +43,7 @@ async fn submit(
         &["bob@example.com".to_owned()],
         &message,
         Some(SmtpAuth {
-            credentials,
+            credential: credentials,
             host: "smtp.example.com",
             port: Some(465),
         }),
@@ -59,7 +59,7 @@ const DELIVERY: &str =
 
 #[tokio::test]
 async fn a_token_authenticates_with_the_mechanism_the_server_advertised() {
-    let credentials = Credentials::oauth2("alice@example.com", "ya29.token");
+    let credentials = Credential::bearer_for("alice@example.com", "ya29.token");
     let (outcome, sent) = submit(
         script(&[
             "220 mail ESMTP\r\n",
@@ -85,7 +85,7 @@ async fn a_token_authenticates_with_the_mechanism_the_server_advertised() {
         )
         .expect("clean credential");
     assert!(
-        sent.contains(&format!("AUTH OAUTHBEARER {expected}\r\n")),
+        sent.contains(&format!("AUTH OAUTHBEARER {}\r\n", expected.as_str())),
         "{sent}"
     );
     // The token is never in the clear, and never as a password.
@@ -102,7 +102,7 @@ async fn a_microsoft_style_server_gets_the_vendor_mechanism() {
     // The fallback half: Exchange Online documents only `XOAUTH2` — and has switched
     // basic auth off — so a server without the preferred mechanism must not be left
     // unauthenticated.
-    let credentials = Credentials::oauth2("alice@example.com", "tok");
+    let credentials = Credential::bearer_for("alice@example.com", "tok");
     let (outcome, sent) = submit(
         script(&[
             "220 mail ESMTP\r\n",
@@ -119,7 +119,7 @@ async fn a_microsoft_style_server_gets_the_vendor_mechanism() {
 
 #[tokio::test]
 async fn a_rejected_token_is_acknowledged_and_reported_with_the_servers_reason() {
-    let credentials = Credentials::oauth2("alice@example.com", "expired");
+    let credentials = Credential::bearer_for("alice@example.com", "expired");
     let (outcome, sent) = submit(
         script(&[
             "220 mail ESMTP\r\n",
@@ -146,7 +146,7 @@ async fn a_rejected_token_is_acknowledged_and_reported_with_the_servers_reason()
 
 #[tokio::test]
 async fn a_rejected_xoauth2_token_is_acknowledged_with_an_empty_line() {
-    let credentials = Credentials::oauth2("alice@example.com", "expired");
+    let credentials = Credential::bearer_for("alice@example.com", "expired");
     let (outcome, sent) = submit(
         script(&[
             "220 mail ESMTP\r\n",
@@ -165,7 +165,7 @@ async fn a_rejected_xoauth2_token_is_acknowledged_with_an_empty_line() {
 async fn a_flat_refusal_with_no_challenge_is_still_an_authentication_error() {
     // Not every server describes the rejection: some answer the `AUTH` line with a bare
     // `535`. There is nothing to acknowledge then, and nothing to wait for.
-    let credentials = Credentials::oauth2("alice@example.com", "expired");
+    let credentials = Credential::bearer_for("alice@example.com", "expired");
     let (outcome, sent) = submit(
         script(&[
             "220 mail ESMTP\r\n",
@@ -185,7 +185,7 @@ async fn a_flat_refusal_with_no_challenge_is_still_an_authentication_error() {
 /// send the user through a sign-in that cannot help. The same rule as `AUTH PLAIN`.
 #[tokio::test]
 async fn a_deferred_token_is_rate_limited_not_a_bad_credential() {
-    let credentials = Credentials::oauth2("alice@example.com", "tok");
+    let credentials = Credential::bearer_for("alice@example.com", "tok");
     let (outcome, _) = submit(
         script(&[
             "220 mail ESMTP\r\n",
@@ -201,7 +201,7 @@ async fn a_deferred_token_is_rate_limited_not_a_bad_credential() {
 
 #[tokio::test]
 async fn a_server_offering_no_oauth_mechanism_says_what_it_does_offer() {
-    let credentials = Credentials::oauth2("alice@example.com", "tok");
+    let credentials = Credential::bearer_for("alice@example.com", "tok");
     let (outcome, sent) = submit(
         script(&["220 mail ESMTP\r\n", "250-mail\r\n250 AUTH PLAIN LOGIN\r\n"]),
         &credentials,
@@ -224,7 +224,7 @@ async fn a_server_offering_no_oauth_mechanism_says_what_it_does_offer() {
 async fn a_challenge_that_says_nothing_still_produces_the_servers_status_code() {
     // Some servers send the `334` with no payload. There is then nothing to decode, and
     // the error must not read as though a reason were attached.
-    let credentials = Credentials::oauth2("alice@example.com", "expired");
+    let credentials = Credential::bearer_for("alice@example.com", "expired");
     let (outcome, sent) = submit(
         script(&[
             "220 mail ESMTP\r\n",
@@ -247,7 +247,7 @@ async fn a_challenge_that_says_nothing_still_produces_the_servers_status_code() 
 
 #[tokio::test]
 async fn an_smtp_server_advertising_no_mechanisms_at_all_still_explains_itself() {
-    let credentials = Credentials::oauth2("alice@example.com", "tok");
+    let credentials = Credential::bearer_for("alice@example.com", "tok");
     let (outcome, _sent) = submit(
         script(&["220 mail ESMTP\r\n", "250-mail\r\n250 PIPELINING\r\n"]),
         &credentials,

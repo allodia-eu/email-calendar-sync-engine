@@ -27,7 +27,7 @@ fn oauthbearer_builds_the_rfc_7628_initial_response() {
             Some(143),
         )
         .expect("clean credential");
-    assert_eq!(built, RFC7628_INITIAL);
+    assert_eq!(built.as_str(), RFC7628_INITIAL);
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn xoauth2_builds_googles_initial_response() {
             Some(993),
         )
         .expect("clean credential");
-    assert_eq!(built, XOAUTH2_INITIAL);
+    assert_eq!(built.as_str(), XOAUTH2_INITIAL);
 }
 
 #[test]

@@ -57,7 +57,10 @@ async fn a_sasl_ir_server_gets_the_credential_inline_on_the_command() {
         )
         .expect("clean credential");
     assert!(
-        sent.contains(&format!("a2 AUTHENTICATE OAUTHBEARER {expected}\r\n")),
+        sent.contains(&format!(
+            "a2 AUTHENTICATE OAUTHBEARER {}\r\n",
+            expected.as_str()
+        )),
         "{sent}"
     );
     // The password path is never taken: no credential is ever sent as a `LOGIN`.
@@ -86,7 +89,10 @@ async fn a_server_without_sasl_ir_is_prompted_for_the_credential() {
             Some(993),
         )
         .expect("clean credential");
-    assert!(sent.contains(&format!("\r\n{expected}\r\n")), "{sent}");
+    assert!(
+        sent.contains(&format!("\r\n{}\r\n", expected.as_str())),
+        "{sent}"
+    );
 }
 
 #[tokio::test]

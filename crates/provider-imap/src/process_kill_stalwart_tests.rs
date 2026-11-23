@@ -120,7 +120,7 @@ async fn mailbox(
     let config = crate::ImapConfig::new(
         harness.imap_addr.as_str(),
         host,
-        crate::Credentials::password(bob.address.as_str(), bob.password.as_str()),
+        engine_provider::Credential::password(bob.address.as_str(), bob.password.as_str()),
     );
     let connector = engine_tls::TlsClientConfig::dangerous_accept_any().connector();
     crate::ImapAccount::connect(&config, connector)

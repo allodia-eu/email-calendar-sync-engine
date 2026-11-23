@@ -10,6 +10,7 @@
 //! The mechanism-specific bytes live in [`crate::sasl`]; this module is the framing.
 
 use tokio::io::{AsyncRead, AsyncWrite};
+use zeroize::Zeroizing;
 
 use crate::{
     error::{ImapError, ImapResult},
@@ -107,8 +108,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let tag = self.next_tag();
         let atom = mechanism.atom();
         if sasl_ir {
-            self.send_raw(format!("{tag} AUTHENTICATE {atom} {initial}\r\n").as_bytes())
-                .await?;
+            let line = Zeroizing::new(format!("{tag} AUTHENTICATE {atom} {initial}\r\n"));
+            self.send_raw(line.as_bytes()).await?;
         } else {
             self.send_raw(format!("{tag} AUTHENTICATE {atom}\r\n").as_bytes())
                 .await?;
@@ -116,7 +117,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 // The empty continuation is the server asking for the credential it
                 // would have taken inline.
                 SaslLine::Continuation(_) => {
-                    self.send_raw(format!("{initial}\r\n").as_bytes()).await?;
+                    let line = Zeroizing::new(format!("{initial}\r\n"));
+                    self.send_raw(line.as_bytes()).await?;
                 }
                 // A server may refuse the mechanism outright rather than prompt.
                 SaslLine::Completion(status, detail) => return complete(&status, &detail, ""),

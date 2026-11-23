@@ -155,7 +155,7 @@ async fn send_after_starttls_skips_greeting_and_authenticates() {
         &recipients(&["bob@test.local"]),
         &message,
         Some(SmtpAuth {
-            credentials: &crate::credentials::Credentials::password("alice@test.local", "pw"),
+            credential: &engine_provider::Credential::password("alice@test.local", "pw"),
             host: "smtp.test.local",
             port: Some(587),
         }),
