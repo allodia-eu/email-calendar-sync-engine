@@ -481,4 +481,15 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
     fn calendar_collections(&self) -> Option<&dyn crate::CalendarCollections> {
         None
     }
+
+    /// This adapter as a [`ContactImporter`](crate::import::ContactImporter), or `None`.
+    #[cfg(feature = "import")]
+    fn contact_importer(&self) -> Option<&dyn crate::import::ContactImporter> {
+        None
+    }
+
+    /// This adapter as an [`AddressBookCollections`](crate::AddressBookCollections), or `None`.
+    fn address_book_collections(&self) -> Option<&dyn crate::AddressBookCollections> {
+        None
+    }
 }

@@ -6,6 +6,7 @@
 mod address_book;
 mod model;
 mod property;
+mod vcard_version;
 mod write;
 
 pub use address_book::AddressBook;
@@ -16,4 +17,5 @@ pub use model::{
     Organization, OrganizationUnit, PersonalInfo, Title,
 };
 pub use property::{ContactProperty, PropertyId};
+pub use vcard_version::VcardVersion;
 pub use write::{ContactDraft, ContactField, ContactFieldSet, ContactPatch, FieldPatch};

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">
+  <s:exception>Sabre\DAV\Exception\UnsupportedMediaType</s:exception>
+  <s:message>This resource only supports valid vCard or jCard data. Parse error: This parser only supports VCARD and VCALENDAR files</s:message>
+</d:error>

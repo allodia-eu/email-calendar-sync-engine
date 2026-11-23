@@ -60,6 +60,8 @@ pub(crate) enum DavMethod {
     Delete,
     /// `MKCALENDAR` (RFC 4791 §5.3.1) — create a calendar collection with its properties.
     Mkcalendar,
+    /// Extended `MKCOL` (RFC 5689) — create an address book with its properties.
+    Mkcol,
 }
 
 impl DavMethod {
@@ -73,6 +75,7 @@ impl DavMethod {
             Self::Put => "PUT",
             Self::Delete => "DELETE",
             Self::Mkcalendar => "MKCALENDAR",
+            Self::Mkcol => "MKCOL",
         }
     }
 }
@@ -235,5 +238,6 @@ mod method_tests {
         assert_eq!(DavMethod::Put.as_str(), "PUT");
         assert_eq!(DavMethod::Delete.as_str(), "DELETE");
         assert_eq!(DavMethod::Mkcalendar.as_str(), "MKCALENDAR");
+        assert_eq!(DavMethod::Mkcol.as_str(), "MKCOL");
     }
 }

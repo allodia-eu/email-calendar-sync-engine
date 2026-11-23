@@ -171,7 +171,7 @@ pub(crate) async fn list_address_books(
         .collect()
 }
 
-fn address_book(response: &DavResponse) -> Result<AddressBook, CalDavError> {
+pub(crate) fn address_book(response: &DavResponse) -> Result<AddressBook, CalDavError> {
     let id = AddressBookId::try_from(response.href())
         .map_err(|error| CalDavError::protocol(error.to_string()))?;
     let mut book = AddressBook::new(
@@ -302,27 +302,16 @@ pub(crate) fn bind_collection(home: &str, value: &str) -> Result<AddressBookId, 
     AddressBookId::try_from(href.as_str()).map_err(|error| CalDavError::protocol(error.to_string()))
 }
 
-pub(crate) fn stable_suffix(card: &ContactCard) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    card.display_name().hash(&mut hasher);
+/// The resource name a card with no `UID` is created under: a SHA-256 of its display name and
+/// email addresses, the same on every Rust release (unlike `DefaultHasher`), so a retried create
+/// meets its own earlier write.
+pub(crate) fn unnamed_card_name(card: &ContactCard) -> String {
+    let mut identity = card.display_name().unwrap_or_default();
     for email in card.emails.values() {
-        email.value.address.hash(&mut hasher);
+        identity.push('\n');
+        identity.push_str(&email.value.address);
     }
-    format!("contact-{:016x}", hasher.finish())
-}
-
-pub(crate) fn encode_segment(value: &str) -> String {
-    value
-        .bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
-                char::from(byte).to_string()
-            } else {
-                format!("%{byte:02X}")
-            }
-        })
-        .collect()
+    crate::href::hashed_name(identity.as_bytes())
 }
 
 pub(crate) fn decode_data_uri(value: &str) -> Result<Vec<u8>, CalDavError> {

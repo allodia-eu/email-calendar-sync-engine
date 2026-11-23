@@ -401,3 +401,41 @@ async fn a_created_card_keeps_its_organization_and_title_through_a_patch() {
         .await
         .expect("clean up");
 }
+
+#[cfg(feature = "import")]
+#[path = "contacts/import.rs"]
+mod contact_import;
+
+/// Contact import against Stalwart (`contacts/import.rs`), in the scratch account Bob's home, so
+/// the seeded account's address books are never touched.
+#[cfg(feature = "import")]
+#[tokio::test]
+async fn stalwart_contact_import_round_trip() {
+    let Some(harness) = Harness::from_env() else {
+        eprintln!("skipping stalwart_contact_import_round_trip: STALWART_HTTP_ADDR unset");
+        return;
+    };
+    harness
+        .wait_until_ready(Duration::from_secs(30))
+        .expect("harness ready");
+    let [bob, _] = harness.scratch.clone();
+    let base = format!("http://{}", harness.http_addr);
+    let provider = connect_honouring_throttles("CardDAV connect", || {
+        CardDavProvider::connect(CardDavConfig::new(
+            &base,
+            Credentials::Basic {
+                username: bob.address.clone(),
+                password: bob.password.clone(),
+            },
+            engine_http::test_server::user_agent(),
+        ))
+    })
+    .await;
+    let server = contact_import::DavServer {
+        base: base.clone(),
+        user: bob.address.clone(),
+        pass: bob.password.clone(),
+    };
+    let account = AccountId::try_from("stalwart-contact-import").unwrap();
+    contact_import::import_round_trip(&provider, &account, &server).await;
+}

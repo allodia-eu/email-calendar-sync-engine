@@ -164,7 +164,12 @@ async fn carddav_create_uses_vcard_put_and_if_none_match() {
     assert_eq!(writes[0].method, DavMethod::Put);
     assert_eq!(writes[0].precondition, Precondition::IfNoneMatch);
     assert_eq!(writes[0].content_type, Some("text/vcard; charset=utf-8"));
-    assert!(writes[0].href.ends_with("ada%40example.test.vcf"));
+    // One naming rule for every create (`href::resource_name`): the `@` as servers list it.
+    assert!(
+        writes[0].href.ends_with("/ada@example.test.vcf"),
+        "{}",
+        writes[0].href
+    );
     assert!(writes[0].body.contains("UID:ada@example.test"));
 }
 

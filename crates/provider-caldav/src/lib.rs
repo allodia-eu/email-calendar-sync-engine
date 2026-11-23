@@ -49,6 +49,9 @@ mod calendar_import;
 mod carddav;
 mod carddav_config;
 mod carddav_ops;
+mod contact_create;
+#[cfg(feature = "import")]
+mod contact_import;
 mod credential_hosts;
 mod credential_scope;
 mod ctag_sync;

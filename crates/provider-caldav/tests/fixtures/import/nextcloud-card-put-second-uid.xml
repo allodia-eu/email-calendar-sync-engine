@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">
+  <s:exception>OCA\DAV\Exception\UidConflict</s:exception>
+  <s:message>VCard object with uid already exists in this addressbook collection.</s:message>
+  <card:no-uid-conflict xmlns:card="urn:ietf:params:xml:ns:carddav">
+    <d:href xmlns:d="DAV:">/remote.php/dav/addressbooks/users/alice/laneb-capture/capture-1@example.com.vcf</d:href>
+  </card:no-uid-conflict>
+</d:error>

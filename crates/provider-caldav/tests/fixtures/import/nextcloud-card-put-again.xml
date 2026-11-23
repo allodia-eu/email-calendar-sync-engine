@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">
+  <s:exception>Sabre\DAV\Exception\PreconditionFailed</s:exception>
+  <s:message>An If-None-Match header was specified, but the ETag matched (or * was specified).</s:message>
+  <s:header>If-None-Match</s:header>
+</d:error>

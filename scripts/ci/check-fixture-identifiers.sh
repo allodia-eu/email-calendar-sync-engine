@@ -108,8 +108,9 @@ while IFS= read -r file; do
     # ASCII, and a non-ASCII label matches the byte range either way.
     lower=$(printf '%s' "$addr" | tr 'A-Z' 'a-z')
     domain=${lower#*@}
-    # A fixture filename (`evt-1@test.local.ics`) is a file, not a mailbox.
+    # A fixture filename (`evt-1@test.local.ics`, `card@test.local.vcf`) is a file, not a mailbox.
     domain=${domain%.ics}
+    domain=${domain%.vcf}
     domain=${domain%.eml}
     if printf '%s' "$domain" | grep -qE "$RESERVED_RE"; then
       continue
