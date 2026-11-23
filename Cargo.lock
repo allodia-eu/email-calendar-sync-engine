@@ -1633,6 +1633,7 @@ dependencies = [
  "engine-mime",
  "engine-provider",
  "engine-recurrence",
+ "engine-rfc5322",
  "engine-search",
  "engine-store",
  "engine-sync",

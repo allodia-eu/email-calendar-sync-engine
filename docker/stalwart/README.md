@@ -70,7 +70,7 @@ file since v0.16 — see the design doc).
 | ------------------- | ------------------ | ----------------------------- |
 | `alice@test.local`  | `harness-alice-pw` | primary; holds the whole seed (mail + calendar + contacts) |
 | `bob@test.local`    | `harness-bob-pw`   | scratch: SMTP recipient, and **organizer** in the scheduling suite |
-| `carol@test.local`  | `harness-carol-pw` | scratch: **attendee** in the scheduling suite |
+| `carol@test.local`  | `harness-carol-pw` | scratch: **attendee** in the scheduling suite; the live import suites' target |
 | `dave@test.local`   | `harness-dave-pw`  | shares one calendar with Alice, read-only, and nothing else |
 | `admin`             | `harness-admin-pw` | fallback admin (management)   |
 

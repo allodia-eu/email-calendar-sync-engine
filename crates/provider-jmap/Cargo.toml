@@ -26,8 +26,13 @@ thiserror = { workspace = true }
 async-stream = { workspace = true }
 # `buffer_unordered` overlaps a batch's individual downloads (`blob_batch`).
 futures-util = { workspace = true }
+engine-rfc5322 = { workspace = true, optional = true }
 
 [features]
+# Importing into an account (`engine_provider::import::MailImporter` for `JmapProvider`):
+# `Email/import`, with the bytes sent inline by RFC 9404 `Blob/upload` where they fit, base64
+# encoded by the engine's one outbound codec.
+import = ["engine-provider/import", "dep:engine-rfc5322"]
 # Exposes `fuzz_parse` for the `fuzz/` cargo-fuzz target; off in normal builds.
 fuzzing = []
 
@@ -44,6 +49,8 @@ time = { workspace = true }
 # `StreamExt` to drain the email chunk stream in the offline sync tests.
 futures-util = { workspace = true }
 stalwart-harness = { path = "../stalwart-harness" }
+# The import claims every adapter's live suite shares (`tests/live_import.rs`).
+engine-provider = { workspace = true, features = ["import-conformance"] }
 # The live scheduling tests observe organiser and attendee copies over CalDAV and clean
 # both scheduling inboxes after creating and changing the meeting through JMAP.
 provider-caldav = { workspace = true }
