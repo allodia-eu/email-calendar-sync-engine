@@ -38,6 +38,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct Response {
     responses: Vec<Invocation>,
+    session_state: Option<String>,
 }
 
 impl Response {
@@ -51,7 +52,54 @@ impl Response {
             .iter()
             .map(invocation_from_json)
             .collect::<Result<_, _>>()?;
-        Ok(Self { responses })
+        let session_state = value
+            .get("sessionState")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        Ok(Self {
+            responses,
+            session_state,
+        })
+    }
+
+    /// The `sessionState` the answer carries (RFC 8620 §3.4): when it differs from the
+    /// [`Session::state`](crate::Session::state) a client holds, the session changed and is
+    /// fetched again. `None` where the server sent none.
+    #[must_use]
+    pub fn session_state(&self) -> Option<&str> {
+        self.session_state.as_deref()
+    }
+
+    /// The answer to `call` named `name`, for a method that answers more than once under one
+    /// call id: `EmailSubmission/set` with `onSuccessUpdateEmail` answers as itself, then as
+    /// the implicit `Email/set` that filed the message (RFC 8621 §7.5).
+    ///
+    /// # Errors
+    ///
+    /// [`JmapError::Method`] when the server answered `call` with a method error, and
+    /// [`JmapError::MissingResponse`] when no answer to `call` carries `name`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use provider_jmap::{CallId, JmapError, Response};
+    ///
+    /// fn filed(response: &Response, submission: &CallId) -> Result<bool, JmapError> {
+    ///     let implicit = response.result_named(submission, "Email/set")?;
+    ///     Ok(implicit
+    ///         .get("updated")
+    ///         .is_some_and(|updated| !updated.is_null()))
+    /// }
+    /// ```
+    pub fn result_named(&self, call: &CallId, name: &str) -> Result<&Value, JmapError> {
+        let mut answers = self.responses.iter().filter(|inv| &inv.call_id == call);
+        if let Some(error) = answers.clone().find(|inv| inv.method == "error") {
+            answered(error)?;
+        }
+        answers
+            .find(|inv| inv.method == name)
+            .map(|inv| &inv.arguments)
+            .ok_or_else(|| JmapError::MissingResponse(call.clone()))
     }
 
     /// The result arguments the server answered `call` with: its first answer, where a method

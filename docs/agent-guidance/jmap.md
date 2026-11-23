@@ -82,6 +82,13 @@ are what this replaces.
   error_type }` carrying the call that caused it, and an unanswered call as
   `JmapError::MissingResponse(call_id)`. Measured live (`tests/live_client.rs`): Stalwart answers
   a call to an unknown account `accountNotFound` under that call's id and runs the calls after it.
+  `result_named(call, name)` reads a method that answers more than once under one id (the
+  implicit `Email/set` after `EmailSubmission/set` with `onSuccessUpdateEmail`), and
+  `session_state()` the `sessionState` that says when the session must be fetched again.
+- **A `JmapError` shows codes only.** `Status` displays as `JMAP HTTP <status>`, plus the
+  problem-details `type` where the body is one; the body is a `ServerText`, whose `Debug` shows
+  its length and whose text only `as_str` gives, since a server's error text can echo what the
+  request carried. The conversion to `ProviderError` inherits that.
 - **`JmapClient::execute`, `upload`, `download`, `download_stream`.** Every request goes through
   the one transport: authenticated, inside the account's `RequestGate`, throttled by the shared
   funnel. `upload` answers the stored `BlobId`. `download_stream` answers a `BlobDownload` read a
@@ -89,7 +96,8 @@ are what this replaces.
   **A blob request goes only to the origin of the session's own template** (`downloadUrl` for a
   download, `uploadUrl` for an upload); anything else is `JmapError::Refused` before a byte is
   sent, because the request carries the account's credential and the session is the only party
-  that names where it may go.
+  that names where it may go. Where blobs live on an origin of their own (Fastmail's
+  user-content domain), that origin gets the credential and the API origin does not.
 - **`blob::download_url` and `blob::upload_url`** fill the templates in, percent-encoding every
   substitution. Before this, a draft's upload URL substituted the account id raw; both now go
   through the one encoder.
@@ -97,6 +105,9 @@ are what this replaces.
   domain's account as a **`JmapAccountId`** (`mail_account_id`, `submission_account_id`,
   `calendar_account_id`, `contact_account_id`), a newtype distinct from the engine's `AccountId`.
   It serializes as the bare string, so it goes into a call's arguments as it is.
+  `has_capability(urn)` says whether the server speaks an extension (Sieve, a vacation
+  response), and `account_for(urn)` which account its calls address, by the one rule the domain
+  accessors use: the `primaryAccounts` entry, or the bound shared account where it lists the URN.
 
 Kept internal: `Walk` and the sync passes, the normalizers, and the `Executor` test seam.
 

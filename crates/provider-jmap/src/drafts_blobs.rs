@@ -71,7 +71,8 @@ pub(crate) async fn resolve(
             blob_ids.push(
                 executor
                     .upload(&url, &attachment.media_type, &attachment.content)
-                    .await?,
+                    .await?
+                    .to_string(),
             );
         }
     }

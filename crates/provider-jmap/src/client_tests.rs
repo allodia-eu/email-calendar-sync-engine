@@ -92,14 +92,97 @@ async fn a_blob_request_to_another_origin_is_refused_before_it_is_sent() {
             .await
             .unwrap_err(),
     );
-    // Same host, another port: a different origin too.
-    let other_port = format!("{}0/upload/c/", base.trim_end_matches('/'));
+    // Same host, another port: a different origin too. Port 9 (discard) is in range and is not
+    // the mock's.
+    assert!(!base.ends_with(":9"));
     refused(
         client
-            .upload(&other_port, "text/plain", b"x")
+            .upload("http://127.0.0.1:9/upload/c/", "text/plain", b"x")
             .await
             .unwrap_err(),
     );
+}
+
+/// A server that answers `replies` in order and hands back every request it read, so a test
+/// sees what was sent where.
+fn capturing_server(replies: Vec<String>) -> (String, std::sync::mpsc::Receiver<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (sent, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for reply in replies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = engine_http::test_server::read_request_blocking(&mut stream);
+            let _ = sent.send(String::from_utf8_lossy(&request).into_owned());
+            let _ = std::io::Write::write_all(&mut stream, reply.as_bytes());
+        }
+    });
+    (format!("http://{addr}"), received)
+}
+
+/// Fastmail's shape: the API on one origin, blobs on a separate user-content origin. The
+/// credential goes to the blob origin the session named, and a blob path on the API origin,
+/// which the session did not name for blobs, is refused.
+#[tokio::test]
+async fn blobs_on_their_own_origin_get_the_credential_and_the_api_origin_does_not() {
+    let (blobs, sent) = capturing_server(vec![
+        http_bytes("raw message"),
+        http_ok(r#"{"blobId":"G9"}"#),
+    ]);
+    let session = format!(
+        r#"{{"capabilities":{{"urn:ietf:params:jmap:core":{{}},"urn:ietf:params:jmap:mail":{{}}}},
+            "primaryAccounts":{{"urn:ietf:params:jmap:mail":"c"}},
+            "apiUrl":"https://mail.test.local/jmap/",
+            "downloadUrl":"{blobs}/download/{{accountId}}/{{blobId}}/{{name}}?type={{type}}",
+            "uploadUrl":"{blobs}/upload/{{accountId}}/"}}"#
+    );
+    let api = mock_server(vec![http_ok(&session)]);
+    let client = JmapClient::connect(rich_config(api.clone())).await.unwrap();
+    assert_eq!(
+        client
+            .session()
+            .download_url()
+            .unwrap()
+            .split("/download")
+            .next(),
+        Some(blobs.as_str())
+    );
+
+    let bytes = client.download(&download_url(&client)).await.unwrap();
+    assert_eq!(bytes, b"raw message");
+    let upload = blob::upload_url(
+        client.session().upload_url().unwrap(),
+        &JmapAccountId::new("c"),
+    );
+    assert_eq!(
+        client
+            .upload(&upload, "text/plain", b"x")
+            .await
+            .unwrap()
+            .as_str(),
+        "G9"
+    );
+    for request in [sent.recv().unwrap(), sent.recv().unwrap()] {
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: basic"),
+            "the blob origin gets the credential: {request}"
+        );
+    }
+
+    // The same paths on the API origin: not where the session said blobs live.
+    let on_api = format!("{api}/download/c/b1/m.eml");
+    for err in [
+        client.download(&on_api).await.unwrap_err(),
+        client.download_stream(&on_api).await.unwrap_err(),
+        client
+            .upload(&format!("{api}/upload/c/"), "text/plain", b"x")
+            .await
+            .unwrap_err(),
+    ] {
+        assert!(matches!(err, JmapError::Refused(_)), "{err:?}");
+    }
 }
 
 #[tokio::test]

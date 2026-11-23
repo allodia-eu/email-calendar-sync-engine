@@ -232,7 +232,7 @@ impl Executor for Overlapping {
         url: &str,
         media_type: &str,
         bytes: &[u8],
-    ) -> Result<String, crate::error::JmapError> {
+    ) -> Result<engine_core::ids::BlobId, crate::error::JmapError> {
         self.inner.upload(url, media_type, bytes).await
     }
 

@@ -122,7 +122,8 @@ pub(crate) async fn upload_attachments(
         blob_ids.push(
             executor
                 .upload(&url, &attachment.media_type, &attachment.content)
-                .await?,
+                .await?
+                .to_string(),
         );
     }
     Ok(blob_ids)

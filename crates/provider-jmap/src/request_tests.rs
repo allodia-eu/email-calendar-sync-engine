@@ -125,3 +125,41 @@ fn rejects_non_triple_responses() {
         assert!(Response::parse(&body).is_err(), "{body}");
     }
 }
+
+/// `EmailSubmission/set` with `onSuccessUpdateEmail` answers twice under one call id (RFC 8621
+/// §7.5): its own answer, then an implicit `Email/set`. Captured from Stalwart.
+#[test]
+fn every_answer_under_one_call_is_read_by_its_name() {
+    let response = Response::parse(&crate::provider::provider_test_support::fixture(
+        "submit_send_response.json",
+    ))
+    .unwrap();
+    let submission = CallId::from_wire("1");
+
+    let own = response
+        .result_named(&submission, "EmailSubmission/set")
+        .unwrap();
+    assert!(own.get("created").is_some());
+    let implicit = response.result_named(&submission, "Email/set").unwrap();
+    assert!(implicit.get("updated").is_some());
+    assert_ne!(own, implicit);
+    assert!(matches!(
+        response.result_named(&submission, "Mailbox/set"),
+        Err(JmapError::MissingResponse(_))
+    ));
+    assert_eq!(response.session_state(), Some("2f72d7c8"));
+}
+
+#[test]
+fn a_method_error_under_a_call_answers_whatever_name_is_asked() {
+    let call = CallId::from_wire("0");
+    let response = Response::parse(&json!({
+        "methodResponses": [["error", { "type": "forbidden" }, "0"]]
+    }))
+    .unwrap();
+    assert!(matches!(
+        response.result_named(&call, "Email/set"),
+        Err(JmapError::Method { error_type, .. }) if error_type == "forbidden"
+    ));
+    assert_eq!(response.session_state(), None);
+}

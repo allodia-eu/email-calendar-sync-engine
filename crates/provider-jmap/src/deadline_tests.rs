@@ -81,7 +81,12 @@ impl Executor for SilentSubmission {
         unreachable!("a send without attachments downloads nothing")
     }
 
-    async fn upload(&self, _url: &str, _type: &str, _bytes: &[u8]) -> Result<String, JmapError> {
+    async fn upload(
+        &self,
+        _url: &str,
+        _type: &str,
+        _bytes: &[u8],
+    ) -> Result<engine_core::ids::BlobId, JmapError> {
         unreachable!("a send without attachments uploads nothing")
     }
 

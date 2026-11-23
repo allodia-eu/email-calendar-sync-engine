@@ -7,6 +7,7 @@
 //! network. The provider is one of its callers, not its owner.
 
 use async_trait::async_trait;
+use engine_core::ids::BlobId;
 use engine_provider::{HandOver, HttpVersion, TlsVersion};
 
 use crate::{
@@ -44,7 +45,7 @@ pub(crate) trait Executor: Send + Sync {
     async fn download(&self, url: &str) -> Result<Vec<u8>, JmapError>;
     /// POSTs raw `bytes` of `media_type` to a resolved blob-upload URL, returning the
     /// server-assigned `blobId` (RFC 8620 §6.1) — used to attach a draft's parts.
-    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<String, JmapError>;
+    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<BlobId, JmapError>;
     fn session(&self) -> &Session;
     /// The HTTP version the transport negotiated. Defaults to `None`: only the live
     /// [`JmapClient`] speaks HTTP, so a fake fed canned documents has no version to
@@ -93,9 +94,8 @@ impl Executor for JmapClient {
         JmapClient::download(self, url).await
     }
 
-    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<String, JmapError> {
-        let blob = JmapClient::upload(self, url, media_type, bytes).await?;
-        Ok(blob.as_str().to_owned())
+    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<BlobId, JmapError> {
+        JmapClient::upload(self, url, media_type, bytes).await
     }
 
     fn session(&self) -> &Session {

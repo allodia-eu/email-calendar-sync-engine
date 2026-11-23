@@ -20,6 +20,8 @@
 //!   *own* advertised origin: a URL the server deliberately puts elsewhere is left alone
 //!   (`rebase_template`).
 
+use std::collections::BTreeSet;
+
 use engine_core::{ids::SharedAccountId, sync::SearchDomain};
 use engine_provider::{OverrideSurvival, SharedAccounts, StoreDomains, WriteGuard};
 use reqwest::Url;
@@ -28,7 +30,7 @@ use serde_json::Value;
 use crate::{
     error::JmapError,
     request::capability,
-    session_accounts::{self, JmapAccountId, SessionAccount},
+    session_accounts::{self, Addressing, JmapAccountId, SessionAccount},
     session_limits::{max_participants_per_event, parse_limits},
     session_urls::{origin_of, rebase_template, resolve_against},
 };
@@ -110,20 +112,17 @@ pub struct Session {
     download_url: Option<String>,
     upload_url: Option<String>,
     event_source_url: Option<String>,
-    pub(crate) mail_account_id: Option<JmapAccountId>,
-    pub(crate) submission_account_id: Option<JmapAccountId>,
-    pub(crate) calendar_account_id: Option<JmapAccountId>,
+    /// Which account each capability's calls address.
+    pub(crate) addressing: Addressing,
+    /// Every capability URN the server lists (`capabilities`).
+    pub(crate) server_capabilities: BTreeSet<String>,
     pub(crate) max_participants_per_event: Option<usize>,
-    pub(crate) contact_account_id: Option<JmapAccountId>,
     /// Every account the session lists — the credential's own and each shared with it —
     /// or `None` when it carries no `accounts` map at all.
     pub(crate) accounts: Option<Vec<SessionAccount>>,
     /// The domains the *server* serves, whatever this client is addressed at: what a shared
     /// account can be asked about (`crate::shared`).
     served: StoreDomains,
-    /// The account this client is bound to, when it opens a shared mailbox rather than
-    /// the credential's own.
-    pub(crate) bound: Option<String>,
     limits: CoreLimits,
     capabilities: engine_provider::Capabilities,
     /// Whether the mail account answers `Blob/get` (RFC 9404), so a body warm can read many
@@ -176,19 +175,8 @@ impl Session {
             })
             .transpose()?;
 
-        // Unbound, a domain is addressed at its `primaryAccounts` entry. Bound, it is
-        // addressed at the bound account — and only if that account exposes it, since a
-        // shared account need not carry every domain the server does.
-        let primary = value.get("primaryAccounts");
-        let account_for = |urn: &str| match bound {
-            Some(account) => account
-                .supports(urn)
-                .then(|| JmapAccountId::new(account.id.clone())),
-            None => primary
-                .and_then(|p| p.get(urn))
-                .and_then(Value::as_str)
-                .map(JmapAccountId::new),
-        };
+        let addressing = Addressing::new(value.get("primaryAccounts"), bound);
+        let account_for = |urn: &str| addressing.account_for(urn).cloned();
         let mail_account_id = account_for(capability::MAIL);
         let calendar_account_id = account_for(capability::CALENDARS);
         let contact_account_id = account_for(capability::CONTACTS);
@@ -316,7 +304,6 @@ impl Session {
             .and_then(|c| c.get(capability::CORE))
             .map(parse_limits)
             .unwrap_or_default();
-        let submission_account_id = account_for(capability::SUBMISSION);
         // RFC 9404 advertises the extension for the session and, per account, the accounts it
         // covers; a blob read is scoped to an account, so it is the mail account's that counts
         // — the bound one, when this client opens a shared mailbox.
@@ -327,27 +314,27 @@ impl Session {
                     .flatten()
                     .any(|account| account.id == id.as_str() && account.supports(capability::BLOB))
             });
-        let bound = bound.map(|account| account.id.clone());
+        let server_capabilities = caps
+            .and_then(Value::as_object)
+            .map(|caps| caps.keys().cloned().collect())
+            .unwrap_or_default();
 
         Ok(Self {
             api_url,
             download_url,
             upload_url,
             event_source_url,
-            mail_account_id,
-            submission_account_id,
             max_participants_per_event: max_participants_per_event(
                 value,
                 calendar_account_id.as_ref().map(JmapAccountId::as_str),
             ),
-            calendar_account_id,
-            contact_account_id,
             accounts,
             served,
-            bound,
             limits,
             capabilities,
             blob_get,
+            addressing,
+            server_capabilities,
             state: value
                 .get("state")
                 .and_then(Value::as_str)

@@ -22,12 +22,12 @@
 //! does (`crate::mail`).
 
 use core::fmt;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{error::JmapError, session::Session};
+use crate::{error::JmapError, request::capability, session::Session};
 
 /// A JMAP account id (RFC 8620 §1.6.2): the server's name for an account, which every method
 /// call's `accountId` argument carries.
@@ -55,8 +55,12 @@ use crate::{error::JmapError, session::Session};
 pub struct JmapAccountId(String);
 
 impl JmapAccountId {
-    /// An account id the server assigned, such as one a host kept from an earlier
-    /// [`Session`].
+    /// An account id as a server names it, unchecked.
+    ///
+    /// Take the one the current [`Session`] answers where there is one: only the session says
+    /// which account a call may address, and an id kept from an earlier session can go stale
+    /// (a share withdrawn, an account renamed). This is for a host that already holds an id
+    /// the server gave it, and for tests.
     ///
     /// # Examples
     ///
@@ -86,8 +90,94 @@ impl fmt::Display for JmapAccountId {
     }
 }
 
-/// Which account each data domain's calls address.
+/// Which account each capability's calls address: unbound, its `primaryAccounts` entry; bound to
+/// a shared account, that account, and only for the capabilities it lists, since a share need
+/// not carry every domain the server does.
+#[derive(Debug, Clone)]
+pub(crate) struct Addressing {
+    primary: BTreeMap<String, JmapAccountId>,
+    bound: Option<(JmapAccountId, BTreeSet<String>)>,
+}
+
+impl Addressing {
+    pub(crate) fn new(primary: Option<&Value>, bound: Option<&SessionAccount>) -> Self {
+        let primary = primary
+            .and_then(Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(urn, id)| Some((urn.clone(), JmapAccountId::new(id.as_str()?))))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let bound = bound.map(|account| {
+            (
+                JmapAccountId::new(account.id.clone()),
+                account.capabilities.clone(),
+            )
+        });
+        Self { primary, bound }
+    }
+
+    pub(crate) fn account_for(&self, urn: &str) -> Option<&JmapAccountId> {
+        match &self.bound {
+            Some((id, capabilities)) => capabilities.contains(urn).then_some(id),
+            None => self.primary.get(urn),
+        }
+    }
+
+    /// The shared account this client is bound to, if any.
+    pub(crate) fn bound(&self) -> Option<&JmapAccountId> {
+        self.bound.as_ref().map(|(id, _)| id)
+    }
+}
+
+/// Which account each capability's calls address.
 impl Session {
+    /// Whether the server lists `urn` among its `capabilities` (RFC 8620 §2): whether it speaks
+    /// the extension at all. Whether a call for it can be made is
+    /// [`account_for`](Self::account_for).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn example(session: &provider_jmap::Session) {
+    /// const SIEVE: &str = "urn:ietf:params:jmap:sieve";
+    /// let filters = session.has_capability(SIEVE) && session.account_for(SIEVE).is_some();
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn has_capability(&self, urn: &str) -> bool {
+        self.server_capabilities.contains(urn)
+    }
+
+    /// The account calls for capability `urn` address: the `primaryAccounts` entry for it, or,
+    /// for a client bound to a shared account, that account where it lists `urn`. `None` where
+    /// no call for `urn` can be addressed. The domain accessors below answer this for their
+    /// own URN.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use provider_jmap::{JmapClient, JmapError, Request, capability};
+    /// use serde_json::json;
+    ///
+    /// const VACATION: &str = "urn:ietf:params:jmap:vacationresponse";
+    ///
+    /// async fn out_of_office(client: &JmapClient) -> Result<Option<serde_json::Value>, JmapError> {
+    ///     let Some(account) = client.session().account_for(VACATION) else {
+    ///         return Ok(None);
+    ///     };
+    ///     let mut request = Request::new([capability::CORE, VACATION]);
+    ///     let get = request.invoke("VacationResponse/get", json!({ "accountId": account }));
+    ///     let response = client.execute(&request).await?;
+    ///     Ok(response.result(&get)?["list"].get(0).cloned())
+    /// }
+    /// ```
+    #[must_use]
+    pub fn account_for(&self, urn: &str) -> Option<&JmapAccountId> {
+        self.addressing.account_for(urn)
+    }
+
     /// The account mail calls address: the bound account, or the `primaryAccounts` entry for
     /// mail.
     ///
@@ -105,7 +195,7 @@ impl Session {
     /// # Ok(()) }
     /// ```
     pub fn mail_account_id(&self) -> Result<&JmapAccountId, JmapError> {
-        self.addressed(self.mail_account_id.as_ref(), "mail")
+        self.addressed(self.account_for(capability::MAIL), "mail")
     }
 
     /// The account submission calls (`Identity`, `EmailSubmission`) address.
@@ -122,7 +212,7 @@ impl Session {
     /// # Ok(()) }
     /// ```
     pub fn submission_account_id(&self) -> Result<&JmapAccountId, JmapError> {
-        self.addressed(self.submission_account_id.as_ref(), "submission")
+        self.addressed(self.account_for(capability::SUBMISSION), "submission")
     }
 
     /// The account calendar calls (`Calendar`, `CalendarEvent`) address.
@@ -139,7 +229,7 @@ impl Session {
     /// # Ok(()) }
     /// ```
     pub fn calendar_account_id(&self) -> Result<&JmapAccountId, JmapError> {
-        self.addressed(self.calendar_account_id.as_ref(), "calendar")
+        self.addressed(self.account_for(capability::CALENDARS), "calendar")
     }
 
     /// The account address-book and contact-card calls address.
@@ -156,7 +246,7 @@ impl Session {
     /// # Ok(()) }
     /// ```
     pub fn contact_account_id(&self) -> Result<&JmapAccountId, JmapError> {
-        self.addressed(self.contact_account_id.as_ref(), "contacts")
+        self.addressed(self.account_for(capability::CONTACTS), "contacts")
     }
 
     /// Every account the session lists, the credential's own included; empty when it carries
@@ -167,8 +257,10 @@ impl Session {
 
     /// The shared account this client is bound to, or `None` for the credential's own.
     pub(crate) fn bound_account(&self) -> Option<&SessionAccount> {
-        let bound = self.bound.as_deref()?;
-        self.accounts().iter().find(|account| account.id == bound)
+        let bound = self.addressing.bound()?;
+        self.accounts()
+            .iter()
+            .find(|account| account.id == bound.as_str())
     }
 
     /// One domain's account id, or the error that says why there is none.
@@ -177,7 +269,7 @@ impl Session {
         id: Option<&'a JmapAccountId>,
         domain: &str,
     ) -> Result<&'a JmapAccountId, JmapError> {
-        id.ok_or_else(|| match &self.bound {
+        id.ok_or_else(|| match self.addressing.bound() {
             Some(bound) => JmapError::session(format!(
                 "the shared account {bound:?} this client is bound to does not expose {domain}"
             )),

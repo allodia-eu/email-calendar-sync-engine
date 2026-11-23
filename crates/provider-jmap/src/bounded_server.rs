@@ -352,7 +352,12 @@ impl Executor for Arc<BoundedServer> {
         Err(JmapError::status(404, "no blobs here"))
     }
 
-    async fn upload(&self, _url: &str, _media: &str, _bytes: &[u8]) -> Result<String, JmapError> {
+    async fn upload(
+        &self,
+        _url: &str,
+        _media: &str,
+        _bytes: &[u8],
+    ) -> Result<engine_core::ids::BlobId, JmapError> {
         Err(JmapError::status(404, "no uploads here"))
     }
 
