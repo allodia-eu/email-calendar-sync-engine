@@ -16,9 +16,10 @@
 //! invitation is sent, to anyone, and the `iCalUID` is preserved (`events.insert` mints its
 //! own). So the fixture costs no mail and the thing under test is a genuine invitation.
 //!
-//! The adapter has no import verb and should not grow one — importing is a migration tool,
-//! not a sync verb — so the seed is a direct HTTP call, the same exception
-//! `provider-caldav`'s scheduling suite makes for a seeded document. **Every assertion is
+//! Importing is not a sync verb: it lives behind the `import` feature, in traits of its own
+//! (`providers.md` → "Import"), and the Google adapter does not implement them. So the seed is
+//! a direct HTTP call, the same exception `provider-caldav`'s scheduling suite makes for a
+//! seeded document. **Every assertion is
 //! about what the adapter did.**
 //!
 //! # What only the live API can settle

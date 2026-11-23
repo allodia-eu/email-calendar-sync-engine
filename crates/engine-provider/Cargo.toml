@@ -27,6 +27,10 @@ http = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 
 [features]
+# The import seam (`engine_provider::import`): storing an object that already exists, as it was.
+# Not a sync verb, so a host that never imports (a migration, a webmail's upload, an app's file
+# import all do) never compiles it.
+import = []
 # The `HttpVersion::from_http` conversion and the `same_origin` credential guard
 # (and their `http`/`url` dependencies). Enabled by the reqwest-backed adapters:
 # `provider-jmap`, `provider-caldav`, `provider-graph`, `provider-google`.
