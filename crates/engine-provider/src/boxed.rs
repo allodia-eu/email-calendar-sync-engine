@@ -167,6 +167,11 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
     async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
         (**self).resolve_shared_account(address).await
     }
+
+    #[cfg(feature = "import")]
+    fn mail_importer(&self) -> Option<&dyn crate::import::MailImporter> {
+        (**self).mail_importer()
+    }
 }
 
 /// The calendar-sync half, delegated for the same reason and under the same `?Sized` bound

@@ -28,6 +28,10 @@ The engine models mail, calendar, and contact objects, sync, search/indexing, an
 - **FTS works before vectors.** Full-text and structured search must be useful without embeddings. Vector search is local-only by default and remote embedding requires explicit host policy.
 - **Provider adapters are isolated crates.** Protocol quirks stay inside provider crates and surface as capabilities, changes, cursors, and transport operations.
 - **Writes are outbox mediated.** UI-visible writes first commit locally; background workers perform provider side effects with idempotency and explicit ambiguous states.
+- **Import is a seam of its own, behind the `import` feature.** Storing an object that already
+  exists, as it was, is what a migration, a webmail's upload into a folder and an app's file
+  import share, and it is not a sync verb, so it never changes the sync `Provider` contract
+  (`providers.md` → "Import").
 - **Raw provider payloads are preserved.** MIME, iCalendar, JSCalendar, JSContact, vCard, and
   provider JSON stay available for re-parsing and protocol-specific writes.
 

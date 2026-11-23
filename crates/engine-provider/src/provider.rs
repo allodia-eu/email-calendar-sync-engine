@@ -439,4 +439,17 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
     async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
         crate::shared::resolve_by_listing(self, address).await
     }
+
+    /// This adapter as a [`MailImporter`](crate::import::MailImporter), or `None` where it
+    /// cannot import (the default).
+    ///
+    /// An adapter that implements `MailImporter` answers `Some(self)`, so a host holding a
+    /// `Box<dyn Provider>` reaches import through it without knowing the concrete adapter. A
+    /// capability is reached this way, through an accessor that defaults to `None`, rather than
+    /// through a flag beside a method that rejects: the answer and the means to act on it are
+    /// one value.
+    #[cfg(feature = "import")]
+    fn mail_importer(&self) -> Option<&dyn crate::import::MailImporter> {
+        None
+    }
 }
