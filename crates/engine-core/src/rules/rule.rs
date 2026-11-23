@@ -15,6 +15,25 @@ pub struct RuleSet {
     /// The provider's own form, kept so a write copies every rule the caller did not change;
     /// `None` on a set built rather than read.
     pub raw: Option<RawRules>,
+    /// Whether these rules run: a Sieve account may hold its rules in a script that is stored
+    /// but not active. A write keeps it as it is ([`RulesActivation`]).
+    pub activation: RulesActivation,
+}
+
+/// Whether an account's rules run.
+///
+/// A write never changes it: switching a stored script on or off is the user's call, as the
+/// reply's is (`filters-and-out-of-office.md`). Only a first write, to an account with no rules
+/// to edit, makes rules that run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RulesActivation {
+    /// They run: the transport has no notion of rules held but switched off, or the script that
+    /// holds them is the active one, or there are none yet.
+    #[default]
+    Running,
+    /// They are stored and do not run: a Sieve script that is not the active one.
+    Inactive,
 }
 
 impl RuleSet {
@@ -25,7 +44,15 @@ impl RuleSet {
             rules,
             version: None,
             raw: None,
+            activation: RulesActivation::Running,
         }
+    }
+
+    /// Records whether the rules run (builder-style).
+    #[must_use]
+    pub fn with_activation(mut self, activation: RulesActivation) -> Self {
+        self.activation = activation;
+        self
     }
 
     /// Records the version the set was read at (builder-style).

@@ -94,7 +94,7 @@ async fn a_read_carries_every_part_its_version_and_the_object_as_read() {
     // The scripts are listed in the same request, to see whether the user's rules run the
     // reply; the captured answer has no listing, which reads as the flag says.
     assert_eq!(
-        calls(&exec),
+        calls(&exec, 1),
         [
             (
                 "VacationResponse/get".to_owned(),

@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use crate::{
     JmapProvider,
-    provider::provider_test_support::{FakeExecutor, account, fixture},
+    provider::provider_test_support::{FakeExecutor, account, fixture, sieve_listing},
     request::capability,
 };
 
@@ -26,7 +26,9 @@ fn session() -> Value {
         "primaryAccounts": { capability::MAIL: "c", capability::SIEVE: "c",
                              capability::VACATION_RESPONSE: "c" },
         "accounts": { "c": { "accountCapabilities": {
-            capability::MAIL: {}, capability::SIEVE: {}, capability::VACATION_RESPONSE: {}
+            capability::MAIL: {},
+            capability::SIEVE: { "sieveExtensions": ["fileinto", "include", "vacation"] },
+            capability::VACATION_RESPONSE: {}
         } } },
         "apiUrl": "https://mail.test.local/jmap/",
         "downloadUrl": "https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}",
@@ -43,9 +45,10 @@ fn over(responses: Vec<Value>, script: &str) -> (JmapProvider, Arc<FakeExecutor>
     (JmapProvider::with_executor(Box::new(exec.clone())), exec)
 }
 
-/// Carol's scripts with the rules running and the reply's script beside them (captured).
+/// Carol's scripts with the rules running and the reply's script beside them, and the reply's
+/// state, one counter with theirs (captured).
 fn rules_running() -> Value {
-    fixture("sieve_get_rules_and_reply_response.json")
+    sieve_listing()
 }
 
 const WITHOUT: &str = "keep;\r\n";
@@ -214,18 +217,110 @@ async fn a_reply_the_running_rules_include_reads_as_on_though_its_flag_says_off(
 }
 
 #[tokio::test]
-async fn a_rules_script_that_cannot_be_edited_refuses_before_anything_is_written() {
-    let (provider, exec) = over(vec![rules_running()], "if true {");
-    let err = provider
+async fn a_running_script_that_cannot_take_the_include_falls_back_to_the_flag_never_refuses() {
+    // It needs no include to switch the reply off: the words alone.
+    let (provider, exec) = over(
+        vec![
+            rules_running(),
+            fixture("vacation_set_kept_off_response.json"),
+        ],
+        "if true {",
+    );
+    let receipt = provider
+        .set_vacation(
+            &account(),
+            VacationPrecondition::IfUnchanged(&read_at("steaq")),
+            &away().turned_off(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.rules, RulesEffect::Untouched);
+    assert_eq!(exec.request_count(), 2);
+    // It would need the include to switch the reply on: the server's own flag, as without rules,
+    // and the receipt says what that did to them.
+    let (provider, exec) = over(
+        vec![
+            rules_running(),
+            fixture("vacation_set_deactivates_response.json"),
+        ],
+        "if true {",
+    );
+    let receipt = provider
         .set_vacation(
             &account(),
             VacationPrecondition::IfUnchanged(&read_at("steaq")),
             &away(),
         )
         .await
+        .unwrap();
+    assert_eq!(receipt.rules, RulesEffect::Deactivated);
+    let requests = exec.requests.lock().unwrap();
+    assert_eq!(
+        requests.last().unwrap()["methodCalls"][1][1]["update"]["singleton"]["isEnabled"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn an_unguarded_write_does_not_toggle_a_script_that_moved_after_its_listing() {
+    // B2: the words land with no guard; the state they left from is not the listing's, so the
+    // script the include was composed over may not be the user's latest. It is not written.
+    let mut moved = fixture("vacation_set_kept_off_response.json");
+    moved["methodResponses"][0][1]["oldState"] = json!("later");
+    let (provider, exec) = over(vec![rules_running(), moved], WITHOUT);
+    let err = provider
+        .set_vacation(&account(), VacationPrecondition::Unconditional, &away())
+        .await
         .unwrap_err();
-    assert!(err.is_item_unavailable(), "{err:?}");
-    assert_eq!(exec.request_count(), 1, "the listing alone");
+    assert!(err.requires_confirmation(), "{err:?}");
+    assert_eq!(exec.request_count(), 2, "no include written");
+}
+
+#[tokio::test]
+async fn without_the_condition_the_reply_is_written_and_read_with_its_own_flag() {
+    // B5: the reply's state is not the scripts' (or the account lists no `include`): the flag.
+    let mut apart = rules_running();
+    apart["methodResponses"][1][1]["state"] = json!("elsewhere");
+    let (provider, exec) = over(
+        vec![apart, fixture("vacation_set_deactivates_response.json")],
+        WITHOUT,
+    );
+    let receipt = provider
+        .set_vacation(
+            &account(),
+            VacationPrecondition::IfUnchanged(&read_at("sbi")),
+            &away(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.rules, RulesEffect::Deactivated);
+    assert_eq!(exec.uploads.lock().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn a_read_falls_back_to_the_flag_where_the_rules_cannot_be_read_or_the_states_differ() {
+    let doc = |state: &str| {
+        json!({ "methodResponses": [
+            ["VacationResponse/get", { "accountId": "e", "state": state, "list": [{
+                "id": "singleton", "isEnabled": false, "fromDate": null, "toDate": null,
+                "subject": "Away", "textBody": "Away.", "htmlBody": null
+            }], "notFound": [] }, "0"],
+            ["SieveScript/get", rules_running()["methodResponses"][0][1].clone(), "1"]
+        ] })
+    };
+    // B4: the running script's blob cannot be downloaded.
+    let exec = Arc::new(FakeExecutor::from_session(&session(), vec![doc("steaq")]));
+    let provider = JmapProvider::with_executor(Box::new(exec));
+    assert!(!provider.read_vacation(&account()).await.unwrap().enabled);
+    // Nor decoded.
+    let exec = Arc::new(
+        FakeExecutor::from_session(&session(), vec![doc("steaq")]).with_download_body(b"\xff"),
+    );
+    let provider = JmapProvider::with_executor(Box::new(exec));
+    assert!(!provider.read_vacation(&account()).await.unwrap().enabled);
+    // B5: the include is there, but the reply's state is not the scripts'.
+    let (provider, _) = over(vec![doc("elsewhere")], WITH);
+    assert!(!provider.read_vacation(&account()).await.unwrap().enabled);
 }
 
 #[tokio::test]

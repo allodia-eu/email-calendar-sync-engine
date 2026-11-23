@@ -384,8 +384,11 @@ An account's rules are a setting too, written whole and directly, guarded by the
   did not change, byte for byte.
 - **What the account cannot hold is decided first**, by `plan_rules` in edit mode against
   `rule_vocabulary(account)`, and the `RulesReceipt` carries each rule's `RuleOutcome`; adapters
-  add only what the server alone refuses (a script over its size limit, a script it calls invalid:
-  `item_unavailable`). A stale base is a `Conflict`; a lost answer is `requires_confirmation`.
+  add only what the server alone refuses: a script over its size limit or one it calls invalid
+  (`item_unavailable`), an account with no room for it (`refused_by_target(StorageFull)`). A stale
+  base is a `Conflict`; a lost answer is `requires_confirmation`.
+- **A write never switches stored rules on or off** (`RuleSet::activation`, `RulesStored`), and
+  says what it did to a running reply (`ReplyEffect`).
 - **Rule values are content**: names, addresses, folders, test values. Errors and `Debug` carry
   kinds, positions and counts only.
 

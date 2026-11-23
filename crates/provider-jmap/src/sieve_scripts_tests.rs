@@ -2,7 +2,7 @@
 //! the design names: no scripts, the reply only, the rules only, the rules with the include, and
 //! the include of a reply script someone destroyed.
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::*;
 use crate::provider::provider_test_support::fixture;
@@ -108,11 +108,14 @@ fn the_rules_script_is_the_running_one_else_the_engine_s_or_the_only_other() {
 }
 
 #[test]
-fn an_include_of_the_reply_is_recognised_however_it_is_written_and_only_at_the_top() {
+fn an_include_of_the_reply_is_one_of_the_user_s_own_scripts_and_only_at_the_top() {
     for (text, includes) in [
         (WITH_INCLUDE, true),
         ("include \"vacation\";", true),
-        ("INCLUDE :global \"vacation\";", true),
+        ("INCLUDE :personal :once \"vacation\";", true),
+        // A global script of that name is not the user's reply.
+        ("include :global \"vacation\";", false),
+        ("include :personal :global \"vacation\";", false),
         ("include \"other\";", false),
         ("if true { include \"vacation\"; }", false),
         ("include \"vacation\" \"more\";", false),
@@ -140,4 +143,75 @@ fn the_include_is_no_rule_of_the_user_s_and_compose_puts_it_first_or_takes_it_ou
         "require [\"include\"];\r\ninclude :personal :optional \"vacation\";\r\nkeep;\r\n"
     );
     assert!(compose("if true {", &[], true).is_err());
+}
+
+#[test]
+fn a_whole_script_carried_as_one_rule_is_never_taken_for_the_include() {
+    // A script the reader keeps whole (here: a malformed `require`) holds the include among other
+    // commands; it is the user's, all of it.
+    let whole = "require 1;\r\ninclude :personal \"vacation\";\r\nkeep;\r\n";
+    let rules = user_rules(whole);
+    assert_eq!(rules.len(), 1, "carried whole, not filtered out");
+}
+
+#[test]
+fn a_refusal_names_the_rule_handed_in_not_one_shifted_by_the_include() {
+    use engine_core::rules::{Condition, HeaderField, Match, TextOp, TextTest};
+    let rules = vec![
+        MailRule::typed(Match::default(), vec![engine_core::rules::Action::Discard]),
+        MailRule::typed(
+            Match::all(vec![Condition::Header {
+                field: HeaderField::Subject,
+                test: TextTest::new(TextOp::Is, vec!["${x}".to_owned()]).unwrap(),
+            }]),
+            vec![engine_core::rules::Action::Discard],
+        ),
+    ];
+    let base = "require \"variables\";\r\n";
+    let err = compose(base, &rules, true).unwrap_err();
+    assert!(err.to_string().starts_with("rule 1 "), "{err}");
+    let err = compose(base, &rules, false).unwrap_err();
+    assert!(err.to_string().starts_with("rule 1 "), "{err}");
+    assert_eq!(
+        compose("if true {", &rules, false).unwrap_err().to_string(),
+        "the script cannot be edited rule by rule"
+    );
+}
+
+#[test]
+fn the_include_is_usable_only_where_include_is_listed_and_the_states_are_one() {
+    let doc = fixture("sieve_listing_with_reply_state_response.json");
+    let state = doc["methodResponses"][0][1]["state"].as_str().unwrap();
+    let reply_state = doc["methodResponses"][1][1]["state"].as_str();
+    assert_eq!(
+        Some(state),
+        reply_state,
+        "one counter, observed in one response"
+    );
+    let session = |extensions: Value| {
+        let doc = json!({
+            "capabilities": { "urn:ietf:params:jmap:core": {}, "urn:ietf:params:jmap:sieve": {} },
+            "primaryAccounts": { "urn:ietf:params:jmap:sieve": "c" },
+            "accounts": { "c": { "accountCapabilities": {
+                "urn:ietf:params:jmap:sieve": { "sieveExtensions": extensions }
+            } } },
+            "apiUrl": "https://mail.test.local/jmap/"
+        });
+        Session::parse(
+            &doc,
+            &reqwest::Url::parse("http://127.0.0.1:18080").unwrap(),
+            crate::session::SessionUrlPolicy::RebaseToConnection,
+            None,
+        )
+        .unwrap()
+    };
+    let with = session(json!(["include"]));
+    assert!(include_usable(&with, state, reply_state));
+    assert!(!include_usable(&with, state, Some("other")));
+    assert!(!include_usable(&with, state, None));
+    assert!(!include_usable(
+        &session(json!(["fileinto"])),
+        state,
+        reply_state
+    ));
 }

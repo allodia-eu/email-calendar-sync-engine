@@ -10,14 +10,21 @@
 //!   [`Unconditional`](VacationPrecondition::Unconditional) write the caller spelled out sends
 //!   none. A `VacationResponse` holds a window and a subject and answers everyone with one reply
 //!   ([`vocabulary`]).
-//! - **What the write did to the account's own rules is observed, not assumed.** Where the account
-//!   also has JMAP Sieve, the same request lists the scripts before and after the update, and an
-//!   effect is claimed only where the two listings' states are the write's `oldState` and
-//!   `newState`, so nothing else changed between them. Stalwart runs the reply as a script of its
-//!   own, and turning it on deactivates whatever script the user had active (RFC 9661 §2.1 allows
-//!   one), which the receipt reports as [`RulesEffect::Deactivated`]; turning it off switches
-//!   nothing back on, which it reports as [`RulesEffect::StillDeactivated`]. Without Sieve the
-//!   rules cannot be seen, so the effect is [`RulesEffect::Unknown`].
+//! - **While the user's rules run, the reply runs through them** (`crate::vacation_include`): where
+//!   a script of the user's runs and the condition holds (`jmap.md`, "the condition"), the words
+//!   are written with `isEnabled: false`, which activates nothing, and the rules script's `include`
+//!   of the reply's script switches it on and off, so the user's rules keep running
+//!   ([`RulesEffect::Untouched`]). A read lists the scripts in the same request and reads the reply
+//!   as on where that include runs it.
+//! - **Otherwise the server's own flag, and what it did to the rules is observed, not assumed.**
+//!   Where the account also has JMAP Sieve, the same request lists the scripts before and after the
+//!   update, and an effect is claimed only where the two listings' states are the write's
+//!   `oldState` and `newState`, so nothing else changed between them. Turning the reply on with the
+//!   flag deactivates whatever script ran (RFC 9661 §2.1 allows one), reported as
+//!   [`RulesEffect::Deactivated`]: on Stalwart only where the include path did not apply (the
+//!   condition failed, or the running script could not take the include). Turning it off switches
+//!   nothing back on, reported as [`RulesEffect::StillDeactivated`]. Without Sieve the rules cannot
+//!   be seen, so the effect is [`RulesEffect::Unknown`].
 //! - **No content in errors.** A failure names its method error or `SetError` type; the reply's
 //!   words never reach a message.
 
@@ -94,11 +101,17 @@ impl Vacation for JmapProvider {
         refuse_unheld_vacation(&vocabulary(), new)?;
         let guard = precondition.version(self.vacation_write_guard())?;
         let executor = self.executor();
-        if let Some(running) = crate::vacation_include::rules_running(executor).await? {
+        // While the user's rules run and the condition holds, through their include; where the
+        // running script cannot take the include, with the server's own flag, as without rules.
+        if let Some(prepared) = crate::vacation_include::prepare(executor).await?
+            && let Ok(toggled) = prepared.toggled(new.enabled)
+        {
             let account = vacation_account(executor.session())?;
             let body = to_json(new);
-            return crate::vacation_include::write(executor, account, guard, &running, new, body)
-                .await;
+            return crate::vacation_include::write(
+                executor, account, guard, &prepared, toggled, body,
+            )
+            .await;
         }
         Ok(write(executor, guard, new).await?)
     }
@@ -144,7 +157,8 @@ async fn read(executor: &dyn Executor) -> Result<VacationResponse, JmapError> {
         .and_then(|call| response.result(&call).ok())
         .and_then(|result| crate::sieve_scripts::parse(result).ok());
     if let Some(scripts) = scripts
-        && crate::vacation_include::runs(executor, &scripts).await?
+        && crate::sieve_scripts::include_usable(session, &scripts.state, Some(state))
+        && crate::vacation_include::runs(executor, &scripts).await
     {
         return Ok(reply.turned_on());
     }

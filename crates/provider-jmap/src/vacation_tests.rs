@@ -43,9 +43,11 @@ pub(super) fn with_sieve(responses: Vec<Value>) -> (JmapProvider, Arc<FakeExecut
     )
 }
 
-/// The calls of the last request: the write, after the listing that decides how to write it.
-pub(super) fn calls(exec: &FakeExecutor) -> Vec<(String, Value)> {
+/// The calls of the last of `count` requests: a write comes after the listing that decides how
+/// to write it (two), a read is one.
+pub(super) fn calls(exec: &FakeExecutor, count: usize) -> Vec<(String, Value)> {
     let requests = exec.requests.lock().unwrap();
+    assert_eq!(requests.len(), count, "requests sent");
     requests.last().expect("a request")["methodCalls"]
         .as_array()
         .unwrap()
@@ -119,7 +121,7 @@ async fn a_write_sends_every_part_guarded_by_the_version_read_between_two_script
     );
     let scripts = json!({ "accountId": "c", "ids": null, "properties": ["isActive"] });
     assert_eq!(
-        calls(&exec),
+        calls(&exec, 2),
         [
             ("SieveScript/get".to_owned(), scripts.clone()),
             (
@@ -214,7 +216,7 @@ async fn an_unconditional_write_sends_no_state_and_without_sieve_the_rules_are_u
         .unwrap();
 
     assert_eq!(receipt.rules, RulesEffect::Unknown);
-    let sent = calls(&exec);
+    let sent = calls(&exec, 1);
     assert_eq!(sent.len(), 1, "no script listing without Sieve");
     assert_eq!(sent[0].0, "VacationResponse/set");
     assert!(sent[0].1.get("ifInState").is_none());
@@ -393,9 +395,11 @@ async fn a_guarded_write_of_a_reply_never_read_is_refused_before_anything_is_sen
 }
 
 #[tokio::test]
-async fn a_script_listing_that_does_not_bracket_the_write_leaves_the_rules_unknown() {
-    // Stalwart shows one counter: the listing before is at the write's oldState and the listing
-    // after at its newState. Anything else means a change came between, so nothing is claimed.
+async fn listings_that_do_not_bracket_the_write_leave_the_rules_unknown() {
+    // A race, simulated: another client's write landed between a listing and the reply's write
+    // in the same request. Stalwart shows one counter, so the listing before is at the write's
+    // oldState and the listing after at its newState; anything else means a change came between,
+    // and nothing is claimed.
     let moved = |call: usize, state: &str| {
         let mut doc = fixture("vacation_set_deactivates_response.json");
         doc["methodResponses"][call][1]["state"] = json!(state);

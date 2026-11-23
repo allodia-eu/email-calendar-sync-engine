@@ -40,8 +40,8 @@ pub use plan::{
     ForwardingRules, Kept, Loss, LossReason, PlanMode, RuleOutcome, RulePart, RulesPlan, plan_rules,
 };
 pub use raw_rule::{Expansion, RawRule, RuleOrigin, RuleSyntax};
-pub use receipt::RulesReceipt;
-pub use rule::{MailRule, Match, MatchMode, RuleBody, RuleSet, TypedRule};
+pub use receipt::{ReplyEffect, RulesReceipt, RulesStored};
+pub use rule::{MailRule, Match, MatchMode, RuleBody, RuleSet, RulesActivation, TypedRule};
 pub use values::{MailboxPath, RuleAddress, RuleName, RuleValueError};
 pub use vocabulary::{RuleFeature, RuleVocabulary, Support};
 

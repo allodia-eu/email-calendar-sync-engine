@@ -756,17 +756,28 @@ then by `provider-jmap/tests/live_vacation.rs` (2026-11-23). Captured, scrubbed,
   `VacationResponse/set` creates it under that name. `live_rules_reply` pins it, so a server that
   renames it turns the suite red instead of silently losing replies.
 - **The two writes cannot share one request.** Stalwart ignores a result reference for `ifInState`
-  (STALWART-NEXT), so the include toggle goes in a second request, guarded by the `newState` the
+  (STALWART-7), so the include toggle goes in a second request, guarded by the `newState` the
   reply's write answered. If the first lands and the second does not, the words are stored and
   whether the reply runs is as it was: `requires_confirmation`, read before writing again.
 - **`SieveScript/set` is atomic, so nothing validates first.** An invalid create asking to be
   activated stored and activated nothing and left the state; an invalid update of the running
-  script left its bytes and its flag. Stalwart answers `invalidScript` where RFC 9661 says
-  `invalidSieve` (STALWART-NEXT); both are `item_unavailable`. Stalwart accepts unknown names in
-  `require` silently (STALWART-NEXT), so the proof that it enforces its list uses `imapsieve`,
+  script left its bytes and its flag (and Stalwart's validate cannot see a blob uploaded in the
+  same request, STALWART-6). Stalwart answers `invalidScript` where RFC 9661 says
+  `invalidSieve` (STALWART-5); both are `item_unavailable`. Stalwart accepts unknown names in
+  `require` silently (STALWART-8), so the proof that it enforces its list uses `imapsieve`,
   which it knows and refuses.
 - **A flag after `fileinto` misses the filed copy** (RFC 5232 §3, delivered): the writer puts marks
   first, and reads only that order typed.
+
+**Follow-ups from slice 2.**
+
+- **Switching stored rules on.** A write keeps rules where they are, running or not
+  (`RuleSet::activation`); the engine never activates a script the user left off, as it never
+  reactivates one the reply switched off. A host that wants to offer "switch your rules on" needs
+  a deliberate verb for it, not yet designed.
+- **The reply's script name.** The include names `vacation`, Stalwart's; RFC 9661 names none.
+  Another JMAP server with a reply script of another name leaves the include naming nothing
+  (`:optional`) until its name is known; the condition the adapter checks is in `jmap.md`.
 
 **Still to settle:**
 

@@ -110,6 +110,7 @@ async fn live_rules_and_the_reply_run_together() {
     let bob = provider(&harness, &bob_who).await;
     let bob_raw = client(&harness, &bob_who).await;
     let (prior, _) = scripts(&carol_raw).await;
+    let prior_reply = reply_object(&carol_raw).await;
     let marker = sieve_common::marker("reply");
     let folder = format!("{marker}-folder");
     let folder_id = create_folder(&carol_raw, &folder).await;
@@ -126,10 +127,23 @@ async fn live_rules_and_the_reply_run_together() {
     let checked = AssertUnwindSafe(exercise(&run, &prior))
         .catch_unwind()
         .await;
-    let restored = restore(&carol_raw, &prior).await;
-    remove_folder(&carol_raw, &folder_id).await;
-    remove_messages(&carol_raw, &marker).await;
-    remove_messages(&bob_raw, &marker).await;
+    // Each cleanup step runs whatever the others do.
+    let restored = sieve_common::cleanup("restoring Carol", async {
+        if let Err(problem) = restore(&carol_raw, &prior, &prior_reply).await {
+            panic!("{problem}");
+        }
+    })
+    .await;
+    let folder =
+        sieve_common::cleanup("removing the folder", remove_folder(&carol_raw, &folder_id)).await;
+    let carol_mail = sieve_common::cleanup(
+        "removing Carol's mail",
+        remove_messages(&carol_raw, &marker),
+    )
+    .await;
+    let bob_mail =
+        sieve_common::cleanup("removing Bob's mail", remove_messages(&bob_raw, &marker)).await;
+    let restored = restored.and(folder).and(carol_mail).and(bob_mail);
     if let Err(failed) = checked {
         if let Err(problem) = restored {
             eprintln!("and restoring Carol failed too: {problem}");
@@ -141,8 +155,8 @@ async fn live_rules_and_the_reply_run_together() {
 
 async fn exercise(run: &Run<'_>, prior: &[sieve_common::Listed]) {
     assert!(
-        prior.iter().all(|(_, _, active, _)| !active),
-        "the suite starts with none of Carol's scripts running: {prior:?}"
+        prior.is_empty(),
+        "the suite starts only where Carol has no scripts, so it changes none of hers: {prior:?}"
     );
     let m = &run.marker;
 
@@ -198,6 +212,16 @@ async fn exercise(run: &Run<'_>, prior: &[sieve_common::Listed]) {
         .replace_rules(&account(), &empty, &wanted)
         .await
         .expect("rules written");
+    assert_eq!(
+        receipt.stored,
+        engine_core::rules::RulesStored::CreatedRunning,
+        "no script to edit: one is made and switched on"
+    );
+    assert_eq!(
+        receipt.reply,
+        engine_core::rules::ReplyEffect::Untouched,
+        "the reply keeps running through it"
+    );
     assert!(
         receipt
             .outcomes

@@ -29,14 +29,16 @@ use engine_core::{
     mail::{Importance, Keyword, MailboxRole},
     rules::{
         Action, Condition, HeaderField, Kept, MailRule, MailboxPath, Match, RuleBody, RuleFeature,
-        RuleMailbox, RuleName, SizeBound, TextOp, TextTest,
+        RuleMailbox, RuleName, RulesActivation, RulesStored, SizeBound, TextOp, TextTest,
     },
 };
 use engine_provider::{MailRules, WriteGuard};
 use futures_util::FutureExt;
 use provider_jmap::JmapClient;
 use serde_json::json;
-use sieve_common::{account, client, provider, restore, rules, scripts, sieve_set, text, validate};
+use sieve_common::{
+    account, client, provider, reply_object, restore, rules, scripts, sieve_set, text, validate,
+};
 
 fn subject(op: TextOp, value: &str) -> Condition {
     Condition::Header {
@@ -109,10 +111,11 @@ async fn live_rules_are_written_guarded_read_back_typed_and_refused_whole() {
     let carol = provider(&harness, &harness.scratch[1]).await;
     let raw = client(&harness, &harness.scratch[1]).await;
     let (prior, _) = scripts(&raw).await;
+    let prior_reply = reply_object(&raw).await;
     let checked = AssertUnwindSafe(exercise(rules(&carol), &raw, &prior))
         .catch_unwind()
         .await;
-    let restored = restore(&raw, &prior).await;
+    let restored = restore(&raw, &prior, &prior_reply).await;
     if let Err(failed) = checked {
         if let Err(problem) = restored {
             eprintln!("and restoring Carol failed too: {problem}");
@@ -124,8 +127,8 @@ async fn live_rules_are_written_guarded_read_back_typed_and_refused_whole() {
 
 async fn exercise(rules: &dyn MailRules, raw: &JmapClient, prior: &[sieve_common::Listed]) {
     assert!(
-        prior.iter().all(|(_, _, active, _)| !active),
-        "the suite starts with none of Carol's scripts running: {prior:?}"
+        prior.is_empty(),
+        "the suite starts only where Carol has no scripts, so it changes none of hers: {prior:?}"
     );
     assert_eq!(rules.rules_write_guard(), WriteGuard::Enforced);
     let vocabulary = rules.rule_vocabulary(&account()).await.unwrap();
@@ -159,11 +162,13 @@ async fn exercise(rules: &dyn MailRules, raw: &JmapClient, prior: &[sieve_common
         "{:?}",
         receipt.outcomes
     );
+    assert_eq!(receipt.stored, RulesStored::CreatedRunning);
     let read = rules.read_rules(&account()).await.unwrap();
     assert_eq!(
         read.version, receipt.version,
         "the receipt's version is the rules'"
     );
+    assert_eq!(read.activation, RulesActivation::Running);
     let mut expected = unplaced(&wanted);
     // `fileinto "INBOX"` names the inbox, which reads back as its role.
     expected[3] = MailRule::typed(
@@ -243,7 +248,7 @@ async fn exercise(rules: &dyn MailRules, raw: &JmapClient, prior: &[sieve_common
     eprintln!("an invalid create: {refused}");
     assert_eq!(
         refused["notCreated"]["s1"]["type"], "invalidScript",
-        "STALWART-NEXT: not invalidSieve"
+        "STALWART-5: not invalidSieve"
     );
     assert_eq!(
         scripts(raw).await,
@@ -290,7 +295,8 @@ async fn exercise(rules: &dyn MailRules, raw: &JmapClient, prior: &[sieve_common
 
     // The vocabulary is the server's: what the writer used was accepted above, and an extension
     // the server does not list is refused. Stalwart takes an unknown name in `require` silently
-    // and refuses only a known one it lacks, so `imapsieve` is the probe that can fail.
+    // and refuses only a known one it lacks (STALWART-8), so `imapsieve` is the probe that can
+    // fail.
     let refused = validate(raw, "require \"imapsieve\";\r\nkeep;\r\n").await;
     assert_eq!(refused["error"]["type"], "invalidScript", "{refused}");
     let accepted = validate(raw, &script).await;

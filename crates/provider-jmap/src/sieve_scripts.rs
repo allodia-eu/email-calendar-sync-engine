@@ -10,13 +10,15 @@
 //! the rules script's first command, so no rule's `stop` or `discard` keeps the reply from
 //! running.
 
+use core::fmt;
+
 use engine_core::{
     ids::BlobId,
     rules::{MailRule, RuleBody},
 };
 use engine_sieve::{
     Segment, SegmentKind,
-    dialect::{DialectError, carried, read_rules, write_rules},
+    dialect::{DialectErrorKind, carried, read_rules, write_rules},
     segment, string,
 };
 use serde_json::{Value, json};
@@ -25,6 +27,7 @@ use crate::{
     error::JmapError,
     executor::Executor,
     request::{CallId, Request},
+    session::Session,
     session_accounts::JmapAccountId,
 };
 
@@ -134,6 +137,22 @@ impl Scripts {
     }
 }
 
+/// Whether the engine may run the reply through the rules script's `include`, on what this
+/// response shows: the account lists `include`, and `state`, the `SieveScript` state, is the
+/// `VacationResponse` state `reply_state` read in the same response, so the two are one counter
+/// and the reply's words live in a script the rules can include. Both hold on Stalwart; where
+/// either does not, the reply is written with the server's own flag (`jmap.md`, "the
+/// condition").
+pub(crate) fn include_usable(session: &Session, state: &str, reply_state: Option<&str>) -> bool {
+    let lists_include = session.sieve.as_ref().is_some_and(|sieve| {
+        sieve
+            .extensions
+            .iter()
+            .any(|extension| extension.eq_ignore_ascii_case("include"))
+    });
+    lists_include && reply_state == Some(state)
+}
+
 /// Whether the reply runs: the server keeps it in a script, and that script is active, or the
 /// active rules script, whose text is `running_text`, includes it. The one answer the reply's
 /// read and the rules' write both use.
@@ -149,30 +168,38 @@ pub(crate) fn includes_reply(text: &str) -> bool {
     segment(text).is_ok_and(|segments| segments.iter().any(is_reply_include))
 }
 
-/// Whether `segment` is an `include` of the reply's script, however it is written.
+/// Whether `segment` is an `include` of the reply's script: of the user's own scripts
+/// (`:personal`, or no location, which RFC 6609 §3.2 makes the same), optionally `:optional` or
+/// `:once`. A `:global` include names another script of that name, not the reply's.
 fn is_reply_include(segment: &Segment<'_>) -> bool {
-    if segment.kind() != SegmentKind::Command
-        || !segment
-            .tokens()
-            .first()
-            .is_some_and(|name| name.is_identifier("include"))
-    {
-        return false;
-    }
-    let mut strings = segment
+    let significant: Vec<_> = segment
         .tokens()
         .iter()
-        .filter(|token| token.kind().is_string());
-    let target = strings.next().and_then(string::value);
-    target.as_deref() == Some(REPLY_SCRIPT) && strings.next().is_none()
+        .filter(|token| !token.kind().is_trivia())
+        .collect();
+    let [name, middle @ .., target, end] = significant.as_slice() else {
+        return false;
+    };
+    segment.kind() == SegmentKind::Command
+        && name.is_identifier("include")
+        && end.kind() == engine_sieve::TokenKind::Semicolon
+        && middle
+            .iter()
+            .all(|tag| tag.is_tag("personal") || tag.is_tag("optional") || tag.is_tag("once"))
+        && string::value(target).as_deref() == Some(REPLY_SCRIPT)
 }
 
-/// Whether `rule` is the include of the reply's script, which is no rule of the user's.
+/// Whether `rule` is the include of the reply's script, which is no rule of the user's: a rule
+/// that is exactly that one command, never a whole script carried as one rule that holds it.
 pub(crate) fn is_reply_include_rule(rule: &MailRule) -> bool {
     match &rule.body {
-        RuleBody::Opaque(raw) => {
-            segment(raw.text()).is_ok_and(|segments| segments.iter().any(is_reply_include))
-        }
+        RuleBody::Opaque(raw) => segment(raw.text()).is_ok_and(|segments| {
+            let commands: Vec<_> = segments
+                .iter()
+                .filter(|segment| segment.kind() != SegmentKind::Trailing)
+                .collect();
+            matches!(commands.as_slice(), [only] if is_reply_include(only))
+        }),
         _ => false,
     }
 }
@@ -185,13 +212,39 @@ pub(crate) fn user_rules(text: &str) -> Vec<MailRule> {
         .collect()
 }
 
+/// Why `rules` could not be written over a script: the dialect's refusal, with the index of the
+/// rule it names counted among the rules handed in, not among those written with the include.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ComposeError {
+    kind: DialectErrorKind,
+    rule: Option<usize>,
+}
+
+impl fmt::Display for ComposeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.kind, self.rule) {
+            (DialectErrorKind::Unsplittable(_), _) => {
+                f.write_str("the script cannot be edited rule by rule")
+            }
+            (DialectErrorKind::Variable { .. }, Some(rule)) => {
+                write!(
+                    f,
+                    "rule {rule} holds a value the script's variables would expand"
+                )
+            }
+            (_, Some(rule)) => write!(f, "rule {rule} holds what the Sieve writer cannot write"),
+            (_, None) => f.write_str("the script's require cannot be written"),
+        }
+    }
+}
+
 /// `rules` written over `base`, with the include of the reply first where `reply_on`, and
 /// without it otherwise. An include `base` already has is copied as it was.
 pub(crate) fn compose(
     base: &str,
     rules: &[MailRule],
     reply_on: bool,
-) -> Result<String, DialectError> {
+) -> Result<String, ComposeError> {
     let mut list = Vec::with_capacity(rules.len() + 1);
     if reply_on {
         let existing = read_rules(base).into_iter().find(is_reply_include_rule);
@@ -199,13 +252,21 @@ pub(crate) fn compose(
         let include = carried(INCLUDE_REPLY).map(MailRule::opaque);
         list.extend(existing.or(include));
     }
-    list.extend(
-        rules
-            .iter()
-            .filter(|rule| !is_reply_include_rule(rule))
-            .cloned(),
-    );
-    write_rules(base, &list)
+    let offset = list.len();
+    let kept: Vec<usize> = (0..rules.len())
+        .filter(|&i| !is_reply_include_rule(&rules[i]))
+        .collect();
+    list.extend(kept.iter().map(|&i| rules[i].clone()));
+    write_rules(base, &list).map_err(|err| {
+        let kind = err.kind();
+        let rule = match kind {
+            DialectErrorKind::Unrenderable { rule } | DialectErrorKind::Variable { rule } => rule
+                .checked_sub(offset)
+                .and_then(|at| kept.get(at).copied()),
+            _ => None,
+        };
+        ComposeError { kind, rule }
+    })
 }
 
 /// A script's text, downloaded by its blob id.

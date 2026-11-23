@@ -247,34 +247,43 @@ pub(crate) async fn remove_messages(client: &JmapClient, text: &str) {
         .expect("remove this run's messages");
 }
 
-/// Puts Carol's reply back off and empty, removes every script not in `prior`, and checks the
-/// scripts are as they were: what each suite ends with, pass or fail.
-pub(crate) async fn restore(client: &JmapClient, prior: &[Listed]) -> Result<(), String> {
+/// Puts Carol's reply back as `prior_reply` (the object read before the suite), removes every
+/// script not in `prior` (deactivating one only where it is the suite's), and checks the scripts
+/// are as they were: what each suite ends with, pass or fail. It touches nothing the suite did not
+/// change: each suite starts only on an account with no scripts at all.
+pub(crate) async fn restore(
+    client: &JmapClient,
+    prior: &[Listed],
+    prior_reply: &Value,
+) -> Result<(), String> {
     let account = client
         .session()
         .account_for(capability::VACATION_RESPONSE)
         .unwrap()
         .clone();
+    let mut back = prior_reply.clone();
+    if let Some(object) = back.as_object_mut() {
+        object.remove("id");
+    }
     let mut request = Request::new([capability::CORE, capability::VACATION_RESPONSE]);
     request.invoke(
         "VacationResponse/set",
-        json!({ "accountId": account, "update": { "singleton": {
-            "isEnabled": false, "fromDate": null, "toDate": null,
-            "subject": null, "textBody": null, "htmlBody": null
-        } } }),
+        json!({ "accountId": account, "update": { "singleton": back } }),
     );
     client
         .execute(&request)
         .await
         .map_err(|err| format!("the reply: {err}"))?;
     let (now, _) = scripts(client).await;
-    let added: Vec<&str> = now
+    let added: Vec<&Listed> = now
         .iter()
         .filter(|(id, ..)| prior.iter().all(|(was, ..)| was != id))
-        .map(|(id, ..)| id.as_str())
         .collect();
-    sieve_set(client, json!({ "onSuccessDeactivateScript": true }), None).await;
-    let answer = sieve_set(client, json!({ "destroy": added }), None).await;
+    if added.iter().any(|(.., active, _)| *active) {
+        sieve_set(client, json!({ "onSuccessDeactivateScript": true }), None).await;
+    }
+    let ids: Vec<&str> = added.iter().map(|(id, ..)| id.as_str()).collect();
+    let answer = sieve_set(client, json!({ "destroy": ids }), None).await;
     if answer.get("notDestroyed").is_some() {
         return Err(format!("removing the suite's scripts: {answer}"));
     }
@@ -287,7 +296,23 @@ pub(crate) async fn restore(client: &JmapClient, prior: &[Listed]) -> Result<(),
     if shape(&after) != shape(prior) {
         return Err(format!("the scripts differ: {:?}", shape(&after)));
     }
+    if reply_object(client).await != *prior_reply {
+        return Err("the reply differs from what it was".to_owned());
+    }
     Ok(())
+}
+
+/// Runs `step`, a part of a suite's cleanup, so that one that panics leaves the others to run:
+/// its panic is reported, and the suite fails after every step has had its turn.
+pub(crate) async fn cleanup(
+    what: &str,
+    step: impl std::future::Future<Output = ()>,
+) -> Result<(), String> {
+    use futures_util::FutureExt;
+    std::panic::AssertUnwindSafe(step)
+        .catch_unwind()
+        .await
+        .map_err(|_| format!("{what} panicked"))
 }
 
 /// The harness, ready, or `None` where no harness is configured.

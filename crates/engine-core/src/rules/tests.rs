@@ -139,6 +139,25 @@ fn a_vocabulary_answers_what_it_was_given() {
 fn a_receipt_carries_its_version_and_outcomes() {
     let receipt = RulesReceipt::new(Some(RuleSetVersion::new("s2")), Vec::new());
     assert_eq!(
+        (receipt.stored, receipt.reply),
+        (RulesStored::InPlace, ReplyEffect::Untouched)
+    );
+    let created = receipt
+        .clone()
+        .stored(RulesStored::CreatedRunning)
+        .with_reply(ReplyEffect::Stopped);
+    assert_eq!(
+        (created.stored, created.reply),
+        (RulesStored::CreatedRunning, ReplyEffect::Stopped)
+    );
+    assert_eq!(RuleSet::default().activation, RulesActivation::Running);
+    assert_eq!(
+        RuleSet::new(Vec::new())
+            .with_activation(RulesActivation::Inactive)
+            .activation,
+        RulesActivation::Inactive
+    );
+    assert_eq!(
         receipt.version.as_ref().map(RuleSetVersion::as_str),
         Some("s2")
     );

@@ -55,6 +55,18 @@ pub trait MailRules: Send + Sync {
     /// [`Edit`](engine_core::rules::PlanMode::Edit) mode, and the receipt carries its outcome per
     /// rule: a rule the account cannot hold is not written, and the receipt says so.
     ///
+    /// The rules are written where they are, running or not as they were
+    /// ([`RuleSet::activation`]): a write never switches stored rules on or off. Only an account
+    /// with no rules to edit gets new ones that run
+    /// ([`RulesStored::CreatedRunning`](engine_core::rules::RulesStored::CreatedRunning)), and the
+    /// receipt says what that did to a running reply
+    /// ([`ReplyEffect`](engine_core::rules::ReplyEffect)).
+    ///
+    /// The guard is `base`'s version and nothing else: there is no unconditional write, unlike
+    /// [`Vacation::set_vacation`](crate::Vacation::set_vacation)'s, because no host has needed a
+    /// deliberate overwrite of a rule set yet, and writing a script over one nobody read is how a
+    /// user's hand-written rules are lost. One is an addition when a host needs it.
+    ///
     /// # Errors
     ///
     /// Refused before anything is sent, so never written:
@@ -70,7 +82,10 @@ pub trait MailRules: Send + Sync {
     /// - [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict) when the rules
     ///   moved since `base` was read: read them again, and write again from that.
     /// - [`item_unavailable`](ProviderError::item_unavailable) when the server refused the written
-    ///   rules as invalid; nothing was stored.
+    ///   rules as invalid or too large; nothing was stored.
+    /// - [`refused_by_target`](ProviderError::refused_by_target) with
+    ///   [`StorageFull`](crate::TargetRefusal::StorageFull) when the account has no room for the
+    ///   rules (JMAP's `overQuota`); waiting does not clear it.
     /// - [`requires_confirmation`](ProviderError::requires_confirmation) when the request went out
     ///   and no answer came back, so the rules may have been written: read them before writing
     ///   again.

@@ -227,10 +227,34 @@ the group's.
   in the reply's script and activates nothing), then, in a second request guarded by the
   `newState` the first answered, updates the rules script with its `include` of the reply added
   (on) or taken out (off). Two requests, because Stalwart ignores a result reference for
-  `ifInState` (`docs/spec-deviations.md`). If the first lands and the second does not, the words
+  `ifInState` (`docs/spec-deviations.md`, STALWART-7). If the first lands and the second does not, the words
   are stored and whether it runs is as it was: `requires_confirmation`. A read lists the scripts
   in the same request and answers on where the reply's script is active, or the running rules
   script includes it: `sieve_scripts::reply_runs`, the one answer the reply and the rules share.
+
+  **The condition**, checked on every request, not by server name. The include path is taken
+  only where all of these hold; otherwise the reply is written and read with the server's own flag,
+  as without rules, and the receipt reports what that did to them (`RulesEffect`), never a
+  refusal:
+
+  | Fact | How it is checked | On Stalwart v1.0.2 | Where it does not hold |
+  |---|---|---|---|
+  | A script of the user's runs | the listing | when the user has rules | the flag: nothing to keep running |
+  | The account lists `include` | the session's `sieveExtensions` | yes | the flag |
+  | `VacationResponse` and `SieveScript` are one counter | both states, read in one response, equal | yes (live) | the flag |
+  | The running script can be read, and rewritten where the reply's state changes | its blob downloads as UTF-8, and the dialect can write it | for scripts it can split | the flag |
+  | The reply's script is named `vacation` | **not checkable**: the constant `REPLY_SCRIPT`, observed, pinned by `live_rules_reply` | yes (live) | a server that names it otherwise: the include names nothing (`:optional`), the reply does not run through the rules, and the suite turns red |
+
+  The same surface on the other transports, for the "provider-neutral" survey: ManageSieve (slice
+  3) keeps the reply and the rules in one script the engine writes, so there is no second script
+  to include; Graph and Gmail keep the reply apart from the rules, so neither stops the other. The
+  include is JMAP's answer to a reply kept as a script of its own, and the neutral types
+  (`RulesEffect`, `ReplyEffect`) describe the effect, not the provider.
+
+  **What the include path rewrites.** It writes over whatever user script is running, another
+  client's included, adds `include` to its `require` (and keeps it there when the reply goes off:
+  a require never drops a name), and when the reply goes off removes every top-level
+  `include :personal "vacation"` it finds, a hand-written one too.
 
   **What another client sees.** On such an account `VacationResponse/get` answers
   `isEnabled: false` while the reply runs, and switching it off there does nothing: the include,
@@ -275,11 +299,20 @@ answers it where the session addresses an account with `urn:ietf:params:jmap:sie
   updates (or creates) and activates it, with `ifInState` set to the read version; a listing at a
   newer state is a `Conflict` before anything is sent. A script over `maxSizeScript` is
   `item_unavailable` before sending.
+- **Where the rules are written.** In place, running or not as they were: a write never switches
+  a stored script on or off (`RuleSet::activation` says which it is). Only an account with no
+  script to edit gets `rules`, created and made the active one (`RulesStored::CreatedRunning`).
+  What a write would copy unchanged, and whether the reply runs, come from the server's script:
+  `base`'s raw form stands for it only where `base` was read at the state just listed, and is
+  downloaded otherwise. Where the reply ran and the written script cannot include it (the
+  condition above fails), the receipt says `ReplyEffect::Stopped`.
+- **Refusals.** `invalidScript`/`invalidSieve` and `tooLarge` are `item_unavailable`; `overQuota`
+  is `refused_by_target(StorageFull)`, the account's own state, which waiting does not clear.
 - **No validate before set.** `SieveScript/set` refuses an invalid script whole, proven live both
   ways: an invalid create asking to be activated stores and activates nothing and leaves the
   state, and an invalid update of the running script leaves its bytes and its flag. So
   `SieveScript/validate` would add a round trip and no safety, and on Stalwart it cannot see a
-  blob uploaded in the same request anyway. `invalidScript` (Stalwart) and `invalidSieve` (RFC
+  blob uploaded in the same request anyway (STALWART-6). `invalidScript` (Stalwart, STALWART-5) and `invalidSieve` (RFC
   9661) are the same refusal, `item_unavailable`, naming the type and never the description, which
   quotes the script.
 - **Order matters on delivery.** A flag set after a `fileinto` misses the filed copy on Stalwart,
