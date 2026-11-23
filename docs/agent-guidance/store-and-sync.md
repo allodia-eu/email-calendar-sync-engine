@@ -453,14 +453,26 @@ and the two are different jobs:
   snapshot/backfill: IMAP `UID SEARCH SINCE`, JMAP an `Email/query` `after`, Graph a
   `receivedDateTime ge` `$filter`, Gmail `q: after:`. **No delta can carry one** — a
   `deltaLink`, a `startHistoryId` and `Email/changes` all take a cursor, not a query.
-- **Where a pass resumes.** The orchestrator stores each email cursor with the depth it was
-  fetched under (`engine_sync::window_cursor`): a folder-bound scope's folder floor, an
-  account-wide scope's account floor and the floor of every mailbox held further back
-  (below). A pass asking for an earlier floor, for the account or for any such mailbox,
-  starts the scope over, since the cursor knows nothing of the mail between the two. A later
-  floor resumes: a host computes the floor from today, so it moves on every day. The record
-  is what starts the scope over; clearing the cursors (`clear_mail_cursors`) is what stops a
-  pass already running under the old window, at its next commit, rather than after it ends.
+- **Where a pass resumes, and how it widens.** Each email cursor is stored with the depth it
+  **covers** and, while a widening runs, the depth it widens **to** (`StampedCursor`, in
+  `engine-core`, so a store can read the record): a folder-bound scope's folder window, an
+  account-wide scope's account window and every mailbox held further back (below). The decision
+  is `engine_sync::window_cursor`'s. A depth the covered one covers resumes with a delta: a host
+  computes the floor from today, so it moves on every day and never widens anything. A depth
+  reaching further back **widens**: the pass runs its delta, then `Provider::widen_email` with
+  `Widening::new(covered, asked)` under the same lease, and records the asked depth as covered
+  only in a commit of its own once the band stream has ended, so a pass killed mid-band claims
+  nothing it did not fetch. The record also says whether the band has begun, and **the
+  orchestrator, not the adapter, decides whether the next pass continues it**
+  (`Widening::resuming`): only when the band had begun toward a depth covering the one asked, so
+  a pass under a narrower window in between, which may have dropped band mail, makes the next
+  widening start afresh. A band adapter
+  fetches only `Widening::bands()` as additive chunks that tombstone nothing and checkpoint the
+  adapter's position in the band beside the kept delta cursor; the default **reopens**, a fresh
+  pass over the wider window, which is what the clear used to cost and is still correct for
+  every adapter. A host therefore never clears cursors to widen. `clear_mail_cursors` stops a
+  pass already running at its next commit, and forces a fresh snapshot
+  (`docs/design/windows-and-widening.md`).
 - **What a `PassMode::Additive` delta stores.** Any incoming message the window does not
   admit (`MailboxWindows::admits`) is dropped before the apply. The rule lives on the chunk,
   `EmailChunk::into_update` in `engine-provider`, so `engine-sync`'s streaming loop and a host
@@ -484,6 +496,12 @@ and never tombstoned either. Depth on the snapshot path is the adapter's job, an
 `admits` compares **dates**, inclusively, against `received_at` falling back to `sent_at` —
 the same value `MailRow::date_utc` carries — and admits **undated** mail, which is not provably
 outside the window.
+
+**No host does date arithmetic of its own.** `SyncWindow::months_back(n, today)` is the one rule
+for "N months back" (whole calendar months, the day clamped to the month it lands in: 31 March
+less one month is 28 February), `today` being the host's day, since the engine reads no clock
+there; "all mail" is `SyncWindow::full()`. A calendar horizon around a day is
+`Horizon::days(from, until)` over `CalendarDate::checked_add_days` and `checked_months_before`.
 
 **A mailbox held further back (`MailboxWindows`).** A host that wants one mailbox's longer
 history (a Sent folder) deepens it, `MailboxWindows::new(account).deepen(mailbox, window)`,
@@ -509,21 +527,25 @@ inside when the window of any mailbox it is filed in admits it** (`MailboxWindow
 - **What a prune keeps.** `prune_account_mail_outside_window` takes the same `MailboxWindows`,
   so a depth-reduction prune never deletes what a deeper pass fetched.
 - **Recipient coverage** records the **account** window: it claims how far back every
-  mailbox's recipients were observed, which a deeper Sent does not make true.
-- **The deeper pass starts on its own.** Every cursor records the depth it was fetched under
-  (`window_cursor`, above), so the next pass after a mailbox is deepened starts over the one
-  scope that fetches it: that folder on IMAP and Graph, while every other folder resumes; the
-  account's one scope on JMAP and Gmail, whose snapshot or backfill then fetches the account's
-  window again beside the deepened mailbox's older mail. That is the price of one
-  enumeration serving every mailbox, and it is the same price widening the account pays. A
-  host does not clear the mail cursors to deepen a mailbox; a pass already running finishes
-  under the windows it began with, and the next one starts over. Holding a mailbox less far back,
-  or no longer at all, resumes; what the narrower window no longer wants stays until a prune.
+  mailbox's recipients were observed, which a deeper Sent does not make true. A wider account
+  window is recorded only once every folder of the pass reached it (`FolderSync::reached_window`):
+  until a widening's bands have all ended, the record keeps the window it had.
+- **The deeper pass starts on its own.** Every cursor records the depth it covers
+  (`window_cursor`, above), so the next pass after a mailbox is deepened widens the one scope
+  that fetches it, by that mailbox's band alone where the adapter widens by band
+  (`Widening::band_for(folder)` for a folder-bound scope, `Widening::bands()` for an account-wide
+  one), with every other folder resuming: deepening is widening. An adapter on the default reopen
+  fetches its scope's whole new window again instead. A host does not clear the mail cursors to
+  deepen a mailbox; a pass already running finishes under the windows it began with, and the
+  next one widens. Holding a mailbox less far
+  back, or no longer at all, resumes; what the narrower window no longer wants stays until a
+  prune.
 
 **Change events (`SyncObserver` / `SyncCommit`).** After every committed chunk the
 orchestrator calls the caller's `SyncObserver::committed` with a `SyncCommit { scope,
-fetched, total, upserted, removed }` — the running progress *and* the exact rows that
-just landed (borrowed, zero-copy on the engine side). A host splices its view from
+fetched, total, upserted, removed, tombstoned, widening }` — the running progress *and* the exact
+rows that just landed (borrowed, zero-copy on the engine side). `widening` marks a commit of a
+widening's band, whose `fetched`/`total` count the band alone, so a host can label it older mail. A host splices its view from
 `upserted`/`removed` **without re-querying** the mailbox. (Reconcile tombstones are
 computed by present-set diff inside the store, so they are not enumerated in `removed`;
 the pass's `SyncApplied::tombstoned` count signals a host may re-read to reconcile.)
@@ -817,8 +839,11 @@ than a delta off a cursor over rows that are gone.
 ## Local depth narrowing without a provider
 
 The per-sync `window` (`SyncWindow { since }`, above) lets a host **widen or narrow** sync
-depth on the next sync without reconnecting. Narrowing is enforced for a reachable account by
-clearing the mail cursors and re-syncing: the snapshot under the narrower window carries only
+depth on the next sync without reconnecting. Widening needs nothing more: the next pass widens
+each scope by band (above). Narrowing is enforced for a reachable account by clearing the mail
+cursors and re-syncing (until the prune lowers the recorded depth itself, slice 3 of
+`docs/design/windows-and-widening.md`; a cursor left stamped deeper than the store holds after a
+prune would widen back to nothing): the snapshot under the narrower window carries only
 in-window ids, so its reconciliation **tombstones the out-of-window rows**. That path needs the
 provider. When the account cannot reach it, the app can store the new depth but cannot force
 that re-snapshot — so the engine owns a local cleanup that reproduces the *same* end state

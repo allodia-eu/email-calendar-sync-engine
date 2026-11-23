@@ -1,10 +1,12 @@
 # Windows and widening
 
-Status: design note, not implemented. Direction approved by the owner: **windows are neutral and
-widen without a re-read** (`north-star.md`, principle 8). The owner settled the open questions on
-2026-11-23 (§11); what is still undecided waits on a live test, not on a choice. Changes to
-public types and to `Provider` named here still need the owner's OK before they land
-(`AGENTS.md`, "Breaking changes").
+Status: slice 1 implemented (§10, item 1): the vocabulary, `Widening` and `Band`, the stamp and
+its decision table, `Provider::widen_email` (this change); the IMAP and JMAP bands (the two
+stacked on it). Slices 2 to 5 are not.
+Direction approved by the owner: **windows are neutral and widen without a re-read**
+(`north-star.md`, principle 8). The owner settled the open questions on 2026-11-23 (§11); what is
+still undecided waits on a live test, not on a choice. Where slice 1's live runs proved the body
+wrong, the body now says what was built, and §12 lists each correction.
 
 This note fixes three things: a neutral vocabulary for "how far back", so no host does month
 arithmetic of its own; a **widening** operation that fetches only what a wider window newly
@@ -126,9 +128,18 @@ impl Widening {
     pub fn band_for(&self, mailbox: &MailboxId) -> Option<Band>;
 }
 
-/// Mail dated in `[since, before)`, in one mailbox or in any.
-pub struct Band { pub mailbox: Option<MailboxId>, pub since: Option<CalendarDate>, pub before: CalendarDate }
+/// Mail dated in `[since, before)`, in one mailbox or in any. Read through `mailbox()`,
+/// `since()` and `before()`; `admits(mailboxes, date)` says whether a message is in it.
+pub struct Band { mailbox: Option<MailboxId>, since: Option<CalendarDate>, before: Option<CalendarDate> }
+
+impl MailboxWindows {
+    /// The bands that enumerate this whole window: the same rule from a store holding nothing.
+    pub fn bands(&self) -> Vec<Band>;
+}
 ```
+
+`before` is `None` only in a whole window's listing (its account band has no upper end); a
+widening's bands always have one.
 
 The bands are computed by one rule, so no adapter derives them:
 
@@ -141,12 +152,18 @@ The bands are computed by one rule, so no adapter derives them:
 Gmail's `window_listing::listings` and JMAP's `email_filter` already enumerate a whole window in
 this shape (the account from its floor, each deepened mailbox from its floor up to the
 account's). The band rule is the same rule with an upper end, so the two adapters' copies and the
-band computation should become one implementation in `engine-core`.
+band computation are one implementation in `engine-core`: `MailboxWindows::bands` is the rule
+from a store holding nothing, and JMAP's `email_filter` is built on it (slice 1; Gmail's in
+slice 2).
 
-Properties, tested as properties (§9): for any windows `from ⊆ to`, mailbox set and date,
-`to.admits ∧ ¬from.admits ⇔ some band admits`, and no band admits what `to` does not. The account
-band and a mailbox band never overlap in date; two mailbox bands may, for a message filed in both,
-which is listed twice and stored once.
+Properties, checked exhaustively over every combination of a small universe of floors, mailbox
+overrides, mailbox sets and dates (§9): for any windows and any message, `to.admits ∧
+¬from.admits ⇒ some band admits` (no gap), and `some band admits ⇒ to.admits` (nothing past the
+wider window). The converse of the first holds only for a message filed in one mailbox that `from`
+did not hold further back: the account band and a mailbox band never share a date, but two mailbox
+bands may (a message filed in both is listed twice), and the account band lists any mailbox, so a
+mailbox `from` held further back has that older mail listed again once the account floor moves past
+it. Every such repeat is the same key, which the store upserts once (§4.4).
 
 ### 3.3 Calendar: `Horizon` helpers
 
@@ -265,27 +282,36 @@ Band chunks are `Additive`, not a new mode, on purpose:
 Two records, each owned by the layer that understands it:
 
 - **The orchestrator's stamp** (`window_cursor`) records the depth the scope *covers*, as now, and,
-  while a widening is in progress, the *target* depth beside it. The covered depth becomes the
-  target only in the commit that ends the band. The two depths and their codec live in
-  `engine-core` (§5); `engine-sync` decides what a pass does with them.
-- **The adapter's cursor** records where in the band it is, together with the band it refers to:
-  IMAP a band watermark beside `backfill_low` (the lowest band UID committed), JMAP the walk's
-  anchor (§4.2), Gmail its existing `Backfill { label, page }`. A position recorded for another
-  band is ignored. A reopen has no band position: it is a fresh pass, which resumes as a fresh
-  pass does today.
+  while a widening is in progress, the *target* depth beside it and whether the widening's
+  **band has begun** (committed a cursor of its own). The covered depth becomes the target only
+  in the commit that ends the band. The record and its codec live in `engine-core` (§5);
+  `engine-sync` decides what a pass does with it.
+- **The adapter's cursor** records where in the band it is: IMAP a band watermark beside
+  `backfill_low` (the lowest band UID committed), JMAP the walk's anchor (§4.2), Gmail its existing
+  `Backfill { label, page }`. A reopen's position is its fresh pass's own cursor. A band position
+  rides through the delta a pass runs first, so the band can still be continued after it.
+- **Whether to continue that position is the orchestrator's decision, never the adapter's**, and
+  it says so on the call (`Widening::resuming`). The first version of this note let the adapter
+  decide by the band its position named; review found two ways that loses: a pass under a
+  narrower window between two widenings toward the same depth may have dropped band mail (an old
+  message filed into the folder meanwhile) that a position recorded before it skips for good, with
+  no prune involved; and a reopen has no band of its own to compare, so it restarted on every pass
+  and never ended. Only the stamp knows what ran on the scope in between.
 
 `window_cursor::resume` stops answering "start over" to an earlier floor and answers one of:
 
 | Stored stamp vs. asked depth | Pass |
 |---|---|
 | Covered depth covers what is asked (today's resume, the daily floor move included) | Delta. Stamp the asked depth. |
-| Asked reaches further back; no widening in progress | Delta, then `widen_email` with `Widening::new(covered, asked)`. Stamp target = asked. |
-| Widening in progress toward exactly the asked depth | Delta, then `widen_email` again; the adapter continues from its recorded position. |
-| Widening in progress toward another depth | Drop the target. If the covered depth covers what is asked: delta only. Otherwise widen from covered to asked, afresh. |
+| A widening in progress whose band has begun, toward a depth that covers the asked one | Delta, then `widen_email` **resuming**: the adapter continues from its recorded position. Stamp target = asked, band begun. |
+| Asked reaches further back, any other way (no widening, its band not begun, or toward a depth that does not cover the asked one) | Delta, then `widen_email` with `Widening::new(covered, asked)` **afresh**: a recorded position is ignored. Stamp target = asked; band begun from the band's first commit. |
 | No cursor, or one the adapter cannot read (a bare cursor is one fetched over the full history, as now) | Fresh pass, as today. |
 
-**A target changed mid-band restarts the band from the covered depth** (decision 3), as the fourth
-row says. Continuing the band in progress and adding the difference would need the stamp to
+**A target changed mid-band restarts the band from the covered depth** (decision 3), unless the
+new target lies inside the old: a window computed from today narrows its target a day at a time,
+and its band, already reaching further, continues (the band it now needs is part of the one it was
+fetching, with the same upper end). A delta-only pass in between drops the target, so the next
+widening starts afresh whatever it asks. Continuing the band in progress and adding the difference would need the stamp to
 record a band per target and the adapters to merge positions, for a case that arises only when a
 host changes depth while a band runs; a restart re-fetches only what the abandoned band had
 already stored, as keyed upserts.
@@ -296,11 +322,17 @@ or a cursor cleared meanwhile stops the band at its next commit like any pass.
 
 ### 4.4 `present`, reconcile and deltas around a band
 
-- **Until a band ends, the delta is asked under the covered depth and judged by the target.** A
-  delta that enumerates (IMAP without QRESYNC reads held flags through `SEARCH SINCE`; Gmail over
-  IMAP lists the window when counts drop) then lists only what the store is meant to hold, and
-  never meets band keys it lacks; an arrival the band admits is still kept, whichever of the two
-  brings it first. After the band, both are the new depth, so the next reconcile covers the band.
+- **Until a band ends, the delta is asked and judged under the target depth** (the depth the pass
+  asks for), as every delta is. The body first said "asked under the covered depth"; that is wrong
+  twice over (§12). A delta that enumerates (IMAP without QRESYNC reads held flags through
+  `SEARCH SINCE`) under the covered depth would leave out the band mail the store already holds,
+  and its reconcile would tombstone it while the adapter's band position says it is held: a gap.
+  And a delta that filters by date (the same IMAP path) under the covered depth never fetches an
+  old message filed into the folder during the band, whose UID is above the band's bound: another
+  gap. Under the target, an enumerating delta lists band keys the store lacks too, which only
+  costs their flags; a key in `present` the store does not hold is no harm. A reconciling delta
+  still drops the adapter's band position (§4.3), because the adapter cannot tell which depth it was
+  asked under.
 - Nothing in the store outside the new window is touched by a band or by the deltas around it.
 - **Duplicates.** Within one band listing a key is yielded once. Across listings a key can appear
   twice (a message filed in two deepened mailboxes; Gmail's boundary is exclusive, §4.2); across a
@@ -354,6 +386,11 @@ type. The format only grows (a target line): every cursor stamped today parses t
 (pinned by a test), and a bare cursor still reads as one fetched over the full history, so
 narrowing stamps it with `windows`.
 
+In slice 1 the type exists as `StampedCursor` (`crates/engine-core/src/sync/stamp.rs`) with the
+covered and target depths, whether the target's band has begun, `parse`, `to_state`, `covered`,
+`target`, `is_band_begun` and `into_cursor`;
+`narrowed_to` lands with the prune that needs it (slice 3).
+
 The other option, the prune taking each scope's new stamp from its caller, was rejected: the
 caller would have to read every cursor first, and a pass can commit between that read and the
 prune, so each write would need a compare-and-set and a retry loop, and the caller would still
@@ -399,9 +436,10 @@ dedupes.
   finds its covered depth short of the asked one and runs its band (§4.3). The sync host stops
   calling `clear_mail_cursors` to widen, and stops calling it after a prune to narrow.
   `clear_mail_cursors` stays, for a forced re-snapshot.
-- **Progress:** `SyncCommit` gains a flag saying the commit came from a widening, so a host can
-  label the bar "older mail"; `total` is then the band's size. `MailSyncReport` says per scope
-  whether a band finished, so a host knows when the new depth is complete.
+- **Progress:** `SyncCommit::widening` says the commit came from a widening, so a host can
+  label the bar "older mail"; `total` is then the band's size. `FolderSync::reached_window` says
+  per scope whether the stored mail now reaches the window asked, false while a band is unfinished,
+  so a host knows when the new depth is complete.
 - **Narrowing:** `prune_account_mail_outside_window` lowers the recorded depth (§5). The rest of the
   sync host's narrowing path (sweep, vacuum) is unchanged.
 - **Depth:** `SyncWindow::months_back(n, today)` replaces the host's arithmetic.
@@ -452,8 +490,9 @@ window still defaults to the full history, and a widening happens only when a ca
 4. **Cursor kept:** a band leaves the delta cursor at a point no later than the start of the band's
    enumeration, so every change to a band message after it is fetched is replayed.
 5. **Crash-safe:** a pass killed anywhere in a band resumes with invariants 1-4 intact, from its
-   last checkpoint (IMAP's band watermark, JMAP's anchor, Gmail's page); a reopen resumes as a
-   fresh pass does.
+   last checkpoint (IMAP's band watermark, JMAP's anchor, Gmail's page), and a reopen continues its
+   own fresh pass from its last checkpoint, so either ends on a later pass. It resumes only when
+   the stamp says its band had begun and no narrower pass ran since; otherwise it starts afresh.
 6. **Honest coverage:** the recorded covered depth never claims more than the store holds (it
    becomes the target only when the band ends; a prune lowers it in the prune's own transaction).
 7. **Daily floor moves are free:** a floor that moved forward never triggers a band.
@@ -540,7 +579,8 @@ Live, against real servers:
 5. **Calendars**, only if a host needs it: Google's band, only on the live test of §9.
 
 After slice 1 the sync host can drop its widening clear for every account, without branching: an
-adapter still on the default reopen behaves as the clear did.
+adapter still on the default reopen behaves as the clear did, and a reopen killed mid-way is
+continued by the next pass as the clear's fresh pass would have been.
 
 ## 11. Decisions (2026-11-23)
 
@@ -573,3 +613,42 @@ These are not owner questions; a live run answers each (§9).
 - **The three request shapes never sent before:** JMAP `before`, IMAP
   `UID 1:N SINCE … BEFORE …`, and the `MESSAGELIMIT` fallback with both bounds, proven live on
   Stalwart and Dovecot in slice 1.
+
+## 12. What slice 1 found
+
+Each item changed the body above in the same change; this is the list a reviewer checks against.
+
+1. **`Band::before` is optional, and a whole window is bands too** (§3.2). To put JMAP's
+   `email_filter` on the band rule, a fresh pass's listing must be expressible: its account band has
+   no upper end. `MailboxWindows::bands()` is the rule from a store holding nothing; a widening's
+   bands always have an upper end. The fields are private behind accessors, as `rust.md` asks.
+2. **The band properties as first stated were too strong** (§3.2). Exhaustive checking found the
+   account band re-lists older mail of a mailbox `from` already held further back, besides the
+   known repeat across two mailbox bands. Both are repeats of one key, never a gap; the stated
+   property is now the one that holds.
+3. **The delta during a band is asked under the target depth, not the covered one** (§4.4), and
+   the adapter's band position rides through a delta that tombstones nothing and is dropped by a
+   reconcile (§4.3). Under the covered depth, an IMAP delta without QRESYNC would tombstone band
+   mail already stored and miss an old message filed into the folder mid-band.
+4. **The orchestrator, not the adapter, decides whether a widening continues** (§4.3,
+   `window_cursor.rs`). The first slice-1 version let each adapter compare the band its position
+   named; review showed a narrower pass between two widenings loses mail that way, and that the
+   reopen default restarted forever. The stamp now records whether the target's band has begun;
+   a widening resumes (`Widening::resuming`) only when it has and the stored target covers the
+   asked depth, so a daily-moving floor keeps its band. The covered depth becomes the target in a
+   commit of its own once the band stream ends.
+5. **The stamp type is `StampedCursor`**, without `narrowed_to` until slice 3 (§5).
+6. **Progress and completion surface as `SyncCommit::widening` and `FolderSync::reached_window`**
+   (§7.1), and recipient coverage moves to a wider account floor only when every folder reached it
+   (§4.4); a narrower or first record is written as before.
+7. **A band position no longer outlives anything that could invalidate it.** A position is
+   continued only when the stamp says so, and every pass that does not run the widening (a delta
+   under a narrower window) drops the target and the band-begun mark with it. Slice 3's prune
+   restamp does the same as it lowers the covered depth, so the widening after a prune starts afresh
+   with no extra state.
+8. **The stamp's widening lines are safe to roll back past** (§5, `stamp.rs`). They are written as
+   `deeper=` lines for ids that start with a line break, which an engine before them reads as
+   mailboxes no pass asks for: it resumes from the same covered depth with the same provider
+   cursor. Lines of their own would have been handed to the provider as part of its cursor, which
+   breaks a provider that parses one (a Graph `deltaLink`).
+

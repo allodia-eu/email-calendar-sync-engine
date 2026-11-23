@@ -75,6 +75,9 @@ mod submit;
 mod unconfirmed_write;
 mod unrecordable;
 mod vanished;
+mod widening;
+mod widening_fake;
+mod widening_reopen;
 mod window_change;
 
 /// A way the fake provider can fail, so a test can drive one failure path without the

@@ -1,7 +1,8 @@
 //! A host changes how far back an account's mail goes by clearing its mail cursors and syncing
 //! again under the new window. Neither half may be undone by a pass that started under the old
 //! one: a pass already running stops rather than write its cursor back over the clear, and a
-//! cursor written under a later floor than a pass asks for is not resumed from.
+//! cursor written under a later floor than a pass asks for is widened from, never taken as
+//! covering the older mail.
 
 use std::sync::atomic::AtomicUsize;
 
@@ -198,7 +199,7 @@ async fn a_pass_fenced_off_ends_when_the_next_pass_already_holds_the_scope() {
 }
 
 #[tokio::test]
-async fn a_pass_asking_for_older_mail_than_its_cursor_covers_starts_over() {
+async fn a_pass_asking_for_older_mail_than_its_cursor_covers_widens_after_its_delta() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let provider = Backfill::new(2, false);
 
@@ -209,8 +210,19 @@ async fn a_pass_asking_for_older_mail_than_its_cursor_covers_starts_over() {
     pass(&provider, &store, SyncWindow::full()).await;
     pass(&provider, &store, SyncWindow::full()).await;
 
+    // This adapter has no band of its own, so a widening is the default reopen (no cursor),
+    // after a delta from the cursor it keeps; the one after a widening resumes.
+    let resumed = |cursor: &str| Some(cursor.to_owned());
     assert_eq!(
         provider.resumed_from(),
-        vec![None, Some("1".to_owned()), None, None, Some("1".to_owned())],
+        vec![
+            None,
+            resumed("1"),
+            resumed("delta"),
+            None,
+            resumed("1"),
+            None,
+            resumed("1"),
+        ],
     );
 }

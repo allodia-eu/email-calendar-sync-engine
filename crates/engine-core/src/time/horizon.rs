@@ -34,6 +34,21 @@ impl Horizon {
         Ok(Self { start, end })
     }
 
+    /// The whole UTC days `[from, until)`: from the first instant of `from` to the first instant
+    /// of `until`, which it does not include.
+    ///
+    /// With [`CalendarDate::checked_add_days`] and [`CalendarDate::checked_months_before`], this
+    /// is how a host builds a horizon around a day without date arithmetic of its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::EmptyRange`] unless `from` is strictly before `until`.
+    pub fn days(from: CalendarDate, until: CalendarDate) -> Result<Self, TimeError> {
+        let midnight =
+            |date: CalendarDate| UtcDateTime::new(date.year(), date.month(), date.day(), 0, 0, 0);
+        Self::new(midnight(from)?, midnight(until)?)
+    }
+
     /// The inclusive lower bound.
     #[must_use]
     pub fn start(self) -> UtcDateTime {
@@ -141,6 +156,25 @@ mod tests {
         assert_eq!(Horizon::new(instant, instant), Err(TimeError::EmptyRange));
         assert_eq!(
             Horizon::new(at("2026-07-13T00:00:00Z"), instant),
+            Err(TimeError::EmptyRange)
+        );
+    }
+
+    #[test]
+    fn a_horizon_of_days_runs_from_midnight_to_midnight() {
+        let date = |raw: &str| raw.parse::<CalendarDate>().unwrap();
+        let week = Horizon::days(date("2026-07-06"), date("2026-07-13")).unwrap();
+        assert_eq!(week, window());
+        assert_eq!(
+            week.covering_dates(),
+            (date("2026-07-06"), date("2026-07-13"))
+        );
+        assert_eq!(
+            Horizon::days(date("2026-07-06"), date("2026-07-06")),
+            Err(TimeError::EmptyRange)
+        );
+        assert_eq!(
+            Horizon::days(date("2026-07-13"), date("2026-07-06")),
             Err(TimeError::EmptyRange)
         );
     }

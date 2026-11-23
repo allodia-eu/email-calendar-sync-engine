@@ -176,6 +176,7 @@ async fn account_progress_aggregates_two_folders() {
         upserted: &[],
         removed: &[],
         tombstoned: 0,
+        widening: false,
     });
     assert_eq!(progress.snapshot().total, None);
     progress.committed(&SyncCommit {
@@ -185,6 +186,7 @@ async fn account_progress_aggregates_two_folders() {
         upserted: &[],
         removed: &[],
         tombstoned: 0,
+        widening: false,
     });
     let snap = progress.snapshot();
     assert_eq!(snap.fetched, 7);

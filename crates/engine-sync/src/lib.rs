@@ -398,6 +398,7 @@ mod scope_wait;
 mod sent_copies;
 mod source_answer;
 mod stream;
+mod stream_drain;
 mod threading;
 mod vanished;
 mod warm;

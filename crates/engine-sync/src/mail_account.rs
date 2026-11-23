@@ -130,9 +130,16 @@ where
     let folders = run_folders(providers, store, account, &req, &tuning, observer, &sent).await;
 
     // The account's window, not a deepened mailbox's: coverage says how far back *every*
-    // mailbox's recipients have been observed.
-    let coverage =
-        recipients::record_coverage(store, account, tuning.window.account(), !sent.is_empty());
+    // mailbox's recipients have been observed, so it reaches further back only once every
+    // folder's widening has ended.
+    let reached = folders.iter().all(|folder| folder.reached_window);
+    let coverage = recipients::record_coverage(
+        store,
+        account,
+        tuning.window.account(),
+        reached,
+        !sent.is_empty(),
+    );
     let account_steps = repaired.and(forgotten).and(coverage.await);
     observer.account_sync_finished(account);
 
@@ -250,12 +257,14 @@ where
             let mut timing = SyncTiming::default();
             // Filled through even on the paths that return early, so a folder that failed still
             // says where it got to.
-            let result = stream_email(provider, account, pass, &mut timing).await;
+            let outcome = stream_email(provider, account, pass, &mut timing).await;
             let scope = provider.email_scope(account);
-            observer.folder_sync_finished(account, &scope, result.is_ok());
+            observer.folder_sync_finished(account, &scope, outcome.is_ok());
+            let reached_window = outcome.as_ref().is_ok_and(|outcome| outcome.reached);
             FolderSync {
                 scope,
-                result,
+                result: outcome.map(|outcome| outcome.applied),
+                reached_window,
                 elapsed: started.elapsed(),
                 timing,
             }

@@ -1,6 +1,7 @@
 //! A mailbox held further back than its account, where one scope holds the whole account's mail
-//! (JMAP, Gmail): the adapter is handed every mailbox's window, and deepening one starts that
-//! scope over with no cursor cleared by the host.
+//! (JMAP, Gmail): the adapter is handed every mailbox's window, and deepening one widens that
+//! scope with no cursor cleared by the host. The adapter here has no band of its own, so its
+//! widening is the default reopen: a fresh pass under the deeper windows, after the delta.
 
 use engine_core::{sync::MailboxWindows, time::CalendarDate};
 use engine_provider::CalendarWrites;
@@ -147,7 +148,7 @@ async fn stored(store: &SqliteStore<ManualClock>, provider: &Account) -> Vec<Str
 }
 
 #[tokio::test]
-async fn deepening_a_mailbox_starts_an_account_wide_scope_over_and_fetches_only_that_mailbox() {
+async fn deepening_a_mailbox_widens_an_account_wide_scope_and_fetches_only_that_mailbox() {
     let (provider, passes) = provider();
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
@@ -161,9 +162,9 @@ async fn deepening_a_mailbox_starts_an_account_wide_scope_over_and_fetches_only_
         "Sent reaches back to its own floor, the Inbox does not, and nothing past Sent's floor"
     );
     assert_eq!(
-        passes.lock().unwrap()[1],
-        (true, deepened()),
-        "the scope started over, handed every mailbox's window"
+        passes.lock().unwrap()[1..],
+        [(false, deepened()), (true, deepened())],
+        "a delta, then the reopen, handed every mailbox's window"
     );
 }
 
@@ -192,7 +193,7 @@ async fn an_account_wide_scope_resumes_once_it_holds_the_deepened_mailbox() {
 }
 
 #[tokio::test]
-async fn deepening_a_second_mailbox_starts_the_scope_over_again() {
+async fn deepening_a_second_mailbox_widens_the_scope_again() {
     let (provider, passes) = provider();
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
@@ -205,7 +206,7 @@ async fn deepening_a_second_mailbox_starts_the_scope_over_again() {
     .await;
 
     let fresh: Vec<bool> = passes.lock().unwrap().iter().map(|(f, _)| *f).collect();
-    assert_eq!(fresh, [true, true]);
+    assert_eq!(fresh, [true, false, true], "a delta, then the reopen");
     assert_eq!(
         stored(&store, &provider).await,
         vec!["in-new", "in-old", "sent-new", "sent-old"]

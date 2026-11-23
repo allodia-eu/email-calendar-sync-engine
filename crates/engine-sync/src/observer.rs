@@ -44,6 +44,10 @@ pub struct SyncCommit<'a> {
     /// dropped rows it cannot name individually, so it should re-read the scope; `0`
     /// on every incremental (delta/`VANISHED`) commit, whose removals are in `removed`.
     pub tombstoned: usize,
+    /// Whether this commit belongs to a **widening**: mail older than the scope held, fetched
+    /// because the window now reaches further back. A host can label such progress as older
+    /// mail; [`total`](Self::total) is then the size of what the widening adds.
+    pub widening: bool,
 }
 
 impl SyncCommit<'_> {
@@ -161,6 +165,7 @@ mod tests {
             upserted: &upserted,
             removed: &removed,
             tombstoned: 0,
+            widening: false,
         });
         assert_eq!(*seen.lock().unwrap(), vec![(2, 2, 1)]);
     }
@@ -178,6 +183,7 @@ mod tests {
             upserted: &[],
             removed: &[],
             tombstoned: 0,
+            widening: false,
         };
         assert!(commit.is_empty());
         IgnoreCommits.committed(&commit);

@@ -11,7 +11,7 @@ use engine_core::{
     ids::{AccountId, CalendarId, ContactId, ProviderKey},
     mail::{Mailbox, Message, MessageMetadata},
     raw::RawMime,
-    sync::{MailboxWindows, SyncScope, SyncState, SyncWindow},
+    sync::{MailboxWindows, SyncScope, SyncState, SyncWindow, Widening},
     time::Horizon,
 };
 
@@ -72,6 +72,17 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         chunk_size: usize,
     ) -> EmailStream<'a> {
         (**self).stream_email(account, cursor, window, fetch_batch, chunk_size)
+    }
+
+    fn widen_email<'a>(
+        &'a self,
+        account: &'a AccountId,
+        cursor: &'a SyncState,
+        widening: &'a Widening,
+        fetch_batch: usize,
+        chunk_size: usize,
+    ) -> EmailStream<'a> {
+        (**self).widen_email(account, cursor, widening, fetch_batch, chunk_size)
     }
 
     async fn sync_email(

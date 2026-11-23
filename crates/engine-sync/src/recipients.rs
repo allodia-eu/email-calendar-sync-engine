@@ -156,16 +156,26 @@ where
         .map_err(Into::into)
 }
 
-/// Persists the explicit observation-coverage statement.
+/// Persists the explicit observation-coverage statement for `window`.
+///
+/// A window reaching further back than the recorded one is recorded only when `reached`, that is
+/// when every folder's widening has ended: until then the older mail is not all observed, and the
+/// record keeps the window it had. A narrower window, or the first record, is written as asked.
 pub(crate) async fn record_coverage<S>(
     store: &S,
     account: &AccountId,
     window: SyncWindow,
+    reached: bool,
     sent_identified: bool,
 ) -> Result<(), SyncError>
 where
     S: ContactStore,
 {
+    let recorded = store.recipient_coverage(Some(account.clone())).await?;
+    let window = match recorded.first() {
+        Some(recorded) if !reached && !recorded.window.covers(window) => recorded.window,
+        _ => window,
+    };
     store
         .set_recipient_coverage(&RecipientCoverage {
             account: account.clone(),
