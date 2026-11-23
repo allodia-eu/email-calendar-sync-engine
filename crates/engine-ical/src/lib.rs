@@ -33,6 +33,7 @@ mod conference_write;
 mod error;
 mod event;
 mod format;
+mod import;
 mod lines;
 mod party;
 mod patch;
@@ -54,6 +55,9 @@ use engine_core::{
 };
 pub use error::IcalError;
 use event::{event_from_vevent, vevent_uid};
+// Storing an object as it was, telling nobody (`CalendarImporter`, behind `engine-provider`'s
+// `import` feature): the iCalendar half, so no adapter re-implements it.
+pub use import::{ImportObject, import_object, object_uid};
 // The fold-aware line-surgery engine: the one implementation of "rewrite this content
 // line, leave every other byte alone", shared by the structural patcher and the CalDAV
 // `imip` RSVP primitive.

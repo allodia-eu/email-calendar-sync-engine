@@ -306,6 +306,17 @@ mail is still readable. Two things a real server-authored invitation taught us
   decode wrongly and the attendee address becomes `mailt`, which matches nobody —
   the invitation silently stops being *mine* and no RSVP is offered.
 
+## Importing a meeting schedules nothing
+
+Storing a meeting on a server that auto-schedules (RFC 6638) is what makes the server send its
+invitations, so an *import*, which stores what a source already held, must say that nobody is to
+be told. On iCalendar that is `SCHEDULE-AGENT=CLIENT` on every `ORGANIZER` and `ATTENDEE` of every
+component, overrides included (RFC 6638 §7.1); a `VALARM`'s `ATTENDEE` names who a reminder mails
+and is not a scheduling party. `engine_ical::import_object` is the one place that rewrites an
+object that way, keeping every other byte. The parameter stays in the stored object, so the server
+does not schedule the meeting later either, while the client that edits it keeps the parameter.
+Proven live with a control (`caldav.md` → "Import").
+
 ## JSCalendar ↔ iCalendar boundary
 
 - The normalized projection is JSCalendar-shaped. iCalendar from CalDAV is

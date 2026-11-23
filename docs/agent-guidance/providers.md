@@ -254,8 +254,7 @@ it. An adapter that can import implements the trait; there is no capability flag
   `Box<dyn MailImporter>` and `Arc<dyn MailImporter>` are importers too, for code generic over
   `I: MailImporter`.
 - **Who implements it:** IMAP (`APPEND`, `imap-smtp.md` → "Import") and JMAP (`Email/import`,
-  `jmap.md` → "Import"); Graph and Gmail are sources only. Calendar and contact import (CalDAV and
-  CardDAV `PUT` without scheduling) come with their first adapter.
+  `jmap.md` → "Import"); Graph and Gmail are sources only.
 - **What every importer must do is checked once**: `engine_provider::import::conformance` (the
   `import-conformance` feature, for live suites) imports a dated message with keywords and an
   undated control, and reads both back through the sync seam: bytes, the mailbox asked for, a
@@ -265,6 +264,24 @@ it. An adapter that can import implements the trait; there is no capability flag
   shows each claim fail, by name, against a target that breaks it. Each adapter's live suite runs it against its servers and adds only what is its
   own. An adapter that imports runs it; a claim every importer makes belongs there, not in one
   suite.
+- **Events: `CalendarImporter`** (`docs/design/calendar-and-contact-import.md`). `import_events`
+  takes a batch of `EventImport` (one event's raw iCalendar, overrides included, and its
+  calendar) and answers each in order, as mail does. Two things differ, and the data decides both:
+  an event is matched by its `UID`, so one its calendar already holds is answered
+  `ImportedEvent::existing` and never stored twice; and an event's state is inside its document,
+  so there is no `kept` until a target that keeps less of it (Graph, Google) is built. An import
+  **tells nobody**: that is the contract, not an option, and each adapter says how it keeps it.
+  `calendar_import_limits` and `import_cursor` are per calendar, because CalDAV states both per
+  collection. Reached through `Provider::calendar_importer`, which an adapter answers only where
+  it can keep the import silent. CalDAV implements it, offered where the server advertises
+  `calendar-auto-schedule` or has nothing to schedule with (no scheduling inbox or outbox;
+  `caldav.md` → "Import"). The item is UTF-8 text, as `RawIcal` is.
+- **Creating a container is not import.** `CalendarCollections::create_calendar` (outside the
+  `import` feature, reached through `Provider::calendar_collections`) makes a new calendar from a
+  name, a description and a colour, and answers it as the target holds it, which is the receipt of
+  what was kept. A sync host creating a calendar for its user and a transfer host creating one to
+  import into are the same act, as mail import shares `MailboxWrites::edit_mailbox`. A time zone
+  joins `NewCalendar` with an event-to-iCalendar writer that builds `VTIMEZONE` from tzdb (not yet in the engine).
 - **When the target's own state refuses, the reason is named, once for every adapter and every
   kind of object.** `ProviderError::refused_by_target(TargetRefusal)` (`engine-provider`,
   `error.rs`) is `FailureClass::InvalidState`: not retryable as it stands, and with no wait,
@@ -285,6 +302,7 @@ it. An adapter that can import implements the trait; there is no capability flag
   |---|---|---|---|
   | IMAP (any `NO`, `error.rs`) | `NO [OVERQUOTA]` (RFC 9208) | `NO [TRYCREATE]` (RFC 3501), `NO [NONEXISTENT]` (RFC 5530) | `NO [NOPERM]` (RFC 5530) |
   | JMAP (`Email/import`, `import/wire.rs`) | `overQuota`, as a `SetError` or a method error (RFC 8621 §4.8) | `invalidProperties` naming only `mailboxIds`; a mailbox the import cursor cannot find | `forbidden` |
+  | CalDAV, CardDAV (a write's answer, `write_refusal.rs`) | `507`; `DAV:quota-not-exceeded` (RFC 4331) | `404`; a `409` naming no precondition (RFC 4918 §9.7.1: Stalwart's missing calendar) | `403` naming `DAV:need-privileges` (SabreDAV); a plain `403` (Stalwart's read-only share, Nextcloud's birthday calendar, observed) |
 - **Every other situation an import meets has one class too**, the same on every adapter:
 
   | Situation | Answer |

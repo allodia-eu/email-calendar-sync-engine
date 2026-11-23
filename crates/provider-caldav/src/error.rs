@@ -174,6 +174,10 @@ fn status_class(status: u16, body: &str) -> FailureClass {
         // Stalwart's concurrency refusal, which the send funnel has already waited out and is
         // still a throttle when it gives up (`throttle.rs`).
         400 if crate::throttle::is_concurrency_limit(body) => FailureClass::RateLimited,
+        // A `412` naming a CalDAV or CardDAV precondition is the server refusing the object
+        // itself, which is how Stalwart refuses one (`docs/spec-deviations.md`, STALWART-2):
+        // sending it again is refused again.
+        412 if crate::write_refusal::names_object_precondition(body) => FailureClass::Permanent,
         // `412 Precondition Failed` is an `If-Match`/ETag write conflict (RFC 4791
         // §5.3.2); a `409 Conflict` without the sync-token precondition is a
         // write-ordering conflict.
@@ -228,6 +232,40 @@ impl CalDavError {
             ProviderError::new(class, detail)
         };
         error.with_source(self)
+    }
+}
+
+impl CalDavError {
+    /// This failure as a [`ProviderError`] that says what kind of failure it was and nothing
+    /// else: its class, an HTTP status, and `what` the caller was doing.
+    ///
+    /// For the import and collection paths, whose errors reach a host's logs and reports: a
+    /// server's error text can echo what it was sent (an event's summary, a card's name), so
+    /// neither it nor this error is attached. The classification is the same as
+    /// [`From<CalDavError>`](ProviderError)'s, rate-limit wait and unconfirmed write included.
+    pub(crate) fn content_free(self, what: &str) -> ProviderError {
+        let detail = match &self {
+            Self::Status { status, .. } => format!("{what}: the server answered HTTP {status}"),
+            Self::Transport(_) => format!("{what}: the exchange with the server failed"),
+            Self::Xml(_) | Self::Protocol(_) => {
+                format!("{what}: the server's answer was malformed")
+            }
+            Self::Ical(_) => format!("{what}: the object is not valid iCalendar"),
+            Self::UnsupportedAuthentication(_) => {
+                format!("{what}: the server asks for an authentication method this account lacks")
+            }
+            Self::Unconfirmed(_) => {
+                format!("{what}: no answer came back, so it may have been applied")
+            }
+        };
+        if matches!(self, Self::Unconfirmed(_)) {
+            return ProviderError::needs_confirmation(detail);
+        }
+        let class = self.failure_class();
+        if class == FailureClass::RateLimited {
+            return ProviderError::rate_limited(detail, self.retry_after().map(Into::into));
+        }
+        ProviderError::new(class, detail)
     }
 }
 
@@ -315,6 +353,40 @@ mod tests {
             CalDavError::protocol("response without href").failure_class(),
             FailureClass::Permanent
         );
+    }
+
+    /// Every kind of failure keeps its class and says nothing the server said.
+    #[test]
+    fn a_content_free_error_keeps_the_class_and_drops_the_words() {
+        let said = "SUMMARY:private";
+        let cases = [
+            (CalDavError::status(404, said), FailureClass::Permanent),
+            (CalDavError::xml(said), FailureClass::Permanent),
+            (CalDavError::protocol(said), FailureClass::Permanent),
+            (CalDavError::ical(said), FailureClass::Permanent),
+            (
+                CalDavError::UnsupportedAuthentication(said.to_owned()),
+                FailureClass::Permanent,
+            ),
+            (
+                CalDavError::Transport(engine_http::SendError::withheld(said.to_owned())),
+                FailureClass::Retryable,
+            ),
+        ];
+        for (error, class) in cases {
+            let quiet = error.content_free("importing");
+            assert_eq!(quiet.class(), class);
+            assert!(!quiet.detail().contains("private"), "{}", quiet.detail());
+            assert!(std::error::Error::source(&quiet).is_none());
+        }
+        let wait = core::time::Duration::from_secs(31);
+        let throttled = CalDavError::status(429, said)
+            .with_retry_after(Some(wait))
+            .content_free("importing");
+        assert_eq!(throttled.class(), FailureClass::RateLimited);
+        assert!(throttled.retry_after().is_some());
+        let lost = CalDavError::Unconfirmed(Box::new(CalDavError::status(504, said)));
+        assert!(lost.content_free("importing").requires_confirmation());
     }
 
     #[test]

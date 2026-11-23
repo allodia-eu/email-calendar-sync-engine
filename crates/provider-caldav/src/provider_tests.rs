@@ -270,16 +270,15 @@ async fn calendar_sync_loop_normalizes_folds_and_expands_the_seed() {
 async fn mints_a_resource_href_under_the_calendar_it_is_given() {
     let provider = connect(replay(&[PRINCIPAL])).await;
     let calendar = default_calendar();
-    // The conventional `<collection>/<uid>.ics`, with the UID canonically encoded:
-    // `@` → `%40` (the form servers store and report — verified live against
-    // Stalwart), so the minted href matches the server's resource href for a later
-    // If-Match/DELETE.
+    // The conventional `<collection>/<uid>.ics`, with the UID encoded as one segment but its
+    // `@` kept: the form Stalwart, SabreDAV and Nextcloud list the object under afterwards
+    // (observed live), so the minted href is the id every later read reports.
     let href = provider
         .event_href(&calendar, &Uid::new("oneoff-2001@test.local").unwrap())
         .unwrap();
     assert_eq!(
         href.as_str(),
-        "/dav/cal/alice%40test.local/default/oneoff-2001%40test.local.ics"
+        "/dav/cal/alice%40test.local/default/oneoff-2001@test.local.ics"
     );
     // A path-unsafe UID (space, slash) is percent-encoded into one segment, so the
     // href stays a single valid resource name.
@@ -295,7 +294,7 @@ async fn mints_a_resource_href_under_the_calendar_it_is_given() {
     let work = CalendarId::try_from("/dav/cal/alice%40test.local/work/").unwrap();
     assert_eq!(
         provider.event_href(&work, &uid).unwrap().as_str(),
-        "/dav/cal/alice%40test.local/work/x%40test.local.ics"
+        "/dav/cal/alice%40test.local/work/x@test.local.ics"
     );
     assert!(
         provider
@@ -355,7 +354,7 @@ async fn a_create_is_written_into_the_calendar_its_draft_names() {
 
     assert_eq!(
         receipt.event.as_str(),
-        "/dav/cal/alice%40test.local/work/new%40test.local.ics"
+        "/dav/cal/alice%40test.local/work/new@test.local.ics"
     );
     assert_eq!(replay.writes()[0].href, receipt.event.as_str());
 }

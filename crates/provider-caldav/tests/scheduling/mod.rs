@@ -397,6 +397,8 @@ fn participant<'a>(event: &'a Event, address: &str) -> &'a engine_core::calendar
 // parties are, how an invitation is created, waited for, and cleaned up), and `scenarios`
 // is what each one asserts. Splitting there keeps both under the 500-line limit without
 // cutting across a responsibility.
+#[cfg(feature = "import")]
+pub(crate) mod import;
 pub(crate) mod reply_delivery;
 pub(crate) mod scenarios;
 

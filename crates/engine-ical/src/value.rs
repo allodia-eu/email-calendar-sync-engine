@@ -66,6 +66,7 @@ pub(crate) fn parse_date_time_list(line: &ContentLine) -> Vec<CalendarDateTime> 
                 name: line.name.clone(),
                 params: line.params.clone(),
                 value: entry.to_owned(),
+                index: line.index,
             };
             parse_calendar_date_time(&item).ok()
         })
@@ -163,6 +164,7 @@ mod tests {
                 .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
                 .collect(),
             value: value.to_owned(),
+            index: 0,
         }
     }
 

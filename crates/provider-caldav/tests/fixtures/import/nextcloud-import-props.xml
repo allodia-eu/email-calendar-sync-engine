@@ -1,0 +1,2 @@
+<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns"><d:response><d:href>/remote.php/dav/calendars/alice/laneb-capture/</d:href><d:propstat><d:prop><cal:max-resource-size>10000000</cal:max-resource-size><d:sync-token>http://sabre.io/ns/sync/1</d:sync-token><cs:getctag>http://sabre.io/ns/sync/1</cs:getctag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>
