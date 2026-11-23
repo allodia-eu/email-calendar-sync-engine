@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use engine_core::rules::{MailRule, RawRule, RuleName, RuleOrigin, RuleSyntax};
+use engine_core::rules::{Expansion, MailRule, RawRule, RuleName, RuleOrigin, RuleSyntax};
 
 use super::{actions, cursor::Cursor, facts, matching};
 use crate::{
@@ -51,7 +51,7 @@ pub(super) fn rule(segment: &Segment<'_>, index: usize, script: &Script) -> Opti
     let rule = match typed(segment.tokens(), script.literal) {
         Some((true, rule)) => rule,
         Some((false, rule)) => rule.disabled(),
-        None => MailRule::opaque(raw(segment, &script.requires, named.clone())),
+        None => MailRule::opaque(raw(segment, Some(script), named.clone())),
     };
     let rule = match named {
         Some(name) => rule.named(name),
@@ -63,15 +63,31 @@ pub(super) fn rule(segment: &Segment<'_>, index: usize, script: &Script) -> Opti
     }))
 }
 
-/// A segment carried whole, with what its tokens say it needs and does.
-fn raw(
-    segment: &Segment<'_>,
-    script_requires: &BTreeSet<String>,
-    name: Option<RuleName>,
-) -> RawRule {
+/// A segment carried whole, with what its tokens say it needs and does. `script` is the script it
+/// was read from; `None` for a command a host wrote, with no script to fall back to.
+fn raw(segment: &Segment<'_>, script: Option<&Script>, name: Option<RuleName>) -> RawRule {
     let tokens = segment.tokens();
-    let mut raw = RawRule::new(RuleSyntax::Sieve, segment.text())
-        .requiring(facts::requirements(tokens, script_requires));
+    let mut requires = facts::requirements(tokens, script.map(|script| &script.requires));
+    let mut raw = RawRule::new(RuleSyntax::Sieve, segment.text());
+    if facts::holds_expansion(tokens) {
+        let expanded = script.is_some_and(|script| !script.literal);
+        if expanded && let (Some(requires), Some(script)) = (&mut requires, script) {
+            // What made the source expand it is what it needs to mean the same.
+            for extension in ["variables", "encoded-character"] {
+                if script.requires.contains(extension) {
+                    requires.insert(extension.to_owned());
+                }
+            }
+        }
+        raw = raw.holding(if expanded {
+            Expansion::Expanded
+        } else {
+            Expansion::Literal
+        });
+    }
+    if let Some(requires) = requires {
+        raw = raw.requiring(requires);
+    }
     if !facts::sends_mail(tokens) {
         raw = raw.sending_no_mail();
     }
@@ -82,14 +98,14 @@ fn raw(
 }
 
 /// A command written by the engine itself and carried whole (the `include` of a reply
-/// script): what [`read_rules`](super::read_rules) would make of it as a script of its own.
+/// script): what [`read_rules`](super::read_rules) would make of it as a script of its own. A
+/// token the tables do not know leaves what it requires unknown.
 pub(super) fn carried(text: &str) -> Option<RawRule> {
     let segments = crate::segment(text).ok()?;
     let [segment] = segments.as_slice() else {
         return None;
     };
-    (segment.kind() == SegmentKind::Command)
-        .then(|| raw(segment, &BTreeSet::new(), name(segment.leading())))
+    (segment.kind() == SegmentKind::Command).then(|| raw(segment, None, name(segment.leading())))
 }
 
 /// An `if` the dialect reads: whether it is enabled, and the rule, enabled, unnamed.

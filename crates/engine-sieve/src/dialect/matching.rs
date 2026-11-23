@@ -40,8 +40,8 @@ pub(super) fn read(cursor: &mut Cursor<'_, '_>) -> Option<Match> {
     to_match(test(cursor)?)
 }
 
-/// Reads an `if`'s test: whether the rule runs, and what it matches. A disabled rule whose test
-/// spans lines, which no `if false # …` comment can hold, is `allof (false, <test>)`.
+/// Reads an `if`'s test: whether the rule runs, and what it matches. `allof (false, <test>)` is a
+/// disabled rule, as a hand-written script may say; the writer never writes it (`super::render`).
 pub(super) fn read_rule_test(cursor: &mut Cursor<'_, '_>) -> Option<(bool, Match)> {
     match test(cursor)? {
         Test::AllOf(mut items)

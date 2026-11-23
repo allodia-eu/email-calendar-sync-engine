@@ -55,8 +55,10 @@ const IDENTIFIERS: &[(&str, &str)] = &[
     ("convert", "convert"),
 ];
 
-/// Tags of base Sieve and of the commands above, which require nothing more.
+/// Tags of base Sieve and of the commands above, which require nothing more than their
+/// command does. Read against each extension's RFC.
 const NEUTRAL_TAGS: &[&str] = &[
+    // RFC 5228: match types, address parts, size, comparator (whose name is checked below).
     "is",
     "contains",
     "matches",
@@ -66,13 +68,16 @@ const NEUTRAL_TAGS: &[&str] = &[
     "over",
     "under",
     "comparator",
+    // RFC 6609 include.
     "personal",
     "global",
     "optional",
     "once",
+    // RFC 5173 body transforms.
     "text",
     "raw",
     "content",
+    // RFC 5230 vacation; RFC 5435 notify.
     "subject",
     "from",
     "addresses",
@@ -81,14 +86,15 @@ const NEUTRAL_TAGS: &[&str] = &[
     "importance",
     "message",
     "options",
-    "upperlimit",
-    "percent",
+    // RFC 7352 duplicate.
+    "header",
+    "uniqueid",
+    // RFC 5703 foreverypart and RFC 5703 extracttext.
     "name",
     "first",
-    "headers",
 ];
 
-/// Tags that need an extension of their own.
+/// Tags that need an extension of their own, whichever command carries them.
 const TAGS: &[(&str, &str)] = &[
     ("copy", "copy"),
     ("regex", "regex"),
@@ -97,12 +103,7 @@ const TAGS: &[(&str, &str)] = &[
     ("create", "mailbox"),
     ("value", "relational"),
     ("count", "relational"),
-    ("seconds", "vacation-seconds"),
     ("index", "index"),
-    ("last", "index"),
-    // Also `vacation :mime`, which needs no more than `vacation`: requiring `mime` too only
-    // asks more of the target than it must, never less.
-    ("mime", "mime"),
     ("anychild", "mime"),
     ("type", "mime"),
     ("subtype", "mime"),
@@ -114,6 +115,7 @@ const TAGS: &[(&str, &str)] = &[
     ("detail", "subaddress"),
     ("list", "extlists"),
     ("fcc", "fcc"),
+    ("percent", "spamtestplus"),
     ("lower", "variables"),
     ("upper", "variables"),
     ("lowerfirst", "variables"),
@@ -122,39 +124,74 @@ const TAGS: &[(&str, &str)] = &[
     ("length", "variables"),
 ];
 
-/// The extensions `tokens` use, or `script_requires` (all the source script named) where a
-/// token is one the tables above do not know, so nothing a command needs is ever left out.
+/// What a token known to the tables needs.
+enum Need {
+    /// Nothing more than its command needs.
+    Nothing,
+    /// This extension.
+    Extension(&'static str),
+}
+
+/// A tag whose extension depends on the command or test it belongs to: `:seconds` is
+/// `vacation-seconds` on `vacation` (RFC 6131) and `duplicate`'s own; `:last` is `index` on a
+/// test (RFC 5260) and `editheader`'s or `duplicate`'s own on theirs; `:mime` is `mime` on a test
+/// (RFC 5703) and `vacation`'s own on `vacation`. `None`: not one of these tags.
+fn contextual(tag: &str, command: &str) -> Option<Need> {
+    Some(match (tag, command) {
+        ("seconds", "vacation") => Need::Extension("vacation-seconds"),
+        ("seconds", "duplicate")
+        | ("last", "addheader" | "deleteheader" | "duplicate")
+        | ("mime", "vacation") => Need::Nothing,
+        ("last", _) => Need::Extension("index"),
+        ("mime", _) => Need::Extension("mime"),
+        _ => return None,
+    })
+}
+
+/// The extensions `tokens` use. Where a token is one the tables above do not know, everything
+/// `script_requires` names (the source script's `require`s), so nothing a command needs is ever
+/// left out; `None` where there is no source script to fall back to.
 pub(super) fn requirements(
     tokens: &[Token<'_>],
-    script_requires: &BTreeSet<String>,
-) -> BTreeSet<String> {
+    script_requires: Option<&BTreeSet<String>>,
+) -> Option<BTreeSet<String>> {
     let mut needs = BTreeSet::new();
+    let mut command = String::new();
     for token in tokens {
         let found = match token.kind() {
             TokenKind::Identifier => {
-                let name = token.text().to_ascii_lowercase();
-                if BASE.contains(&name.as_str()) {
+                command = token.text().to_ascii_lowercase();
+                if BASE.contains(&command.as_str()) {
                     continue;
                 }
-                IDENTIFIERS.iter().find(|(known, _)| *known == name)
+                IDENTIFIERS
+                    .iter()
+                    .find(|(known, _)| *known == command)
+                    .map(|(_, extension)| Need::Extension(extension))
             }
             TokenKind::Tag => {
                 let name = token.text()[1..].to_ascii_lowercase();
                 if NEUTRAL_TAGS.contains(&name.as_str()) {
                     continue;
                 }
-                TAGS.iter().find(|(known, _)| *known == name)
+                contextual(&name, &command).or_else(|| {
+                    TAGS.iter()
+                        .find(|(known, _)| *known == name)
+                        .map(|(_, extension)| Need::Extension(extension))
+                })
             }
             _ => continue,
         };
         match found {
-            Some((_, extension)) => {
-                needs.insert((*extension).to_owned());
+            Some(Need::Extension(extension)) => {
+                needs.insert(extension.to_owned());
             }
-            None => return script_requires.clone(),
+            Some(Need::Nothing) => {}
+            None => return script_requires.cloned(),
         }
     }
-    // A comparator other than the two every interpreter has is an extension of its own.
+    // A comparator other than the two every interpreter has is an extension of its own
+    // (RFC 5228 §2.7.3).
     for pair in tokens
         .iter()
         .filter(|token| !token.kind().is_trivia())
@@ -168,15 +205,33 @@ pub(super) fn requirements(
             needs.insert(format!("comparator-{name}"));
         }
     }
-    needs
+    Some(needs)
 }
 
-/// Whether `tokens` may send mail out of the account: a `redirect`, or a `notify` (enotify can
-/// send mail).
+/// Whether `tokens` may send mail out of the account: unless every command and test in them is
+/// one known to send none. A `redirect`, a `notify` (enotify can send mail), an `include` (the
+/// script it runs may redirect), and anything this table does not know (`pipe`, `execute`, a
+/// vendor's report command) may. A `vacation` or a `reject` answers the sender alone and carries
+/// the message to nobody else, so neither counts.
 pub(super) fn sends_mail(tokens: &[Token<'_>]) -> bool {
     tokens
         .iter()
-        .any(|token| token.is_identifier("redirect") || token.is_identifier("notify"))
+        .filter(|token| token.kind() == TokenKind::Identifier)
+        .any(|token| {
+            let name = token.text().to_ascii_lowercase();
+            let known = BASE.contains(&name.as_str())
+                || IDENTIFIERS.iter().any(|(known, _)| *known == name);
+            !known || matches!(name.as_str(), "redirect" | "notify" | "include")
+        })
+}
+
+/// Whether a string in `tokens` holds `${`, which a script requiring `variables` or
+/// `encoded-character` expands rather than reads as written.
+pub(super) fn holds_expansion(tokens: &[Token<'_>]) -> bool {
+    tokens
+        .iter()
+        .filter_map(crate::string::value)
+        .any(|value| value.contains("${"))
 }
 
 /// A fingerprint of a script's text (64-bit FNV-1a): the same on every platform and release,

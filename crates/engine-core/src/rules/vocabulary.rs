@@ -66,6 +66,9 @@ pub enum RuleFeature {
     Stop,
     /// Stores a rule that does not run.
     Disabled,
+    /// Stores a rule that does not run, whose test holds a value that spans lines (the Sieve
+    /// dialect keeps a disabled rule's test in a comment, which ends at its line's end).
+    DisabledMultiLine,
     /// Stores a rule's name.
     Name,
     /// Applies rules in the order given.

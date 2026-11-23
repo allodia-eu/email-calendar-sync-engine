@@ -135,11 +135,15 @@ fn fileinto(cursor: &mut Cursor<'_, '_>) -> Option<Action> {
     // Only the fallback the writer writes reads typed (`super::render`), since a rewrite writes
     // that one, and another would change where such a message lands.
     let mailbox = match (role, id) {
-        (Some(attribute), None) => match MailboxRole::from_imap_special_use(&attribute) {
-            MailboxRole::Other(_) => return None,
-            role if attribute.get(1..) == Some(path.as_str()) => RuleMailbox::Role(role),
-            _ => return None,
-        },
+        (Some(attribute), None) => {
+            let role = MailboxRole::from_imap_special_use(&attribute);
+            let exact = role.as_imap_special_use() == Some(attribute.as_str())
+                && attribute.get(1..) == Some(path.as_str());
+            if !exact {
+                return None;
+            }
+            RuleMailbox::Role(role)
+        }
         (None, Some(id)) if path == super::render::ID_FALLBACK => {
             RuleMailbox::Id(MailboxId::try_from(id.as_str()).ok()?)
         }

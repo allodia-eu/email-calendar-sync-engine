@@ -2,9 +2,9 @@
 //!
 //! `# rule:[name]` at the start of a line, then `if <test>`, a line with `{`, one action per
 //! line indented by a tab, and a line with `}`, every line ending in CRLF; a disabled rule as
-//! `if false # <test>`, or, where its test spans lines and no comment can hold it,
-//! `if allof (false, <test>)`. The fixtures in `tests/fixtures/roundcube/` are the plugin's own
-//! bytes, and the writer's output for the same rules is compared with them byte for byte.
+//! `if false # <test>`, which holds a test on one line only. The fixtures in
+//! `tests/fixtures/roundcube/` are the plugin's own bytes, and the writer's output for the same
+//! rules is compared with them byte for byte.
 //!
 //! The actions are written marks first (`addflag`, `addheader`), then the rest in the rule's
 //! order: a flag set after a `fileinto` does not reach the copy already filed (RFC 5232 §3),
@@ -59,10 +59,11 @@ pub(super) fn rule(rule: &MailRule, kept: &str, needs: &mut Extensions) -> Rende
         out.push_str("if ");
         out.push_str(&test);
     } else if test.contains(['\r', '\n']) {
-        // A comment ends at its line's end, so a test that spans lines cannot live in one.
-        out.push_str("if allof (false, ");
-        out.push_str(&test);
-        out.push(')');
+        // A comment ends at its line's end, so a test that spans lines cannot live in one. The
+        // reader takes `if allof (false, …)` as disabled, but Roundcube reads that as a rule that
+        // runs, and a save there could re-arm it, so the writer does not write it: the plan
+        // keeps no such rule (`RuleFeature::DisabledMultiLine`).
+        return Err(Unrenderable);
     } else {
         out.push_str("if false # ");
         out.push_str(&test);

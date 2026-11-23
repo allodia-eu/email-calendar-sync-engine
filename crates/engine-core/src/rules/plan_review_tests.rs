@@ -201,3 +201,44 @@ fn a_subject_named_in_any_case_is_the_subject() {
         HeaderField::Named("X-Spam".to_owned())
     );
 }
+
+#[test]
+fn a_carried_rule_whose_strings_hold_an_expansion_does_not_move_to_another_script() {
+    let target = rich().with_opaque(RuleSyntax::Sieve, Vec::new());
+    for expansion in [Expansion::Literal, Expansion::Expanded] {
+        let rule = MailRule::opaque(sieve_text("x;").sending_no_mail().holding(expansion));
+        let (written, outcome) = one(&rule, &target, IMPORT);
+        assert_eq!(written, None, "{expansion:?}");
+        assert_eq!(
+            outcome.losses,
+            vec![loss(RulePart::Rule, LossReason::NotExpressible)]
+        );
+        // Kept where it is: the writer checks the script it is written over.
+        assert_eq!(one(&rule, &target, PlanMode::Edit).1.kept, Kept::Whole);
+    }
+}
+
+#[test]
+fn a_disabled_rule_whose_test_spans_lines_needs_a_target_that_stores_one() {
+    let body = subject("a\r\nb");
+    let rule = MailRule::typed(Match::all(vec![body.clone()]), vec![into("x")]).disabled();
+    let (written, outcome) = one(&rule, &rich(), PlanMode::Edit);
+    assert_eq!(written, None);
+    assert_eq!(
+        outcome.losses,
+        vec![loss(RulePart::Enabled, LossReason::NotExpressible)]
+    );
+    let holds = rich().with_exact([RuleFeature::DisabledMultiLine]);
+    assert_eq!(one(&rule, &holds, PlanMode::Edit).1.kept, Kept::Whole);
+    // Enabled, it needs nothing more; and an import it would disable for review is refused
+    // for the same reason, as a forwarding rule the target cannot hold disabled.
+    let enabled = MailRule::typed(Match::all(vec![body.clone()]), vec![into("x")]);
+    assert_eq!(one(&enabled, &rich(), PlanMode::Edit).1.kept, Kept::Whole);
+    let forwards = MailRule::typed(Match::all(vec![body]), vec![redirect(1)]);
+    let (written, outcome) = one(&forwards, &rich(), IMPORT);
+    assert_eq!(written, None);
+    assert_eq!(
+        outcome.losses,
+        vec![loss(RulePart::Enabled, LossReason::ForwardNotAllowed)]
+    );
+}

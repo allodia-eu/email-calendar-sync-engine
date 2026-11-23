@@ -173,12 +173,23 @@ Implemented as sketched, with these differences, each for a reason the code met:
   stores back.
 - The receipt is `RulesReceipt { version, outcomes }`; `RulesPlan.rules` pairs each written rule
   with its source index (`PlannedRule`).
-- A `RawRule` carries what the reader learned of its text: the extensions it requires (from one
-  table of command, test and tag; where a token is not in it, everything the source script
-  required), whether it may send mail (a `redirect` or `notify`), and the name it holds. The plan
-  carries it only to a target that lists every extension it needs, never renames or disables it
-  (its text holds both), and on an import that arms no forwarding does not carry one that may
-  send mail. A `NativeAction` says whether it sends mail too.
+- A `RawRule` carries what the reader learned of its text:
+  - the extensions it requires, from one table of command, test and tag, a tag read in the
+    context of its command (`:seconds` is `vacation-seconds` on `vacation` only), and where a
+    token is not in the table, everything the source script required (unknown, for a command a
+    host wrote);
+  - whether it may send mail: unless every command and test in it is known to send none, so
+    `redirect`, `notify`, `include` and anything unknown (`pipe`, `execute`) may;
+  - the name it holds;
+  - whether its strings hold `${`, and whether its source expanded them (`Expansion`).
+
+  The plan carries it only to a target that lists every extension it needs, never renames or
+  disables it (its text holds both), does not carry one that may send mail on an import that arms
+  no forwarding, and does not move one with `${` to another script (it means what its own script
+  made of it, and may use a variable another command there sets). The writer refuses one whose
+  `${` the script it writes over would read the other way, and a typed rule with `${` anywhere
+  over a script that expands it (`DialectErrorKind::Variable`). A `NativeAction` says whether it
+  sends mail too.
 - `RuleOrigin::ScriptSegment { script, index }`: `script` is a fingerprint of the text read, so a
   rule read from one script is never copied as a segment of another.
 - A `TextTest` always has a value, and `RuleName`, `MailboxPath` and `RuleAddress` are never empty
@@ -569,7 +580,7 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 | Mark importance (`Action::MarkImportance`) | ≈ `addheader "Importance"` (ext `editheader`) | ✓ `markImportance` | ≈ `IMPORTANT` |
 | `Native`: forward as attachment | ✗ | ✓ `forwardAsAttachmentTo` | ✗ |
 | `stop` | ✓ `stop` | ✓ `stopProcessingRules` | ✗ (every filter applies) |
-| `enabled: false` | ✓ in the dialect, `if false # <test>`, or `if allof (false, <test>)` where the test spans lines (a client that does not know it sees a rule that never runs) | ✓ `isEnabled` | ✗ |
+| `enabled: false` | ✓ in the dialect, `if false # <test>` (a client that does not know it sees a rule that never runs); ✗ where a value of the test spans lines (`RuleFeature::DisabledMultiLine`): no comment holds it, and Roundcube reads `allof (false, …)` as a rule that runs (observed, the fixture README) | ✓ `isEnabled` | ✗ |
 | `name` | ✓ in the dialect, `# rule:[name]` (a comment to any other client) | ✓ `displayName` | ✗ |
 | Order | ✓ script order | ✓ `sequence` | ✗ |
 

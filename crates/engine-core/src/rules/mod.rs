@@ -25,6 +25,7 @@
 mod action;
 mod condition;
 mod plan;
+mod plan_support;
 mod raw_rule;
 mod receipt;
 mod rule;
@@ -38,7 +39,7 @@ pub use condition::{
 pub use plan::{
     ForwardingRules, Kept, Loss, LossReason, PlanMode, RuleOutcome, RulePart, RulesPlan, plan_rules,
 };
-pub use raw_rule::{RawRule, RuleOrigin, RuleSyntax};
+pub use raw_rule::{Expansion, RawRule, RuleOrigin, RuleSyntax};
 pub use receipt::RulesReceipt;
 pub use rule::{MailRule, Match, MatchMode, RuleBody, RuleSet, TypedRule};
 pub use values::{MailboxPath, RuleAddress, RuleName, RuleValueError};

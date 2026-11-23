@@ -40,3 +40,29 @@ reader and writer are written from the observed bytes. Values use reserved domai
 - String lists: `["a","b"]`. A value with a line end: a `text:` block, with periods doubled; the
   token after a block in a test starts on the next line.
 - `address` writes its part before its match type (`address :domain :is`), and leaves `:all` out.
+
+## A disabled rule whose test spans lines: not one Roundcube keeps disabled
+
+`if false # <test>` holds a test on one line. For a test with a value that spans lines (a
+`text:` block), the engine considered writing `if allof (false, <test>)`. Run through the same
+image, the plugin read this script
+
+```sieve
+# rule:[Fwd]
+if allof (false, header :contains "subject" text:
+two
+lines
+.
+)
+{
+	redirect "x@example.com";
+}
+```
+
+as a rule that runs: `disabled: false`, `join: true`, and the tests `not true` (its spelling of
+`false`) and the header test. Written back unchanged, it kept `false`, so a save alone does not
+re-arm it. But the plugin shows it as an enabled rule with an odd first test, and removing that
+test there re-arms it, so a forwarding rule an import stored disabled could start forwarding from
+an edit in Roundcube. The engine therefore never writes this form: the plan keeps no disabled rule
+whose test spans lines (`RuleFeature::DisabledMultiLine`, which no Sieve vocabulary lists). The
+reader still reads a hand-written one as disabled.

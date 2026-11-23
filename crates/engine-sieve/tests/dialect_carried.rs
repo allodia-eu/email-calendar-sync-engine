@@ -129,7 +129,7 @@ fn a_rule_carried_from_another_script_brings_its_needs_and_not_the_other_s_comme
 fn a_command_written_by_a_host_is_carried_with_its_needs() {
     let include = carried("include :personal :optional \"vacation\";\r\n").unwrap();
     assert_eq!(include.requires(), Some(&names(&["include"])));
-    assert!(!include.sends_mail());
+    assert!(include.sends_mail(), "the script it runs may redirect");
     let written = write_rules("", &[MailRule::opaque(include)]).unwrap();
     assert_eq!(
         written,
@@ -228,7 +228,7 @@ fn a_renamed_indented_rule_keeps_its_name_at_the_start_of_a_line() {
 }
 
 #[test]
-fn a_disabled_rule_whose_test_spans_lines_is_written_so_it_reads_back_disabled() {
+fn a_disabled_rule_whose_test_spans_lines_is_not_written_and_a_hand_written_one_reads_disabled() {
     let rule = MailRule::typed(
         Match::all(vec![Condition::Body(
             TextTest::new(TextOp::Contains, vec!["two\r\nlines".to_owned()]).unwrap(),
@@ -236,9 +236,22 @@ fn a_disabled_rule_whose_test_spans_lines_is_written_so_it_reads_back_disabled()
         vec![Action::Discard],
     )
     .disabled();
-    let written = write_rules("", std::slice::from_ref(&rule)).unwrap();
-    assert!(written.contains("if allof (false, body"), "{written:?}");
-    let mut back = only(&written);
+    // Roundcube reads `if allof (false, …)` as a rule that runs (observed, fixture README), so
+    // the plan keeps no such rule and the writer refuses it.
+    let plan = plan_rules(
+        std::slice::from_ref(&rule),
+        &vocabulary(["body"], None),
+        PlanMode::Edit,
+    );
+    assert_eq!(plan.outcomes[0].kept, Kept::NotKept);
+    assert_eq!(
+        write_rules("", std::slice::from_ref(&rule))
+            .unwrap_err()
+            .kind(),
+        DialectErrorKind::Unrenderable { rule: 0 }
+    );
+    let hand = "require \"body\";\r\nif allof (false, body :text :contains text:\r\ntwo\r\nlines\r\n.\r\n)\r\n{\r\n\tdiscard;\r\n}\r\n";
+    let mut back = read_rules(hand).remove(0);
     back.origin = None;
     assert_eq!(back, rule);
 }

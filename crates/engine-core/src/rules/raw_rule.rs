@@ -22,6 +22,9 @@ pub enum RuleSyntax {
 ///   import that arms no forwarding rule does not carry it: its text cannot be disabled. Assumed
 ///   until the reader says otherwise.
 /// - **The name it carries**, as read, which its text holds and a write cannot change.
+/// - **Whether its strings hold `${`**, and whether the script it came from expanded them
+///   ([`Expansion`]): such a rule means something else in a script that expands differently, and
+///   one that uses a variable may depend on a command elsewhere in its script.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RawRule {
     syntax: RuleSyntax,
@@ -29,6 +32,18 @@ pub struct RawRule {
     requires: Option<BTreeSet<String>>,
     sends_mail: bool,
     name: Option<RuleName>,
+    expansion: Option<Expansion>,
+}
+
+/// How a script reads the `${…}` a carried rule's strings hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Expansion {
+    /// As written: the script requires neither `variables` nor `encoded-character`.
+    Literal,
+    /// Expanded: the script requires `variables` or `encoded-character` (RFC 5229, RFC 5228
+    /// §2.4.2.4).
+    Expanded,
 }
 
 impl RawRule {
@@ -41,7 +56,22 @@ impl RawRule {
             requires: None,
             sends_mail: true,
             name: None,
+            expansion: None,
         }
+    }
+
+    /// Records that the text's strings hold `${`, read as `expansion` says (builder-style).
+    #[must_use]
+    pub fn holding(mut self, expansion: Expansion) -> Self {
+        self.expansion = Some(expansion);
+        self
+    }
+
+    /// How the script the text came from reads the `${` its strings hold, or `None` where they
+    /// hold none.
+    #[must_use]
+    pub fn expansion(&self) -> Option<Expansion> {
+        self.expansion
     }
 
     /// Records the extensions the text requires (builder-style).

@@ -2,13 +2,12 @@
 
 use std::collections::BTreeSet;
 
-use engine_core::rules::{MailRule, RuleBody, RuleOrigin, RuleSyntax};
+use engine_core::rules::{Expansion, MailRule, RuleBody, RuleOrigin, RuleSyntax};
 
 use super::{DialectError, read, render};
 use crate::{
     require,
     segment::{Segment, SegmentKind, segment},
-    string,
 };
 
 /// `rules` as a script, copying from `base` every rule that is as it was read, byte for byte.
@@ -41,6 +40,13 @@ pub(super) fn write(base: &str, rules: &[MailRule]) -> Result<String, DialectErr
                     && rule.name.as_ref() == raw.name() =>
             {
                 let requires = raw.requires().ok_or(DialectError::unrenderable(index))?;
+                // Its `${` means what its own script made of it: written over a script that
+                // reads `${` the other way, it would mean something else.
+                if let Some(expansion) = raw.expansion()
+                    && (expansion == Expansion::Expanded) == script.literal
+                {
+                    return Err(DialectError::variable(index));
+                }
                 needed.extend(requires.iter().cloned());
                 raw.text().to_owned()
             }
@@ -93,13 +99,10 @@ pub(super) fn write(base: &str, rules: &[MailRule]) -> Result<String, DialectErr
     Ok(out)
 }
 
-/// Whether a written rule holds a value with `${`, which a script that requires `variables` or
-/// `encoded-character` would expand rather than read as written.
+/// Whether a written rule holds `${` anywhere, which a script requiring `variables` or
+/// `encoded-character` would expand rather than read as written: in a value, and in the test of a
+/// disabled rule, which sits in a comment now and is read as a test when the rule is enabled
+/// again. A name with `${` is refused too, which costs nothing and keeps the check whole.
 fn expands(text: &str) -> bool {
-    crate::tokenize(text).is_ok_and(|tokens| {
-        tokens
-            .iter()
-            .filter_map(string::value)
-            .any(|value| value.contains("${"))
-    })
+    text.contains("${")
 }
