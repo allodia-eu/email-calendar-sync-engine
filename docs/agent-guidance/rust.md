@@ -137,7 +137,29 @@ Two things decide whether a worktree hits:
   ([`.cargo/config.toml`](../../.cargo/config.toml) says how to read one instead).
 
 When a result cannot be squared with the diff, rule the cache out by running that build with
-`RUSTC_WRAPPER=` set to nothing. `kache explain <crate>` says why a crate missed.
+`RUSTC_WRAPPER=` set to nothing. `kache explain <crate>` says why a crate missed, and
+`kache key explain` / `kache key diff` (kache 2.2) name the key inputs that differ between two
+invocations, a remap prefix or a path among them.
+
+**Coverage is not a reason to turn the cache off.** Measured on Linux with kache 2.2:
+`cargo llvm-cov -p engine-core --all-features` run without kache, with it, and with it in a second
+worktree at the same commit reported the same totals and the same file list each time. The
+dependencies came from the cache, and the instrumented workspace crate was compiled in each
+checkout, so a cached unit cannot carry another checkout's source paths into the report. A total
+that looks wrong, or counts every line about twice, is stale profile data in
+`target/llvm-cov-target` from an earlier run of other code: `cargo llvm-cov clean` (the whole of
+it, not `--workspace`) before measuring. Running with `RUSTC_WRAPPER=` instead only rebuilds
+everything from source and hides the real cause.
+
+Two settings in your own kache config pay off once several worktrees build here:
+
+- **A cache budget that holds what the worktrees share.** The default is 5% of the disk, capped at
+  100 GiB; with three worktrees building, a 47 GiB budget evicted 11.8 GiB in one afternoon, the
+  shared dependencies included. `kache config set cache.local_max_size 100GiB`.
+- **`kache config set cache.auto_clean_superseded_executables 2`** keeps the two newest builds of
+  each test binary, which is the ballast "When the gate is slow" in `AGENTS.md` measures. Its
+  daemon ranks builds by when Cargo last wrote them, so a test built under several feature sets
+  may be relinked once.
 
 ## Measuring at scale
 

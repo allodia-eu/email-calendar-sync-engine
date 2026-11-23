@@ -391,6 +391,15 @@ five back-to-back `live_caldav` runs, where the fourth used to fail. `rateLimitA
 unauthenticated requests and fails on a harness started before the change, so a stale container
 says so rather than flaking.
 
+That authenticated limit stays because `live_concurrency` measures the server's own refusals, and
+it is per account: 1,000 requests a minute. One run of a suite fits; the same suite in a loop on
+one scratch account does not, and the runs after the first fail on `429`, before any assertion
+about the code. Leave half a minute between repeated runs, and read a `429` in a loop as the
+loop's fault, not the code's.
+
+When several worktrees share these servers, take a lock (`flock`) around every live run, reseed
+and `docker compose`, so one checkout's reseed cannot land in the middle of another's run.
+
 ## The seed dataset — and the invariant each fixture protects
 
 One shared dataset, loaded into `alice@test.local`. Fixtures carry content the
@@ -501,6 +510,12 @@ run. Non-negotiable:
   Both read like a broken server. Fix a date when the *client* is what interprets it;
   derive it from today when the *server's* behaviour turns on whether it has passed, and
   when you fix one suite's fixture, grep the others for the same shape.
+- **Tests that share a scratch account need markers no other contains.** The tests of one binary
+  run at once, and a suite that plants mail picks out its own by a subject marker. JMAP's
+  `Email/query` `subject` filter matches substrings, so a residue sweep for `jmapband` can destroy
+  `jmapbandkill`'s mail mid-run, and a `starts_with` check counted that mail as its own: a failure
+  seen on CI only, where the two tests overlapped in time (#393). Give each test a marker that is
+  not a prefix or substring of another's, and match it with the space that follows it.
 - **Readiness, not sleeps.** The compose healthcheck gates on a post-seed marker
   *and* HTTP liveness; `Harness::wait_until_ready` polls `/healthz/live`. Never a
   fixed sleep.
