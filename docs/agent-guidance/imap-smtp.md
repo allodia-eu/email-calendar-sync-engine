@@ -747,6 +747,25 @@ credential.
   mailbox or message on the line with it, and one folder nobody can name costs an account its
   entire `LIST`. `tokenize` keeps both bytes verbatim, so the name survives to be split like any
   other; what the escape *means* is the folder-list rule's business, not the tokenizer's.
+- **Import (`MailImporter`, the `import` feature, `import.rs`).** Reached through
+  `Provider::mail_importer`, which `ImapProvider` answers with itself. Each message is stored by
+  the one routine a Sent copy and a draft use (`store_message.rs`), into the mailbox it names:
+  one per message, so `max_mailboxes` is 1 and more is refused before anything is sent. Its
+  keywords ride the `APPEND` by the one rule above (a folder that refuses the `SELECT` takes the
+  message without them), and `ImportedMessage::kept` says which. The arrival time goes as the
+  `INTERNALDATE` (`"dd-Mon-yyyy hh:mm:ss +0000"`, UTC) in the whole seconds one holds, which is
+  the time `kept` reports; a time before year 0 has no `date-year`, so it is left for the server
+  to stamp. The stated size is `APPENDLIMIT=<n>` (a bare `APPENDLIMIT` is per mailbox and states
+  none). A tagged `NO` or `BAD` in place of the continuation is a refusal of that message alone,
+  and `TOOBIG` (RFC 7889) is `item_unavailable`. `APPEND` is not idempotent, so the transport
+  says which side of the point of no return a failure fell on (`AppendFailure`): until the
+  literal's closing CRLF is written nothing is stored; after it, a lost answer is
+  `requires_confirmation`. Either ends the batch, the connection is discarded, and every later
+  message is answered "not sent". `import_cursor` is the folder's sync cursor from the `SELECT` a
+  pass opens it with, so a delta from it through a provider bound to the folder lists what was
+  stored after it (`live_imap_import.rs`, Stalwart and both Dovecot revisions). A server may add
+  keywords of its own: Stalwart files every stored message `$hasattachment` or
+  `$hasnoattachment`.
 - **`put_draft` / `delete_draft` (no SMTP).** A draft is `APPEND`ed into the account's
   Drafts folder (resolved by `\Drafts` SPECIAL-USE, else creating `Drafts`) flagged
   `\Draft \Seen`, so keeping a draft works against any IMAP server even where SMTP

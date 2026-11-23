@@ -187,3 +187,13 @@ fn a_fetch_never_names_more_than_the_message_limit() {
     assert_eq!(caps(YAHOO).within_message_limit(200), 200);
     assert_eq!(caps(&["IMAP4rev1"]).within_message_limit(0), 0);
 }
+
+#[cfg(feature = "import")]
+#[test]
+fn the_largest_message_a_server_takes_is_its_appendlimit() {
+    // RFC 7889: `APPENDLIMIT=<n>` holds for every mailbox. A bare `APPENDLIMIT` says only that
+    // limits differ per mailbox (asked through `STATUS`), so it states no account-wide size.
+    assert_eq!(caps(YAHOO).append_limit(), Some(41_697_280));
+    assert_eq!(caps(&["IMAP4rev1", "APPENDLIMIT"]).append_limit(), None);
+    assert_eq!(caps(&["IMAP4rev1"]).append_limit(), None);
+}

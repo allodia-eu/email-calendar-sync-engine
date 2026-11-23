@@ -146,6 +146,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
 
 #[async_trait]
 impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for ImapProvider<S> {
+    /// IMAP imports by `APPEND` (`crate::import`), so a host holding this adapter as a
+    /// `dyn Provider` reaches it here.
+    #[cfg(feature = "import")]
+    fn mail_importer(&self) -> Option<&dyn engine_provider::import::MailImporter> {
+        Some(self)
+    }
+
     /// The negotiated facts, and as many overlapping body fetches as the account has worker
     /// connections for right now: each fetch borrows its own from the pool, so the width is the
     /// pool's, less the connections its watches hold. Read per call, because it moves as
