@@ -80,6 +80,8 @@ fn a_credential_acting_as_another_account_carries_both_accounts() {
     // The username is the one that signs in, the administrator's: the mailbox acted as is
     // not who the password belongs to.
     assert_eq!(credential.username(), Some(ADMIN));
+    // The mailbox that opens is the account acted as.
+    assert_eq!(credential.authorization_identity(), Some(ADDRESS));
     assert!(matches!(
         &credential,
         Credential::ActingAs { username, password, acting_as }
@@ -111,6 +113,15 @@ fn the_username_reads_out_of_either_shape() {
         Some(ADDRESS)
     );
     assert_eq!(Credential::bearer(TOKEN).username(), None);
+    // Signing in as itself, a credential's mailbox is its username's (RFC 4616 §2: the
+    // authorization identity is derived from the authentication identity).
+    for credential in [
+        Credential::password(ADDRESS, PASSWORD),
+        Credential::bearer_for(ADDRESS, TOKEN),
+    ] {
+        assert_eq!(credential.authorization_identity(), Some(ADDRESS));
+    }
+    assert_eq!(Credential::bearer(TOKEN).authorization_identity(), None);
     #[expect(deprecated, reason = "the name the IMAP alias keeps compiling")]
     let old = Credential::oauth2(ADDRESS, TOKEN);
     assert!(

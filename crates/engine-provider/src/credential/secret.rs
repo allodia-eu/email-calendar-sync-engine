@@ -150,14 +150,30 @@ impl Credential {
         Self::bearer_for(username, access_token)
     }
 
-    /// The account name that signs in, when the credential carries one: for
-    /// [`ActingAs`](Self::ActingAs), the administrator's, not the account acted as. It is not a
-    /// secret, but it is personal, so `Debug` does not print it.
+    /// The account name that signs in, when the credential carries one.
+    ///
+    /// For [`ActingAs`](Self::ActingAs) this is the **administrator's**, not the account whose
+    /// mailbox opens: ask [`authorization_identity`](Self::authorization_identity) for that. It is
+    /// not a secret, but it is personal, so `Debug` does not print it.
     #[must_use]
     pub fn username(&self) -> Option<&str> {
         match self {
             Self::Password { username, .. } | Self::ActingAs { username, .. } => Some(username),
             Self::Bearer { username, .. } => username.as_deref(),
+        }
+    }
+
+    /// The account whose mailbox a session signed in with this credential opens: SASL's
+    /// authorization identity (RFC 4616 §2), presented or derived.
+    ///
+    /// For [`ActingAs`](Self::ActingAs), the account acted as; for every other credential, its
+    /// [`username`](Self::username), since it signs in as itself. `None` for a token without
+    /// one. Personal, like the username, so `Debug` does not print it.
+    #[must_use]
+    pub fn authorization_identity(&self) -> Option<&str> {
+        match self {
+            Self::ActingAs { acting_as, .. } => Some(acting_as),
+            Self::Password { .. } | Self::Bearer { .. } => self.username(),
         }
     }
 }
