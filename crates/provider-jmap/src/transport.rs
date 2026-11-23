@@ -191,6 +191,13 @@ impl Transport {
         Ok(error_for_status(resp).await?.bytes().await?)
     }
 
+    /// GETs `url` and returns the reply with its body unread, once its status says it is a
+    /// success: a blob read a piece at a time (`crate::blob::BlobDownload`).
+    pub(crate) async fn get_streaming(&self, url: &str) -> Result<reqwest::Response, JmapError> {
+        let resp = self.send(self.client.get(url), Exchange::Ordinary).await?;
+        Ok(error_for_status(resp).await?.into_streaming())
+    }
+
     /// POSTs raw `bytes` with `Content-Type: content_type` and parses the JSON
     /// response — the blob-upload path (RFC 8620 §6.1), which returns a
     /// `{ accountId, blobId, type, size }` object naming the stored blob.

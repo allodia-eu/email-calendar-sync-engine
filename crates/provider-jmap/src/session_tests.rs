@@ -57,9 +57,9 @@ fn rebases_api_url_onto_connection_base_by_default() {
     .unwrap();
     // The advertised foreign HTTPS origin is replaced by the connection origin.
     assert_eq!(session.api_url(), "http://127.0.0.1:18080/jmap/");
-    assert_eq!(session.mail_account_id().unwrap(), "c");
-    assert_eq!(session.submission_account_id().unwrap(), "c");
-    assert_eq!(session.calendar_account_id().unwrap(), "c");
+    assert_eq!(session.mail_account_id().unwrap().as_str(), "c");
+    assert_eq!(session.submission_account_id().unwrap().as_str(), "c");
+    assert_eq!(session.calendar_account_id().unwrap().as_str(), "c");
     assert_eq!(session.state(), Some("2f72d7c8"));
 }
 
@@ -315,7 +315,7 @@ fn contacts_capability_exposes_account_and_write_features() {
         "downloadUrl": "https://mail.test.local/download/{accountId}/{blobId}/{name}?accept={type}"
     });
     let session = Session::parse(&doc, &base, SessionUrlPolicy::RebaseToConnection, None).unwrap();
-    assert_eq!(session.contact_account_id().unwrap(), "contacts");
+    assert_eq!(session.contact_account_id().unwrap().as_str(), "contacts");
     let capabilities = session.capabilities();
     assert!(capabilities.contacts());
     assert!(capabilities.contact_groups());

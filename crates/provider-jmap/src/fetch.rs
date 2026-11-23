@@ -15,7 +15,7 @@ use serde_json::{Map, Value, json};
 use crate::{
     error::JmapError,
     executor::Executor,
-    request::{Request, result_ref, with_back_reference},
+    request::{CallId, Request, ResultRef, with_back_reference},
     sync_ops::{Changes, clamp_limit, objects},
     walk::{Order, Walk},
 };
@@ -270,7 +270,7 @@ async fn delta_page<T: SyncObject>(
 
 /// The `cannotCalculateChanges` method error (RFC 8620 §5.2) for `call_id`, which the caller
 /// recovers from with a snapshot.
-pub(crate) fn cannot_calculate_changes(call_id: String) -> JmapError {
+pub(crate) fn cannot_calculate_changes(call_id: CallId) -> JmapError {
     JmapError::Method {
         call_id,
         error_type: "cannotCalculateChanges".to_owned(),
@@ -283,11 +283,11 @@ pub(crate) struct ChangesRequest {
     /// The request to execute.
     pub(crate) request: Request,
     /// The `Foo/changes` call id.
-    pub(crate) changes: String,
+    pub(crate) changes: CallId,
     /// The call id of the `Foo/get` over the created ids.
-    pub(crate) created: String,
+    pub(crate) created: CallId,
     /// The call id of the `Foo/get` over the updated ids.
-    pub(crate) updated: String,
+    pub(crate) updated: CallId,
 }
 
 /// Builds a [`ChangesRequest`] from `since`; `updated_properties` narrows the `Foo/get` of the
@@ -324,7 +324,7 @@ pub(crate) fn changes_request(
 /// via a `#ids` result back-reference (RFC 8620 §3.7).
 fn back_ref_get(
     account: &str,
-    result_of: &str,
+    result_of: &CallId,
     name: &str,
     path: &str,
     properties: Option<&[&str]>,
@@ -334,5 +334,5 @@ fn back_ref_get(
     if let Some(props) = properties {
         args.insert("properties".to_owned(), json!(props));
     }
-    with_back_reference(args, "ids", result_ref(result_of, name, path))
+    with_back_reference(args, "ids", &ResultRef::new(result_of, name, path))
 }

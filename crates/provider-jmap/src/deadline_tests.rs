@@ -10,10 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
-use engine_http::{
-    Exchange,
-    test_server::{SilentServer, held_until, reply, trickling},
-};
+use engine_http::test_server::{SilentServer, held_until, reply, trickling};
 use engine_provider::{Deadlines, Draft, ProviderError};
 use tokio::time::Instant;
 
@@ -22,7 +19,8 @@ use crate::{
     error::JmapError,
     executor::Executor,
     provider::provider_test_support::{FakeExecutor, fixture},
-    request::{Request, Response, capability},
+    request::{Request, capability},
+    response::Response,
     session::Session,
 };
 
@@ -83,7 +81,12 @@ impl Executor for SilentSubmission {
         unreachable!("a send without attachments downloads nothing")
     }
 
-    async fn upload(&self, _url: &str, _type: &str, _bytes: &[u8]) -> Result<String, JmapError> {
+    async fn upload(
+        &self,
+        _url: &str,
+        _type: &str,
+        _bytes: &[u8],
+    ) -> Result<engine_core::ids::BlobId, JmapError> {
         unreachable!("a send without attachments uploads nothing")
     }
 
@@ -100,11 +103,8 @@ async fn a_silent_server_fails_a_method_call_retryable_after_the_reply_bound() {
     request.invoke("Mailbox/get", serde_json::json!({ "accountId": "c" }));
     tokio::time::pause();
 
-    let (outcome, elapsed) = held_until(
-        server.has_received(2),
-        timed(client.execute(&request, Exchange::Ordinary)),
-    )
-    .await;
+    let (outcome, elapsed) =
+        held_until(server.has_received(2), timed(client.execute(&request))).await;
 
     let err = ProviderError::from(outcome.expect_err("a silent server is a failure"));
     assert!(err.is_retryable(), "{err}");
@@ -155,7 +155,10 @@ async fn a_blob_that_keeps_arriving_is_never_cut_off() {
     let blobs = trickling(head, "x".repeat(1000), 5, Duration::from_secs(50)).await;
     tokio::time::pause();
 
-    let (outcome, elapsed) = timed(client.download(&format!("{blobs}/download/c/b/m"))).await;
+    // The transport itself: the blob server is a second origin the session never advertised,
+    // which `JmapClient::download` refuses before any byte moves.
+    let url = format!("{blobs}/download/c/b/m");
+    let (outcome, elapsed) = timed(client.transport.get_bytes(&url)).await;
 
     assert_eq!(outcome.expect("a steady blob arrives").len(), 5000);
     assert!(elapsed > BOUNDS.reply() + BOUNDS.stall(), "{elapsed:?}");

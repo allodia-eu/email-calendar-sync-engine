@@ -8,7 +8,7 @@ use super::*;
 fn method_errors_classify_per_rfc_8620() {
     assert_eq!(
         JmapError::Method {
-            call_id: "1".into(),
+            call_id: crate::request::CallId::from_wire("1"),
             error_type: "cannotCalculateChanges".into(),
         }
         .failure_class(),
@@ -16,7 +16,7 @@ fn method_errors_classify_per_rfc_8620() {
     );
     assert_eq!(
         JmapError::Method {
-            call_id: "0".into(),
+            call_id: crate::request::CallId::from_wire("0"),
             error_type: "rateLimit".into(),
         }
         .failure_class(),
@@ -24,7 +24,7 @@ fn method_errors_classify_per_rfc_8620() {
     );
     assert_eq!(
         JmapError::Method {
-            call_id: "0".into(),
+            call_id: crate::request::CallId::from_wire("0"),
             error_type: "stateMismatch".into(),
         }
         .failure_class(),
@@ -32,7 +32,7 @@ fn method_errors_classify_per_rfc_8620() {
     );
     assert_eq!(
         JmapError::Method {
-            call_id: "0".into(),
+            call_id: crate::request::CallId::from_wire("0"),
             error_type: "unknownMethod".into(),
         }
         .failure_class(),
@@ -50,7 +50,7 @@ fn a_concurrency_limit_is_a_throttle_even_though_it_arrives_as_a_400() {
         body: r#"{"type":"urn:ietf:params:jmap:error:limit","status":400,
                  "detail":"The request exceeds the maximum number of concurrent requests.",
                  "limit":"maxConcurrentRequests"}"#
-            .to_owned(),
+            .into(),
         retry_after: None,
     };
     assert_eq!(refused.failure_class(), FailureClass::RateLimited);
@@ -81,7 +81,7 @@ fn the_send_funnel_waits_out_the_400_the_adapter_already_called_a_rate_limit() {
     assert_eq!(
         JmapError::Status {
             status: 400,
-            body: CONCURRENCY.to_owned(),
+            body: CONCURRENCY.into(),
             retry_after: None,
         }
         .failure_class(),
@@ -117,7 +117,7 @@ fn the_blob_quota_429_carries_the_instant_stalwart_named() {
     // adapter has given it one.
     let refused = JmapError::Status {
         status: 429,
-        body: BLOB_QUOTA.to_owned(),
+        body: BLOB_QUOTA.into(),
         retry_after: Some(core::time::Duration::from_secs(2688)),
     };
     let neutral: ProviderError = refused.into();
@@ -139,7 +139,7 @@ fn the_concurrency_400_names_no_instant_and_does_not_pretend_to() {
     // a guess in front of a host as the server's word.
     let refused = JmapError::Status {
         status: 400,
-        body: CONCURRENCY.to_owned(),
+        body: CONCURRENCY.into(),
         retry_after: None,
     };
     let neutral: ProviderError = refused.into();
@@ -160,7 +160,7 @@ fn the_blob_quota_429_needs_no_classifier_at_all() {
     assert_eq!(
         JmapError::Status {
             status: 429,
-            body: BLOB_QUOTA.to_owned(),
+            body: BLOB_QUOTA.into(),
             retry_after: None,
         }
         .failure_class(),
@@ -189,7 +189,8 @@ fn the_other_request_limits_stay_permanent() {
     for limit in ["maxSizeRequest", "maxCallsInRequest"] {
         let refused = JmapError::Status {
             status: 400,
-            body: format!(r#"{{"type":"urn:ietf:params:jmap:error:limit","limit":"{limit}"}}"#),
+            body: format!(r#"{{"type":"urn:ietf:params:jmap:error:limit","limit":"{limit}"}}"#)
+                .into(),
             retry_after: None,
         };
         assert_eq!(refused.failure_class(), FailureClass::Permanent, "{limit}");
@@ -198,7 +199,7 @@ fn the_other_request_limits_stay_permanent() {
     assert_eq!(
         JmapError::Status {
             status: 400,
-            body: "not json".to_owned(),
+            body: "not json".into(),
             retry_after: None,
         }
         .failure_class(),
@@ -260,7 +261,7 @@ fn http_status_maps_to_class() {
 #[test]
 fn converts_into_classified_provider_error_with_source() {
     let provider: ProviderError = JmapError::Method {
-        call_id: "2".into(),
+        call_id: crate::request::CallId::from_wire("2"),
         error_type: "cannotCalculateChanges".into(),
     }
     .into();
@@ -280,7 +281,48 @@ fn malformed_responses_are_permanent() {
         FailureClass::Permanent
     );
     assert_eq!(
-        JmapError::MissingResponse("9".into()).failure_class(),
+        JmapError::MissingResponse(crate::request::CallId::from_wire("9")).failure_class(),
         FailureClass::Permanent
     );
+}
+
+/// A status error crosses the public API now (`JmapClient::execute`, `upload`, `download`), so
+/// what it shows is a code: the status, and the problem-details `type` where the body is one.
+/// The body itself, which may echo content, is reachable only by asking for it.
+#[test]
+fn a_status_error_shows_its_code_and_never_the_server_s_text() {
+    let body = r#"{"type":"urn:ietf:params:jmap:error:limit","status":400,
+                   "detail":"Subject 'Quarterly numbers' exceeds the limit"}"#;
+    let refused = JmapError::status(400, body);
+
+    let shown = refused.to_string();
+    assert_eq!(shown, "JMAP HTTP 400 (urn:ietf:params:jmap:error:limit)");
+    for leak in [
+        shown.clone(),
+        format!("{refused:?}"),
+        ProviderError::from(JmapError::status(400, body)).to_string(),
+        format!("{:?}", ProviderError::from(JmapError::status(400, body))),
+        JmapError::status(502, body).after_write().to_string(),
+    ] {
+        assert!(!leak.contains("Quarterly"), "server text leaked: {leak}");
+    }
+    let JmapError::Status { body: kept, .. } = &refused else {
+        panic!("a status error");
+    };
+    assert_eq!(
+        kept.as_str(),
+        body,
+        "the body is still there for whoever asks"
+    );
+}
+
+#[test]
+fn a_body_that_is_not_problem_details_shows_the_status_alone() {
+    for body in [
+        "<html>Account alice@example.com locked</html>",
+        r#"{"type":"not a uri, just prose"}"#,
+        "",
+    ] {
+        assert_eq!(JmapError::status(503, body).to_string(), "JMAP HTTP 503");
+    }
 }

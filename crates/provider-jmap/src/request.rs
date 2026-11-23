@@ -1,107 +1,227 @@
-//! The batched JMAP request/response envelope (RFC 8620 §3.2–3.7).
+//! The batched JMAP request envelope (RFC 8620 §3.3) and the result references that chain
+//! one call to another (§3.7).
 //!
-//! A JMAP request is `{ "using": [capabilities], "methodCalls": [[name, args,
-//! callId], …] }`; the response is `{ "methodResponses": [[name, result, callId],
-//! …], "sessionState": … }`. A method's argument may be a **result reference**
-//! (`{ "resultOf": callId, "name": method, "path": pointer }`) carried under a
-//! `#`-prefixed key, letting one call consume a prior call's output without a
-//! round-trip (RFC 8620 §3.7) — e.g. `Email/get` over the ids `Email/query`
-//! produced.
+//! A JMAP request is `{ "using": [capabilities], "methodCalls": [[name, args, callId], …] }`.
+//! A method's argument may be a **result reference** (`{ "resultOf": callId, "name": method,
+//! "path": pointer }`) carried under a `#`-prefixed key, letting one call consume a prior call's
+//! output without a round trip, such as `Email/get` over the ids `Email/query` produced.
 //!
-//! These types are pure (`serde_json` only) so the envelope is fully unit-tested
-//! offline; the transport that ships them lives in [`crate::transport`].
+//! These types are pure (`serde_json` only), so the envelope is unit-tested offline; the
+//! transport that ships them is [`JmapClient::execute`](crate::JmapClient::execute), and the
+//! answer is a [`Response`](crate::Response).
+
+use core::fmt;
 
 use serde_json::{Map, Value, json};
 
-/// JMAP capability URNs used in the `using` set.
-pub(crate) mod capability {
+/// The JMAP capability URNs a [`Request`] declares in its `using` set.
+///
+/// A request lists every capability its methods rely on, and the core one always (RFC 8620
+/// §3.3). These are the ones the adapter itself speaks; a server's extension is named by its own
+/// URN, which [`Request::new`] takes as readily.
+pub mod capability {
     /// `urn:ietf:params:jmap:core` (RFC 8620). Required by every request.
-    pub(crate) const CORE: &str = "urn:ietf:params:jmap:core";
+    pub const CORE: &str = "urn:ietf:params:jmap:core";
     /// `urn:ietf:params:jmap:mail` (RFC 8621).
-    pub(crate) const MAIL: &str = "urn:ietf:params:jmap:mail";
+    pub const MAIL: &str = "urn:ietf:params:jmap:mail";
     /// `urn:ietf:params:jmap:submission` (RFC 8621 §7).
-    pub(crate) const SUBMISSION: &str = "urn:ietf:params:jmap:submission";
-    /// `urn:ietf:params:jmap:calendars` (JMAP Calendars draft).
-    pub(crate) const CALENDARS: &str = "urn:ietf:params:jmap:calendars";
+    pub const SUBMISSION: &str = "urn:ietf:params:jmap:submission";
+    /// `urn:ietf:params:jmap:calendars` (JMAP Calendars).
+    pub const CALENDARS: &str = "urn:ietf:params:jmap:calendars";
     /// `urn:ietf:params:jmap:contacts` (RFC 9610).
-    pub(crate) const CONTACTS: &str = "urn:ietf:params:jmap:contacts";
-    /// `urn:ietf:params:jmap:blob` (RFC 9404): `Blob/get`, many blobs' bytes in one call.
-    pub(crate) const BLOB: &str = "urn:ietf:params:jmap:blob";
+    pub const CONTACTS: &str = "urn:ietf:params:jmap:contacts";
+    /// `urn:ietf:params:jmap:blob` (RFC 9404): `Blob/get` and `Blob/upload`, many blobs in one
+    /// method call.
+    pub const BLOB: &str = "urn:ietf:params:jmap:blob";
+}
+
+/// The id of one method call within a [`Request`] (RFC 8620 §3.2, the `callId`).
+///
+/// [`Request::invoke`] hands one out for each call it adds. It is the key a
+/// [`Response`](crate::Response) answers that call under and the call a [`ResultRef`] points at.
+/// It is a type of its own so that it cannot be mixed up with a method name or an object id,
+/// which are strings on the wire too.
+///
+/// # Examples
+///
+/// ```
+/// use provider_jmap::{Request, capability};
+/// use serde_json::json;
+///
+/// let mut request = Request::new([capability::CORE]);
+/// let echo = request.invoke("Core/echo", json!({ "hello": true }));
+/// assert_eq!(request.to_json()["methodCalls"][0][2], echo.as_str());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CallId(String);
+
+impl CallId {
+    /// A call id as the server answered it.
+    pub(crate) fn from_wire(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// The id as it is sent.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for CallId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A result reference (RFC 8620 §3.7): "the value at `path` in the answer to call `of`, which
+/// answered as `name`".
+///
+/// Set it on a later call's arguments with [`set_on`](Self::set_on), which writes it under the
+/// `#`-prefixed key the protocol requires. The server resolves it before running that call, so
+/// two dependent calls take one round trip.
+///
+/// # Examples
+///
+/// ```
+/// use provider_jmap::{Request, ResultRef, capability};
+/// use serde_json::{Map, json};
+///
+/// let mut request = Request::new([capability::CORE, capability::MAIL]);
+/// let query = request.invoke("Email/query", json!({ "accountId": "a1", "limit": 10 }));
+///
+/// let mut get = Map::new();
+/// get.insert("accountId".to_owned(), json!("a1"));
+/// ResultRef::new(&query, "Email/query", "/ids").set_on(&mut get, "ids");
+/// request.invoke("Email/get", get.into());
+///
+/// assert_eq!(
+///     request.to_json()["methodCalls"][1][1]["#ids"],
+///     json!({ "resultOf": query.as_str(), "name": "Email/query", "path": "/ids" })
+/// );
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultRef {
+    of: CallId,
+    name: String,
+    path: String,
+}
+
+impl ResultRef {
+    /// A reference to the value at `path` (a JSON pointer, where `*` maps over an array) in the
+    /// answer to `of`, an answer named `name`: the method `of` called, or the implicit call a
+    /// method answers with (`Email/set` after an `EmailSubmission/set`, RFC 8621 §7.5).
+    #[must_use]
+    pub fn new(of: &CallId, name: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            of: of.clone(),
+            name: name.into(),
+            path: path.into(),
+        }
+    }
+
+    /// The call whose answer is referenced.
+    #[must_use]
+    pub fn of(&self) -> &CallId {
+        &self.of
+    }
+
+    /// The name the referenced answer carries.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The JSON pointer into the referenced answer.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Sets this reference as the argument `property` of `arguments`, under the `#property` key
+    /// the protocol requires. A plain `property` there is removed, since RFC 8620 §3.7 refuses a
+    /// call that carries both.
+    pub fn set_on(&self, arguments: &mut Map<String, Value>, property: &str) {
+        arguments.remove(property);
+        arguments.insert(
+            format!("#{property}"),
+            json!({ "resultOf": self.of.as_str(), "name": self.name, "path": self.path }),
+        );
+    }
 }
 
 /// One method call: `[name, arguments, callId]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Invocation {
-    /// The method name, e.g. `Email/get`.
+    /// The method name, such as `Email/get`.
     pub(crate) method: String,
     /// The method arguments object.
     pub(crate) arguments: Value,
-    /// The client-assigned call id, unique within the request.
-    pub(crate) call_id: String,
+    /// The call id, unique within the request.
+    pub(crate) call_id: CallId,
 }
 
 impl Invocation {
-    /// The method error (RFC 8620 §3.6.2) this invocation is, if it is one.
-    fn answered(&self) -> Result<(), super::error::JmapError> {
-        if self.method != "error" {
-            return Ok(());
-        }
-        let error_type = self
-            .arguments
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_owned();
-        Err(super::error::JmapError::Method {
-            call_id: self.call_id.clone(),
-            error_type,
-        })
-    }
-
     fn to_json(&self) -> Value {
-        json!([self.method, self.arguments, self.call_id])
-    }
-
-    /// Parses one `[name, args, callId]` triple from a response.
-    fn from_json(value: &Value) -> Result<Self, super::error::JmapError> {
-        let triple = value
-            .as_array()
-            .filter(|a| a.len() == 3)
-            .ok_or_else(|| super::error::JmapError::protocol("method response is not a triple"))?;
-        let method = triple[0]
-            .as_str()
-            .ok_or_else(|| super::error::JmapError::protocol("method name is not a string"))?;
-        let call_id = triple[2]
-            .as_str()
-            .ok_or_else(|| super::error::JmapError::protocol("call id is not a string"))?;
-        Ok(Self {
-            method: method.to_owned(),
-            arguments: triple[1].clone(),
-            call_id: call_id.to_owned(),
-        })
+        json!([self.method, self.arguments, self.call_id.as_str()])
     }
 }
 
-/// A batched JMAP request under construction.
+/// A batched JMAP request under construction (RFC 8620 §3.3).
+///
+/// Each [`invoke`](Self::invoke) appends a method call and returns its [`CallId`], which later
+/// calls reference ([`ResultRef`]) and the [`Response`](crate::Response) answers it under. The
+/// server runs the calls in order, and refuses a request with more calls than the session's
+/// `maxCallsInRequest` ([`CoreLimits`](crate::CoreLimits)).
+///
+/// # Examples
+///
+/// ```no_run
+/// use provider_jmap::{JmapClient, JmapError, Request, capability};
+/// use serde_json::json;
+///
+/// async fn mailbox_names(client: &JmapClient) -> Result<Vec<String>, JmapError> {
+///     let account = client.session().mail_account_id()?;
+///     let mut request = Request::new([capability::CORE, capability::MAIL]);
+///     let get = request.invoke(
+///         "Mailbox/get",
+///         json!({ "accountId": account, "properties": ["name"] }),
+///     );
+///     let response = client.execute(&request).await?;
+///     let names = response.result(&get)?["list"]
+///         .as_array()
+///         .into_iter()
+///         .flatten()
+///         .filter_map(|mailbox| mailbox["name"].as_str().map(str::to_owned))
+///         .collect();
+///     Ok(names)
+/// }
+/// ```
 #[derive(Debug, Clone, Default)]
-pub(crate) struct Request {
+pub struct Request {
     using: Vec<String>,
     calls: Vec<Invocation>,
 }
 
 impl Request {
-    /// Starts a request declaring the capability URNs its methods rely on.
-    pub(crate) fn new(using: impl IntoIterator<Item = &'static str>) -> Self {
+    /// Starts a request declaring the capability URNs its methods rely on: [`capability`]
+    /// constants, or a server extension's own URN.
+    #[must_use]
+    pub fn new<I>(using: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
         Self {
-            using: using.into_iter().map(str::to_owned).collect(),
+            using: using.into_iter().map(Into::into).collect(),
             calls: Vec::new(),
         }
     }
 
-    /// Appends a method call and returns its assigned call id, so a later call can
-    /// back-reference it.
-    pub(crate) fn invoke(&mut self, method: impl Into<String>, arguments: Value) -> String {
-        let call_id = self.calls.len().to_string();
+    /// Appends a call of `method` with `arguments`, and returns its id: a later call references
+    /// its answer by it, and the [`Response`](crate::Response) answers it under it.
+    pub fn invoke(&mut self, method: impl Into<String>, arguments: Value) -> CallId {
+        let call_id = CallId(self.calls.len().to_string());
         self.calls.push(Invocation {
             method: method.into(),
             arguments,
@@ -110,8 +230,9 @@ impl Request {
         call_id
     }
 
-    /// Serializes to the `{ using, methodCalls }` wire object.
-    pub(crate) fn to_json(&self) -> Value {
+    /// The request as the `{ using, methodCalls }` object that goes on the wire.
+    #[must_use]
+    pub fn to_json(&self) -> Value {
         json!({
             "using": self.using,
             "methodCalls": self.calls.iter().map(Invocation::to_json).collect::<Vec<_>>(),
@@ -119,145 +240,17 @@ impl Request {
     }
 }
 
-/// Builds a result-reference value (`{ resultOf, name, path }`, RFC 8620 §3.7)
-/// for use as a `#`-prefixed argument, e.g. `args["#ids"] = result_ref("0",
-/// "Email/query", "/ids")`.
-pub(crate) fn result_ref(result_of: &str, name: &str, path: &str) -> Value {
-    json!({ "resultOf": result_of, "name": name, "path": path })
-}
-
-/// A parsed batched response.
-#[derive(Debug, Clone)]
-pub(crate) struct Response {
-    responses: Vec<Invocation>,
-}
-
-impl Response {
-    /// Parses a `{ methodResponses, sessionState }` document.
-    pub(crate) fn parse(value: &Value) -> Result<Self, super::error::JmapError> {
-        let list = value
-            .get("methodResponses")
-            .and_then(Value::as_array)
-            .ok_or_else(|| super::error::JmapError::protocol("methodResponses missing"))?;
-        let responses = list
-            .iter()
-            .map(Invocation::from_json)
-            .collect::<Result<_, _>>()?;
-        Ok(Self { responses })
-    }
-
-    /// Returns the result arguments for `call_id`, mapping a method `error`
-    /// response (RFC 8620 §3.6.2) to a typed
-    /// [`JmapError::Method`](super::error::JmapError::Method).
-    pub(crate) fn result(&self, call_id: &str) -> Result<&Value, super::error::JmapError> {
-        let invocation = self
-            .responses
-            .iter()
-            .find(|inv| inv.call_id == call_id)
-            .ok_or_else(|| super::error::JmapError::MissingResponse(call_id.to_owned()))?;
-        invocation.answered()?;
-        Ok(&invocation.arguments)
-    }
-
-    /// [`result`](Self::result), taking the arguments out of the response rather than
-    /// borrowing them.
-    pub(crate) fn into_result(mut self, call_id: &str) -> Result<Value, super::error::JmapError> {
-        let at = self
-            .responses
-            .iter()
-            .position(|inv| inv.call_id == call_id)
-            .ok_or_else(|| super::error::JmapError::MissingResponse(call_id.to_owned()))?;
-        let invocation = self.responses.swap_remove(at);
-        invocation.answered()?;
-        Ok(invocation.arguments)
-    }
-}
-
-/// Inserts a `#`-prefixed back-reference argument into an arguments object.
+/// Sets `reference` as the argument `name` of `arguments` ([`ResultRef::set_on`]) and returns
+/// the arguments as a value, for a call built from a map.
 pub(crate) fn with_back_reference(
     mut arguments: Map<String, Value>,
     name: &str,
-    reference: Value,
+    reference: &ResultRef,
 ) -> Value {
-    arguments.insert(format!("#{name}"), reference);
+    reference.set_on(&mut arguments, name);
     Value::Object(arguments)
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn builds_batched_request_with_sequential_call_ids() {
-        let mut req = Request::new([capability::CORE, capability::MAIL]);
-        let q = req.invoke("Email/query", json!({ "accountId": "c", "limit": 50 }));
-        assert_eq!(q, "0");
-        let get_args = with_back_reference(
-            json!({ "accountId": "c" }).as_object().unwrap().clone(),
-            "ids",
-            result_ref(&q, "Email/query", "/ids"),
-        );
-        let g = req.invoke("Email/get", get_args);
-        assert_eq!(g, "1");
-
-        let wire = req.to_json();
-        assert_eq!(wire["using"], json!([capability::CORE, capability::MAIL]));
-        assert_eq!(wire["methodCalls"][0][0], "Email/query");
-        assert_eq!(wire["methodCalls"][0][2], "0");
-        assert_eq!(wire["methodCalls"][1][0], "Email/get");
-        // The back-reference is carried under "#ids".
-        assert_eq!(
-            wire["methodCalls"][1][1]["#ids"],
-            json!({ "resultOf": "0", "name": "Email/query", "path": "/ids" })
-        );
-    }
-
-    #[test]
-    fn parses_responses_and_finds_by_call_id() {
-        let body = json!({
-            "methodResponses": [
-                ["Mailbox/get", { "accountId": "c", "list": [], "state": "s1" }, "0"],
-                ["Email/query", { "ids": ["e1"] }, "1"]
-            ],
-            "sessionState": "abc"
-        });
-        let resp = Response::parse(&body).unwrap();
-        assert_eq!(resp.result("0").unwrap()["state"], "s1");
-        assert_eq!(resp.result("1").unwrap()["ids"], json!(["e1"]));
-        assert!(matches!(
-            resp.result("2"),
-            Err(super::super::error::JmapError::MissingResponse(_))
-        ));
-    }
-
-    #[test]
-    fn method_error_response_becomes_typed_error() {
-        let body = json!({
-            "methodResponses": [
-                ["error", { "type": "cannotCalculateChanges" }, "0"]
-            ]
-        });
-        let resp = Response::parse(&body).unwrap();
-        let err = resp.result("0").unwrap_err();
-        match err {
-            super::super::error::JmapError::Method {
-                call_id,
-                error_type,
-            } => {
-                assert_eq!(call_id, "0");
-                assert_eq!(error_type, "cannotCalculateChanges");
-            }
-            other => panic!("expected method error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn rejects_non_triple_responses() {
-        let body = json!({ "methodResponses": [["only", "two"]] });
-        assert!(Response::parse(&body).is_err());
-        let missing = json!({ "sessionState": "x" });
-        assert!(Response::parse(&missing).is_err());
-    }
-}
+#[path = "request_tests.rs"]
+mod tests;

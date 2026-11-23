@@ -1,17 +1,19 @@
-//! Blob downloads: RFC 8620 §6.2 `downloadUrl` template substitution, and the raw
-//! message-source fetch built on it.
+//! Blob URLs: the session's `downloadUrl` and `uploadUrl` templates filled in (RFC 8620 §6),
+//! and the raw message-source fetch built on them.
 //!
-//! Split out of `fetch.rs` because two callers share the URL builder — this module's
-//! `message_source` and the contact-photo download in `provider` — and because the
-//! encoding rule below is a security invariant worth pinning with its own tests.
+//! The URL builders are public because a host that drives
+//! [`JmapClient::download`](crate::JmapClient::download) or
+//! [`JmapClient::upload`](crate::JmapClient::upload) itself needs the same URL the adapter
+//! would build, and the encoding rule below is a security invariant that belongs in one place:
+//! every substituted value is percent-encoded, so no value can re-point the URL.
 
 use std::fmt::Write as _;
 
-use engine_core::{mail::Message, raw::RawMime};
+use engine_core::{ids::BlobId, mail::Message, raw::RawMime};
 
-use crate::{error::JmapError, executor::Executor};
+use crate::{error::JmapError, executor::Executor, session_accounts::JmapAccountId};
 
-/// Percent-encodes one `downloadUrl` placeholder substitution.
+/// Percent-encodes one placeholder substitution.
 ///
 /// Everything outside RFC 3986's *unreserved* set is escaped, so a substituted value
 /// can only ever be a single path/query token — it can never introduce a `?`, `#`,
@@ -31,9 +33,66 @@ fn encode_placeholder(value: &str) -> String {
     out
 }
 
-/// Builds a blob download URL from the session's `downloadUrl` template,
-/// percent-encoding every substitution (see [`encode_placeholder`]).
-pub(crate) fn download_url(
+/// The URL that downloads `blob` from `account`: the session's `downloadUrl` `template`
+/// ([`Session::download_url`](crate::Session::download_url)) with its placeholders filled in,
+/// asking for the bytes as `media_type` and naming the file `name` (RFC 8620 §6.2).
+///
+/// Every substitution is percent-encoded, so no value, a media type read from a server's
+/// payload included, can add a path segment, a query parameter or a fragment.
+///
+/// # Examples
+///
+/// ```
+/// use engine_core::ids::BlobId;
+/// use provider_jmap::{JmapAccountId, blob::download_url};
+///
+/// let blob = BlobId::try_from("G3a7")?;
+/// let url = download_url(
+///     "https://jmap.example.com/download/{accountId}/{blobId}/{name}?type={type}",
+///     &JmapAccountId::new("c"),
+///     &blob,
+///     "message/rfc822",
+///     "message.eml",
+/// );
+/// assert_eq!(
+///     url,
+///     "https://jmap.example.com/download/c/G3a7/message.eml?type=message%2Frfc822"
+/// );
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[must_use]
+pub fn download_url(
+    template: &str,
+    account: &JmapAccountId,
+    blob: &BlobId,
+    media_type: &str,
+    name: &str,
+) -> String {
+    fill_download(template, account.as_str(), blob.as_str(), media_type, name)
+}
+
+/// The URL that uploads a blob into `account`: the session's `uploadUrl` `template`
+/// ([`Session::upload_url`](crate::Session::upload_url)) with its `{accountId}` filled in,
+/// percent-encoded as [`download_url`] encodes (RFC 8620 §6.1).
+///
+/// # Examples
+///
+/// ```
+/// use provider_jmap::{JmapAccountId, blob::upload_url};
+///
+/// let url = upload_url(
+///     "https://jmap.example.com/upload/{accountId}/",
+///     &JmapAccountId::new("c"),
+/// );
+/// assert_eq!(url, "https://jmap.example.com/upload/c/");
+/// ```
+#[must_use]
+pub fn upload_url(template: &str, account: &JmapAccountId) -> String {
+    fill_upload(template, account.as_str())
+}
+
+/// [`download_url`] over ids the adapter holds as text.
+pub(crate) fn fill_download(
     template: &str,
     account: &str,
     blob: &str,
@@ -45,6 +104,83 @@ pub(crate) fn download_url(
         .replace("{blobId}", &encode_placeholder(blob))
         .replace("{type}", &encode_placeholder(media_type))
         .replace("{name}", &encode_placeholder(name))
+}
+
+/// [`upload_url`] over an account id the adapter holds as text.
+pub(crate) fn fill_upload(template: &str, account: &str) -> String {
+    template.replace("{accountId}", &encode_placeholder(account))
+}
+
+/// Decodes a `data:` URI's base64 payload, or `None` if `uri` is not one.
+///
+/// A JSContact `media` entry may carry its image **inline** rather than by `blobId`:
+/// a card that reached the server as a vCard with `PHOTO;ENCODING=b` has no blob to
+/// reference, and the `uri` is the whole picture. Observed on Stalwart, and the same
+/// shape the CardDAV adapter builds for the same card — so an adapter that only
+/// understands `blobId` fails on a photo the protocol legitimately delivered.
+pub(crate) fn decode_data_uri(uri: &str) -> Option<Vec<u8>> {
+    let (header, payload) = uri.strip_prefix("data:")?.split_once(',')?;
+    if !header.ends_with(";base64") {
+        return None;
+    }
+    crate::base64::decode(payload)
+}
+
+/// A blob being downloaded, read a chunk at a time so it is never whole in memory
+/// ([`JmapClient::download_stream`](crate::JmapClient::download_stream)).
+///
+/// Each read waits at most the engine's stall bound
+/// ([`Deadlines::stall`](engine_provider::Deadlines::stall)) for the server to send something,
+/// so a server that stops mid-blob fails the read rather than parking it.
+///
+/// # Examples
+///
+/// ```no_run
+/// use provider_jmap::{JmapClient, JmapError};
+///
+/// async fn blob_size(client: &JmapClient, url: &str) -> Result<u64, JmapError> {
+///     let mut blob = client.download_stream(url).await?;
+///     let mut size = 0;
+///     while let Some(chunk) = blob.next_chunk().await? {
+///         size += chunk.len() as u64;
+///     }
+///     Ok(size)
+/// }
+/// ```
+pub struct BlobDownload {
+    response: reqwest::Response,
+}
+
+impl BlobDownload {
+    pub(crate) fn new(response: reqwest::Response) -> Self {
+        Self { response }
+    }
+
+    /// The blob's size in bytes, where the server said it (`Content-Length`).
+    #[must_use]
+    pub fn size(&self) -> Option<u64> {
+        self.response.content_length()
+    }
+
+    /// The next piece of the blob, or `None` once it has all arrived.
+    ///
+    /// # Errors
+    ///
+    /// [`JmapError::Transport`] when the connection fails or the server sends nothing for the
+    /// stall bound; the blob is then incomplete, and is fetched again from the start.
+    pub async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, JmapError> {
+        let stall = engine_provider::Deadlines::STANDARD.stall();
+        let chunk = engine_http::chunk_within(&mut self.response, stall).await?;
+        Ok(chunk.map(|bytes| bytes.to_vec()))
+    }
+}
+
+impl core::fmt::Debug for BlobDownload {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BlobDownload")
+            .field("size", &self.size())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Downloads a message's raw RFC 5322 source via the session's `downloadUrl`
@@ -61,21 +197,6 @@ pub(crate) fn download_url(
 /// Returns [`JmapError::Protocol`] if the message carries no `blobId` (it was never
 /// synced with one), [`JmapError::Session`] if the server advertised no
 /// `downloadUrl`, or a transport/HTTP error from the download.
-/// Decodes a `data:` URI's base64 payload, or `None` if `uri` is not one.
-///
-/// A JSContact `media` entry may carry its image **inline** rather than by `blobId`:
-/// a card that reached the server as a vCard with `PHOTO;ENCODING=b` has no blob to
-/// reference, and the `uri` is the whole picture. Observed on Stalwart, and the same
-/// shape the CardDAV adapter builds for the same card — so an adapter that only
-/// understands `blobId` fails on a photo the protocol legitimately delivered.
-pub(crate) fn decode_data_uri(uri: &str) -> Option<Vec<u8>> {
-    let (header, payload) = uri.strip_prefix("data:")?.split_once(',')?;
-    if !header.ends_with(";base64") {
-        return None;
-    }
-    crate::base64::decode(payload)
-}
-
 pub(crate) async fn message_source(
     executor: &dyn Executor,
     message: &Message,
@@ -92,7 +213,7 @@ pub(crate) async fn message_source(
     let url = download_url(
         template,
         account,
-        blob.as_str(),
+        blob,
         "application/octet-stream",
         "message",
     );
@@ -102,7 +223,7 @@ pub(crate) async fn message_source(
 
 #[cfg(test)]
 mod tests {
-    use super::download_url;
+    use super::{fill_download as download_url, fill_upload};
 
     const TEMPLATE: &str = "https://jmap.test/download/{accountId}/{blobId}/{name}?type={type}";
 
@@ -151,6 +272,14 @@ mod tests {
         );
         assert!(!url.contains("../"), "path traversal survived: {url}");
         assert!(url.contains("..%2F..%2F..%2Fetc%2Fpasswd"), "{url}");
+    }
+
+    /// The upload template gets the same rule: before it, a draft's upload URL substituted the
+    /// account raw, so an account id carrying a `/` or a `?` restructured it.
+    #[test]
+    fn a_hostile_account_cannot_restructure_the_upload_url() {
+        let url = fill_upload("https://jmap.test/upload/{accountId}/", "../a?b#c");
+        assert_eq!(url, "https://jmap.test/upload/..%2Fa%3Fb%23c/");
     }
 
     #[test]

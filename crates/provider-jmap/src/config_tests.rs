@@ -30,8 +30,8 @@ async fn a_bound_config_addresses_every_call_at_the_shared_account() {
     let client = JmapClient::connect(config).await.unwrap();
     // The group's account `g`, where an unbound client would address alice's primary `c`.
     let session = client.session();
-    assert_eq!(session.mail_account_id().unwrap(), "g");
-    assert_eq!(session.submission_account_id().unwrap(), "g");
+    assert_eq!(session.mail_account_id().unwrap().as_str(), "g");
+    assert_eq!(session.submission_account_id().unwrap().as_str(), "g");
 }
 
 #[tokio::test]

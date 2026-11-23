@@ -24,7 +24,7 @@ use serde_json::json;
 use crate::{
     error::JmapError,
     executor::Executor,
-    request::{Request, capability},
+    request::{CallId, Request, capability},
     session_accounts::SessionAccount,
 };
 
@@ -81,7 +81,7 @@ pub(crate) async fn list(executor: &dyn Executor) -> Result<Vec<SharedAccount>, 
     let per_request = session.limits().max_calls_in_request.max(1);
     for batch in questions.chunks(per_request) {
         let mut request = Request::new(using.clone());
-        let calls: Vec<String> = batch
+        let calls: Vec<CallId> = batch
             .iter()
             .map(|(account, _, method)| {
                 request.invoke(*method, json!({ "accountId": account.id, "ids": [] }))

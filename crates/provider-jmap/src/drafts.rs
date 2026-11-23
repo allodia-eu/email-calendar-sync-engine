@@ -25,7 +25,7 @@ use crate::{
     error::JmapError,
     executor::Executor,
     mail::mailbox_from_json,
-    request::{Request, capability},
+    request::{CallId, Request, capability},
     submit::{build_draft, created_id, role_id, set_error},
     sync_ops::objects,
 };
@@ -69,7 +69,7 @@ pub(crate) async fn put_draft(
 
     let resp = executor.execute(&req).await?;
     let result = resp.result(&set)?;
-    let id = created_id(result, "draft").ok_or_else(|| set_error(result, "draft", "Email/set"))?;
+    let id = created_id(result, "draft").ok_or_else(|| set_error(result, "draft", &set))?;
     let key = ProviderKey::new(id)
         .map_err(|e| JmapError::protocol(format!("bad created email id: {e}")))?;
     // The server stamps a draft's arrival time itself, so only the keywords are kept.
@@ -94,7 +94,7 @@ pub(crate) async fn delete_draft(
     );
 
     let resp = executor.execute(&req).await?;
-    settled(resp.result(&set)?, draft)
+    settled(resp.result(&set)?, &set, draft)
 }
 
 /// Reads a `destroy`'s outcome, treating an absent message as the state asked for.
@@ -102,7 +102,7 @@ pub(crate) async fn delete_draft(
 /// The op behind this is retryable, so the second call names a message the first one
 /// destroyed; `notFound` is that call succeeding, and reporting it as a failure would
 /// park the op forever.
-fn settled(result: &Value, draft: &ProviderKey) -> Result<(), JmapError> {
+fn settled(result: &Value, call: &CallId, draft: &ProviderKey) -> Result<(), JmapError> {
     let destroyed = result
         .get("destroyed")
         .and_then(Value::as_array)
@@ -118,7 +118,7 @@ fn settled(result: &Value, draft: &ProviderKey) -> Result<(), JmapError> {
     match error_type {
         None | Some("notFound") => Ok(()),
         Some(other) => Err(JmapError::Method {
-            call_id: "Email/set".to_owned(),
+            call_id: call.clone(),
             error_type: other.to_owned(),
         }),
     }

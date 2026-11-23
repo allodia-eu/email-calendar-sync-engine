@@ -24,7 +24,8 @@ use crate::{
     error::JmapError,
     executor::Executor,
     provider::provider_test_support::{FakeExecutor, account, provider},
-    request::{Request, Response},
+    request::Request,
+    response::Response,
     session::Session,
 };
 
@@ -135,7 +136,12 @@ impl Executor for Refused {
         unreachable!("a create downloads nothing")
     }
 
-    async fn upload(&self, _url: &str, _type: &str, _bytes: &[u8]) -> Result<String, JmapError> {
+    async fn upload(
+        &self,
+        _url: &str,
+        _type: &str,
+        _bytes: &[u8],
+    ) -> Result<engine_core::ids::BlobId, JmapError> {
         unreachable!("a create uploads nothing")
     }
 

@@ -38,7 +38,7 @@ use serde_json::{Map, Value, json};
 use crate::{
     error::JmapError,
     fetch::{MemberFetch, get_ids},
-    request::{Request, result_ref, with_back_reference},
+    request::{Request, ResultRef, with_back_reference},
     sync_ops::{keys, state, total},
 };
 
@@ -360,7 +360,11 @@ impl<'f, 'a> Walk<'f, 'a> {
             }
             req.invoke(
                 format!("{}/get", fetch.type_name),
-                with_back_reference(get_args, "ids", result_ref(&query, &query_method, "/ids")),
+                with_back_reference(
+                    get_args,
+                    "ids",
+                    &ResultRef::new(&query, &query_method, "/ids"),
+                ),
             )
         });
         let resp = fetch.executor.execute(&req).await?;

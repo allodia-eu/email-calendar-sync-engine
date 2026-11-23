@@ -7,12 +7,14 @@
 //! network. The provider is one of its callers, not its owner.
 
 use async_trait::async_trait;
+use engine_core::ids::BlobId;
 use engine_provider::{HandOver, HttpVersion, TlsVersion};
 
 use crate::{
     JmapClient,
     error::JmapError,
-    request::{Request, Response},
+    request::{CallId, Request},
+    response::Response,
     session::Session,
 };
 
@@ -43,7 +45,7 @@ pub(crate) trait Executor: Send + Sync {
     async fn download(&self, url: &str) -> Result<Vec<u8>, JmapError>;
     /// POSTs raw `bytes` of `media_type` to a resolved blob-upload URL, returning the
     /// server-assigned `blobId` (RFC 8620 §6.1) — used to attach a draft's parts.
-    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<String, JmapError>;
+    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<BlobId, JmapError>;
     fn session(&self) -> &Session;
     /// The HTTP version the transport negotiated. Defaults to `None`: only the live
     /// [`JmapClient`] speaks HTTP, so a fake fed canned documents has no version to
@@ -64,7 +66,7 @@ pub(crate) trait Executor: Send + Sync {
 pub(crate) async fn write(
     executor: &dyn Executor,
     request: &Request,
-    call: &str,
+    call: &CallId,
 ) -> Result<serde_json::Value, JmapError> {
     let response = executor
         .execute(request)
@@ -76,7 +78,7 @@ pub(crate) async fn write(
 #[async_trait]
 impl Executor for JmapClient {
     async fn execute(&self, request: &Request) -> Result<Response, JmapError> {
-        JmapClient::execute(self, request, engine_http::Exchange::Ordinary).await
+        JmapClient::execute(self, request).await
     }
 
     async fn submit(
@@ -85,14 +87,14 @@ impl Executor for JmapClient {
         hand_over: &HandOver<'_>,
     ) -> Result<Response, JmapError> {
         let exchange = engine_http::Exchange::Submission(hand_over);
-        JmapClient::execute(self, request, exchange).await
+        JmapClient::send(self, request, exchange).await
     }
 
     async fn download(&self, url: &str) -> Result<Vec<u8>, JmapError> {
         JmapClient::download(self, url).await
     }
 
-    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<String, JmapError> {
+    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<BlobId, JmapError> {
         JmapClient::upload(self, url, media_type, bytes).await
     }
 

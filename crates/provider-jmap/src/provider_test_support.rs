@@ -17,12 +17,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use engine_core::ids::BlobId;
 use reqwest::Url;
 use serde_json::{Value, json};
 
 use super::*;
 use crate::{
-    request::Response,
+    response::Response,
     session::{Session, SessionUrlPolicy},
 };
 
@@ -179,7 +180,7 @@ impl Executor for FakeExecutor {
             .ok_or_else(|| JmapError::status(404, "no blob"))
     }
 
-    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<String, JmapError> {
+    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<BlobId, JmapError> {
         self.uploads
             .lock()
             .unwrap()
@@ -188,6 +189,7 @@ impl Executor for FakeExecutor {
             .lock()
             .unwrap()
             .pop_front()
+            .map(|id| BlobId::try_from(id.as_str()).expect("a canned blob id"))
             .ok_or_else(|| JmapError::status(413, "no upload slot"))
     }
 
@@ -219,7 +221,7 @@ impl Executor for Arc<FakeExecutor> {
         (**self).download(url).await
     }
 
-    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<String, JmapError> {
+    async fn upload(&self, url: &str, media_type: &str, bytes: &[u8]) -> Result<BlobId, JmapError> {
         (**self).upload(url, media_type, bytes).await
     }
 

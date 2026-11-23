@@ -11,6 +11,8 @@ use engine_core::error::FailureClass;
 use engine_provider::ProviderError;
 use serde_json::Value;
 
+use crate::request::CallId;
+
 /// A JMAP protocol or transport failure.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -20,15 +22,16 @@ pub enum JmapError {
     #[error("JMAP transport error: {0}")]
     Transport(#[from] engine_http::SendError),
 
-    /// The server returned a non-success HTTP status. The body is captured for
-    /// diagnostics (a JMAP "problem details" document for request-level errors,
-    /// RFC 8620 §3.6.1).
-    #[error("JMAP HTTP {status}: {body}")]
+    /// The server returned a non-success HTTP status. It shows as its code: the status, and
+    /// the problem-details `type` (RFC 8620 §3.6.1) where the body is one. The body is kept,
+    /// but shown nowhere ([`ServerText`]).
+    #[error("JMAP HTTP {status}{}", problem_suffix(body))]
     Status {
         /// The HTTP status code.
         status: u16,
-        /// The response body (possibly a JSON problem-details document).
-        body: String,
+        /// The response body, possibly a JSON problem-details document, and possibly echoing
+        /// what the request carried.
+        body: ServerText,
         /// When the server said to come back, from [`engine_http::Sent::stated_wait`].
         ///
         /// Usually `None`, and honestly so: RFC 8620 §3.6.1 names *which* limit was hit
@@ -47,8 +50,8 @@ pub enum JmapError {
     /// RFC 8620 §3.6.2) instead of its result.
     #[error("JMAP method error '{error_type}' for call '{call_id}'")]
     Method {
-        /// The call id of the failed invocation.
-        call_id: String,
+        /// The call the server answered with the error.
+        call_id: CallId,
         /// The JMAP error `type` string.
         error_type: String,
     },
@@ -71,9 +74,9 @@ pub enum JmapError {
         properties: Vec<String>,
     },
 
-    /// The batched response carried no entry for a call id that was sent.
+    /// The batched response carried no answer to a call that was sent.
     #[error("no method response for call '{0}'")]
-    MissingResponse(String),
+    MissingResponse(CallId),
 
     /// A response was structurally not a valid JMAP envelope (e.g. `methodResponses`
     /// absent or not an array of triples).
@@ -100,12 +103,86 @@ pub enum JmapError {
     Unconfirmed(Box<JmapError>),
 }
 
+/// Text a server sent in an error reply: a problem-details document, an HTML page, anything.
+///
+/// It may echo what the request carried (a subject, an address), and the engine never logs or
+/// shows content, so it appears in no `Display` and its `Debug` shows only its length. A host
+/// that deliberately wants it reads it with [`as_str`](Self::as_str), knowing what it may hold.
+///
+/// # Examples
+///
+/// ```
+/// use provider_jmap::ServerText;
+///
+/// let body = ServerText::from(r#"{"type":"urn:ietf:params:jmap:error:limit"}"#);
+/// assert_eq!(format!("{body:?}"), "ServerText(43 bytes)");
+/// assert_eq!(
+///     body.problem_type(),
+///     Some("urn:ietf:params:jmap:error:limit")
+/// );
+/// ```
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct ServerText(String);
+
+impl ServerText {
+    /// The text as the server sent it, which may contain content the request carried.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The problem-details `type` (RFC 7807, which RFC 8620 §3.6.1 uses) where the text is such
+    /// a document and its `type` is URI-shaped: a code, safe to show. `None` otherwise.
+    #[must_use]
+    pub fn problem_type(&self) -> Option<&str> {
+        let start = self.0.find("\"type\"")?;
+        let rest = self.0[start + 6..]
+            .trim_start()
+            .strip_prefix(':')?
+            .trim_start();
+        let value = rest.strip_prefix('"')?;
+        let value = &value[..value.find('"')?];
+        let uri_shaped = !value.is_empty()
+            && value.len() <= 200
+            && value.contains(':')
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b":._/-#?=&%~+".contains(&b));
+        uri_shaped.then_some(value)
+    }
+}
+
+impl From<String> for ServerText {
+    fn from(text: String) -> Self {
+        Self(text)
+    }
+}
+
+impl From<&str> for ServerText {
+    fn from(text: &str) -> Self {
+        Self(text.to_owned())
+    }
+}
+
+impl core::fmt::Debug for ServerText {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ServerText({} bytes)", self.0.len())
+    }
+}
+
+/// ` (<type>)` where `body` names a problem type, else nothing.
+fn problem_suffix(body: &ServerText) -> String {
+    body.problem_type()
+        .map(|kind| format!(" ({kind})"))
+        .unwrap_or_default()
+}
+
 impl JmapError {
     /// Builds a [`JmapError::Status`].
     pub(crate) fn status(status: u16, body: impl Into<String>) -> Self {
         Self::Status {
             status,
-            body: body.into(),
+            body: ServerText(body.into()),
             retry_after: None,
         }
     }
@@ -243,7 +320,7 @@ impl JmapError {
     pub fn failure_class(&self) -> FailureClass {
         match self {
             Self::Transport(e) => transport_class(e),
-            Self::Status { status, body, .. } => status_class(*status, body),
+            Self::Status { status, body, .. } => status_class(*status, body.as_str()),
             // A malformed response/session is a protocol-level incompatibility:
             // retrying the same request will not fix it.
             Self::Json(_)
