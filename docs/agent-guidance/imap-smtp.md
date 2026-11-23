@@ -579,18 +579,28 @@ credential.
   attachment bodies are base64 encoded, and non-ASCII attachment filenames use
   RFC 5987-style `filename*` / `name*` parameters. (Long encoded-words are not yet
   folded into 75-octet runs — a later refinement.)
-- **Keywords on the Sent copy.** A draft's `sent_copy_keywords` ride the Sent `APPEND` as
-  flags, and only where the folder's `PERMANENTFLAGS` carries `\*` (RFC 9051 §7.1):
-  without it the server answers `OK` and keeps no new keyword, the same silent success
-  `report.rs` refuses. Reading `PERMANENTFLAGS` needs a `SELECT`, which the first attempt
-  issues only when the draft asks for keywords, so an ordinary send costs nothing extra;
-  the retry reads it from the `SELECT` its probe already makes, and gives a copy it finds
-  already placed the keywords with an idempotent `+FLAGS`. A `SELECT` or `STORE` that
-  fails leaves them out rather than failing the placement. The receipt's
-  `sent_copy_kept` names the ones the copy carries; a `PERMANENTFLAGS` that lists a
-  keyword by name without `\*` counts as not allowing it, since only `\*` is parsed. The
-  repair (`refile`) sets them the same way and returns only the key, so what it kept is
-  read from the next sync (`place.rs`, `tests/live_imap_sent_keywords.rs`).
+- **Which keywords a folder keeps: one rule, `permanent.rs`.** Every write that sets a keyword
+  (the `APPEND` of a Sent copy, a draft or an import; the `STORE` of a report verdict or of a
+  copy already placed) asks the folder's `PERMANENTFLAGS` (RFC 9051 §7.1), because a server that
+  cannot keep a flag answers `OK` and drops it. A keyword is kept when the list names it, or,
+  for anything but the four system flags, when it carries `\*`. With no `PERMANENTFLAGS` at all,
+  RFC 9051 §6.3.2 says every flag can be changed permanently, read as every flag `FLAGS` names;
+  creating a keyword it does not name is stated only by `\*`, so it is not assumed. One routine
+  (`store_message.rs`) applies the rule for every `APPEND`: it opens the folder only when a
+  keyword is asked for, once per folder, and a folder that refuses the `SELECT` gets the message
+  without the keywords. The answer reports what was kept, never the filing's own flags
+  (`\Seen` on a Sent copy, `\Draft \Seen` on a draft). The harness servers all list every
+  system flag and `\*` (`tests/fixtures/select_inbox_*.txt`); a folder that names its keywords
+  instead is pinned offline.
+- **Keywords on the Sent copy.** The keywords of a draft's `sent_copy_metadata` ride the Sent
+  `APPEND` as flags, by the rule above. Reading `PERMANENTFLAGS` needs a `SELECT`, which the
+  first attempt issues only when the draft asks for keywords, so an ordinary send costs nothing
+  extra; the retry reads it from the `SELECT` its probe already makes, and gives a copy it finds
+  already placed the keywords with an idempotent `+FLAGS`. A refused `SELECT` or a failed
+  `STORE` leaves them out rather than failing the placement. The receipt's `sent_copy_kept`
+  names the ones the copy carries. The server stamps the copy's arrival time, so an asked one is
+  neither sent nor kept. The repair (`refile`) sets them the same way and returns only the key,
+  so what it kept is read from the next sync (`place.rs`, `tests/live_imap_sent_keywords.rs`).
 - **Folder resolution.** The sent copy / draft is filed into the account's **real
   folder for the role**, discovered via the `\Sent`/`\Drafts` SPECIAL-USE attribute
   in a `LIST` (so a Gmail `[Gmail]/Sent Mail` or a localized name is honored), and
@@ -740,9 +750,8 @@ credential.
 - **`put_draft` / `delete_draft` (no SMTP).** A draft is `APPEND`ed into the account's
   Drafts folder (resolved by `\Drafts` SPECIAL-USE, else creating `Drafts`) flagged
   `\Draft \Seen`, so keeping a draft works against any IMAP server even where SMTP
-  submission cannot. The keywords `put_draft` is given ride the same `APPEND`, by the rule a
-  Sent copy's follow (`place.rs`): asked for only where a `SELECT` of Drafts shows `\*` in
-  `PERMANENTFLAGS`, reported in `DraftReceipt::kept` either way. Unlike Sent placement an `APPEND` failure surfaces: saving the
+  submission cannot. The keywords of the metadata `put_draft` is given ride the same `APPEND`, by
+  the one rule (`permanent.rs`), reported in `DraftReceipt::kept` either way. Unlike Sent placement an `APPEND` failure surfaces: saving the
   draft is the whole op. `ImapProvider::save_draft` remains as the first-save
   convenience the example and the live suite use, and is the same code path.
 - **A re-save is `APPEND` then `UID STORE +FLAGS (\Deleted)` + `UID EXPUNGE`, in that
@@ -1348,11 +1357,11 @@ keyword — `$Junk`, `$NotJunk`, `$Phishing` — but IMAP keeps the flag and the
 different verbs, so it is two commands rather than one.
 
 **`PERMANENTFLAGS` is read before the write, and it is the only probe IMAP offers here.**
-RFC 9051 §7.1 makes `\*` the server's statement that a client may create new keywords.
-Without it a server answers `UID STORE +FLAGS ($Junk)` with a plain `OK` and stores nothing
-— the report would read as delivered and be absent on the next `FETCH`. `SelectData` now
-carries `permanent_flags_allow_new`, and a mailbox without it makes the report an
-`InvalidState` rather than a silent no-op.
+A server that cannot keep the verdict keyword answers `UID STORE +FLAGS ($Junk)` with a plain
+`OK` and stores nothing — the report would read as delivered and be absent on the next `FETCH`.
+`SelectData::permanent` carries what the mailbox said, and the report asks it by the one rule
+every keyword write follows (`permanent.rs`: named in `PERMANENTFLAGS`, or `\*`). A mailbox that
+keeps neither makes the report an `InvalidState` rather than a silent no-op.
 
 **That refusal branch has no server to exercise it.** Stalwart and both Dovecot dialects
 advertise `\*`, so the live suite can only pin the *premise* (`live_imap_report.rs` →

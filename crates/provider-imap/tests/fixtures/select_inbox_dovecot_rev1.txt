@@ -1,0 +1,8 @@
+* FLAGS (\Answered \Flagged \Deleted \Seen \Draft)
+* OK [PERMANENTFLAGS (\Answered \Flagged \Deleted \Seen \Draft \*)] Flags permitted.
+* 11 EXISTS
+* 0 RECENT
+* OK [UNSEEN 1] First unseen.
+* OK [UIDVALIDITY 1790151415] UIDs valid
+* OK [UIDNEXT 12] Predicted next UID
+* OK [HIGHESTMODSEQ 13] Highest

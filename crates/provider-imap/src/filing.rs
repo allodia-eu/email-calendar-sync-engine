@@ -239,7 +239,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                 draft.message_id.clone(),
                 &handed_over,
             )
-            .with_sent_copy_kept(MessageMetadata::default().with_keywords(placed.keywords))),
+            .with_sent_copy_kept(placed.kept)),
             // Delivered, but the copy is not in Sent and no later sync can find it — there
             // is nothing on the server to reconcile against. Never an `Err`: the message
             // has reached its recipients, and a caller that saw a failure here would
@@ -280,7 +280,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                         &store,
                         Filing::Sent,
                         filed,
-                        &draft.sent_copy_metadata.keywords,
+                        &draft.sent_copy_metadata,
                     )
                     .await
                 }
@@ -332,14 +332,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         draft: &Draft,
     ) -> ProviderResult<Placed> {
         let store = self.store_on(connection).await?;
-        let keywords = &draft.sent_copy_metadata.keywords;
+        let asked = &draft.sent_copy_metadata;
         place_if_absent(
             connection,
             &store,
             Filing::Sent,
             &draft.message_id,
             filed,
-            keywords,
+            asked,
         )
         .await
     }

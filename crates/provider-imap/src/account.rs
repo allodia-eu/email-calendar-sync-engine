@@ -281,8 +281,8 @@ fn capabilities<S>(connection: &Connection<S>, smtp: bool) -> Capabilities {
         .with_mail()
         .with_mail_writes()
         // All three registered keywords are expressible; whether the *server* stores them is a
-        // per-mailbox fact (`\*` in `PERMANENTFLAGS`) that only a `SELECT` can answer, so the
-        // report path checks it per call and refuses rather than writing a flag the server
+        // per-mailbox fact (`PERMANENTFLAGS`, `crate::permanent`) that only a `SELECT` can answer,
+        // so the report path checks it per call and refuses rather than writing a flag the server
         // discards (`crate::report`). The evidence is `Convention`: IMAP has no way to say
         // whether anything trained on the keyword.
         .with_mail_report(ReportControls {

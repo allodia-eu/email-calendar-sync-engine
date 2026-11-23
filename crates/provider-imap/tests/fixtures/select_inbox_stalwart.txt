@@ -1,0 +1,6 @@
+* 8 EXISTS
+* FLAGS (\Answered \Flagged \Deleted \Seen \Draft)
+* 0 RECENT
+* OK [PERMANENTFLAGS (\Deleted \Seen \Answered \Flagged \Draft \*)] All allowed
+* OK [UIDVALIDITY 55107888] UIDs valid
+* OK [UIDNEXT 73] Next predicted UID

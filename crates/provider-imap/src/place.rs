@@ -5,13 +5,12 @@
 //! placement can run on **two different connections**: a pooled one first, and — when that
 //! one is dead — another proved alive. Everything here is therefore free
 //! functions over a [`Connection<S>`] rather than methods on the provider, so one
-//! implementation serves both.
-
-use std::collections::BTreeSet;
+//! implementation serves both. The `APPEND` itself, and which keywords ride it, is
+//! [`crate::store_message`]'s, the routine an import stores with too.
 
 use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
-    mail::{Keyword, MailboxRole},
+    mail::{MailboxRole, MessageMetadata},
 };
 use engine_provider::ProviderResult;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -21,20 +20,22 @@ use crate::{
     mail::{keyword_to_flag, mailbox_from_list, message_key},
     parse::SelectData,
     store::MailStore,
+    store_message::{FolderKeywords, store_message},
     transport::Connection,
+    transport_append::AppendFailure,
     transport_command::quote,
 };
 
-/// Where a placement put the copy, and which of the keywords asked for it carries.
+/// Where a placement put the copy, and what of the metadata asked for it carries.
 #[derive(Debug)]
 pub(crate) struct Placed {
     /// The folder, decoded.
     pub(crate) folder: String,
     /// `(UIDVALIDITY, UID)` of the copy, when the server said.
     pub(crate) append_uid: Option<(u32, u32)>,
-    /// The keywords asked for that the copy carries: all of them where the folder allows
-    /// new keywords, none where it does not.
-    pub(crate) keywords: BTreeSet<Keyword>,
+    /// Of the metadata asked for, what the copy carries: the keywords the folder keeps
+    /// ([`crate::permanent`]), never an arrival time (the server stamps a new copy's).
+    pub(crate) kept: MessageMetadata,
 }
 
 /// Where a placed copy is filed. One value ties together the SPECIAL-USE role used
@@ -72,50 +73,32 @@ impl Filing {
         }
     }
 
-    /// The IMAP flags to set on the appended copy.
-    pub(crate) fn flags(self) -> &'static str {
+    /// The flags the filing itself sets on the copy, whatever was asked: a Sent copy is read,
+    /// a draft is a read draft. Never reported as kept unless asked for too.
+    pub(crate) fn role_flags(self) -> &'static [&'static str] {
         match self {
-            Self::Sent => "\\Seen",
-            Self::Drafts => "\\Draft \\Seen",
+            Self::Sent => &["\\Seen"],
+            Self::Drafts => &["\\Draft", "\\Seen"],
         }
-    }
-
-    /// [`Self::flags`] plus `keywords`, each flag once.
-    fn flags_with(self, keywords: &BTreeSet<Keyword>) -> String {
-        let base = self.flags();
-        let mut flags = base.to_owned();
-        for flag in keywords.iter().map(keyword_to_flag) {
-            if !base.split(' ').any(|own| own.eq_ignore_ascii_case(&flag)) {
-                flags.push(' ');
-                flags.push_str(&flag);
-            }
-        }
-        flags
     }
 }
 
-/// The keywords of `asked` that `selected` lets a client store: all of them when its
-/// `PERMANENTFLAGS` carries `\*`, none otherwise.
-///
-/// Without `\*` a server accepts the `APPEND` flags with a plain `OK` and keeps no new
-/// keyword (RFC 9051 §7.1), so asking would read as kept and be gone on the next `FETCH`.
-/// A `PERMANENTFLAGS` that names a keyword individually is read as not allowing it: the
-/// conservative reading, since the parse records only `\*`.
-fn keepable(selected: &SelectData, asked: &BTreeSet<Keyword>) -> BTreeSet<Keyword> {
-    if selected.permanent_flags_allow_new {
-        asked.clone()
-    } else {
-        BTreeSet::new()
-    }
+/// What a role filing asks of `asked`: all of it but the arrival time, which the server stamps
+/// on a copy it stores now.
+fn undated(asked: &MessageMetadata) -> MessageMetadata {
+    let mut undated = asked.clone();
+    undated.received_at = None;
+    undated
 }
 
 /// Resolves the real folder for `filing` in `store` — its folder carrying the matching
-/// SPECIAL-USE role, else the conventional name (created if missing) — and `APPEND`s
-/// `message` flagged per `filing` plus whichever of `keywords` the folder keeps.
+/// SPECIAL-USE role, else the conventional name (created if missing) — and stores `message`
+/// there with the filing's own flags plus whatever of `asked` the folder keeps
+/// ([`store_message`]).
 ///
 /// Asking for keywords costs a `SELECT`, the only way to read `PERMANENTFLAGS`; asking for
-/// none costs nothing. A `SELECT` that fails leaves the keywords out rather than failing the
-/// placement: they are never worth the copy.
+/// none costs nothing. A folder that refuses the `SELECT` gets the copy without them: they
+/// are never worth the copy.
 ///
 /// # Errors
 ///
@@ -126,28 +109,26 @@ pub(crate) async fn append_to_role_folder<S>(
     store: &MailStore,
     filing: Filing,
     message: &[u8],
-    keywords: &BTreeSet<Keyword>,
+    asked: &MessageMetadata,
 ) -> ProviderResult<Placed>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let folder = resolve_filing_folder(connection, store, filing).await?;
-    let keywords = if keywords.is_empty() {
-        BTreeSet::new()
-    } else {
-        connection
-            .select(&folder)
-            .await
-            .map(|selected| keepable(&selected, keywords))
-            .unwrap_or_default()
-    };
-    let append_uid = connection
-        .append(&folder, &filing.flags_with(&keywords), message)
-        .await?;
+    let stored = store_message(
+        connection,
+        &mut FolderKeywords::default(),
+        &folder,
+        filing.role_flags(),
+        &undated(asked),
+        message,
+    )
+    .await
+    .map_err(AppendFailure::into_error)?;
     Ok(Placed {
         folder,
-        append_uid,
-        keywords,
+        append_uid: stored.append_uid,
+        kept: stored.kept,
     })
 }
 
@@ -220,24 +201,25 @@ where
 /// A classified [`ProviderError`](engine_provider::ProviderError) on a transport failure or
 /// a rejected `LIST`/`SELECT`/`SEARCH`/`APPEND`.
 ///
-/// A copy already there is given `keywords` too: the attempt that placed it may not have
-/// set them, and `+FLAGS` is idempotent. A `STORE` that fails leaves them out rather than
-/// failing the placement.
+/// A copy already there is given the keywords asked for too, those the folder keeps: the
+/// attempt that placed it may not have set them, and `+FLAGS` is idempotent. A `STORE` that
+/// fails leaves them out rather than failing the placement.
 pub(crate) async fn place_if_absent<S>(
     connection: &mut Connection<S>,
     store: &MailStore,
     filing: Filing,
     message_id: &MessageIdHeader,
     message: &[u8],
-    keywords: &BTreeSet<Keyword>,
+    asked: &MessageMetadata,
 ) -> ProviderResult<Placed>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let folder = resolve_filing_folder(connection, store, filing).await?;
     let (selected, existing) = probe_placed_copy(connection, &folder, message_id).await?;
-    let mut keywords = keepable(&selected, keywords);
+    let asked = undated(asked);
     if let Some((_, uid)) = existing {
+        let mut keywords = selected.permanent.keepable(&asked.keywords);
         if !keywords.is_empty() {
             let flags: Vec<String> = keywords.iter().map(keyword_to_flag).collect();
             let item = format!("+FLAGS.SILENT ({})", flags.join(" "));
@@ -248,16 +230,26 @@ where
         return Ok(Placed {
             folder,
             append_uid: existing,
-            keywords,
+            kept: MessageMetadata::default().with_keywords(keywords),
         });
     }
-    let append_uid = connection
-        .append(&folder, &filing.flags_with(&keywords), message)
-        .await?;
+    // The probe's `SELECT` already said what the folder keeps.
+    let mut folders = FolderKeywords::default();
+    folders.record(&folder, selected.permanent);
+    let stored = store_message(
+        connection,
+        &mut folders,
+        &folder,
+        filing.role_flags(),
+        &asked,
+        message,
+    )
+    .await
+    .map_err(AppendFailure::into_error)?;
     Ok(Placed {
         folder,
-        append_uid,
-        keywords,
+        append_uid: stored.append_uid,
+        kept: stored.kept,
     })
 }
 

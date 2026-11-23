@@ -13,8 +13,8 @@
 //! therefore returns the new key rather than an error: the alternative is an op the
 //! caller retries, appending a further copy each time.
 //!
-//! **A draft's keywords ride its `APPEND`**, like a Sent copy's, and only where the Drafts
-//! folder's `PERMANENTFLAGS` carries `\*` (`crate::place`). Every save appends a new message,
+//! **A draft's keywords ride its `APPEND`**, like a Sent copy's, those the Drafts folder keeps
+//! ([`crate::store_message`]). Every save appends a new message,
 //! so each one carries exactly the keywords that save asked for.
 
 use engine_core::{
@@ -57,14 +57,8 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let message = assemble_draft_message(draft, OffsetDateTime::now_utc())?;
-    let placed = append_to_role_folder(
-        connection,
-        store,
-        Filing::Drafts,
-        &message,
-        &metadata.keywords,
-    )
-    .await?;
+    let placed =
+        append_to_role_folder(connection, store, Filing::Drafts, &message, metadata).await?;
 
     if let Some(superseded) = replacing {
         // Best effort by design: the new copy is stored, and reporting this as a failure
@@ -77,9 +71,7 @@ where
         placed.append_uid,
         &draft.message_id,
     );
-    // `APPEND` stamps a draft's arrival time itself, so only the keywords are kept.
-    Ok(DraftReceipt::stored(key)
-        .with_kept(MessageMetadata::default().with_keywords(placed.keywords)))
+    Ok(DraftReceipt::stored(key).with_kept(placed.kept))
 }
 
 /// Removes a stored draft, reporting an absent one as done.

@@ -111,7 +111,7 @@ If product pressure changes the order, the domain model tests still need JMAP an
 
     | adapter | how the keywords are kept | a re-save |
     |---|---|---|
-    | IMAP | on the `APPEND`, only where Drafts' `PERMANENTFLAGS` carries `\*` | the new message carries what this save asked for |
+    | IMAP | on the `APPEND`, those Drafts' `PERMANENTFLAGS` keeps (named, or `\*`) | the new message carries what this save asked for |
     | JMAP | in the `Email/set` create, beside `$draft` and `$seen` | the same |
     | Graph | as named categories (`KeywordName`), set by a `PATCH` after the save, keeping the person's own | the rewritten message keeps its categories (live), so one no longer asked for is taken off |
     | Gmail | as hidden named labels (`KeywordName`), by `messages.modify` on the message the save answers with | `drafts.update` replaces the message and drops the label (live), so every save labels the new one |

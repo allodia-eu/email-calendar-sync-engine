@@ -128,7 +128,12 @@ async fn a_server_silent_partway_through_a_response_fails_after_the_reply_bound(
 async fn an_append_the_server_never_invites_fails_retryable() {
     let (mut c, recorded) = session(&[]);
 
-    let (outcome, elapsed) = timed(c.append("Drafts", "\\Draft", b"a message\r\n")).await;
+    let (outcome, elapsed) = timed(async {
+        c.append("Drafts", "\\Draft", None, b"a message\r\n")
+            .await
+            .map_err(crate::transport_append::AppendFailure::into_error)
+    })
+    .await;
 
     assert_timed_out(outcome);
     assert_took(elapsed, BOUNDS.reply());
@@ -142,7 +147,12 @@ async fn an_append_the_server_never_invites_fails_retryable() {
 async fn an_append_whose_literal_goes_unanswered_fails_retryable() {
     let (mut c, recorded) = session(&["+ Ready for literal data\r\n"]);
 
-    let (outcome, elapsed) = timed(c.append("Sent", "\\Seen", b"a message\r\n")).await;
+    let (outcome, elapsed) = timed(async {
+        c.append("Sent", "\\Seen", None, b"a message\r\n")
+            .await
+            .map_err(crate::transport_append::AppendFailure::into_error)
+    })
+    .await;
 
     assert_timed_out(outcome);
     assert_took(elapsed, BOUNDS.reply());
@@ -160,7 +170,12 @@ async fn an_append_the_server_stops_taking_fails_after_the_stall_bound() {
     let mut c = Connection::resume(client);
     let message = "a line of the message\r\n".repeat(10_000);
 
-    let (outcome, elapsed) = timed(c.append("Sent", "\\Seen", message.as_bytes())).await;
+    let (outcome, elapsed) = timed(async {
+        c.append("Sent", "\\Seen", None, message.as_bytes())
+            .await
+            .map_err(crate::transport_append::AppendFailure::into_error)
+    })
+    .await;
 
     let err = assert_timed_out(outcome);
     assert!(err.to_string().contains("took nothing"), "{err}");

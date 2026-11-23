@@ -15,6 +15,7 @@
 use crate::{
     bodystructure::has_downloadable_part,
     error::{ImapError, ImapResult},
+    permanent::PermanentFlags,
     tokenize::{Item, items_of},
 };
 
@@ -32,15 +33,13 @@ pub(crate) struct SelectData {
     /// present only when the mailbox is opened with CONDSTORE/QRESYNC enabled. It is
     /// the baseline a subsequent QRESYNC delta carries forward in its cursor.
     pub highest_modseq: Option<u64>,
-    /// Whether `PERMANENTFLAGS` carried `\*` — the server's statement that the client
-    /// may create **new** keywords in this mailbox (RFC 9051 §7.1).
+    /// Which keywords the mailbox keeps once stored (`PERMANENTFLAGS`, RFC 9051 §7.1).
     ///
     /// This is the only probe IMAP offers for a failure that is otherwise invisible: a
-    /// server without `\*` answers `UID STORE +FLAGS ($Junk)` with a plain `OK` and
-    /// stores nothing, so a report would read as delivered and be gone on the next
-    /// `FETCH`. An absent `PERMANENTFLAGS` response leaves this `false` — the
-    /// conservative reading, since the client has no statement to rely on.
-    pub permanent_flags_allow_new: bool,
+    /// server that cannot keep a flag answers `UID STORE +FLAGS ($Junk)` or an `APPEND`
+    /// with a plain `OK` and stores nothing, so a write would read as done and be gone on
+    /// the next `FETCH`. [`PermanentFlags`] holds the one rule every write follows.
+    pub permanent: PermanentFlags,
 }
 
 /// One parsed `ENVELOPE` address `(name adl mailbox host)` (RFC 9051 §7.5.2).
@@ -153,11 +152,7 @@ pub(crate) fn parse_select(lines: &[Vec<u8>]) -> ImapResult<SelectData> {
     let mut uid_next = None;
     let mut exists = 0;
     let mut highest_modseq = None;
-    let mut permanent_flags_allow_new = false;
     for line in lines {
-        if permanent_flags_allow_new_keywords(line) {
-            permanent_flags_allow_new = true;
-        }
         if let Some(v) = response_code(line, "UIDVALIDITY") {
             uid_validity = Some(v);
         }
@@ -178,30 +173,8 @@ pub(crate) fn parse_select(lines: &[Vec<u8>]) -> ImapResult<SelectData> {
         uid_next,
         exists,
         highest_modseq,
-        permanent_flags_allow_new,
+        permanent: PermanentFlags::from_select(lines),
     })
-}
-
-/// Whether an untagged line is `* OK [PERMANENTFLAGS (…)]` carrying the `\*` token
-/// (RFC 9051 §7.1), which is the server saying the client may create new keywords.
-///
-/// Matched on the raw bytes rather than the parenthesised item list: `\*` is a flag
-/// *token* rather than an atom, and the surrounding response-code brackets are not
-/// part of the flag list either.
-fn permanent_flags_allow_new_keywords(line: &[u8]) -> bool {
-    let Some(start) = find_subslice(line, b"[PERMANENTFLAGS ") else {
-        return false;
-    };
-    let rest = &line[start..];
-    let end = rest.iter().position(|&b| b == b']').unwrap_or(rest.len());
-    find_subslice(&rest[..end], b"\\*").is_some()
-}
-
-/// The first index of `needle` in `haystack`, or `None`.
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
 }
 
 /// Reads `LIST` untagged responses into [`ListRow`]s, skipping any that are not a
