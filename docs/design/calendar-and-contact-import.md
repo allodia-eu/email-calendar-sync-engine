@@ -121,7 +121,7 @@ Where they differ, the data decides:
   recurrence, and a card's every property, are *inside* the document, which CalDAV and CardDAV
   store whole. Every surveyed server read back what it was given (the projection, for events; every
   property, for the rich card). A target that keeps less is the case `kept` exists for, so it is
-  added with the first adapter that has one: a Graph or Google target, or the vCard writer of E9.
+  added with the first adapter that has one: a Graph or Google target, or a vCard writer that converts between versions (not yet in the engine).
   The receipts are `#[non_exhaustive]`, so adding it breaks no caller.
 - **Identity is the `UID`.** A message is matched by fingerprint, by the host. An event and a card
   name themselves, so the importer answers "already there" for a `UID` the container holds and
@@ -155,8 +155,8 @@ share, as mail import shares `MailboxWrites::edit_mailbox` with folder edits.
   a lost answer is "may be stored", and the host finds the calendar in the list.
 - **No time zone yet.** A CalDAV calendar's time zone is a `VTIMEZONE` definition
   (`calendar-timezone`); no harness server takes RFC 7809's bare id. Building one from tzdb is the
-  iCalendar serializer's job (E7), so `NewCalendar` gains `time_zone` with it, rather than take an
-  input no adapter can honour. The events carry their own `VTIMEZONE`s, so they are unaffected.
+  job of an event-to-iCalendar writer that builds `VTIMEZONE` from tzdb (not yet in the engine), so `NewCalendar` gains `time_zone` with it, rather than take an input no adapter
+  can honour. The events carry their own `VTIMEZONE`s, so they are unaffected.
 - **No component set.** The engine models events alone, and every surveyed server's default set
   holds them; a `VEVENT`-only set would refuse a task a client adds later.
 
@@ -244,7 +244,7 @@ Errors on these paths carry a class and an HTTP status, never the server's text
 | `UID` already there | linked: importing a file twice stores nothing twice | linked: a retried or taken-over batch stores nothing twice | linked |
 | Cursor | not needed (the outbox and sync reconcile) | recorded before each batch's first write; a takeover reads the delta from it | not needed |
 | Silence | importing a file of meetings sends no invitations | the whole point (safety invariant 1 of the transfer host) | the same as the sync host |
-| What it still needs | a splitter for a multi-event `.ics` and a multi-card `.vcf` (one object per item here); the outbox op if the import should be durable | nothing more for CalDAV/CardDAV targets; E7 for Graph sources; E9 for converting cards | the splitter |
+| What it still needs | a splitter for a multi-event `.ics` and a multi-card `.vcf` (one object per item here); the outbox op if the import should be durable | nothing more for CalDAV/CardDAV targets; an event-to-iCalendar writer that builds `VTIMEZONE` from tzdb (not yet in the engine) for Graph sources; a vCard writer that converts between versions (not yet in the engine) for converting cards | the splitter |
 
 ## Graph and Google later
 
@@ -254,7 +254,7 @@ Errors on these paths carry a class and an HTTP status, never the server's text
   live; its duplicate-`UID` answer is to be measured when the adapter is built.
 - **Graph** can create an event but not silently; a Graph `CalendarImporter` would have to import
   without attendees and say so in `kept`, or not be offered. Contacts import over Graph and Google
-  People converts the vCard first (E9).
+  People converts the vCard first, with a vCard writer that converts between versions (not yet in the engine).
 - **JMAP** `CalendarEvent/set` with `sendSchedulingMessages: false` and `ContactCard/set` (or
   `ContactCard/parse`, RFC 9610) fit the same traits.
 
@@ -281,7 +281,7 @@ default. Behaviour that changes on existing paths:
   import arm would prove nothing there. A SabreDAV fixture with its scheduling plugin (as S3 ran)
   would give that arm a control.
 - **A multi-event `.ics` splitter** belongs in `engine-ical` for the sync and direct hosts.
-- **A calendar's time zone** waits on E7's `VTIMEZONE` builder.
+- **A calendar's time zone** waits on an event-to-iCalendar writer that builds `VTIMEZONE` from tzdb (not yet in the engine).
 - **A short `UID` costs more to look up.** `text-match` matches substrings (RFC 4791 §9.7.5),
   so a short `UID` such as `1` returns every object whose `UID` contains it, each one read to
   compare; importing a calendar of such `UID`s grows with the square of its size.

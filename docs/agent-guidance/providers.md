@@ -281,7 +281,7 @@ it. An adapter that can import implements the trait; there is no capability flag
   name, a description and a colour, and answers it as the target holds it, which is the receipt of
   what was kept. A sync host creating a calendar for its user and a transfer host creating one to
   import into are the same act, as mail import shares `MailboxWrites::edit_mailbox`. A time zone
-  joins `NewCalendar` with E7's `VTIMEZONE` builder.
+  joins `NewCalendar` with an event-to-iCalendar writer that builds `VTIMEZONE` from tzdb (not yet in the engine).
 - **When the target's own state refuses, the reason is named, once for every adapter and every
   kind of object.** `ProviderError::refused_by_target(TargetRefusal)` (`engine-provider`,
   `error.rs`) is `FailureClass::InvalidState`: not retryable as it stands, and with no wait,
