@@ -7,7 +7,8 @@
 //! changed individually ([`OverrideSurvival`]). They live beside the capability set rather
 //! than inside it so that file carries the set alone.
 
-/// What a transport can promise about the **lost-update guard** on a calendar write.
+/// What a transport can promise about the **lost-update guard** on a calendar write, and on a
+/// write of an account setting ([`Vacation::guard`](crate::Vacation::guard)).
 ///
 /// Every calendar write in this crate names the revision the caller read, so the
 /// server can refuse an edit built on a copy that has since moved on. Whether the

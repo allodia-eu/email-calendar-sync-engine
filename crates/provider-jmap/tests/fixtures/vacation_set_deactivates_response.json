@@ -1,0 +1,55 @@
+{
+  "methodResponses": [
+    [
+      "SieveScript/get",
+      {
+        "accountId": "e",
+        "state": "sbi",
+        "list": [
+          {
+            "isActive": false,
+            "id": "d"
+          },
+          {
+            "isActive": true,
+            "id": "e"
+          }
+        ],
+        "notFound": []
+      },
+      "0"
+    ],
+    [
+      "VacationResponse/set",
+      {
+        "accountId": "e",
+        "oldState": "sbi",
+        "newState": "sbm",
+        "updated": {
+          "singleton": null
+        }
+      },
+      "1"
+    ],
+    [
+      "SieveScript/get",
+      {
+        "accountId": "e",
+        "state": "sbm",
+        "list": [
+          {
+            "isActive": true,
+            "id": "d"
+          },
+          {
+            "isActive": false,
+            "id": "e"
+          }
+        ],
+        "notFound": []
+      },
+      "2"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}

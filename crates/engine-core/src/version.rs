@@ -72,6 +72,13 @@ string_token! {
     CollectionTag
 }
 
+string_token! {
+    /// The version of an account's out-of-office reply as it was read: what a write names to be
+    /// refused if the reply moved since. Opaque; on JMAP it is the `VacationResponse` type's
+    /// `state` (RFC 8620 §5.1), which a `VacationResponse/set` sends as `ifInState`.
+    VacationVersion
+}
+
 /// An IMAP CONDSTORE per-message mod-sequence (RFC 7162). A monotonic counter
 /// bumped on any metadata or flag change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

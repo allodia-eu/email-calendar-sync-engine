@@ -141,7 +141,7 @@ impl Session {
     ///
     /// ```no_run
     /// # fn example(session: &provider_jmap::Session) {
-    /// const SIEVE: &str = "urn:ietf:params:jmap:sieve";
+    /// use provider_jmap::capability::SIEVE;
     /// let filters = session.has_capability(SIEVE) && session.account_for(SIEVE).is_some();
     /// # }
     /// ```
@@ -161,16 +161,14 @@ impl Session {
     /// use provider_jmap::{JmapClient, JmapError, Request, capability};
     /// use serde_json::json;
     ///
-    /// const VACATION: &str = "urn:ietf:params:jmap:vacationresponse";
-    ///
-    /// async fn out_of_office(client: &JmapClient) -> Result<Option<serde_json::Value>, JmapError> {
-    ///     let Some(account) = client.session().account_for(VACATION) else {
+    /// async fn sieve_scripts(client: &JmapClient) -> Result<Option<serde_json::Value>, JmapError> {
+    ///     let Some(account) = client.session().account_for(capability::SIEVE) else {
     ///         return Ok(None);
     ///     };
-    ///     let mut request = Request::new([capability::CORE, VACATION]);
-    ///     let get = request.invoke("VacationResponse/get", json!({ "accountId": account }));
+    ///     let mut request = Request::new([capability::CORE, capability::SIEVE]);
+    ///     let get = request.invoke("SieveScript/get", json!({ "accountId": account, "ids": null }));
     ///     let response = client.execute(&request).await?;
-    ///     Ok(response.result(&get)?["list"].get(0).cloned())
+    ///     Ok(response.result(&get)?.get("list").cloned())
     /// }
     /// ```
     #[must_use]

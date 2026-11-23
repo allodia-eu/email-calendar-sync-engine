@@ -65,7 +65,8 @@ If product pressure changes the order, the domain model tests still need JMAP an
   Option<&dyn MailImporter>` is the first: an adapter that implements the trait answers
   `Some(self)`, one that cannot implements nothing and answers `None`, and the answer is
   both the capability check and the means to act on it, so no flag in `Capabilities` has to
-  agree with a method that rejects. `Box<dyn Provider>` delegates every accessor, so a host
+  agree with a method that rejects. `Provider::vacation() -> Option<&dyn Vacation>` (below,
+  "Out-of-office") is the second. `Box<dyn Provider>` delegates every accessor, so a host
   holding the box reaches the capability without knowing the adapter.
 
   The accessor is what makes a sub-trait affordable. A bare sub-trait costs a host what a
@@ -299,6 +300,36 @@ it. An adapter that can import implements the trait; there is no capability flag
 
   A throttle or a refused credential ends the batch on every adapter, since it reaches every
   message after it; a refusal of one message never does.
+
+## Out-of-office (`Vacation`)
+
+An account's automatic reply is a setting, not a message: every host kind writes it directly,
+guarded by the version it read, never through the outbox, and the store keeps no copy
+(`docs/design/filters-and-out-of-office.md`, decision 1). The model is
+`engine_core::vacation` (`modeling.md`); the capability is `engine_provider::Vacation`, reached
+through `Provider::vacation()`, which answers `Some` only for an account that has a reply the
+adapter can reach.
+
+- **`read_vacation`** answers the reply with its `version`; **`set_vacation(base, new)`** writes
+  every part of `new`, guarded by `base.version` where `guard()` is `Enforced`. A stale base is a
+  `Conflict`; a lost answer is `requires_confirmation` (read before writing again).
+- **A part the account cannot hold is refused, never dropped.** `vocabulary()` states what the
+  account holds, `VacationVocabulary::lost_parts` is the one rule for what a reply would lose, and
+  `refuse_unheld_vacation` is how every adapter refuses (`InvalidState`, naming the parts, never
+  their words) before sending. A reply limited to contacts written as one to everyone would
+  answer every stranger.
+- **The receipt says what the write did to the account's rules** (`RulesEffect`). On a JMAP
+  server that runs the reply as a Sieve script of its own, turning it on switches the user's own
+  filter script off, silently (observed on Stalwart); the adapter observes it and reports
+  `Deactivated`. `Unknown` is an adapter that cannot see the rules.
+
+| Adapter | Reply | Guard | Vocabulary | Rules effect |
+|---|---|---|---|---|
+| JMAP (`VacationResponse`, RFC 8621 §8) | **Implemented** (`jmap.md` → "Out-of-office") | `Enforced` (`ifInState`) | window, subject; everyone; one reply | observed through JMAP Sieve, else `Unknown` |
+| IMAP + ManageSieve | Planned (slice 3): the `vacation` action in the active script | the script's | per server (`date`, `vacation-seconds`) | `Untouched`: one script holds both |
+| Graph (`automaticRepliesSetting`) | Planned (slices 4, 5) | `Absent` | window, no subject, audiences, outside reply | `Untouched` |
+| Gmail (`VacationSettings`) | Planned (slice 5) | `Absent` | window, subject, audiences | `Untouched` |
+| CalDAV / CardDAV | n/a | | | |
 
 ## Stalwart Test Spine
 

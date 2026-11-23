@@ -1,0 +1,25 @@
+{
+  "methodResponses": [
+    [
+      "VacationResponse/get",
+      {
+        "accountId": "e",
+        "state": "sba",
+        "list": [
+          {
+            "id": "singleton",
+            "isEnabled": true,
+            "fromDate": "2030-01-02T09:00:00Z",
+            "toDate": "2030-01-09T17:00:00Z",
+            "subject": "Away",
+            "textBody": "I am away until the ninth.",
+            "htmlBody": "<p>I am away until the <b>ninth</b>.</p>"
+          }
+        ],
+        "notFound": []
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}

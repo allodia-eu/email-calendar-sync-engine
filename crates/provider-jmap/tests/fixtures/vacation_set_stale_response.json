@@ -1,0 +1,43 @@
+{
+  "methodResponses": [
+    [
+      "SieveScript/get",
+      {
+        "accountId": "e",
+        "state": "sba",
+        "list": [
+          {
+            "isActive": true,
+            "id": "d"
+          }
+        ],
+        "notFound": []
+      },
+      "0"
+    ],
+    [
+      "error",
+      {
+        "type": "stateMismatch",
+        "description": "An \"ifInState\" argument was supplied, but it does not match the current state."
+      },
+      "1"
+    ],
+    [
+      "SieveScript/get",
+      {
+        "accountId": "e",
+        "state": "sba",
+        "list": [
+          {
+            "isActive": true,
+            "id": "d"
+          }
+        ],
+        "notFound": []
+      },
+      "2"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}

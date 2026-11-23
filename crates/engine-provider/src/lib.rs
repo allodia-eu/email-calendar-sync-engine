@@ -68,6 +68,7 @@ mod stream;
 mod stream_update;
 mod submit;
 mod sync;
+mod vacation;
 mod watch;
 
 pub use calendar_sync::CalendarSync;
@@ -117,6 +118,7 @@ pub use submit::{
     DraftCalendar, SentCopy, SubmissionReceipt,
 };
 pub use sync::{CalendarListing, ScopeSync};
+pub use vacation::{Vacation, refuse_unheld_vacation};
 pub use watch::{Watch, WatchEvent};
 
 /// Default page size [`Provider::sync_email`] uses to drain

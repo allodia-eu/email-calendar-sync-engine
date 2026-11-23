@@ -18,7 +18,7 @@
 //! - [`blob`] — the download and upload URLs, and a download read as a stream.
 //! - [`JmapClient`] — connect, execute, upload and download: the low-level handle the normalization
 //!   and `Provider` impl build on, public for a host that needs JMAP the [`JmapProvider`] does not
-//!   wrap (a server's extension, Sieve, a vacation response).
+//!   wrap (a server's extension, Sieve scripts).
 //!
 //! # Two real-world notes
 //!
@@ -80,6 +80,7 @@ mod submit;
 mod submit_body;
 mod sync_ops;
 mod transport;
+mod vacation;
 mod walk;
 mod watch;
 
