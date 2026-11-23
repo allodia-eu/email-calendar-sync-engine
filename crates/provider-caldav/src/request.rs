@@ -168,6 +168,55 @@ pub(crate) fn addressbook_multiget_as_stored(hrefs: &[String]) -> String {
     )
 }
 
+#[cfg(feature = "import")]
+/// `PROPFIND` (Depth 0) of a calendar for what an import needs to know of it: the largest object
+/// it takes (RFC 4791 §5.2.5), and its contents marker, which is the import cursor.
+pub(crate) const CALENDAR_IMPORT_PROPFIND: &str = concat!(
+    r#"<?xml version="1.0" encoding="utf-8"?>"#,
+    r#"<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" "#,
+    r#"xmlns:cs="http://calendarserver.org/ns/">"#,
+    r#"<d:prop><c:max-resource-size/><d:sync-token/><cs:getctag/></d:prop></d:propfind>"#,
+);
+
+/// An `MKCALENDAR` body (RFC 4791 §5.3.1) setting what a person sees of a new calendar: its
+/// name, and its description and colour (the Apple `calendar-color` every surveyed server keeps)
+/// where given.
+pub(crate) fn mkcalendar(name: &str, description: Option<&str>, color: Option<&str>) -> String {
+    let element = |tag: &str, value: &str| format!("<{tag}>{}</{tag}>", xml_escape(value));
+    let mut body = String::from(concat!(
+        r#"<?xml version="1.0" encoding="utf-8"?>"#,
+        r#"<c:mkcalendar xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" "#,
+        r#"xmlns:ic="http://apple.com/ns/ical/"><d:set><d:prop>"#,
+    ));
+    body.push_str(&element("d:displayname", name));
+    if let Some(description) = description {
+        body.push_str(&element("c:calendar-description", description));
+    }
+    if let Some(color) = color {
+        body.push_str(&element("ic:calendar-color", color));
+    }
+    body.push_str("</d:prop></d:set></c:mkcalendar>");
+    body
+}
+
+#[cfg(feature = "import")]
+/// A `calendar-query` REPORT (RFC 4791 §7.8) for the events whose `UID` contains `uid`, with
+/// their data, so the caller keeps only the ones whose `UID` *is* `uid`: CalDAV's `text-match` is
+/// a substring match (§9.7.5).
+pub(crate) fn uid_query(uid: &str) -> String {
+    format!(
+        concat!(
+            r#"<?xml version="1.0" encoding="utf-8"?>"#,
+            r#"<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
+            r#"<d:prop><d:getetag/><c:calendar-data/></d:prop><c:filter>"#,
+            r#"<c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">"#,
+            r#"<c:prop-filter name="UID"><c:text-match collation="i;octet">{uid}</c:text-match>"#,
+            r#"</c:prop-filter></c:comp-filter></c:comp-filter></c:filter></c:calendar-query>"#,
+        ),
+        uid = xml_escape(uid),
+    )
+}
+
 fn multiget(open: &str, prop: &str, close: &str, hrefs: &[String]) -> String {
     let mut body = format!(r#"<?xml version="1.0" encoding="utf-8"?>{open}{prop}"#);
     for href in hrefs {
@@ -181,7 +230,7 @@ fn multiget(open: &str, prop: &str, close: &str, hrefs: &[String]) -> String {
 
 /// Escapes the five XML special characters so an opaque sync-token cannot break
 /// out of its element.
-fn xml_escape(value: &str) -> String {
+pub(crate) fn xml_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
         match ch {

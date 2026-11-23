@@ -187,6 +187,15 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
     fn vacation(&self) -> Option<&dyn crate::Vacation> {
         (**self).vacation()
     }
+
+    #[cfg(feature = "import")]
+    fn calendar_importer(&self) -> Option<&dyn crate::import::CalendarImporter> {
+        (**self).calendar_importer()
+    }
+
+    fn calendar_collections(&self) -> Option<&dyn crate::CalendarCollections> {
+        (**self).calendar_collections()
+    }
 }
 
 /// The calendar-sync half, delegated for the same reason and under the same `?Sized` bound

@@ -21,6 +21,11 @@ use crate::{
 /// What a CTag cursor starts with, telling it apart from a server's sync-token.
 const PREFIX: &str = "ctag:";
 
+/// The cursor a collection whose CTag is `ctag` is read from, in the form [`ctag_sync`] reads.
+pub(crate) fn ctag_cursor(ctag: &str) -> SyncState {
+    SyncState::new(format!("{PREFIX}{ctag}"))
+}
+
 /// Whether `cursor` was minted here rather than by a server's `sync-collection`.
 pub(crate) fn is_ctag_cursor(cursor: Option<&SyncState>) -> bool {
     cursor.is_some_and(|cursor| cursor.as_str().starts_with(PREFIX))
@@ -80,7 +85,7 @@ pub(crate) async fn ctag_sync(
         .ok_or_else(|| {
             CalDavError::protocol("the collection offers neither sync-collection nor a CTag")
         })?;
-    let next = SyncState::new(format!("{PREFIX}{ctag}"));
+    let next = ctag_cursor(ctag);
     if cursor.is_some_and(|cursor| cursor.as_str() == next.as_str()) {
         return Ok(CtagSync::Unchanged(next));
     }

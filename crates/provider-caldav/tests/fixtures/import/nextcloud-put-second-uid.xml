@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">
+  <s:exception>OCA\DAV\Exception\UidConflict</s:exception>
+  <s:message>Calendar object with uid already exists in this calendar collection.</s:message>
+  <cal:no-uid-conflict xmlns:cal="urn:ietf:params:xml:ns:caldav">
+    <d:href xmlns:d="DAV:">/remote.php/dav/calendars/alice/laneb-capture/capture-1@example.com.ics</d:href>
+  </cal:no-uid-conflict>
+</d:error>

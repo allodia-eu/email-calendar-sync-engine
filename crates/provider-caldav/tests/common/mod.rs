@@ -20,6 +20,8 @@
 pub(crate) mod conference_write;
 pub(crate) mod conferences;
 pub(crate) mod imip;
+#[cfg(feature = "import")]
+pub(crate) mod import;
 pub(crate) mod many_calendars;
 pub(crate) mod reconcile;
 pub(crate) mod recurrence;

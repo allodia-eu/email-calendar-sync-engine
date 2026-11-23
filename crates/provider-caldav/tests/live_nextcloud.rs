@@ -398,3 +398,23 @@ async fn nextcloud_a_meeting_goes_on_and_comes_off() {
     let _serial = common::serial_guard().await;
     common::conference_write::a_meeting_goes_on_and_comes_off(&provider, &account).await;
 }
+
+/// Calendar import against Nextcloud (`common::import`), which refuses a second `UID` with a
+/// `409` naming the object that holds it.
+#[cfg(feature = "import")]
+#[tokio::test]
+async fn nextcloud_import_round_trip() {
+    let Some((addr, user, pass)) = harness() else {
+        eprintln!("skipping nextcloud_import_round_trip: NEXTCLOUD_HTTP_ADDR unset");
+        return;
+    };
+    let _serial = common::serial_guard().await;
+    let provider = connect(&addr, &user, &pass).await;
+    let account = AccountId::try_from("nextcloud-import-live").unwrap();
+    let server = common::import::DavServer {
+        base: format!("http://{addr}"),
+        user,
+        pass,
+    };
+    common::import::import_round_trip(&provider, &account, &server).await;
+}

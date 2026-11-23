@@ -43,6 +43,9 @@
 
 mod caldav_config;
 mod calendar;
+mod calendar_create;
+#[cfg(feature = "import")]
+mod calendar_import;
 mod carddav;
 mod carddav_config;
 mod carddav_ops;
@@ -58,6 +61,8 @@ mod href;
 pub mod imip;
 mod multiget;
 mod owners;
+#[cfg(feature = "import")]
+mod precondition;
 mod provider;
 mod request;
 mod response;

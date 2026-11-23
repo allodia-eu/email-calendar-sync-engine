@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?><D:multistatus xmlns:D="DAV:" xmlns:A="urn:ietf:params:xml:ns:caldav"><D:response><D:href>/dav/cal/bob%40test.local/laneb-capture/capture-1@example.com.ics</D:href><D:propstat><D:prop><D:getetag>&quot;2616779722&quot;</D:getetag><A:calendar-data><![CDATA[BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Capture//EN
+BEGIN:VEVENT
+UID:capture-1@example.com
+DTSTAMP:20260101T000000Z
+DTSTART:20270105T100000Z
+DTEND:20270105T110000Z
+SUMMARY:Captured
+END:VEVENT
+END:VCALENDAR
+]]></A:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>

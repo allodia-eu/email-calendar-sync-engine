@@ -31,7 +31,7 @@ use crate::{
     credential_hosts::refuse_unpermitted_base,
     discovery,
     error::CalDavError,
-    href::{collection_href, encode_path_segment},
+    href::{collection_href, resource_name},
     multiget::Multigets,
     transport::{DavClient, DavExecutor},
 };
@@ -197,6 +197,17 @@ impl CalDavProvider {
         })
     }
 
+    /// The transport, for the verbs implemented beside this file (`calendar_create`,
+    /// `calendar_import`).
+    pub(crate) fn executor(&self) -> &dyn DavExecutor {
+        self.executor.as_ref()
+    }
+
+    /// The calendar home every calendar of this provider is under.
+    pub(crate) fn home(&self) -> &str {
+        &self.home_href
+    }
+
     /// Whether this provider opens a store shared with the credential rather than its own.
     fn is_bound(&self) -> bool {
         match (&self.principal, &self.user) {
@@ -218,7 +229,8 @@ impl CalDavProvider {
     /// `<collection>/<uid>.ics`, the universal CalDAV convention (RFC 4791 §5.3.2 lets the
     /// client choose the resource name). `calendar` is the href the listing gave it. The
     /// `uid` is percent-encoded as a single path segment, so an unusual `UID` still yields a
-    /// valid href.
+    /// valid href, and a `UID` too long to be a name is named by its hash
+    /// (`href::resource_name`).
     ///
     /// [`create_event`](CalendarWrites::create_event) mints this itself, so a host does not need
     /// it — a create states an [`EventDraft`] and learns the resulting id from the receipt.
@@ -234,7 +246,7 @@ impl CalDavProvider {
         let href = format!(
             "{}{}.ics",
             collection_href(calendar.as_str())?,
-            encode_path_segment(uid.as_str())
+            resource_name(uid.as_str())
         );
         EventId::try_from(href.as_str())
             .map_err(|e| CalDavError::protocol(format!("bad event href {href:?}: {e}")))
@@ -264,6 +276,17 @@ impl Provider for CalDavProvider {
             ));
         };
         Ok(crate::shared::list(self.executor.as_ref(), user).await?)
+    }
+
+    /// CalDAV imports events with a `PUT` that tells nobody (`crate::calendar_import`).
+    #[cfg(feature = "import")]
+    fn calendar_importer(&self) -> Option<&dyn engine_provider::import::CalendarImporter> {
+        Some(self)
+    }
+
+    /// CalDAV creates calendars with `MKCALENDAR` (`crate::calendar_create`).
+    fn calendar_collections(&self) -> Option<&dyn engine_provider::CalendarCollections> {
+        Some(self)
     }
 }
 

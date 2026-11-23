@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns"><d:response><d:href>/remote.php/dav/calendars/alice/laneb-capture/capture-1@example.com.ics</d:href><d:propstat><d:prop><d:getetag>&quot;9af2d423c31503de1aeec9d98b506180&quot;</d:getetag><cal:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Capture//EN
+BEGIN:VEVENT
+UID:capture-1@example.com
+DTSTAMP:20260101T000000Z
+DTSTART:20270105T100000Z
+DTEND:20270105T110000Z
+SUMMARY:Captured
+END:VEVENT
+END:VCALENDAR
+</cal:calendar-data></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>

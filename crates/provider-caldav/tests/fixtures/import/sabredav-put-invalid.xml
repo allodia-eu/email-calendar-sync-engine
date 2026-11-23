@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">
+  <s:sabredav-version>4.7.0</s:sabredav-version>
+  <s:exception>Sabre\CalDAV\Exception\InvalidComponentType</s:exception>
+  <s:message>iCalendar objects must at least have a component of type VEVENT, VTODO</s:message>
+  <cal:supported-calendar-component xmlns:cal="urn:ietf:params:xml:ns:caldav"/>
+</d:error>

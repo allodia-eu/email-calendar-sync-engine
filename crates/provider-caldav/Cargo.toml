@@ -31,11 +31,17 @@ thiserror = { workspace = true }
 futures-util = { workspace = true }
 # `sync` for the semaphore one provider's multigets share (`multiget::Multigets`).
 tokio = { workspace = true, features = ["sync"] }
+# Names a new object whose `UID` is too long to be its resource name by the UID's hash
+# (`href::resource_name`).
+sha2 = { workspace = true }
 
 [features]
 # Exposes `fuzz_parse` for a cargo-fuzz target driving the iCalendar parser; off
 # in normal builds (mirrors `provider-jmap`).
 fuzzing = []
+# Importing events (`engine_provider::import::CalendarImporter` for `CalDavProvider`): a `PUT` that
+# tells nobody, and a `UID` the calendar already holds answered as already there.
+import = ["engine-provider/import"]
 
 [dev-dependencies]
 # `sync` for the live tests' serialization Mutex (held across awaits); `time` for

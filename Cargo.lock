@@ -1545,6 +1545,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "stalwart-harness",
  "store-sqlite",
  "thiserror",

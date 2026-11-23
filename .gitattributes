@@ -7,3 +7,4 @@
 # recorded byte for byte.
 crates/engine-api/tests/fixtures/stalwart-invitation.eml -text
 crates/provider-caldav/tests/fixtures/sync-initial.xml -text
+crates/provider-caldav/tests/fixtures/import/stalwart-uid-query.xml -text

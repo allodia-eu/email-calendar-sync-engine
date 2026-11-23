@@ -41,6 +41,7 @@ mod capability_contacts;
 mod capability_mailbox;
 mod capability_submission;
 mod capability_window;
+mod collection;
 mod connect_observer;
 mod connection;
 mod contact;
@@ -84,6 +85,7 @@ pub use calendar_write::{
 };
 pub use capability::Capabilities;
 pub use capability_calendar::{OverrideSurvival, RsvpControls};
+pub use collection::{CalendarCollections, NewCalendar};
 pub use connect_observer::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 pub use connection::{ConnectionInfo, HttpVersion, ObservedTlsVersion, TlsVersion};
 #[cfg(feature = "http")]

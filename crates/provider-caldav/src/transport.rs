@@ -58,6 +58,8 @@ pub(crate) enum DavMethod {
     Put,
     /// `DELETE` (RFC 4918 §9.6) — remove a calendar object resource.
     Delete,
+    /// `MKCALENDAR` (RFC 4791 §5.3.1) — create a calendar collection with its properties.
+    Mkcalendar,
 }
 
 impl DavMethod {
@@ -70,6 +72,7 @@ impl DavMethod {
             Self::Report => "REPORT",
             Self::Put => "PUT",
             Self::Delete => "DELETE",
+            Self::Mkcalendar => "MKCALENDAR",
         }
     }
 }
@@ -89,7 +92,7 @@ pub(crate) enum Precondition {
     None,
 }
 
-/// A WebDAV write request (`PUT`/`DELETE`): the verb, target href, optional typed
+/// A WebDAV write request (`PUT`/`DELETE`/`MKCALENDAR`): the verb, target href, optional typed
 /// body, and the conditional precondition. Distinct from the read [`DavExecutor::send`]
 /// shape (Depth + XML), so the proven read path is untouched.
 #[derive(Debug, Clone)]
@@ -231,5 +234,6 @@ mod method_tests {
         assert_eq!(DavMethod::Report.as_str(), "REPORT");
         assert_eq!(DavMethod::Put.as_str(), "PUT");
         assert_eq!(DavMethod::Delete.as_str(), "DELETE");
+        assert_eq!(DavMethod::Mkcalendar.as_str(), "MKCALENDAR");
     }
 }

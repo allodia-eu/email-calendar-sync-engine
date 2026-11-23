@@ -88,6 +88,45 @@ fn with_trailing_slash(href: &str) -> String {
     }
 }
 
+/// The longest encoded `UID` a resource name carries verbatim, in bytes.
+///
+/// A stock SabreDAV schema on MySQL keeps an object's name in `VARBINARY(200)` and Nextcloud's in
+/// `VARCHAR(255)`, and a meeting's `UID` from Outlook is a hex string well over 100 characters,
+/// so a longer one is named by its hash instead, which no schema refuses.
+const MAX_VERBATIM_NAME: usize = 100;
+
+/// The resource name (without `.ics`) a new object with `uid` is stored under: the `UID`
+/// percent-encoded as one segment with its `@` left as it is, or `sha256-` and the hex SHA-256
+/// of the `UID` when that would exceed [`MAX_VERBATIM_NAME`].
+///
+/// One rule for every write that creates an object, so a create and an import of the same `UID`
+/// name the same resource, and a retried one meets its own earlier write (`If-None-Match`).
+///
+/// The `@` is a `pchar` (RFC 3986 §3.3) and is left unencoded because that is how the servers
+/// list the object afterwards: Stalwart, SabreDAV and Nextcloud each answer a `PUT` to
+/// `uid%40example.com.ics` by listing `uid@example.com.ics` in `sync-collection`, `PROPFIND` and
+/// `calendar-query` alike (observed live). Named the way it is listed, the object's id from the
+/// write is the id every later read reports. (Stalwart does encode the `@` of an account in the
+/// home's own segment, which the listing supplies.)
+pub(crate) fn resource_name(uid: &str) -> String {
+    let encoded = encode_path_segment(uid).replace("%40", "@");
+    if encoded.len() <= MAX_VERBATIM_NAME {
+        return encoded;
+    }
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(uid.as_bytes());
+    let mut name = String::from("sha256-");
+    for byte in digest {
+        name.push(hex_lower(byte >> 4));
+        name.push(hex_lower(byte & 0x0f));
+    }
+    name
+}
+
+/// The lower-case hex digit for a 0–15 nibble.
+fn hex_lower(nibble: u8) -> char {
+    char::from_digit(u32::from(nibble), 16).unwrap_or('0')
+}
+
 /// Percent-encodes one URL path segment to its **canonical** form: only RFC 3986
 /// `unreserved` bytes (`ALPHA` / `DIGIT` / `-` / `.` / `_` / `~`) are kept verbatim;
 /// every other byte — including `@`, sub-delims, and path-unsafe bytes — is

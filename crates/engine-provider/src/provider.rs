@@ -468,4 +468,17 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
     fn vacation(&self) -> Option<&dyn crate::Vacation> {
         None
     }
+
+    /// This adapter as a [`CalendarImporter`](crate::import::CalendarImporter), or `None` where
+    /// it cannot import events (the default), as for [`mail_importer`](Self::mail_importer).
+    #[cfg(feature = "import")]
+    fn calendar_importer(&self) -> Option<&dyn crate::import::CalendarImporter> {
+        None
+    }
+
+    /// This adapter as a [`CalendarCollections`](crate::CalendarCollections), or `None` where it
+    /// cannot create calendars (the default).
+    fn calendar_collections(&self) -> Option<&dyn crate::CalendarCollections> {
+        None
+    }
 }
