@@ -180,8 +180,10 @@ fn quoting_and_text_blocks_read_as_the_values_the_plugin_was_given() {
         )
         .named(RuleName::new("Unicode é").unwrap())
     );
+    // The plugin's reply rule is the reply's (`dialect::reply`), not one of the rules.
     let rules = read_rules(VACATION);
-    assert!(is_opaque(&rules[0]) && !is_opaque(&rules[1]));
+    assert_eq!(rules.len(), 1);
+    assert!(!is_opaque(&rules[0]));
 }
 
 #[test]

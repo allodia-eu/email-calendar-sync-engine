@@ -82,6 +82,23 @@ $sets['reply_redirect'] = [
     rule('Out-of-Office', [['test' => 'true']],
          [['type' => 'vacation', 'reason' => 'Away.'], ['type' => 'redirect', 'copy' => true, 'target' => 'deputy@example.com']]),
 ];
+// A user in Amsterdam, the window built by the plugin's own expressions from a DateTime in that
+// zone (`rcube_sieve_vacation.php:276-282`, `set_vacation` at `:834-842`): the zone as `O`, the
+// value as `c` with only `+00:00` turned into `Z`.
+function zoned_test($type, $local) {
+    $dt = new DateTime($local, new DateTimeZone('Europe/Amsterdam'));
+    return ['test' => 'currentdate', 'not' => false, 'part' => 'iso8601', 'type' => 'value-' . $type,
+            'zone' => $dt->format('O'), 'arg' => str_replace('+00:00', 'Z', strtoupper($dt->format('c')))];
+}
+$sets['reply_zone'] = [
+    rule('Out-of-Office', [zoned_test('ge', '2030-01-02 10:00'), zoned_test('le', '2030-01-09 18:30')],
+         [['type' => 'vacation', 'subject' => 'Away', 'reason' => 'Away.']], true),
+];
+$sets['reply_arguments'] = [
+    rule('Out-of-Office', [['test' => 'true']],
+         [['type' => 'vacation', 'seconds' => 3600, 'addresses' => ['carol@example.com', 'c@example.com'],
+           'subject' => 'Away', 'handle' => 'away-1', 'from' => 'carol@example.com', 'reason' => 'Away.']]),
+];
 foreach ($sets as $name => $rules) {
     $s = new rcube_sieve_script('', $caps);
     foreach ($rules as $r) { $s->add_rule($r); }

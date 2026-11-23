@@ -34,6 +34,10 @@ features = ["fuzzing"]
 [dependencies.engine-sieve]
 path = "../crates/engine-sieve"
 
+# The reply the Sieve target writes back over a script.
+[dependencies.engine-core]
+path = "../crates/engine-core"
+
 [[bin]]
 name = "jmap_parse"
 path = "fuzz_targets/jmap_parse.rs"

@@ -43,19 +43,36 @@ reader and writer are written from the observed bytes. Values use reserved domai
 
 ## The out-of-office reply: `reply_*.sieve`
 
-The `reply_*` sets are built as the plugin's vacation engine builds its rule
-(`rcube_sieve_vacation::set_vacation`, read in the same image): `currentdate` tests on the
-`iso8601` part with the zone given (`+0000`, the value then ending in `Z`), `allof` for two tests
-and `true` for none, the rule named `Out-of-Office`, and a disabled reply as any disabled rule. The
-engine's reply reader and writer (`engine_sieve::dialect::reply`) are pinned to them:
+The engine's reply reader and writer (`engine_sieve::dialect::reply`) are pinned to these.
 
-- `reply_window`: both ends, `:days 7` and a subject, a two-line reason, then an ordinary rule;
+**`reply_vacation_post.sieve` was saved by the plugin's settings page**, through its real
+`rcube_sieve_vacation::vacation_post`, on 2026-11-23: the same image, with `managesieve` enabled,
+`timezone` set to `Europe/Amsterdam`, `date_format` `Y-m-d`, and the Dovecot harness
+(`docker/dovecot`, the rev1 service) as its IMAP and ManageSieve server. A script logged in as
+`alice@test.local` and posted the vacation form (`vacation_status=on`, subject `Away`, two-line
+reason, from `2030-01-02 10:00` to `2030-01-09 18:30`, interval `7` days, action `keep`); the
+script the plugin stored, `roundcube`, was read back with `GETSCRIPT` and then deleted. It names
+the rule in the page's language (`Out of Office`) and writes the user's zone: `:zone "+0100"`,
+values ending in `+01:00`.
+
+The other `reply_*` sets come from `generate.php`, built as the plugin's vacation engine builds
+its rule (`rcube_sieve_vacation::set_vacation` and `vacation_post`, read in the same image):
+`currentdate` tests on the `iso8601` part with the zone given, `allof` for two tests and `true` for
+none, the rule named `Out-of-Office` as `set_vacation` names it, a disabled reply as any disabled
+rule. `reply_zone` computes its zone and values with the plugin's own expressions from a
+`DateTime` in `Europe/Amsterdam`, and reads as the same instants as the posted one.
+
+- `reply_window`: both ends in UTC, `:days 7` and a subject, a two-line reason, then an ordinary
+  rule;
 - `reply_start`: a start alone, no subject;
 - `reply_always`: no window (`if true`);
 - `reply_disabled`: switched off, `if false # allof (…)`;
-- `reply_date_zone`: the form the plugin's settings page writes when no time is given, the `date`
-  part in a zone of `+0100`;
-- `reply_redirect`: a reply that also redirects, which the engine reads as a reply it cannot show.
+- `reply_date_zone`: the `date` part in a zone of `+0100`, the form the page writes with no time;
+- `reply_zone`: the `iso8601` part in `+0100`;
+- `reply_arguments`: every argument the plugin writes, in its order (`:seconds`, `:addresses`,
+  `:subject`, `:handle`, `:from`), and `require ["vacation-seconds"]` alone, as it requires;
+- `reply_redirect`: a reply that also redirects, the plugin's "incoming message" action, which the
+  engine reads as a reply it cannot show and keeps when it writes over it.
 
 The plugin takes as the reply the first rule whose first action is `vacation`, writes a new one
 first, and writes the end of the window with `le`, holding through the second it names. Its own

@@ -157,16 +157,24 @@ as a script of its own, the rules script includes the reply's while the reply is
 ("Settled by live tests", slice 2).
 
 Where the server keeps no reply of its own (ManageSieve), the reply is a rule of that same script,
-as Roundcube's vacation engine writes it: the first rule whose first action is `vacation`, a new
-one written first and named `Out-of-Office`, its window `currentdate :zone "+0000" :value "ge"` /
-`"le" "iso8601"` tests (`allof` for two, `true` for none), switched off as any rule is.
-`engine_sieve::dialect::reply` reads it into the neutral `VacationResponse` and writes one over a
-script, in place and keeping the `vacation` arguments the model leaves to the script (`:days`,
-`:seconds`, `:from`, `:addresses`, `:handle`), every other rule copied byte for byte. A reply rule
-holding more than the model says (another test, another action, a `:mime` body, a date in the
-server's own zone) is read as a reply the engine cannot show, never as a narrower one. Text only
-for now: a `:mime` body holding HTML is a follow-up. The bytes are pinned from the plugin's own
-output (`tests/fixtures/roundcube/reply_*.sieve`).
+as Roundcube's vacation engine writes it: a new one written first and named `Out-of-Office`, its
+window `currentdate :zone … :value "ge"` / `"le" "iso8601"` tests (`allof` for two, `true` for
+none), switched off as any rule is. The plugin takes as the reply the first rule whose first action
+is `vacation`; the engine narrows that to one whose tests are only those the plugin writes for a
+window, so a user's own `if header :contains "from" "boss" { vacation …; }` stays an ordinary rule
+rather than being read, and rewritten, as a reply to everyone. `engine_sieve::dialect::reply`
+reads it into the neutral `VacationResponse` and writes one over a script, in place, keeping the
+`vacation` arguments the model leaves to the script (`:days`, `:seconds`, `:addresses`, `:handle`,
+`:from`) and any action after it, every other rule copied byte for byte. The reply rule is the
+reply's alone: `read_rules` leaves it out of the user's rules, and `write_rules` copies it where it
+was, so a host that hides it and writes the rules back keeps the reply, and a migration does not
+carry the `vacation` twice. A reply rule holding more than the model says (another action, a
+`:mime` body, a date in the server's own zone, a `${` the script would expand) is read as a reply
+the engine cannot show, never as a narrower one, and is written over only when the caller names it
+(`write_reply_over`, which keeps what was read of it). The window is written to the second and
+never wider than asked; one that holds no whole second is refused. Text only for now: a `:mime`
+body holding HTML is a follow-up. The bytes are pinned from the plugin's own output, one script
+saved through its settings page (`tests/fixtures/roundcube/README.md`).
 
 ### Types (`engine-core::rules`, implemented in slice 2)
 

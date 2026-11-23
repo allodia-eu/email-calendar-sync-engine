@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use engine_core::rules::{Expansion, MailRule, RuleBody, RuleOrigin, RuleSyntax};
 
-use super::{DialectError, read, render};
+use super::{DialectError, read, render, reply_read};
 use crate::{
     require,
     segment::{Segment, SegmentKind, segment},
@@ -66,9 +66,32 @@ pub(super) fn write(base: &str, rules: &[MailRule]) -> Result<String, DialectErr
         pieces.push((true, text));
     }
     needed.extend(needs.into_iter().map(str::to_owned));
-    let merged = require::merged(&segments, &needed).map_err(DialectError::require)?;
+    // The reply rule is the reply's, not one of the rules (`super::reply`): it stays where it was
+    // among them, byte for byte.
+    if let Some((at, _)) = reply_read::find(base, &segments, script.literal) {
+        let before = segments[..at]
+            .iter()
+            .filter(|segment| segment.kind() == SegmentKind::Command)
+            .count();
+        pieces.insert(
+            before.min(pieces.len()),
+            (false, segments[at].text().to_owned()),
+        );
+    }
+    assemble(&segments, &needed, pieces)
+}
 
-    let mut out = String::with_capacity(base.len());
+/// The script from `segments`: one `require` naming what they named and `needed`, then `pieces`
+/// in order (each flagged when it was rendered rather than copied, so it starts on a line of its
+/// own), then what trailed the last command.
+pub(super) fn assemble(
+    segments: &[Segment<'_>],
+    needed: &BTreeSet<String>,
+    pieces: Vec<(bool, String)>,
+) -> Result<String, DialectError> {
+    let merged = require::merged(segments, needed).map_err(DialectError::require)?;
+
+    let mut out = String::with_capacity(pieces.iter().map(|(_, piece)| piece.len()).sum());
     let requires: Vec<&Segment<'_>> = segments
         .iter()
         .filter(|segment| segment.kind() == SegmentKind::Require)

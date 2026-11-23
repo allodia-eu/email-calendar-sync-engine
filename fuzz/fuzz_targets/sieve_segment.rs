@@ -8,11 +8,16 @@
 //!   (that the segments join back to the script holds by construction, so it is no test);
 //! - a value written as a quoted string, or as a `text:` block where one can hold it, reads back
 //!   as itself;
-//! - an out-of-office reply read from a script, written back over it, reads back as the same reply.
+//! - an out-of-office reply read from a script, written back over it, reads back as the same
+//!   reply; an unread one is written over only when named.
 
+use engine_core::vacation::{AutoReply, VacationResponse};
 use engine_sieve::{
     SegmentKind,
-    dialect::reply::{ScriptReply, read_reply, write_reply},
+    dialect::{
+        DialectErrorKind,
+        reply::{ReplyRefusal, ScriptReply, read_reply, write_reply, write_reply_over},
+    },
     segment, segment_bytes, string, tokenize,
 };
 use libfuzzer_sys::fuzz_target;
@@ -31,18 +36,54 @@ fn written_values_read_back(value: &str) {
 }
 
 fn reply_reads_back(script: &str) {
-    let ScriptReply::Read { reply, .. } = read_reply(script) else {
-        return;
-    };
-    let Ok(written) = write_reply(script, &reply) else {
-        return;
-    };
-    let ScriptReply::Read { reply: back, .. } = read_reply(&written) else {
-        panic!("a reply written reads back as a reply");
-    };
-    assert_eq!(back.enabled, reply.enabled);
-    assert_eq!(back.window, reply.window);
-    assert_eq!(back.reply, reply.reply);
+    let ours = VacationResponse::default()
+        .with_reply(AutoReply::default().with_text("fuzz"))
+        .turned_on();
+    match read_reply(script) {
+        ScriptReply::Read { reply, .. } => {
+            // A reply read writes back, unless its window holds no whole second or the script's
+            // `require` names what no `require` can be written with, and reads back as itself.
+            let written = match write_reply(script, &reply) {
+                Ok(written) => written,
+                Err(err) => {
+                    assert!(
+                        matches!(
+                            err.kind(),
+                            DialectErrorKind::Reply(ReplyRefusal::EmptyWindow)
+                                | DialectErrorKind::Require(_)
+                        ),
+                        "{err:?}"
+                    );
+                    return;
+                }
+            };
+            let ScriptReply::Read { reply: back, .. } = read_reply(&written) else {
+                panic!("a reply written reads back as a reply");
+            };
+            assert_eq!(back.enabled, reply.enabled);
+            assert_eq!(back.window, reply.window);
+            assert_eq!(back.reply, reply.reply);
+        }
+        ScriptReply::Unreadable(unread) => {
+            // Never written over unless named; named, it is replaced in place, or refused for a
+            // `${` the script would expand in what is kept of it.
+            assert_eq!(
+                write_reply(script, &ours).unwrap_err().kind(),
+                DialectErrorKind::Reply(ReplyRefusal::UnreadReply)
+            );
+            match write_reply_over(script, &ours, &unread) {
+                Ok(written) => assert!(read_reply(&written).segment().is_some()),
+                Err(err) => assert!(
+                    matches!(
+                        err.kind(),
+                        DialectErrorKind::Variable { .. } | DialectErrorKind::Require(_)
+                    ),
+                    "{err:?}"
+                ),
+            }
+        }
+        _ => {}
+    }
 }
 
 fuzz_target!(|data: &[u8]| {
