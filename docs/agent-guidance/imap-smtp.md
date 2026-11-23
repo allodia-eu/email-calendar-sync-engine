@@ -513,7 +513,7 @@ boundaries.
   own (`admin` beside `alice@test.local`); a server without the extension has nothing to ask.
   Stalwart (v1.0.2) ignores the authorization identity and signs the authentication identity in
   to its **own** mailbox with `OK`: alice naming bob gets alice's, its recovery administrator
-  naming alice gets the administrator's (`spec-deviations.md`, STALWART-NEW-1). Its
+  naming alice gets the administrator's (`spec-deviations.md`, STALWART-9). Its
   impersonation takes `target%admin` as the username instead, a plain `Password` to the engine.
   So a host uses `ActingAs` only against a server it has verified honours it. Proof:
   `transport_acting_as_tests.rs` (Dovecot's observed lines), and live in

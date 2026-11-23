@@ -142,7 +142,7 @@ ships only after a live Dovecot test with a master user proves it ("Phasing", st
 `Credential::ActingAs { username, password, acting_as }` (`Credential::acting_as`). **The engine
 cannot verify that the server honoured the authorization identity**: IMAP has no way to ask whose
 session opened, and a server that ignores it signs the administrator in to its own mailbox
-without an error (Stalwart does, `spec-deviations.md`, STALWART-NEW-1). A host uses the variant
+without an error (Stalwart does, `spec-deviations.md`, STALWART-9). A host uses the variant
 only against servers it has verified honour it.
 
 `Debug` on `Credential` prints the variant and `username: <present>`, never the username itself.
