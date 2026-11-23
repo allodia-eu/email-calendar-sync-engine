@@ -140,9 +140,7 @@ fn reply(script: &str, segment: &Segment<'_>, literal: bool) -> Option<Found> {
     if !significant.first()?.is_identifier("if") {
         return None;
     }
-    let brace = significant
-        .iter()
-        .position(|token| token.kind() == TokenKind::LeftBrace)?;
+    let brace = block_start(&significant)?;
     let close = matching_brace(&significant, brace)?;
     let block = commands(&significant[brace + 1..close]);
     let (first, rest) = block.split_first()?;
@@ -202,6 +200,21 @@ fn window_only(test: &[&Token<'_>]) -> bool {
                     || ((token.is_identifier("header") || token.is_identifier("anyof"))
                         && regex_received)
             })
+}
+
+/// Where the rule's block opens: the first `{` outside the test's parentheses and brackets. A
+/// `{` inside them is no block of this rule's, whatever a malformed test holds.
+fn block_start(tokens: &[&Token<'_>]) -> Option<usize> {
+    let mut depth = 0usize;
+    for (at, token) in tokens.iter().enumerate() {
+        match token.kind() {
+            TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
+            TokenKind::LeftBrace if depth == 0 => return Some(at),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The `}` closing the `{` at `open`.

@@ -148,6 +148,20 @@ fn an_overwrite_keeps_every_command_after_vacation_and_any_else_and_adds_no_stra
 }
 
 #[test]
+fn a_brace_inside_the_test_s_parentheses_is_no_block_of_the_rule() {
+    // Found by the fuzz target: the `{` inside `allof (…)` was taken for the rule's block, and the
+    // overwrite left the test's `)` behind, which no Sieve parser splits.
+    let torn = "require [\"date\"];\r\nif allof (currentdate :te \n{\r\n\tvacation \"Away.\";\r\n}\t\
+                one \"+le-190\")\r\n{\r\n\tvacatio\tn \"Away.\";\r\n}\r\n";
+    match read_reply(torn) {
+        ScriptReply::Unreadable(_) => {
+            overwritten(torn);
+        }
+        other => assert_eq!(other, ScriptReply::Absent),
+    }
+}
+
+#[test]
 fn an_overwrite_keeps_vacation_s_arguments_only_where_vacation_was_read() {
     // Only the window was unread: `:days` and `:from` are kept.
     let written = overwritten(NO_ZONE);
