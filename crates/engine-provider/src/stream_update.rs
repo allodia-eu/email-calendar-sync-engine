@@ -1,9 +1,11 @@
-//! How one [`EmailChunk`] becomes the update a store applies: the window and patch rules every
-//! driver of [`Provider::stream_email`](crate::Provider::stream_email) shares.
+//! How one [`EmailChunk`] becomes the update a store applies: the window and patch rules for a
+//! host that applies [`Provider::stream_email`](crate::Provider::stream_email) chunk by chunk.
 //!
-//! They live beside the chunk rather than in one orchestrator so that every host applying a
-//! stream (`engine-sync`'s streaming loop, or a host that keeps its own store) reaches the same
-//! conclusions from the same code (`store-and-sync.md`).
+//! They live beside the chunk rather than in one orchestrator so that every such host
+//! (`engine-sync`'s streaming loop, or a host that keeps its own store) reaches the same
+//! conclusions from the same code (`store-and-sync.md`). The default
+//! [`Provider::sync_email`](crate::Provider::sync_email) is not one of them: it drains a whole
+//! pass into one update and is handed no window, so it filters nothing.
 
 use std::collections::BTreeSet;
 
