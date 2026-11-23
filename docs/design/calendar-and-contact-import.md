@@ -165,28 +165,68 @@ share, as mail import shares `MailboxWrites::edit_mailbox` with folder edits.
 Per event:
 
 1. `engine_ical::import_object` (one implementation of "prepare a calendar object to be stored
-   silently", in the iCalendar crate): checks the object is one event with one `UID`, adds
-   `SCHEDULE-AGENT=CLIENT` to every `ORGANIZER` and `ATTENDEE` outside an alarm, replaces another
-   `SCHEDULE-AGENT`, drops `SCHEDULE-FORCE-SEND` and a `METHOD` (RFC 4791 §4.1), and keeps every
-   other byte.
-2. The calendar's limits (one `PROPFIND` per calendar per batch) and the one `check`.
-3. **A `UID` lookup** (`calendar-query`, exact match of the substring results), on every server.
-   SabreDAV stores a duplicate and nothing distinguishes it from a server that refuses one, so the
-   lookup cannot be skipped where it is needed; the measured cost is in the survey. A server that
-   will not answer the query (`4xx`) leaves the `PUT` to its own refusal.
+   silently", in the iCalendar crate): checks the object is one event with one `UID` (every
+   component carrying a `UID` must be an event directly in the calendar), adds
+   `SCHEDULE-AGENT=CLIENT` to every `ORGANIZER` and `ATTENDEE` outside an alarm (a group-prefixed
+   one too), drops every other `SCHEDULE-AGENT` spelling, `SCHEDULE-FORCE-SEND` and a `METHOD`
+   (RFC 4791 §4.1), and keeps every other byte. **It fails closed**: components that do not
+   nest, a party line it cannot parse (an unbalanced quote) or a party outside every component
+   refuse the object, and the rewritten text is parsed again and checked before it is answered.
+   Which component a line is in is read off the read path's own component tree, by line index.
+2. The calendar's limits (one `PROPFIND` per calendar per batch) and the one `check`, on the
+   rewritten text: the size checked is the size stored.
+3. **A `UID` lookup** (`calendar-query`, keeping only results whose event's `UID` is ours, read
+   with `engine_ical::object_uid`), on every server. SabreDAV stores a duplicate and nothing
+   distinguishes it from a server that refuses one, so the lookup cannot be skipped where it is
+   needed; the measured cost is in the survey. A lookup the server refuses (a `Permanent` answer)
+   leaves the `PUT` to its own refusal; a throttle, a refused credential or a server error answers
+   the event, since an unanswered lookup is not one that found nothing.
 4. `PUT` with `If-None-Match: *` to the name minted from the `UID` (`CalDavProvider::event_href`,
-   the one rule every create uses). `412` with no CalDAV precondition: an earlier attempt of this
-   import stored it. `403`/`409` with `no-uid-conflict`: already there, under the href the refusal
-   names. A CalDAV precondition, `400`, `413` or `415`: `item_unavailable`. A gateway's `502`/`504`
-   or a lost answer: `requires_confirmation`.
+   the one rule every create uses). A bare `412`: the name is read (`GET`), and the event is
+   already there only when the object there has our `UID`; another is a `Conflict`.
+   `403`/`409` with `no-uid-conflict`: already there, under the href the refusal names.
+   Everything else is judged by the one write classifier (`CalDavError::write_refusal`), which the
+   sync create path reads too:
+
+   | Answer | Meaning | What the import says |
+   |---|---|---|
+   | a CalDAV or CardDAV object precondition (`403`, or Stalwart's `412`, STALWART-2); `400`, `413`, `415` | the object | `item_unavailable` |
+   | `507`, `DAV:quota-not-exceeded` | the target's storage | `refused_by_target(StorageFull)` |
+   | `404`; `409` naming no precondition (RFC 4918 §9.7.1; Stalwart's answer for a missing calendar) | the calendar is not there | `refused_by_target(NoSuchContainer)` |
+   | `403` naming `need-privileges` (SabreDAV); a plain `403` (Stalwart's read-only share, Nextcloud's birthday calendar) | no permission | `refused_by_target(ReadOnlyContainer)` |
+   | Stalwart's `400` concurrency refusal | a throttle | `RateLimited` |
+   | a gateway's `502`/`504`, or a lost answer | unknown | `requires_confirmation` |
+
+   A plain `403` is read as no permission, not as the object's refusal, on that evidence: both
+   servers that answer one answer it for a calendar the account may not write, and an object's
+   refusal names its precondition.
 
 Two findings changed the shared create path too:
 
 - **An object's `@` is left unencoded in its name**, since all three servers list
   `uid@example.com.ics` for a `PUT` to `uid%40example.com.ics`. Minted the way it is listed, the id
-  a write answers is the id every later read reports.
-- **A `UID` longer than 100 encoded bytes is named by its SHA-256.** Meeting `UID`s from Outlook
-  are long, and SabreDAV's MySQL schema keeps a name in 200 bytes.
+  a write answers is the id every later read reports (the live suite asserts it).
+- **A name longer than 255 bytes is replaced by the `UID`'s SHA-256.** Measured: Nextcloud 35 on
+  PostgreSQL stores a 255-byte name and answers a 260-byte one `500`, which would read as
+  retryable; Stalwart and the SabreDAV fixture took 1,004 bytes. An Outlook meeting `UID`, about
+  112 characters, is far inside the limit.
+
+### Where silence is promised
+
+`Provider::calendar_importer` answers the CalDAV importer only where the calendar home
+advertises `calendar-auto-schedule`. RFC 6638 §2 has a server that schedules say so, and §7.1
+then binds it to leave a `SCHEDULE-AGENT=CLIENT` party to the client: proven live on Stalwart
+with a control that does deliver, and in the transfer host's spike on SabreDAV and Nextcloud with
+scheduling turned on. A server that advertises nothing either does no scheduling or schedules
+without saying so (a departure from §2), and nothing a client can read tells the two apart, so
+silence is not promised there and the accessor answers `None`. The importer is the same code on
+such a server; the live suite drives it through the trait on the SabreDAV fixture, which
+advertises no scheduling, to prove the `UID` lookup on the one server that needs it.
+
+Google's CalDAV endpoint is not surveyed here: no credential for the test account was available
+in this environment. Whether it advertises `calendar-auto-schedule`, and whether it then honours
+the parameter, is to be measured before a host imports into it over CalDAV; until then the rule
+above decides, on what the server says.
 
 Errors on these paths carry a class and an HTTP status, never the server's text
 (`CalDavError::content_free`): an error body can echo an event's summary.
@@ -219,8 +259,12 @@ None of these is implemented; the types leave room for them without a breaking c
 ## Breaking changes
 
 None to a public API: the new traits, types and accessors are additive, and every accessor has a
-default. One behaviour changes: a CalDAV create names an object with its `UID`'s `@` unencoded,
-and a very long `UID` by its hash, so the id in the receipt is the id sync reports.
+default. Behaviour that changes on existing paths:
+
+- a CalDAV create names an object with its `UID`'s `@` unencoded, and a `UID` whose name would
+  pass 255 bytes by its hash, so the id in the receipt is the id sync reports;
+- a write Stalwart refuses with `412` naming a precondition is `Permanent`, no longer the
+  `Conflict` a bare `412` is.
 
 ## Open questions
 
@@ -234,3 +278,9 @@ and a very long `UID` by its hash, so the id in the receipt is the id sync repor
   would give that arm a control.
 - **A multi-event `.ics` splitter** belongs in `engine-ical` for the sync and direct hosts.
 - **A calendar's time zone** waits on E7's `VTIMEZONE` builder.
+- **A short `UID` costs more to look up.** `text-match` matches substrings (RFC 4791 §9.7.5),
+  so a short `UID` such as `1` returns every object whose `UID` contains it, each one read to
+  compare; importing a calendar of such `UID`s grows with the square of its size.
+- **Silence on servers that advertise no scheduling** is not promised (above), which leaves the
+  SabreDAV fixture and any plain RFC 4791 server without an importer. Google's CalDAV is
+  unsurveyed.

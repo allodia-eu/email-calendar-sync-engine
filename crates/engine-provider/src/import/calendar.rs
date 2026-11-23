@@ -38,7 +38,8 @@ use crate::{ProviderError, ProviderResult};
 ///
 /// `ical` is one calendar object: one event with its overrides, sharing one `UID` (RFC 4791
 /// §4.1). The importer stores it as it is, apart from what keeps the import silent, so the target
-/// holds the event the source held. `Debug` prints the size, never the text ([`RawIcal`]).
+/// holds the event the source held. It is UTF-8 text, as [`RawIcal`] is: a source in another
+/// charset is decoded first. `Debug` prints the size, never the text.
 ///
 /// Built with [`new`](Self::new), so a part added later does not break a caller.
 #[derive(Debug, Clone, PartialEq, Eq)]

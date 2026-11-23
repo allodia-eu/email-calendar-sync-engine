@@ -2,6 +2,8 @@
 
 use quick_xml::{Reader, events::Event, name::LocalName};
 
+use crate::dav::push_reference;
+
 /// The `DAV:href` inside the precondition element `local` of an error body, if it names one:
 /// the resource that already holds a `UID`, in a `no-uid-conflict` (RFC 4791 §5.3.2.1, RFC 6352
 /// §6.3.2.1). Whether the body names the precondition at all is
@@ -9,17 +11,29 @@ use quick_xml::{Reader, events::Event, name::LocalName};
 pub(crate) fn precondition_href<T: for<'a> TryFrom<&'a str>>(body: &str, local: &str) -> Option<T> {
     let mut reader = Reader::from_str(body);
     let mut inside = false;
-    let mut in_href = false;
+    let mut href: Option<String> = None;
     loop {
         match reader.read_event() {
             Ok(Event::Start(element)) => {
                 if named(element.local_name(), local) {
                     inside = true;
                 } else if inside && named(element.local_name(), "href") {
-                    in_href = true;
+                    href = Some(String::new());
                 }
             }
-            Ok(Event::Text(text)) if in_href => return T::try_from(text.trim()).ok(),
+            Ok(Event::Text(text)) => {
+                if let Some(href) = href.as_mut() {
+                    href.push_str(&text);
+                }
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                if let Some(href) = href.as_mut() {
+                    push_reference(href, &reference).ok()?;
+                }
+            }
+            Ok(Event::End(element)) if href.is_some() && named(element.local_name(), "href") => {
+                return T::try_from(href?.trim()).ok();
+            }
             Ok(Event::End(element)) if named(element.local_name(), local) => inside = false,
             Ok(Event::Eof) | Err(_) => return None,
             _ => {}
@@ -43,6 +57,24 @@ mod tests {
         assert_eq!(
             precondition_href::<String>(body, "no-uid-conflict").as_deref(),
             Some("/dav/cal/bob%40test.local/work/h1.ics")
+        );
+    }
+
+    /// An `&amp;` in the holder's href is the character it stands for, as the multistatus reader
+    /// reads one (from an independent review, R2).
+    #[test]
+    fn an_entity_in_the_holder_is_resolved() {
+        let body = "<D:error xmlns:D=\"DAV:\" xmlns:A=\"urn:ietf:params:xml:ns:caldav\">\
+                    <A:no-uid-conflict><D:href>/cal/a&amp;b&#46;ics</D:href></A:no-uid-conflict>\
+                    </D:error>";
+        assert_eq!(
+            precondition_href::<String>(body, "no-uid-conflict").as_deref(),
+            Some("/cal/a&b.ics")
+        );
+        let undeclared = body.replace("&amp;", "&nope;");
+        assert_eq!(
+            precondition_href::<String>(&undeclared, "no-uid-conflict"),
+            None
         );
     }
 

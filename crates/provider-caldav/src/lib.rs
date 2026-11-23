@@ -54,6 +54,8 @@ mod credential_scope;
 mod ctag_sync;
 mod dav;
 mod dav_client;
+#[cfg(feature = "import")]
+mod dav_import;
 mod delete_guard;
 mod discovery;
 mod error;
@@ -79,6 +81,7 @@ mod vcard_escape;
 mod vcard_property;
 mod vcard_write;
 mod write;
+mod write_refusal;
 
 #[cfg(test)]
 mod bound_tests;

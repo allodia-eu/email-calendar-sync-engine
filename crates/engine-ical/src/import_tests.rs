@@ -186,3 +186,127 @@ fn a_bare_lf_document_keeps_its_terminators() {
             .contains("ORGANIZER;CN=Bob;SCHEDULE-AGENT=CLIENT:mailto:bob@example.com\n")
     );
 }
+
+/// What fails closed: a party the rewrite cannot be sure of is a refused object, never one
+/// stored as it was. From an independent review (S1–S5).
+mod fails_closed {
+    use super::*;
+
+    fn wrap(body: &str) -> String {
+        format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:u@example.com\r\n\
+             DTSTART:20260105T100000Z\r\n{body}END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+    }
+
+    /// Every `ORGANIZER`/`ATTENDEE` line of `ical`, unfolded, with how many `SCHEDULE-AGENT`s it
+    /// carries and whether one says `CLIENT`.
+    fn agents(ical: &RawIcal) -> Vec<(usize, bool, bool)> {
+        unfolded(ical)
+            .split("\r\n")
+            .filter(|line| {
+                let name = line
+                    .split([';', ':'])
+                    .next()
+                    .unwrap_or("")
+                    .to_ascii_uppercase();
+                name.ends_with("ATTENDEE") || name.ends_with("ORGANIZER")
+            })
+            .map(|line| {
+                let head = line.split(':').next().unwrap().to_ascii_uppercase();
+                let count = head.matches("SCHEDULE-AGENT").count();
+                (
+                    count,
+                    head.contains("SCHEDULE-AGENT=CLIENT")
+                        || head.contains("SCHEDULE-AGENT=\"CLIENT\""),
+                    head.contains("FORCE-SEND"),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn s1_a_party_with_an_unbalanced_quote_is_refused() {
+        let text = wrap(
+            "ORGANIZER:mailto:bob@example.com\r\n\
+             ATTENDEE;CN=Bob \"the builder:mailto:carol@example.com\r\n",
+        );
+        assert!(import_object(&text).is_err());
+    }
+
+    #[test]
+    fn s1_a_party_line_without_a_value_is_refused() {
+        assert!(import_object(&wrap("ATTENDEE;CN=Carol\r\n")).is_err());
+    }
+
+    #[test]
+    fn s2_components_that_do_not_nest_are_refused() {
+        let unclosed = wrap(
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT5M\r\n\
+             ORGANIZER:mailto:bob@example.com\r\nATTENDEE:mailto:carol@example.com\r\n",
+        );
+        assert!(import_object(&unclosed).is_err());
+        let crossed = wrap("BEGIN:VALARM\r\nTRIGGER:-PT5M\r\n")
+            .replace("END:VEVENT\r\n", "END:VEVENT\r\nEND:VALARM\r\n");
+        assert!(import_object(&crossed).is_err());
+    }
+
+    #[test]
+    fn s3_every_spelling_of_a_parameter_ends_as_one_client_agent() {
+        let text = wrap(
+            "ORGANIZER:mailto:bob@example.com\r\n\
+             ATTENDEE; SCHEDULE-AGENT=SERVER:mailto:carol@example.com\r\n\
+             ATTENDEE;SCHEDULE-AGENT=\"CLIENT\":mailto:dan@example.com\r\n\
+             ATTENDEE;schedule-agent=client;SCHEDULE-FORCE-SEND=REQUEST:mailto:eve@example.com\r\n\
+             ATTENDEE;SCHEDULE-AGENT=CLIENT;SCHEDULE-AGENT=SERVER:mailto:fay@example.com\r\n",
+        );
+        let parties = agents(&prepared(&text).ical);
+        assert_eq!(parties.len(), 5);
+        for (count, client, forced) in parties {
+            assert_eq!((count, client, forced), (1, true, false));
+        }
+    }
+
+    #[test]
+    fn s4_an_object_holding_a_task_beside_the_event_is_refused() {
+        let text = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u@example.com\r\n\
+                    ORGANIZER:mailto:bob@example.com\r\nEND:VEVENT\r\nBEGIN:VTODO\r\n\
+                    UID:u@example.com\r\nATTENDEE:mailto:carol@example.com\r\nEND:VTODO\r\n\
+                    END:VCALENDAR\r\n";
+        assert!(import_object(text).is_err());
+    }
+
+    #[test]
+    fn s5_an_event_nested_deeper_is_refused() {
+        let text = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u@example.com\r\nEND:VEVENT\r\n\
+                    BEGIN:X-WRAP\r\nBEGIN:VEVENT\r\nUID:u@example.com\r\n\
+                    ATTENDEE:mailto:carol@example.com\r\nEND:VEVENT\r\nEND:X-WRAP\r\n\
+                    END:VCALENDAR\r\n";
+        assert!(import_object(text).is_err());
+    }
+
+    #[test]
+    fn a_group_prefixed_party_is_left_to_the_client_too() {
+        let text =
+            wrap("ORGANIZER:mailto:bob@example.com\r\nA.ATTENDEE:mailto:carol@example.com\r\n");
+        let ical = unfolded(&prepared(&text).ical);
+        assert!(
+            ical.contains("A.ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:carol@example.com"),
+            "{ical}"
+        );
+    }
+
+    #[test]
+    fn a_property_outside_every_component_is_refused() {
+        let text = format!("ATTENDEE:mailto:carol@example.com\r\n{}", wrap(""));
+        assert!(import_object(&text).is_err());
+    }
+
+    #[test]
+    fn the_uid_is_read_without_rewriting_anything() {
+        assert_eq!(object_uid(MEETING).unwrap().as_str(), "series@example.com");
+        let todo = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t@example.com\r\nEND:VTODO\r\n\
+                    END:VCALENDAR\r\n";
+        assert!(object_uid(todo).is_err(), "a task is not an event");
+    }
+}

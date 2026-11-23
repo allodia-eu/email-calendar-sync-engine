@@ -272,8 +272,9 @@ it. An adapter that can import implements the trait; there is no capability flag
   so there is no `kept` until a target that keeps less of it (Graph, Google) is built. An import
   **tells nobody**: that is the contract, not an option, and each adapter says how it keeps it.
   `calendar_import_limits` and `import_cursor` are per calendar, because CalDAV states both per
-  collection. Reached through `Provider::calendar_importer`. CalDAV implements it
-  (`caldav.md` → "Import").
+  collection. Reached through `Provider::calendar_importer`, which an adapter answers only where
+  it can keep the import silent. CalDAV implements it, offered where the server advertises
+  `calendar-auto-schedule` (`caldav.md` → "Import"). The item is UTF-8 text, as `RawIcal` is.
 - **Creating a container is not import.** `CalendarCollections::create_calendar` (outside the
   `import` feature, reached through `Provider::calendar_collections`) makes a new calendar from a
   name, a description and a colour, and answers it as the target holds it, which is the receipt of
@@ -300,6 +301,7 @@ it. An adapter that can import implements the trait; there is no capability flag
   |---|---|---|---|
   | IMAP (any `NO`, `error.rs`) | `NO [OVERQUOTA]` (RFC 9208) | `NO [TRYCREATE]` (RFC 3501), `NO [NONEXISTENT]` (RFC 5530) | `NO [NOPERM]` (RFC 5530) |
   | JMAP (`Email/import`, `import/wire.rs`) | `overQuota`, as a `SetError` or a method error (RFC 8621 §4.8) | `invalidProperties` naming only `mailboxIds`; a mailbox the import cursor cannot find | `forbidden` |
+  | CalDAV, CardDAV (a write's answer, `error.rs` `write_refusal`) | `507`; `DAV:quota-not-exceeded` (RFC 4331) | `404`; a `409` naming no precondition (RFC 4918 §9.7.1: Stalwart's missing calendar) | `403` naming `DAV:need-privileges` (SabreDAV); a plain `403` (Stalwart's read-only share, Nextcloud's birthday calendar, observed) |
 - **Every other situation an import meets has one class too**, the same on every adapter:
 
   | Situation | Answer |

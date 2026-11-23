@@ -174,6 +174,10 @@ fn status_class(status: u16, body: &str) -> FailureClass {
         // Stalwart's concurrency refusal, which the send funnel has already waited out and is
         // still a throttle when it gives up (`throttle.rs`).
         400 if crate::throttle::is_concurrency_limit(body) => FailureClass::RateLimited,
+        // A `412` naming a CalDAV or CardDAV precondition is the server refusing the object
+        // itself, which is how Stalwart refuses one (`docs/spec-deviations.md`, STALWART-2):
+        // sending it again is refused again.
+        412 if crate::write_refusal::names_object_precondition(body) => FailureClass::Permanent,
         // `412 Precondition Failed` is an `If-Match`/ETag write conflict (RFC 4791
         // §5.3.2); a `409 Conflict` without the sync-token precondition is a
         // write-ordering conflict.

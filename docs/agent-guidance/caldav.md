@@ -541,8 +541,9 @@ the user's `calendar-home-set` never names. It is offered through the neutral
   draft's `UID`; a patch/delete reuses the stored `EventId`. The `@` stays because Stalwart,
   SabreDAV and Nextcloud all list an object `PUT` to `uid%40example.com.ics` as
   `uid@example.com.ics` (observed live), so the id a create answers is the id sync reports. A
-  `UID` longer than 100 encoded bytes is named `sha256-<hex>` instead: Outlook meeting `UID`s are
-  that long, and SabreDAV's MySQL schema keeps a name in 200 bytes (`href::resource_name`). A create lands in the calendar its draft names,
+  name longer than 255 bytes is replaced by `sha256-<hex>` of the `UID`: Nextcloud stores a
+  255-byte name and answers a 260-byte one `500` (measured), while Stalwart and the SabreDAV fixture
+  took 1,004 (`href::resource_name`). A create lands in the calendar its draft names,
   by the href the listing gave it; a bare name is refused, since it would be a second id for
   a listed calendar, keyed to a scope of its own.
 - **The new `ETag` is read back where the server supplies it.** A successful PUT returns the
@@ -609,20 +610,29 @@ survey; `providers.md` → "Import" the contract).
   is too, since the calendar exists.
 - **Importing an event** (`calendar_import.rs`) is: `engine_ical::import_object` (one event with
   one `UID`; every `ORGANIZER` and `ATTENDEE` outside an alarm marked `SCHEDULE-AGENT=CLIENT`,
-  overrides included; `SCHEDULE-FORCE-SEND` and `METHOD` dropped; every other byte kept), the
-  calendar's `max-resource-size` checked, the `UID` looked up with a `calendar-query` (keeping only
-  exact matches, since `text-match` matches substrings), then one `PUT` with `If-None-Match: *` to
-  `event_href`.
+  overrides included; other `SCHEDULE-AGENT` spellings, `SCHEDULE-FORCE-SEND` and `METHOD`
+  dropped; every other byte kept; anything it cannot read for certain refuses the object), the
+  calendar's `max-resource-size` checked on the rewritten text, the `UID` looked up with a
+  `calendar-query` (keeping only exact matches, since `text-match` matches substrings), then one
+  `PUT` with `If-None-Match: *` to `event_href`.
+- **Offered only where silence is promised**: `calendar_importer()` is `Some` only when the home
+  advertises `calendar-auto-schedule` (RFC 6638 §7.1 binds such a server to honour the
+  parameter); the SabreDAV fixture advertises none, and its live run drives the importer through
+  the trait (`docs/design/calendar-and-contact-import.md`, "Where silence is promised").
 - **Already there** is three answers from the server, and the lookup: a held `UID` found by the
-  lookup; a bare `412` on our own name (an earlier attempt of this import); and `no-uid-conflict`
-  in a `403` (Stalwart) or a `409` (Nextcloud), each naming the holder. SabreDAV stores a second
+  lookup; a bare `412` on our own name whose object, read back, has our `UID` (an earlier attempt
+  of this import; another `UID` there is a `Conflict`); and `no-uid-conflict` in a `403`
+  (Stalwart) or a `409` (Nextcloud), each naming the holder. SabreDAV stores a second
   object with a held `UID` (`docs/spec-deviations.md`, SABREDAV-1), which is why the lookup runs on
   every server: nothing tells the two kinds apart. Measured per lookup, 1,000 events in the
   calendar: Stalwart ~10 ms, SabreDAV ~65 ms and growing with the calendar, Nextcloud ~390 ms (its
   per-request cost).
-- **Refused for good** (`item_unavailable`): not one event, over the size, a `412` naming a CalDAV
-  precondition (Stalwart answers an invalid object that way, STALWART-2), `400`, `403`, `413`,
-  `415`. Errors carry a class and a status, never the server's text (`CalDavError::content_free`).
+- **Refusals are judged once** (`CalDavError::write_refusal`, `error.rs`), for the import and the
+  sync create alike: an object precondition, `400`, `413` or `415` is the object's
+  (`item_unavailable`); `507` or `quota-not-exceeded`, `404` or a bare `409`, and a `403` naming
+  `need-privileges` or nothing are the calendar's (`ProviderError::refused_by_target` with
+  `StorageFull`, `NoSuchContainer`, `ReadOnlyContainer`); Stalwart's `400` concurrency refusal is
+  a throttle. Errors carry a class and a status, never the server's text.
 - **The import cursor** is the calendar's `sync-token`, or `ctag:<getctag>` where it has none: what
   `sync_events` deltas from.
 - **Silence is proven live** on Stalwart with a control (`tests/scheduling/import.rs`): the plain

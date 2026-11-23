@@ -23,7 +23,7 @@ use engine_core::{
 };
 use engine_provider::{
     CalendarSync, CalendarWrites, EventWrite, NewCalendar, Provider,
-    import::{EventImport, ImportedEvent},
+    import::{CalendarImporter, EventImport, ImportedEvent},
 };
 use provider_caldav::CalDavProvider;
 
@@ -121,7 +121,18 @@ async fn imports_into(
 }
 
 async fn steps(provider: &CalDavProvider, account: &AccountId, calendar: &CalendarId) {
-    let importer = provider.calendar_importer().expect("CalDAV imports events");
+    // The accessor offers the importer only where the server advertises scheduling, which RFC
+    // 6638 binds to honour the suppression; the SabreDAV fixture advertises none. Its importer
+    // is still the same code, driven here through the trait to prove the `UID` lookup on the one
+    // server that needs it (SABREDAV-1).
+    assert_eq!(
+        provider.calendar_importer().is_some(),
+        provider
+            .connection_info()
+            .capabilities
+            .calendar_scheduling(),
+    );
+    let importer: &dyn CalendarImporter = provider;
     let limits = importer
         .calendar_import_limits(account, calendar)
         .await
@@ -195,6 +206,20 @@ async fn steps(provider: &CalDavProvider, account: &AccountId, calendar: &Calend
         .iter()
         .find(|event| event.uid.as_str() == standup)
         .expect("the meeting");
+    // The id the import answered is the id the target lists: what a host records is what it
+    // will read back.
+    for (answer, uid) in answers.iter().zip([standup, day]) {
+        let listed_id = &listed
+            .iter()
+            .find(|event| event.uid.as_str() == uid)
+            .expect("listed")
+            .id;
+        assert_eq!(
+            answer.as_ref().unwrap().key.as_ref(),
+            Some(listed_id),
+            "{uid}"
+        );
+    }
     stored_as_sent(stored, &meeting(standup), calendar);
 }
 
@@ -219,17 +244,15 @@ async fn a_uid_someone_else_stored_is_linked(
         )
         .await
         .expect("another client stores the event");
-    let answers = provider
-        .calendar_importer()
-        .unwrap()
-        .import_events(
-            account,
-            &[EventImport::new(
-                RawIcal::new(holiday(uid)),
-                calendar.clone(),
-            )],
-        )
-        .await;
+    let answers = CalendarImporter::import_events(
+        provider,
+        account,
+        &[EventImport::new(
+            RawIcal::new(holiday(uid)),
+            calendar.clone(),
+        )],
+    )
+    .await;
     let linked = answers[0].as_ref().expect("answered");
     assert!(linked.already_there, "a held UID is linked: {linked:?}");
     assert_eq!(linked.key.as_ref(), Some(&elsewhere));

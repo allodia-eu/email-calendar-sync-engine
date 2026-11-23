@@ -278,10 +278,15 @@ impl Provider for CalDavProvider {
         Ok(crate::shared::list(self.executor.as_ref(), user).await?)
     }
 
-    /// CalDAV imports events with a `PUT` that tells nobody (`crate::calendar_import`).
+    /// CalDAV imports events with a `PUT` that tells nobody (`crate::calendar_import`), offered
+    /// only where the server advertises `calendar-auto-schedule`: RFC 6638 §7.1 then binds it to
+    /// leave a `SCHEDULE-AGENT=CLIENT` party to the client, and that is proven live on Stalwart
+    /// (and, in the transfer host's spike, on SabreDAV and Nextcloud with scheduling). A server
+    /// that advertises nothing may schedule nothing, or schedule without saying so; nothing tells
+    /// the two apart, so silence is not promised there (`docs/spec-deviations.md`).
     #[cfg(feature = "import")]
     fn calendar_importer(&self) -> Option<&dyn engine_provider::import::CalendarImporter> {
-        Some(self)
+        self.capabilities.calendar_scheduling().then_some(self)
     }
 
     /// CalDAV creates calendars with `MKCALENDAR` (`crate::calendar_create`).
@@ -370,7 +375,9 @@ impl CalendarWrites for CalDavProvider {
     ) -> ProviderResult<EventWriteReceipt> {
         engine_provider::refuse_native_conference(draft.conference.as_ref())?;
         let href = self.event_href(&draft.calendar, &draft.uid)?;
-        Ok(crate::write::create_event(self.executor.as_ref(), href, draft).await?)
+        crate::write::create_event(self.executor.as_ref(), href, draft)
+            .await
+            .map_err(CalDavError::into_write_error)
     }
 
     async fn patch_event(
@@ -393,7 +400,9 @@ impl CalendarWrites for CalDavProvider {
         _account: &AccountId,
         write: &EventWrite,
     ) -> ProviderResult<EventWriteReceipt> {
-        Ok(crate::write::put_event(self.executor.as_ref(), write).await?)
+        crate::write::put_event(self.executor.as_ref(), write)
+            .await
+            .map_err(CalDavError::into_write_error)
     }
 
     async fn rsvp_event(

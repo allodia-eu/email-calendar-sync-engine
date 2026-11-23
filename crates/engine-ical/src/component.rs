@@ -54,8 +54,24 @@ impl Component {
 
 /// Parses `text` into its top-level components (normally a single `VCALENDAR`).
 pub(crate) fn parse_components(text: &str) -> Vec<Component> {
+    parse_tree(text).roots
+}
+
+/// The component tree of a text, and whether its `BEGIN`/`END` lines nest.
+pub(crate) struct Tree {
+    /// The top-level components, as [`parse_components`] reads them.
+    pub roots: Vec<Component>,
+    /// Whether every `END` closed the component its `BEGIN` opened, and nothing was left open.
+    /// The read path tolerates a text that does not nest; a writer that must know what every
+    /// line belongs to does not.
+    pub nests: bool,
+}
+
+/// Parses `text` into its component tree, noting whether it nests.
+pub(crate) fn parse_tree(text: &str) -> Tree {
     let mut roots = Vec::new();
     let mut stack: Vec<Component> = Vec::new();
+    let mut nests = true;
     for line in content_lines(text) {
         match line.name.as_str() {
             "BEGIN" => stack.push(Component {
@@ -63,19 +79,24 @@ pub(crate) fn parse_components(text: &str) -> Vec<Component> {
                 properties: Vec::new(),
                 children: Vec::new(),
             }),
-            "END" => close_top(&mut stack, &mut roots),
-            _ => {
-                if let Some(top) = stack.last_mut() {
-                    top.properties.push(line);
-                }
+            "END" => {
+                nests &= stack
+                    .last()
+                    .is_some_and(|open| open.name.eq_ignore_ascii_case(line.value.trim()));
+                close_top(&mut stack, &mut roots);
             }
+            _ => match stack.last_mut() {
+                Some(top) => top.properties.push(line),
+                None => nests = false,
+            },
         }
     }
     // Flush components left unclosed by a truncated resource.
+    nests &= stack.is_empty();
     while !stack.is_empty() {
         close_top(&mut stack, &mut roots);
     }
-    roots
+    Tree { roots, nests }
 }
 
 /// Pops the innermost open component and attaches it to its parent, or to the

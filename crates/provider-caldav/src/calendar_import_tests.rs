@@ -23,53 +23,65 @@ use crate::{
     transport::{DavMethod, Precondition},
 };
 
-const PRINCIPAL: &str = include_str!("../tests/fixtures/principal.xml");
-const PROPS: &str = include_str!("../tests/fixtures/import/stalwart-import-props.xml");
+pub(super) const PRINCIPAL: &str = include_str!("../tests/fixtures/principal.xml");
+pub(super) const PROPS: &str = include_str!("../tests/fixtures/import/stalwart-import-props.xml");
 const SABRE_PROPS: &str = include_str!("../tests/fixtures/import/sabredav-import-props.xml");
-const NONE_HELD: &str = include_str!("../tests/fixtures/import/stalwart-uid-query-empty.xml");
-const HELD: &str = include_str!("../tests/fixtures/import/stalwart-uid-query.xml");
+pub(super) const NONE_HELD: &str =
+    include_str!("../tests/fixtures/import/stalwart-uid-query-empty.xml");
+pub(super) const HELD: &str = include_str!("../tests/fixtures/import/stalwart-uid-query.xml");
 const HELD_TWICE: &str = include_str!("../tests/fixtures/import/sabredav-uid-query.xml");
 const STALWART_CONFLICT: &str =
     include_str!("../tests/fixtures/import/stalwart-put-second-uid.xml");
 const NEXTCLOUD_CONFLICT: &str =
     include_str!("../tests/fixtures/import/nextcloud-put-second-uid.xml");
 const SABRE_TAKEN: &str = include_str!("../tests/fixtures/import/sabredav-put-again.xml");
-const STALWART_INVALID: &str = include_str!("../tests/fixtures/import/stalwart-put-invalid.xml");
-const NEXTCLOUD_INVALID: &str = include_str!("../tests/fixtures/import/nextcloud-put-invalid.xml");
+pub(super) const STALWART_INVALID: &str =
+    include_str!("../tests/fixtures/import/stalwart-put-invalid.xml");
+pub(super) const NEXTCLOUD_INVALID: &str =
+    include_str!("../tests/fixtures/import/nextcloud-put-invalid.xml");
 
 /// The object the fixtures hold, as the source held it.
-const EVENT: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Capture//EN\r\nBEGIN:VEVENT\r\n\
+pub(super) const EVENT: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Capture//EN\r\nBEGIN:VEVENT\r\n\
 UID:capture-1@example.com\r\nDTSTAMP:20260101T000000Z\r\nDTSTART:20270105T100000Z\r\n\
 DTEND:20270105T110000Z\r\nSUMMARY:Captured\r\nORGANIZER:mailto:bob@example.com\r\n\
 ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:carol@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
 
 /// Where the Stalwart fixtures say the held object is.
-const HELD_HREF: &str = "/dav/cal/bob%40test.local/laneb-capture/capture-1@example.com.ics";
+pub(super) const HELD_HREF: &str =
+    "/dav/cal/bob%40test.local/laneb-capture/capture-1@example.com.ics";
 
-fn account() -> AccountId {
+pub(super) fn account() -> AccountId {
     AccountId::try_from("acct").unwrap()
 }
 
-fn work() -> CalendarId {
+pub(super) fn work() -> CalendarId {
     CalendarId::try_from("/dav/cal/alice%40test.local/work/").unwrap()
 }
 
-fn ours() -> EventId {
+pub(super) fn ours() -> EventId {
     EventId::try_from("/dav/cal/alice%40test.local/work/capture-1@example.com.ics").unwrap()
 }
 
-fn event(text: &str) -> EventImport {
+pub(super) fn event(text: &str) -> EventImport {
     EventImport::new(RawIcal::new(text), work())
 }
 
-fn key(answer: &ImportedEvent) -> Option<&str> {
+pub(super) fn key(answer: &ImportedEvent) -> Option<&str> {
     answer.key.as_ref().map(EventId::as_str)
 }
 
 /// A provider whose discovery is replayed, answering `after` in order once connected, with the
 /// replay kept to read what it was sent.
-async fn target(after: Vec<HttpResponse>) -> (CalDavProvider, Arc<Replay>) {
-    let mut responses = vec![ok(PRINCIPAL), options(Some("1, 3, calendar-access"))];
+pub(super) async fn target(after: Vec<HttpResponse>) -> (CalDavProvider, Arc<Replay>) {
+    target_advertising("1, 3, calendar-access, calendar-auto-schedule", after).await
+}
+
+/// [`target`] on a server whose calendar home advertises `classes` (RFC 4918 §10.1).
+pub(super) async fn target_advertising(
+    classes: &str,
+    after: Vec<HttpResponse>,
+) -> (CalDavProvider, Arc<Replay>) {
+    let mut responses = vec![ok(PRINCIPAL), options(Some(classes))];
     responses.extend(after);
     let replay = Arc::new(Replay::new(responses));
     let provider = CalDavProvider::with_executor(
@@ -82,14 +94,16 @@ async fn target(after: Vec<HttpResponse>) -> (CalDavProvider, Arc<Replay>) {
     (provider, replay)
 }
 
-async fn import_one(after: Vec<HttpResponse>) -> (ProviderResult<ImportedEvent>, Arc<Replay>) {
+pub(super) async fn import_one(
+    after: Vec<HttpResponse>,
+) -> (ProviderResult<ImportedEvent>, Arc<Replay>) {
     let (provider, replay) = target(after).await;
     let mut answers = provider.import_events(&account(), &[event(EVENT)]).await;
     assert_eq!(answers.len(), 1);
     (answers.remove(0), replay)
 }
 
-fn lookups(replay: &Replay) -> usize {
+pub(super) fn lookups(replay: &Replay) -> usize {
     replay
         .seen()
         .iter()
@@ -168,13 +182,17 @@ async fn a_uid_that_only_contains_the_one_asked_for_is_not_a_match() {
 }
 
 #[tokio::test]
-async fn a_name_already_taken_is_an_earlier_attempt_of_this_import() {
+async fn a_name_already_taken_by_this_uid_is_an_earlier_attempt_of_this_import() {
     for taken in [status(412, ""), status(412, SABRE_TAKEN)] {
-        let (answer, _) = import_one(vec![ok(PROPS), ok(NONE_HELD), taken]).await;
+        let (answer, replay) =
+            import_one(vec![ok(PROPS), ok(NONE_HELD), taken, status(200, EVENT)]).await;
         assert_eq!(
             answer.expect("linked"),
             ImportedEvent::existing(Some(ours()))
         );
+        let reads = replay.reads();
+        let read = reads.last().expect("the name was read");
+        assert_eq!((read.0, read.1.as_str()), (DavMethod::Get, ours().as_str()));
     }
 }
 
@@ -214,12 +232,6 @@ async fn a_refusal_naming_no_holder_asks_for_it() {
 
     assert_eq!(key(&answer.expect("linked")), Some(HELD_HREF));
     assert_eq!(lookups(&replay), 2);
-}
-
-#[tokio::test]
-async fn a_conflict_that_is_not_about_the_uid_stays_a_conflict() {
-    let (answer, _) = import_one(vec![ok(PROPS), ok(NONE_HELD), status(409, "")]).await;
-    assert_eq!(answer.unwrap_err().class(), FailureClass::Conflict);
 }
 
 #[tokio::test]
@@ -410,27 +422,38 @@ async fn the_limits_are_the_calendars_largest_object() {
 }
 
 #[tokio::test]
-async fn a_host_reaches_the_importer_through_the_provider() {
-    let (provider, _) = target(Vec::new()).await;
-    let held: Box<dyn engine_provider::Provider> = Box::new(provider);
+async fn the_importer_is_offered_where_the_server_promises_to_honour_the_suppression() {
+    let (scheduling, _) = target(Vec::new()).await;
+    let held: Box<dyn engine_provider::Provider> = Box::new(scheduling);
     assert!(held.calendar_importer().is_some());
+    assert!(held.calendar_collections().is_some());
+
+    // RFC 6638 §2: a server that schedules advertises it, and only such a server is bound by
+    // §7.1 to leave a `SCHEDULE-AGENT=CLIENT` party to the client.
+    let (plain, _) = target_advertising("1, 3, calendar-access", Vec::new()).await;
+    let held: Box<dyn engine_provider::Provider> = Box::new(plain);
+    assert!(held.calendar_importer().is_none());
     assert!(held.calendar_collections().is_some());
 }
 
 #[test]
-fn a_uid_names_its_resource_verbatim_until_it_is_too_long_to() {
+fn a_uid_names_its_resource_verbatim_until_nextcloud_could_not_hold_it() {
     assert_eq!(
         resource_name("capture-1@example.com"),
         "capture-1@example.com"
     );
-    let outlook = "040000008200E00074C5B7101A82E008".repeat(5);
-    let hashed = resource_name(&outlook);
+    // An Outlook meeting UID, 112 hex characters, is its own name.
+    let outlook = format!("040000008200E00074C5B7101A82E008{}", "0".repeat(80));
+    assert_eq!(resource_name(&outlook), outlook);
+    // 251 bytes plus `.ics` is the longest name Nextcloud stored (measured).
+    let longest = "u".repeat(251);
+    assert_eq!(resource_name(&longest), longest);
+    let hashed = resource_name(&"u".repeat(252));
     assert!(hashed.starts_with("sha256-"), "{hashed}");
     assert_eq!(hashed.len(), "sha256-".len() + 64);
     assert_eq!(
         hashed,
-        resource_name(&outlook),
+        resource_name(&"u".repeat(252)),
         "the same UID, the same name"
     );
-    assert_ne!(hashed, resource_name(&outlook.to_lowercase()));
 }

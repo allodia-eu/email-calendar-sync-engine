@@ -16,6 +16,10 @@ pub(crate) struct ContentLine {
     pub params: Vec<(String, String)>,
     /// The raw value, still TEXT-escaped (use [`unescape_text`] for TEXT values).
     pub value: String,
+    /// Which logical (unfolded) line of the text this is, counting from 0: the index
+    /// [`Document`](crate::Document) gives the same line, so a reader can find the line it
+    /// would edit.
+    pub index: usize,
 }
 
 impl ContentLine {
@@ -32,7 +36,8 @@ impl ContentLine {
 pub(crate) fn content_lines(text: &str) -> Vec<ContentLine> {
     unfold(text)
         .iter()
-        .filter_map(|line| tokenize(line))
+        .enumerate()
+        .filter_map(|(index, line)| tokenize(line, index))
         .collect()
 }
 
@@ -54,7 +59,7 @@ fn unfold(text: &str) -> Vec<String> {
 }
 
 /// Tokenizes one unfolded line, or `None` if it has no `name:value` shape.
-fn tokenize(line: &str) -> Option<ContentLine> {
+fn tokenize(line: &str, index: usize) -> Option<ContentLine> {
     let (head, value) = split_once_unquoted(line, ':')?;
     let mut segments = split_unquoted(head, ';').into_iter();
     let name = segments.next()?.to_ascii_uppercase();
@@ -66,6 +71,7 @@ fn tokenize(line: &str) -> Option<ContentLine> {
         name,
         params,
         value: value.to_owned(),
+        index,
     })
 }
 
@@ -103,7 +109,7 @@ pub fn split_unquoted(text: &str, delim: char) -> Vec<&str> {
 
 /// Parses one `KEY=value` (or `KEY="value"`) parameter, uppercasing the name, stripping
 /// surrounding quotes and decoding RFC 6868's escapes. A segment with no `=` is dropped.
-fn parse_param(segment: &str) -> Option<(String, String)> {
+pub(crate) fn parse_param(segment: &str) -> Option<(String, String)> {
     let (key, value) = segment.split_once('=')?;
     let value = value.trim();
     let value = value.strip_circumfix('"', '"').unwrap_or(value);

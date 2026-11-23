@@ -8,7 +8,7 @@
 //! - **The organizer's copy.** Bob stores a meeting inviting Carol. Stored as a plain guarded
 //!   create, the server puts it on Carol's calendar, in her scheduling inbox and in her mailbox.
 //!   Imported, the same meeting under another `UID` reaches none of the three in five times the
-//!   time the control took, and never under three seconds.
+//!   time the control's mail took (its last delivery), and never under three seconds.
 //!
 //! The attendee's direction has no such proof here, and that is recorded rather than asserted:
 //! Carol storing her accepted copy of Bob's meeting plainly, as the control, made Stalwart send
@@ -103,7 +103,6 @@ async fn an_imported_invitation_reaches_nobody(parties: &Parties) {
         |_| true,
     )
     .await;
-    let delivered = started.elapsed();
     assert!(
         !scheduling_inbox_hrefs(parties, control.as_str()).is_empty(),
         "the control reaches the attendee's scheduling inbox"
@@ -112,6 +111,9 @@ async fn an_imported_invitation_reaches_nobody(parties: &Parties) {
         mailed(parties, &parties.attendee_auth, &control_summary)
     })
     .await;
+    // The mail is the last of the three deliveries to land, so the quiet window is measured
+    // from it: a window shorter than the mail takes could not see the mail not come.
+    let delivered = started.elapsed();
     clean_up(parties, &control).await;
     unmail(parties, &parties.attendee_auth, &control_summary);
 

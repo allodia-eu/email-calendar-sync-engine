@@ -179,6 +179,36 @@ pub(crate) fn has_precondition(body: &str, local: &str) -> bool {
     }
 }
 
+/// Appends the character a `&…;` reference stands for to `text`: a character reference, or one
+/// of the five predefined entities. A `multistatus` or an error body carries no DTD, so any other
+/// entity is undeclared and the document is not well-formed. The one rule every DAV body reader
+/// resolves references by.
+///
+/// # Errors
+///
+/// Returns [`CalDavError::Xml`] for a malformed or undeclared reference.
+pub(crate) fn push_reference(
+    text: &mut String,
+    reference: &quick_xml::events::BytesRef<'_>,
+) -> Result<(), CalDavError> {
+    let resolved = reference
+        .resolve_char_ref()
+        .map_err(|e| CalDavError::xml(e.to_string()))?;
+    match resolved {
+        Some(character) => text.push(character),
+        None => match resolve_predefined_entity(reference) {
+            Some(expansion) => text.push_str(expansion),
+            None => {
+                return Err(CalDavError::xml(format!(
+                    "undeclared entity `&{};` in a DAV body",
+                    &**reference
+                )));
+            }
+        },
+    }
+    Ok(())
+}
+
 /// # Errors
 ///
 /// Returns [`CalDavError::Xml`] on malformed XML.
@@ -238,26 +268,7 @@ pub(crate) fn parse_multistatus(xml: &str) -> Result<MultiStatus, CalDavError> {
             // the payload here is an iCalendar/vCard object whose CRLF is significant
             // and which we hand back to a server verbatim, so the bytes are kept.
             Event::Text(chunk) => text.push_str(&chunk),
-            Event::GeneralRef(reference) => {
-                let resolved = reference
-                    .resolve_char_ref()
-                    .map_err(|e| CalDavError::xml(e.to_string()))?;
-                match resolved {
-                    Some(character) => text.push(character),
-                    // Only the five predefined entities are resolvable: a `multistatus`
-                    // carries no DTD, so anything else is undeclared and the document is
-                    // not well-formed.
-                    None => match resolve_predefined_entity(&reference) {
-                        Some(expansion) => text.push_str(expansion),
-                        None => {
-                            return Err(CalDavError::xml(format!(
-                                "undeclared entity `&{};` in multistatus document",
-                                &*reference
-                            )));
-                        }
-                    },
-                }
-            }
+            Event::GeneralRef(reference) => push_reference(&mut text, &reference)?,
             Event::CData(chunk) => text.push_str(&chunk),
             Event::End(_) => {
                 route_closed_element(
