@@ -465,7 +465,8 @@ outlives the token that opened it, so nothing replaces an open one.
   provider that may be counting towards a lockout. The same rule wraps SMTP, where `AUTH`
   precedes `MAIL FROM`, so a retried submission has sent nothing. The ask-and-replace loop is the
   engine's one helper, `engine_provider::with_credential`; this crate supplies only what counts
-  as a refusal. Proof: `dial_renewal_tests.rs` and `filing_smtp_server_tests.rs`.
+  as a refusal. Proof: `dial_renewal_tests.rs`, `filing_smtp_server_tests.rs`, and live on
+  Dovecot and Stalwart (`live_imap_credential.rs`).
 - **A source that cannot produce a credential dials nothing.** It fails with
   `ImapError::Credential`, classified as the source classified it: a revoked grant is
   `Authentication`, an unreachable token endpoint is retryable. It is not a session refusal, so
