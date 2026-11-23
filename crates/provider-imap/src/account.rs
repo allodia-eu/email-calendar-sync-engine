@@ -82,9 +82,12 @@ impl<S> core::fmt::Debug for ImapAccount<S> {
 
 impl ImapAccount<TlsStream<TcpStream>> {
     /// Connects over TLS (implicit or STARTTLS, per the config) and authenticates with the
-    /// [`Credential`](engine_provider::Credential) the config's source gives, a password or an
-    /// OAuth 2.0 access token, proving them and reading the server's capabilities. The connection
-    /// is kept for the first folder that needs one.
+    /// [`Credential`](engine_provider::Credential) the config's source gives: a password, an
+    /// OAuth 2.0 access token, or an administrator's password acting as another account
+    /// ([`Credential::ActingAs`](engine_provider::Credential::ActingAs), read its warning
+    /// first). This proves the credential and reads the server's capabilities, and the
+    /// connection is kept for the first folder that needs one. Every later connection the
+    /// account opens must sign in as the same account, the one whose mailbox this one opened.
     ///
     /// The `connector` carries the host's trust policy — the library never bakes in a root
     /// store, so a mobile host (or the self-signed test fixture) injects its own

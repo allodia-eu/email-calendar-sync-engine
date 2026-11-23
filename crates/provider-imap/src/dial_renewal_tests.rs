@@ -184,7 +184,7 @@ impl Servers {
         async move { Connection::open(stream).await.map(|c| (c, None)) }
     }
 
-    fn written(&self, session: usize) -> String {
+    pub(super) fn written(&self, session: usize) -> String {
         written(&self.sessions.lock().unwrap()[session])
     }
 

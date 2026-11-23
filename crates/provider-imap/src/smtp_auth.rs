@@ -12,11 +12,11 @@
 //! for a bearer token than for a password: a token grants an account's whole mailbox
 //! and is replayable until it expires.
 
-use engine_provider::{Credential, CredentialProtocol};
+use engine_provider::Credential;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    credentials::{SignIn, sign_in},
+    credentials::{SubmitAs, submit_as},
     error::{ImapError, ImapResult},
     sasl::{self, Mechanism},
     secret_line::{Part, secret_line},
@@ -52,8 +52,8 @@ pub(crate) async fn authenticate<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    match sign_in(auth.credential, CredentialProtocol::Smtp)? {
-        SignIn::Password { username, password } => {
+    match submit_as(auth.credential)? {
+        SubmitAs::Password { username, password } => {
             // `AUTH PLAIN` is sent whether or not the server listed it, which is how
             // this path has always behaved; the reply is the answer either way.
             let token = sasl::plain_response(None, username, password)?;
@@ -69,7 +69,7 @@ where
             }
             Ok(())
         }
-        SignIn::Token { username, token } => {
+        SubmitAs::Token { username, token } => {
             let offered = advertised_mechanisms(extensions);
             let mechanism = sasl::select(offered.iter().copied()).ok_or_else(|| {
                 ImapError::auth_unsupported(format!(
@@ -92,9 +92,6 @@ where
             smtp.write_raw(line.as_bytes()).await?;
             finish(smtp, mechanism).await
         }
-        // `sign_in` refuses this over SMTP already; refused here too, so this function's own
-        // answer never depends on its caller having asked first.
-        SignIn::ActingAs { .. } => Err(crate::credentials::acting_as_over_smtp()),
     }
 }
 

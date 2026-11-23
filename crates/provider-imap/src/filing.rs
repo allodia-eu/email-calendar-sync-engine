@@ -34,7 +34,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 
 pub(crate) use crate::smtp_sender::{SmtpSender, resolve_smtp};
 use crate::{
-    credentials::{sign_in, with_credential},
+    credentials::{submit_as, with_credential},
     deadline,
     error::{ImapError, ImapResult},
     place::{Filing, Placed, append_to_role_folder, place_if_absent, placed_key},
@@ -97,7 +97,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                 let prepared = &sub;
                 let (source, smtp) = (credentials.as_ref(), CredentialProtocol::Smtp);
                 let result = with_credential(source, smtp, origin, |credentials| async move {
-                    sign_in(&credentials, smtp)?;
+                    submit_as(&credentials)?;
                     let tcp = deadline::connect(addr).await?;
                     let tls = tls_connect(connector, server_name, tcp).await?;
                     let (ehlo, from, to) = (&prepared.ehlo, &prepared.from, &prepared.to);
@@ -118,7 +118,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                 let prepared = &sub;
                 let (source, smtp) = (credentials.as_ref(), CredentialProtocol::Smtp);
                 let result = with_credential(source, smtp, origin, |credentials| async move {
-                    sign_in(&credentials, smtp)?;
+                    submit_as(&credentials)?;
                     let tcp = deadline::connect(addr).await?;
                     // Cleartext STARTTLS handshake, then upgrade the socket and transmit
                     // (authenticating) over the now-established TLS.

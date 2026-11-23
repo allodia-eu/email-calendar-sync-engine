@@ -24,6 +24,8 @@ use crate::{credentials::PresentedIdentity, error::ImapError, mock::script, pool
 const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
 const MASTER: &str = "master@example.com";
+/// base64 of `alice@example.com\0master@example.com\0master-pw` (RFC 4616).
+const ACTING_AS_ALICE: &str = "YWxpY2VAZXhhbXBsZS5jb20AbWFzdGVyQGV4YW1wbGUuY29tAG1hc3Rlci1wdw==";
 
 /// A source that answers each ask, `credential` or `replace`, with the next of `answers`.
 #[derive(Debug)]
@@ -85,6 +87,15 @@ fn refusing_login() -> Vec<u8> {
     ])
 }
 
+/// A server that refuses an `AUTHENTICATE PLAIN`, as Dovecot does a wrong master password.
+fn refusing_plain() -> Vec<u8> {
+    script(&[
+        GREETING,
+        "* CAPABILITY IMAP4rev1 SASL-IR AUTH=PLAIN\r\na1 OK done\r\n",
+        "a2 NO [AUTHENTICATIONFAILED] Authentication failed.\r\n",
+    ])
+}
+
 /// A server that accepts an `AUTHENTICATE PLAIN`.
 fn accepting_plain() -> Vec<u8> {
     script(&[
@@ -137,6 +148,14 @@ async fn acting_as_an_account_is_that_accounts_identity_not_the_administrators()
     dial()
         .await
         .expect("the administrator signs in acting as alice");
+    // On the wire: `AUTHENTICATE PLAIN` naming alice as the authorization identity, never a
+    // `LOGIN` as the administrator, which would open the administrator's own mailbox.
+    let wire = servers.written(0);
+    assert!(
+        wire.contains(&format!("a2 AUTHENTICATE PLAIN {ACTING_AS_ALICE}\r\n")),
+        "{wire}"
+    );
+    assert!(!wire.contains("LOGIN"), "{wire}");
     // Alice's own password opens the same mailbox, so it belongs in the same pool.
     dial().await.expect("alice herself");
     // The same administrator acting as bob, or as itself, would open another mailbox.
@@ -148,21 +167,52 @@ async fn acting_as_an_account_is_that_accounts_identity_not_the_administrators()
 }
 
 #[tokio::test]
-async fn only_a_dial_that_signed_in_decides_the_identity() {
-    // The first answer is refused, and its replacement names another account. The refused one
-    // never signed in, so it decides nothing: the replacement is the account's identity.
+async fn a_replacement_naming_another_account_fails_even_on_the_first_dial() {
+    // Nothing is remembered yet, so only the refused credential says which account this is:
+    // a replacement for another account is the source answering for the wrong subject.
     let source = Answers::new(vec![
-        Credential::password(BOB, "wrong"),
-        Credential::password(ALICE, "pw"),
-        Credential::password(ALICE, "pw"),
+        Credential::acting_as(MASTER, "master-pw", ALICE),
+        Credential::acting_as(MASTER, "master-pw", BOB),
     ]);
-    let servers = Servers::new(vec![refusing_login(), accepting_login(), accepting_login()]);
+    let servers = Servers::new(vec![refusing_plain(), accepting_plain()]);
     let config = token_config(source);
     let presented = PresentedIdentity::default();
 
+    let err = dial_with(&config, &presented, || servers.open())
+        .await
+        .expect_err("bob does not replace alice");
+
+    assert!(is_another_account(&err), "{err:?}");
+    assert_eq!(servers.opened(), 1, "nothing is opened for bob");
+    assert_eq!(format!("{presented:?}"), "PresentedIdentity(<absent>)");
+}
+
+#[tokio::test]
+async fn only_a_dial_that_signed_in_decides_the_identity() {
+    // The first dial is refused twice and fails, so it decides nothing: the account the next
+    // dial signs in as is the account's identity.
+    let source = Answers::new(vec![
+        Credential::password(ALICE, "wrong"),
+        Credential::password(ALICE, "still-wrong"),
+        Credential::password(BOB, "pw"),
+        Credential::password(BOB, "pw"),
+    ]);
+    let servers = Servers::new(vec![
+        refusing_login(),
+        refusing_login(),
+        accepting_login(),
+        accepting_login(),
+    ]);
+    let config = token_config(source);
+    let presented = PresentedIdentity::default();
+
+    let err = dial_with(&config, &presented, || servers.open())
+        .await
+        .expect_err("refused, and refused again");
+    assert!(matches!(err, ImapError::Auth(_)), "{err:?}");
     dial_with(&config, &presented, || servers.open())
         .await
-        .expect("the replacement signs in");
+        .expect("the first account to sign in");
     dial_with(&config, &presented, || servers.open())
         .await
         .expect("the account that signed in, again");

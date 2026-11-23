@@ -19,7 +19,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 
 use crate::{
     config::{ImapConfig, ImapSecurity},
-    credentials::{PresentedIdentity, SignIn, sign_in, with_credential},
+    credentials::{PresentedIdentity, SignIn, another_account, sign_in, with_credential},
     deadline,
     error::{ImapError, ImapResult},
     tls_info,
@@ -69,7 +69,10 @@ pub(crate) async fn connect_session(
 /// counted the attempt.
 ///
 /// Every dial of one account shares `presented`: once a dial has signed in, a credential
-/// naming another account fails before anything is opened ([`PresentedIdentity`]).
+/// naming another account fails before anything is opened ([`PresentedIdentity`]). A
+/// replacement must name the account the refused credential named, whatever is remembered: a
+/// source that answers a refusal with another account's credential is answering for the wrong
+/// subject, on the first dial as on any other.
 ///
 /// Generic over the stream so the offline suite drives it over scripted connections.
 ///
@@ -88,18 +91,28 @@ where
 {
     let origin = config.origin();
     let source = config.credentials.as_ref();
+    // The account this dial's first credential named; a replacement must name the same.
+    let mut first: Option<String> = None;
     with_credential(source, CredentialProtocol::Imap, &origin, |credential| {
-        let opening = sign_in(&credential, CredentialProtocol::Imap)
-            .and_then(|signing_in| {
-                presented.check(signing_in.identity())?;
-                Ok(signing_in.identity().to_owned())
+        let opening = sign_in(&credential)
+            .and_then(|_| {
+                // `sign_in` refused every credential without one, so this is never empty.
+                let identity = credential.authorization_identity().unwrap_or_default();
+                match &first {
+                    Some(first) if first != identity => return Err(another_account()),
+                    Some(_) => {}
+                    None => first = Some(identity.to_owned()),
+                }
+                presented.check(identity)?;
+                Ok(identity.to_owned())
             })
             .map(|identity| (identity, open()));
         async move {
             let (identity, opening) = opening?;
             let (connection, tls_version) = opening.await?;
             let connection = finish_session(connection, tls_version, config, &credential).await?;
-            presented.remember(&identity);
+            // Dropping the connection on a mismatch closes it: it never reaches the pool.
+            presented.remember(&identity)?;
             Ok((connection, tls_version))
         }
     })
@@ -180,7 +193,7 @@ pub(crate) async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     // from what this server advertises (`crate::sasl`); an administrator acting as another
     // account goes over SASL `PLAIN`. Whichever it is, the next line is the same: the observer is
     // told the session is authenticated, not *how*.
-    match sign_in(credential, CredentialProtocol::Imap)? {
+    match sign_in(credential)? {
         SignIn::Password { username, password } => {
             connection.login(username, password).await?;
         }
