@@ -45,7 +45,10 @@ pub fn vocabulary<'a>(
             RuleFeature::Name,
             RuleFeature::Order,
         ])
-        .with_opaque(RuleSyntax::Sieve);
+        .with_opaque(
+            RuleSyntax::Sieve,
+            listed.iter().map(|name| (*name).to_owned()),
+        );
     for op in &ops {
         vocabulary = vocabulary.with_exact([
             RuleFeature::SubjectText(*op),

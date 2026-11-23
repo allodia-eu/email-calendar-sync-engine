@@ -1,8 +1,8 @@
 //! What one account's rule language can express.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::{NativeKind, RuleSyntax, TextOp};
+use super::{NativeKind, RawRule, RuleSyntax, TextOp};
 
 /// One thing a rule can say, as a target either can or cannot hold it.
 ///
@@ -74,6 +74,7 @@ pub enum RuleFeature {
 
 /// How a target holds a feature it has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Support {
     /// As the model means it.
     Exact,
@@ -94,7 +95,7 @@ pub enum Support {
 pub struct RuleVocabulary {
     features: BTreeMap<RuleFeature, Support>,
     max_redirects: Option<usize>,
-    opaque: Option<RuleSyntax>,
+    opaque: Option<(RuleSyntax, BTreeSet<String>)>,
     native: Option<NativeKind>,
 }
 
@@ -129,10 +130,15 @@ impl RuleVocabulary {
         self
     }
 
-    /// Stores rules carried in `syntax` back as they were (builder-style).
+    /// Stores rules carried in `syntax` back as they were, where they require only
+    /// `extensions` (builder-style): the extensions the account lists.
     #[must_use]
-    pub fn with_opaque(mut self, syntax: RuleSyntax) -> Self {
-        self.opaque = Some(syntax);
+    pub fn with_opaque(
+        mut self,
+        syntax: RuleSyntax,
+        extensions: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.opaque = Some((syntax, extensions.into_iter().collect()));
         self
     }
 
@@ -155,10 +161,16 @@ impl RuleVocabulary {
         self.max_redirects
     }
 
-    /// Whether a rule carried in `syntax` can be stored back.
+    /// Whether `raw` can be stored back: it is in the language this account speaks, and what
+    /// it requires is known and listed.
     #[must_use]
-    pub fn stores_opaque(&self, syntax: RuleSyntax) -> bool {
-        self.opaque == Some(syntax)
+    pub fn stores_opaque(&self, raw: &RawRule) -> bool {
+        self.opaque.as_ref().is_some_and(|(syntax, listed)| {
+            *syntax == raw.syntax()
+                && raw
+                    .requires()
+                    .is_some_and(|requires| requires.is_subset(listed))
+        })
     }
 
     /// Whether `kind`'s own conditions and actions can be stored.

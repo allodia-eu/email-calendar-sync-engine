@@ -25,8 +25,10 @@
 mod action;
 mod condition;
 mod plan;
+mod raw_rule;
 mod receipt;
 mod rule;
+mod values;
 mod vocabulary;
 
 pub use action::{Action, NativeAction, NativeCondition, NativeKind, RuleMailbox};
@@ -36,13 +38,14 @@ pub use condition::{
 pub use plan::{
     ForwardingRules, Kept, Loss, LossReason, PlanMode, RuleOutcome, RulePart, RulesPlan, plan_rules,
 };
+pub use raw_rule::{RawRule, RuleOrigin, RuleSyntax};
 pub use receipt::RulesReceipt;
-pub use rule::{
-    MailRule, MailboxPath, Match, MatchMode, RawRule, RuleAddress, RuleBody, RuleName, RuleOrigin,
-    RuleSet, RuleSyntax, TypedRule,
-};
+pub use rule::{MailRule, Match, MatchMode, RuleBody, RuleSet, TypedRule};
+pub use values::{MailboxPath, RuleAddress, RuleName, RuleValueError};
 pub use vocabulary::{RuleFeature, RuleVocabulary, Support};
 
+#[cfg(test)]
+mod plan_review_tests;
 #[cfg(test)]
 mod plan_tests;
 #[cfg(test)]

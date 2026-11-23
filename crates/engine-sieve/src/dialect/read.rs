@@ -1,8 +1,10 @@
 //! A script's rules, read segment by segment.
 
+use std::collections::BTreeSet;
+
 use engine_core::rules::{MailRule, RawRule, RuleName, RuleOrigin, RuleSyntax};
 
-use super::{actions, cursor::Cursor, matching};
+use super::{actions, cursor::Cursor, facts, matching};
 use crate::{
     lex::{Token, TokenKind, tokenize},
     segment::{Segment, SegmentKind},
@@ -18,7 +20,17 @@ pub(super) fn name(leading: &str) -> Option<RuleName> {
         .lines()
         .rev()
         .find_map(|line| line.strip_prefix(NAME_PREFIX)?.strip_suffix(']'))
-        .map(RuleName::new)
+        .and_then(|name| RuleName::new(name).ok())
+}
+
+/// What the reader knows of the script a segment is read from.
+pub(super) struct Script {
+    /// Whether values read as literal text ([`super::literal`]).
+    pub(super) literal: bool,
+    /// Every extension the script's `require`s name.
+    pub(super) requires: BTreeSet<String>,
+    /// The script's [`facts::fingerprint`].
+    pub(super) fingerprint: u64,
 }
 
 /// The comments before a rule other than its `# rule:[…]` lines: what a rewritten rule keeps.
@@ -31,20 +43,53 @@ pub(super) fn without_names(leading: &str) -> String {
 
 /// The rule segment `index` holds: typed where the dialect reads it, otherwise carried whole as
 /// its exact text. `None` for a `require` or the trailing segment, which are no rules.
-pub(super) fn rule(segment: &Segment<'_>, index: usize, literal: bool) -> Option<MailRule> {
+pub(super) fn rule(segment: &Segment<'_>, index: usize, script: &Script) -> Option<MailRule> {
     if segment.kind() != SegmentKind::Command {
         return None;
     }
-    let rule = match typed(segment.tokens(), literal) {
+    let named = name(segment.leading());
+    let rule = match typed(segment.tokens(), script.literal) {
         Some((true, rule)) => rule,
         Some((false, rule)) => rule.disabled(),
-        None => MailRule::opaque(RawRule::new(RuleSyntax::Sieve, segment.text())),
+        None => MailRule::opaque(raw(segment, &script.requires, named.clone())),
     };
-    let rule = match name(segment.leading()) {
+    let rule = match named {
         Some(name) => rule.named(name),
         None => rule,
     };
-    Some(rule.with_origin(RuleOrigin::ScriptSegment(index)))
+    Some(rule.with_origin(RuleOrigin::ScriptSegment {
+        script: script.fingerprint,
+        index,
+    }))
+}
+
+/// A segment carried whole, with what its tokens say it needs and does.
+fn raw(
+    segment: &Segment<'_>,
+    script_requires: &BTreeSet<String>,
+    name: Option<RuleName>,
+) -> RawRule {
+    let tokens = segment.tokens();
+    let mut raw = RawRule::new(RuleSyntax::Sieve, segment.text())
+        .requiring(facts::requirements(tokens, script_requires));
+    if !facts::sends_mail(tokens) {
+        raw = raw.sending_no_mail();
+    }
+    match name {
+        Some(name) => raw.named(name),
+        None => raw,
+    }
+}
+
+/// A command written by the engine itself and carried whole (the `include` of a reply
+/// script): what [`read_rules`](super::read_rules) would make of it as a script of its own.
+pub(super) fn carried(text: &str) -> Option<RawRule> {
+    let segments = crate::segment(text).ok()?;
+    let [segment] = segments.as_slice() else {
+        return None;
+    };
+    (segment.kind() == SegmentKind::Command)
+        .then(|| raw(segment, &BTreeSet::new(), name(segment.leading())))
 }
 
 /// An `if` the dialect reads: whether it is enabled, and the rule, enabled, unnamed.
@@ -76,9 +121,9 @@ fn typed(tokens: &[Token<'_>], literal: bool) -> Option<(bool, MailRule)> {
         }
         _ => {
             let mut cursor = Cursor::new(rest, literal);
-            let when = matching::read(&mut cursor)?;
+            let (enabled, when) = matching::read_rule_test(&mut cursor)?;
             let block = rest.len() - remaining(&cursor, rest)?;
-            (true, when, &rest[block..])
+            (enabled, when, &rest[block..])
         }
     };
     let mut cursor = Cursor::new(block, literal);

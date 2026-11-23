@@ -29,6 +29,7 @@
 
 mod actions;
 mod cursor;
+mod facts;
 mod matching;
 mod read;
 mod render;
@@ -50,21 +51,39 @@ pub fn read_rules(script: &str) -> Vec<MailRule> {
     let Ok(segments) = crate::segment(script) else {
         return whole(script);
     };
-    let Ok(literal) = literal(&segments) else {
+    let Ok(context) = self::script(script, &segments) else {
         return whole(script);
     };
     segments
         .iter()
         .enumerate()
-        .filter_map(|(index, segment)| read::rule(segment, index, literal))
+        .filter_map(|(index, segment)| read::rule(segment, index, &context))
         .collect()
 }
 
+/// A script the reader cannot split, as one rule: what it requires and whether it sends mail
+/// are not known, so the plan carries it nowhere and an import never.
 fn whole(script: &str) -> Vec<MailRule> {
     if script.is_empty() {
         return Vec::new();
     }
     vec![MailRule::opaque(RawRule::new(RuleSyntax::Sieve, script))]
+}
+
+/// `text` as one rule carried whole, with what its tokens say it needs and does: for a command
+/// a host writes itself (the `include` of a script), so the writer requires what it needs and
+/// the plan knows whether it sends mail. `None` where `text` is not one command.
+pub fn carried(text: &str) -> Option<RawRule> {
+    read::carried(text)
+}
+
+/// What the reader knows of `text`, split into `segments`.
+fn script(text: &str, segments: &[Segment<'_>]) -> Result<read::Script, SieveError> {
+    Ok(read::Script {
+        literal: literal(segments)?,
+        requires: require::required(segments)?,
+        fingerprint: facts::fingerprint(text),
+    })
 }
 
 /// `rules` written as a script over `base`, the script they were read from ([module
@@ -73,8 +92,11 @@ fn whole(script: &str) -> Vec<MailRule> {
 /// # Errors
 ///
 /// A [`DialectError`]: `base` cannot be split at its commands, a rule holds what the writer
-/// cannot write (what [`vocabulary`] does not list, or a value no Sieve string can hold), or the
-/// `require` cannot be written.
+/// cannot write, or the `require` cannot be written. It refuses only what a rule
+/// [`plan_rules`](engine_core::rules::plan_rules) kept under this account's [`vocabulary`]
+/// never holds, so the plan runs first: a rule carried whole that was renamed, disabled, or of
+/// unknown needs; a typed part the vocabulary does not list; a value with `${` over a script
+/// that would expand it.
 pub fn write_rules(base: &str, rules: &[MailRule]) -> Result<String, DialectError> {
     write::write(base, rules)
 }
@@ -105,6 +127,12 @@ pub enum DialectErrorKind {
     },
     /// The `require` the rules need cannot be written.
     Require(SieveErrorKind),
+    /// The rule at this index holds a value with `${` over a script that requires `variables`
+    /// or `encoded-character`, which would expand it. The writer does not escape it.
+    Variable {
+        /// The rule's index in the list handed in.
+        rule: usize,
+    },
 }
 
 impl DialectError {
@@ -117,6 +145,12 @@ impl DialectError {
     fn unrenderable(rule: usize) -> Self {
         Self {
             kind: DialectErrorKind::Unrenderable { rule },
+        }
+    }
+
+    fn variable(rule: usize) -> Self {
+        Self {
+            kind: DialectErrorKind::Variable { rule },
         }
     }
 
@@ -141,6 +175,10 @@ impl fmt::Display for DialectError {
             DialectErrorKind::Unrenderable { rule } => {
                 write!(f, "rule {rule} holds what the Sieve writer cannot write")
             }
+            DialectErrorKind::Variable { rule } => write!(
+                f,
+                "rule {rule} holds a value the script's variables would expand"
+            ),
             DialectErrorKind::Require(kind) => {
                 write!(f, "the script's require cannot be written ({kind:?})")
             }

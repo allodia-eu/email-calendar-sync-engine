@@ -1,53 +1,7 @@
 //! A rule set and the rules in it.
 
-use super::{Action, Condition};
+use super::{Action, Condition, RawRule, RuleName, RuleOrigin};
 use crate::{raw::RawRules, version::RuleSetVersion};
-
-/// Defines a string newtype holding content, whose `Debug` shows only its length.
-macro_rules! content_text {
-    ($(#[$meta:meta])* $name:ident) => {
-        $(#[$meta])*
-        #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-        pub struct $name(String);
-
-        impl $name {
-            #[doc = "Wraps `value` as it was written."]
-            #[must_use]
-            pub fn new(value: impl Into<String>) -> Self {
-                Self(value.into())
-            }
-
-            #[doc = "The value as a string slice."]
-            #[must_use]
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl ::core::fmt::Debug for $name {
-            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                f.debug_struct(stringify!($name)).field("len", &self.0.len()).finish()
-            }
-        }
-    };
-}
-
-content_text! {
-    /// A rule's name as the user gave it: Graph's `displayName`, the `# rule:[name]` comment
-    /// of the Sieve dialect the engine writes.
-    RuleName
-}
-
-content_text! {
-    /// A folder as a rule names it by path (a Sieve `fileinto` argument), when the rule names
-    /// it neither by role nor by id.
-    MailboxPath
-}
-
-content_text! {
-    /// An address a rule sends mail on to.
-    RuleAddress
-}
 
 /// An account's mail rules, in evaluation order, as read from its server.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -236,59 +190,4 @@ pub enum MatchMode {
     All,
     /// At least one condition holds.
     Any,
-}
-
-/// The languages a rule may be carried in when the engine cannot type it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[non_exhaustive]
-pub enum RuleSyntax {
-    /// Sieve (RFC 5228).
-    Sieve,
-}
-
-/// A rule the engine carries but cannot show: its language and its exact text.
-#[derive(Clone, PartialEq, Eq)]
-pub struct RawRule {
-    syntax: RuleSyntax,
-    text: String,
-}
-
-impl RawRule {
-    /// A rule in `syntax`, kept as `text`.
-    #[must_use]
-    pub fn new(syntax: RuleSyntax, text: impl Into<String>) -> Self {
-        Self {
-            syntax,
-            text: text.into(),
-        }
-    }
-
-    /// The rule's language.
-    #[must_use]
-    pub fn syntax(&self) -> RuleSyntax {
-        self.syntax
-    }
-
-    /// The rule's exact text.
-    #[must_use]
-    pub fn text(&self) -> &str {
-        &self.text
-    }
-}
-
-impl core::fmt::Debug for RawRule {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("RawRule")
-            .field("syntax", &self.syntax)
-            .field("len", &self.text.len())
-            .finish()
-    }
-}
-
-/// Where a rule was read from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum RuleOrigin {
-    /// The top-level command at this index of the script read, counting every segment.
-    ScriptSegment(usize),
 }

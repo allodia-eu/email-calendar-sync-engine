@@ -171,7 +171,23 @@ Implemented as sketched, with these differences, each for a reason the code met:
   `RuleVocabulary` is a map from a `RuleFeature` (the grain where transports differ) to `Support`
   (`Exact` or `Approximated`), plus the redirect limit and the kinds of opaque and native parts it
   stores back.
-- The receipt is `RulesReceipt { version, outcomes }`.
+- The receipt is `RulesReceipt { version, outcomes }`; `RulesPlan.rules` pairs each written rule
+  with its source index (`PlannedRule`).
+- A `RawRule` carries what the reader learned of its text: the extensions it requires (from one
+  table of command, test and tag; where a token is not in it, everything the source script
+  required), whether it may send mail (a `redirect` or `notify`), and the name it holds. The plan
+  carries it only to a target that lists every extension it needs, never renames or disables it
+  (its text holds both), and on an import that arms no forwarding does not carry one that may
+  send mail. A `NativeAction` says whether it sends mail too.
+- `RuleOrigin::ScriptSegment { script, index }`: `script` is a fingerprint of the text read, so a
+  rule read from one script is never copied as a segment of another.
+- A `TextTest` always has a value, and `RuleName`, `MailboxPath` and `RuleAddress` are never empty
+  and never hold a CR, LF or NUL: what no transport writes cannot be built. The plan answers
+  `NotExpressible` for what can still be built and not written (a role no transport names, a
+  redirect to nobody, no keyword to add).
+- The action order is not semantic. The writer adds keywords and an importance before it files,
+  redirects or discards, because a flag set after a `fileinto` does not reach the filed copy (RFC
+  5232 §3); a script in another order reads as carried whole.
 
 The sketch as written before the code:
 
@@ -496,14 +512,16 @@ rule 0  Reduced  Action(1) NotExpressible        # markImportance: no editheader
 rule 1  NotKept  Exception(0) NotExpressible     # dropping it would also move auto-replies
 ```
 
-Written script, in the Roundcube dialect (section 3; layout as slice 2 pins it):
+Written script, in the Roundcube dialect, as `engine_sieve::dialect::write_rules` writes it (every
+line ends in CRLF; the action is indented by a tab):
 
 ```sieve
-require ["fileinto", "mailbox"];
+require ["fileinto"];
 # rule:[Invoices]
-if header :contains "subject" "Invoice" {
-    fileinto "Finance";
-    stop;
+if header :contains "subject" "Invoice"
+{
+	fileinto "Finance";
+	stop;
 }
 ```
 
@@ -520,7 +538,7 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 | Neutral | Sieve | Graph | Gmail |
 |---|---|---|---|
 | `Match` All / Any | ✓ `allof` / `anyof` | All ✓ (predicates ANDed; values in one predicate ORed, **unverified**); Any ✗ | All ✓; Any ≈ (`query` with `OR`) |
-| `except` | ✓ `not anyof(…)` | ✓ `exceptions` (same predicates only) | ≈ `negatedQuery` |
+| `except` | ✓ `not e`, or `allof (c1, …, not e1, …)`; with any-of conditions `allof (anyof (c1, …), not e1, …)`; an `anyof` holding a `not`, or nested lists, read as carried whole | ✓ `exceptions` (same predicates only) | ≈ `negatedQuery` |
 | Subject contains | ✓ `header :contains "subject"` | ✓ `subjectContains` | ≈ `subject` (word match, not substring) |
 | Subject is / glob / regex | ✓ `:is` / `:matches` / `:regex` (ext `regex`) | ✗ | ✗ |
 | Named header contains | ✓ `header :contains "X-…"` | ≈ `headerContains` (any header) | ✗ |
@@ -542,16 +560,16 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 |---|---|---|---|
 | `FileInto` (move) | ✓ `fileinto`; by name, or `:mailboxid` (RFC 9042, survives a rename) where listed | ✓ `moveToFolder` | ✓ add label + remove `INBOX` (one user label per filter) |
 | `FileInto { copy }` | ✓ `fileinto :copy` (ext `copy`, RFC 3894) | ✓ `copyToFolder` | ✓ add label, keep `INBOX` |
-| `FileInto { Role(Trash / Junk) }` | ✓ `:specialuse` (RFC 8579) where listed, else by the folder's name | ✓ `delete` / move to Junk | ✓ `TRASH` / `SPAM` |
+| `FileInto { Role(Trash / Junk) }` | ✓ `:specialuse "\\Trash" "Trash"` (RFC 8579), the attribute's name as the fallback folder, for every role but the inbox (`"INBOX"`); ✗ where `special-use` is not listed (no fallback to a name alone) | ✓ `delete` / move to Junk | ✓ `TRASH` / `SPAM` |
 | `Discard` | ✓ `discard` | ✓ `permanentDelete` | ≈ `TRASH` (recoverable) |
-| `Redirect` | ✓ `redirect` (`:copy` keeps it), bounded by `maxNumberRedirects` | ✓ `redirectTo` (keeps a copy) | ≈ `forward`: one verified address, original sender kept |
+| `Redirect` | ✓ `redirect` (`:copy` keeps it), one per address; a rule's addresses together bounded by `maxNumberRedirects` (two rules that each fit can exceed it for one message; the server enforces that on delivery) | ✓ `redirectTo` (keeps a copy) | ≈ `forward`: one verified address, original sender kept |
 | `Forward` (as the account) | ≈ `redirect :copy` (From differs) | ✓ `forwardTo` | ≈ `forward` |
 | `AddKeywords` `$seen` / `$flagged` | ✓ `addflag "\\Seen"` / `"\\Flagged"` (ext `imap4flags`, RFC 5232) | ✓ `markAsRead` / ✗ (no flag action) | ✓ remove `UNREAD` / add `STARRED` |
 | `AddKeywords` named | ✓ `addflag "name"` | ≈ `assignCategories` | ≈ hidden named label (counts as the one user label) |
 | Mark importance (`Action::MarkImportance`) | ≈ `addheader "Importance"` (ext `editheader`) | ✓ `markImportance` | ≈ `IMPORTANT` |
 | `Native`: forward as attachment | ✗ | ✓ `forwardAsAttachmentTo` | ✗ |
 | `stop` | ✓ `stop` | ✓ `stopProcessingRules` | ✗ (every filter applies) |
-| `enabled: false` | ✓ in the dialect, `if false # <test>` (a client that does not know it sees a rule that never runs) | ✓ `isEnabled` | ✗ |
+| `enabled: false` | ✓ in the dialect, `if false # <test>`, or `if allof (false, <test>)` where the test spans lines (a client that does not know it sees a rule that never runs) | ✓ `isEnabled` | ✗ |
 | `name` | ✓ in the dialect, `# rule:[name]` (a comment to any other client) | ✓ `displayName` | ✗ |
 | Order | ✓ script order | ✓ `sequence` | ✗ |
 

@@ -7,35 +7,35 @@ use std::collections::BTreeSet;
 use super::*;
 use crate::mail::{Importance, Keyword, MailboxRole, SystemKeyword};
 
-const IMPORT: PlanMode = PlanMode::Import {
+pub(super) const IMPORT: PlanMode = PlanMode::Import {
     forwarding: ForwardingRules::Disabled,
 };
 
-fn subject(value: &str) -> Condition {
+pub(super) fn subject(value: &str) -> Condition {
     Condition::Header {
         field: HeaderField::Subject,
-        test: TextTest::new(TextOp::Contains, vec![value.to_owned()]),
+        test: TextTest::new(TextOp::Contains, vec![value.to_owned()]).unwrap(),
     }
 }
 
-fn into(path: &str) -> Action {
+pub(super) fn into(path: &str) -> Action {
     Action::FileInto {
-        mailbox: RuleMailbox::Path(MailboxPath::new(path)),
+        mailbox: RuleMailbox::Path(MailboxPath::new(path).unwrap()),
         copy: false,
     }
 }
 
-fn redirect(count: usize) -> Action {
+pub(super) fn redirect(count: usize) -> Action {
     Action::Redirect {
         to: (0..count)
-            .map(|i| RuleAddress::new(format!("r{i}@example.com")))
+            .map(|i| RuleAddress::new(format!("r{i}@example.com")).unwrap())
             .collect(),
         copy: false,
     }
 }
 
 /// A language with everything the tests below need, exactly.
-fn rich() -> RuleVocabulary {
+pub(super) fn rich() -> RuleVocabulary {
     RuleVocabulary::new().with_exact([
         RuleFeature::MatchAny,
         RuleFeature::Except,
@@ -52,7 +52,7 @@ fn rich() -> RuleVocabulary {
     ])
 }
 
-fn without(vocabulary: &RuleVocabulary, missing: RuleFeature) -> RuleVocabulary {
+pub(super) fn without(vocabulary: &RuleVocabulary, missing: RuleFeature) -> RuleVocabulary {
     let mut rebuilt = RuleVocabulary::new();
     for feature in ALL {
         if feature != missing
@@ -79,24 +79,27 @@ const ALL: [RuleFeature; 12] = [
     RuleFeature::Order,
 ];
 
-fn one(
+pub(super) fn one(
     rule: &MailRule,
     target: &RuleVocabulary,
     mode: PlanMode,
 ) -> (Option<MailRule>, RuleOutcome) {
     let plan = plan_rules(std::slice::from_ref(rule), target, mode);
     assert_eq!(plan.outcomes.len(), 1);
-    (plan.rules.into_iter().next(), plan.outcomes[0].clone())
+    (
+        plan.rules.into_iter().next().map(|planned| planned.rule),
+        plan.outcomes[0].clone(),
+    )
 }
 
-fn loss(part: RulePart, reason: LossReason) -> Loss {
+pub(super) fn loss(part: RulePart, reason: LossReason) -> Loss {
     Loss { part, reason }
 }
 
 #[test]
 fn a_rule_the_target_holds_is_kept_whole_and_written_as_given() {
     let rule = MailRule::typed(Match::all(vec![subject("Invoice")]), vec![into("Finance")])
-        .named(RuleName::new("Invoices"))
+        .named(RuleName::new("Invoices").unwrap())
         .stopping();
     let (written, outcome) = one(&rule, &rich(), PlanMode::Edit);
     assert_eq!(outcome.kept, Kept::Whole);
@@ -177,7 +180,7 @@ fn a_lost_action_or_stop_or_name_reduces_the_rule_and_is_not_written() {
             redirect(1),
         ],
     )
-    .named(RuleName::new("n"))
+    .named(RuleName::new("n").unwrap())
     .stopping();
     let target = without(&without(&rich(), RuleFeature::Stop), RuleFeature::Name);
     let (written, outcome) = one(&rule, &target, PlanMode::Edit);
@@ -210,7 +213,7 @@ fn an_approximated_part_keeps_the_rule_whole_and_says_so() {
     let rule = MailRule::typed(
         Match::all(vec![subject("a")]),
         vec![Action::Forward {
-            to: vec![RuleAddress::new("f@example.com")],
+            to: vec![RuleAddress::new("f@example.com").unwrap()],
         }],
     );
     let (written, outcome) = one(&rule, &target, PlanMode::Edit);
@@ -227,7 +230,7 @@ fn an_approximated_part_keeps_the_rule_whole_and_says_so() {
     let rule = MailRule::typed(
         Match::all(vec![Condition::Size(SizeBound::Over(10))]),
         vec![Action::FileInto {
-            mailbox: RuleMailbox::Path(MailboxPath::new("x")),
+            mailbox: RuleMailbox::Path(MailboxPath::new("x").unwrap()),
             copy: true,
         }],
     );
@@ -315,7 +318,12 @@ fn an_opaque_rule_goes_only_to_its_own_kind() {
         outcome.losses,
         vec![loss(RulePart::Rule, LossReason::OpaqueSource)]
     );
-    let sieve = rich().with_opaque(RuleSyntax::Sieve);
+    let rule = MailRule::opaque(
+        RawRule::new(RuleSyntax::Sieve, "keep;")
+            .requiring(Vec::new())
+            .sending_no_mail(),
+    );
+    let sieve = rich().with_opaque(RuleSyntax::Sieve, Vec::new());
     assert_eq!(one(&rule, &sieve, PlanMode::Edit).0, Some(rule));
 }
 
@@ -385,7 +393,7 @@ fn every_condition_and_action_asks_for_its_own_feature() {
         RuleFeature::NamedKeyword,
         RuleFeature::MarkImportance,
     ]);
-    let test = |op| TextTest::new(op, vec!["v".to_owned()]);
+    let test = |op| TextTest::new(op, vec!["v".to_owned()]).unwrap();
     let address = |part| Condition::Address {
         field: AddressField::ToOrCc,
         part,
@@ -417,11 +425,11 @@ fn every_condition_and_action_asks_for_its_own_feature() {
             },
             Action::Discard,
             Action::Redirect {
-                to: vec![RuleAddress::new("a@example.com")],
+                to: vec![RuleAddress::new("a@example.com").unwrap()],
                 copy: true,
             },
             Action::Forward {
-                to: vec![RuleAddress::new("a@example.com")],
+                to: vec![RuleAddress::new("a@example.com").unwrap()],
             },
             Action::AddKeywords(
                 [

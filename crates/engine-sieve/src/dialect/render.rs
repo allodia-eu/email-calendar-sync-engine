@@ -1,9 +1,21 @@
 //! A typed rule written in the dialect, as Roundcube's managesieve plugin writes one.
 //!
-//! `# rule:[name]`, then `if <test>`, a line with `{`, one action per line indented by a tab,
-//! and a line with `}`, every line ending in CRLF; a disabled rule as `if false # <test>`. The
-//! fixtures in `tests/fixtures/roundcube/` are the plugin's own bytes, and the writer's output
-//! for the same rules is compared with them byte for byte.
+//! `# rule:[name]` at the start of a line, then `if <test>`, a line with `{`, one action per
+//! line indented by a tab, and a line with `}`, every line ending in CRLF; a disabled rule as
+//! `if false # <test>`, or, where its test spans lines and no comment can hold it,
+//! `if allof (false, <test>)`. The fixtures in `tests/fixtures/roundcube/` are the plugin's own
+//! bytes, and the writer's output for the same rules is compared with them byte for byte.
+//!
+//! The actions are written marks first (`addflag`, `addheader`), then the rest in the rule's
+//! order: a flag set after a `fileinto` does not reach the copy already filed (RFC 5232 §3),
+//! so the model's action order says nothing about when a keyword is added, and the writer adds
+//! it before the message is delivered anywhere.
+//!
+//! A role is filed by `:specialuse` with its attribute's name as the fallback folder
+//! (`\Trash` falls back to `Trash`), the conventional name a server without the role most
+//! likely has; the inbox needs no role and is `INBOX`. An id is filed by `:mailboxid` with
+//! `INBOX` as the fallback ([`ID_FALLBACK`]), which is where the message would have gone
+//! without the rule.
 
 use std::collections::BTreeSet;
 
@@ -16,6 +28,9 @@ use engine_core::{
 };
 
 use crate::string;
+
+/// Where a rule filing by id falls back to, where no folder has the id (RFC 9042 §3).
+pub(super) const ID_FALLBACK: &str = "INBOX";
 
 /// Why a rule could not be written: the plan should have kept it from the writer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,11 +47,9 @@ pub(super) fn rule(rule: &MailRule, kept: &str, needs: &mut Extensions) -> Rende
     let RuleBody::Typed(typed) = &rule.body else {
         return Err(Unrenderable);
     };
-    let mut out = String::from(kept);
+    // The name line starts its line: an indent that led the rule would hide it from a reader.
+    let mut out = String::from(kept.trim_end_matches([' ', '\t']));
     if let Some(name) = &rule.name {
-        if name.as_str().contains(['\r', '\n']) {
-            return Err(Unrenderable);
-        }
         out.push_str("# rule:[");
         out.push_str(name.as_str());
         out.push_str("]\r\n");
@@ -44,16 +57,25 @@ pub(super) fn rule(rule: &MailRule, kept: &str, needs: &mut Extensions) -> Rende
     let test = test(&typed.when, needs)?;
     if rule.enabled {
         out.push_str("if ");
+        out.push_str(&test);
+    } else if test.contains(['\r', '\n']) {
+        // A comment ends at its line's end, so a test that spans lines cannot live in one.
+        out.push_str("if allof (false, ");
+        out.push_str(&test);
+        out.push(')');
     } else {
-        // The test lives in a comment, which ends at the line's end.
-        if test.contains(['\r', '\n']) {
-            return Err(Unrenderable);
-        }
         out.push_str("if false # ");
+        out.push_str(&test);
     }
-    out.push_str(&test);
     out.push_str("\r\n{\r\n");
-    for action in &typed.actions {
+    let marks =
+        |action: &&Action| matches!(action, Action::AddKeywords(_) | Action::MarkImportance(_));
+    let ordered = typed
+        .actions
+        .iter()
+        .filter(marks)
+        .chain(typed.actions.iter().filter(|action| !marks(action)));
+    for action in ordered {
         for command in action_commands(action, needs)? {
             out.push('\t');
             out.push_str(&command);
@@ -102,12 +124,12 @@ fn condition(condition: &Condition, needs: &mut Extensions) -> Rendered {
     Ok(match condition {
         Condition::Header { field, test } => {
             let name = match field {
-                HeaderField::Subject => "subject",
-                HeaderField::Named(name) => name.as_str(),
+                HeaderField::Named(name) if !field.is_subject() => name.as_str(),
+                _ => "subject",
             };
             format!(
                 "header {} {} {}",
-                op(test.op, needs),
+                op(test.op(), needs)?,
                 value(name)?,
                 values(test)?
             )
@@ -117,6 +139,7 @@ fn condition(condition: &Condition, needs: &mut Extensions) -> Rendered {
                 AddressPart::All => "",
                 AddressPart::LocalPart => ":localpart ",
                 AddressPart::Domain => ":domain ",
+                _ => return Err(Unrenderable),
             };
             let fields = match field {
                 AddressField::From => "\"from\"",
@@ -127,13 +150,13 @@ fn condition(condition: &Condition, needs: &mut Extensions) -> Rendered {
             };
             format!(
                 "address {part}{} {fields} {}",
-                op(test.op, needs),
+                op(test.op(), needs)?,
                 values(test)?
             )
         }
         Condition::Body(test) => {
             needs.insert("body");
-            format!("body :text {} {}", op(test.op, needs), values(test)?)
+            format!("body :text {} {}", op(test.op(), needs)?, values(test)?)
         }
         Condition::Size(SizeBound::Over(bytes)) => format!("size :over {}", size(*bytes)),
         Condition::Size(SizeBound::Under(bytes)) => format!("size :under {}", size(*bytes)),
@@ -145,8 +168,8 @@ fn condition(condition: &Condition, needs: &mut Extensions) -> Rendered {
     })
 }
 
-fn op(op: TextOp, needs: &mut Extensions) -> &'static str {
-    match op {
+fn op(op: TextOp, needs: &mut Extensions) -> Result<&'static str, Unrenderable> {
+    Ok(match op {
         TextOp::Contains => ":contains",
         TextOp::Is => ":is",
         TextOp::Matches => ":matches",
@@ -154,7 +177,8 @@ fn op(op: TextOp, needs: &mut Extensions) -> &'static str {
             needs.insert("regex");
             ":regex"
         }
-    }
+        _ => return Err(Unrenderable),
+    })
 }
 
 /// A size in bytes, with the largest quantifier that keeps it exact (`5M`, as Roundcube writes
@@ -178,7 +202,7 @@ fn value(text: &str) -> Rendered {
 }
 
 fn values(test: &TextTest) -> Rendered {
-    list(&test.values)
+    list(test.values())
 }
 
 /// One value as itself, several as `["a","b"]`.

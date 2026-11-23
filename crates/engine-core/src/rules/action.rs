@@ -103,7 +103,29 @@ pub struct NativeCondition {
     pub raw: String,
 }
 
-/// A provider's own action: its kind, and its JSON fragment as read.
+impl NativeCondition {
+    /// A fragment of `kind`'s own JSON.
+    #[must_use]
+    pub fn new(kind: NativeKind, raw: impl Into<String>) -> Self {
+        Self {
+            kind,
+            raw: raw.into(),
+        }
+    }
+}
+
+impl core::fmt::Debug for NativeCondition {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NativeCondition")
+            .field("kind", &self.kind)
+            .field("len", &self.raw.len())
+            .finish()
+    }
+}
+
+/// A provider's own action: its kind, its JSON fragment as read, and whether it sends mail out
+/// of the account (Graph's `forwardAsAttachmentTo`), which the import safety rule treats as it
+/// treats a typed redirect. Assumed to, until the reader says it does not.
 #[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct NativeAction {
@@ -111,31 +133,35 @@ pub struct NativeAction {
     pub kind: NativeKind,
     /// The provider's JSON fragment.
     pub raw: String,
+    /// Whether it may send mail out of the account.
+    pub sends_mail: bool,
 }
 
-macro_rules! native_debug {
-    ($name:ident) => {
-        impl $name {
-            /// A fragment of `kind`'s own JSON.
-            #[must_use]
-            pub fn new(kind: NativeKind, raw: impl Into<String>) -> Self {
-                Self {
-                    kind,
-                    raw: raw.into(),
-                }
-            }
+impl NativeAction {
+    /// A fragment of `kind`'s own JSON, which may send mail out of the account.
+    #[must_use]
+    pub fn new(kind: NativeKind, raw: impl Into<String>) -> Self {
+        Self {
+            kind,
+            raw: raw.into(),
+            sends_mail: true,
         }
+    }
 
-        impl ::core::fmt::Debug for $name {
-            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                f.debug_struct(stringify!($name))
-                    .field("kind", &self.kind)
-                    .field("len", &self.raw.len())
-                    .finish()
-            }
-        }
-    };
+    /// Records that the action sends no mail out of the account (builder-style).
+    #[must_use]
+    pub fn sending_no_mail(mut self) -> Self {
+        self.sends_mail = false;
+        self
+    }
 }
 
-native_debug!(NativeCondition);
-native_debug!(NativeAction);
+impl core::fmt::Debug for NativeAction {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NativeAction")
+            .field("kind", &self.kind)
+            .field("len", &self.raw.len())
+            .field("sends_mail", &self.sends_mail)
+            .finish()
+    }
+}

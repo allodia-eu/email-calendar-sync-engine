@@ -24,7 +24,7 @@ const QUOTING: &str = include_str!("fixtures/roundcube/quoting.sieve");
 const VACATION: &str = include_str!("fixtures/roundcube/vacation_rule.sieve");
 
 fn test(op: TextOp, values: &[&str]) -> TextTest {
-    TextTest::new(op, values.iter().map(|value| (*value).to_owned()).collect())
+    TextTest::new(op, values.iter().map(|value| (*value).to_owned()).collect()).unwrap()
 }
 
 fn subject(op: TextOp, value: &str) -> Condition {
@@ -36,7 +36,7 @@ fn subject(op: TextOp, value: &str) -> Condition {
 
 fn into(path: &str) -> Action {
     Action::FileInto {
-        mailbox: RuleMailbox::Path(MailboxPath::new(path)),
+        mailbox: RuleMailbox::Path(MailboxPath::new(path).unwrap()),
         copy: false,
     }
 }
@@ -51,6 +51,14 @@ fn names(rules: &[MailRule]) -> Vec<Option<&str>> {
         .iter()
         .map(|rule| rule.name.as_ref().map(RuleName::as_str))
         .collect()
+}
+
+/// The fingerprint the reader gives `script`, as a rule read from it carries.
+fn fingerprint_of(script: &str) -> u64 {
+    match read_rules(script)[0].origin {
+        Some(RuleOrigin::ScriptSegment { script, .. }) => script,
+        _ => unreachable!(),
+    }
 }
 
 fn is_opaque(rule: &MailRule) -> bool {
@@ -90,23 +98,23 @@ fn the_plugin_s_rules_read_typed_and_what_the_dialect_does_not_write_is_carried_
             ]),
             vec![Action::AddKeywords(flags)],
         )
-        .named(RuleName::new("Any of two")),
+        .named(RuleName::new("Any of two").unwrap()),
         MailRule::typed(
             Match::all(vec![subject(TextOp::Matches, "report*")]).except(vec![Condition::Header {
                 field: HeaderField::Named("x-spam-flag".to_owned()),
                 test: test(TextOp::Is, &["YES"]),
             }]),
             vec![Action::Redirect {
-                to: vec![RuleAddress::new("archive@example.com")],
+                to: vec![RuleAddress::new("archive@example.com").unwrap()],
                 copy: true,
             }],
         )
-        .named(RuleName::new("All of two")),
+        .named(RuleName::new("All of two").unwrap()),
         MailRule::typed(
             Match::all(vec![Condition::Size(SizeBound::Over(5 << 20))]),
             vec![Action::Discard],
         )
-        .named(RuleName::new("Big")),
+        .named(RuleName::new("Big").unwrap()),
         MailRule::typed(
             Match::all(vec![Condition::Body(test(
                 TextOp::Contains,
@@ -118,10 +126,14 @@ fn the_plugin_s_rules_read_typed_and_what_the_dialect_does_not_write_is_carried_
     ];
     for (i, want) in expected.into_iter().enumerate() {
         assert_eq!(
-            rules[i],
-            want.with_origin(RuleOrigin::ScriptSegment(i + 1)),
+            rules[i].origin,
+            Some(RuleOrigin::ScriptSegment {
+                script: fingerprint_of(MANY),
+                index: i + 1
+            }),
             "rule {i}"
         );
+        assert_eq!(unplaced(rules[i].clone()), want, "rule {i}");
     }
     // `setflag` replaces flags and `keep` is no neutral action: both carried whole, named.
     assert!(is_opaque(&rules[4]) && is_opaque(&rules[5]));
@@ -157,7 +169,7 @@ fn quoting_and_text_blocks_read_as_the_values_the_plugin_was_given() {
             Match::all(vec![subject(TextOp::Contains, "say \"hi\" \\ there")]),
             vec![into("Odd \"folder\"")],
         )
-        .named(RuleName::new("Quote \"and\" back\\slash"))
+        .named(RuleName::new("Quote \"and\" back\\slash").unwrap())
     );
     assert!(is_opaque(&rules[1]), "reject is no neutral action");
     assert_eq!(
@@ -166,7 +178,7 @@ fn quoting_and_text_blocks_read_as_the_values_the_plugin_was_given() {
             Match::all(vec![subject(TextOp::Contains, "Größe")]),
             vec![into("Ärger")]
         )
-        .named(RuleName::new("Unicode é"))
+        .named(RuleName::new("Unicode é").unwrap())
     );
     let rules = read_rules(VACATION);
     assert!(is_opaque(&rules[0]) && !is_opaque(&rules[1]));
@@ -265,7 +277,7 @@ fn a_rule_s_name_is_its_last_name_line_and_a_rewrite_keeps_its_other_comments() 
     let script = "# rule:[Old]\r\n# kept: why this rule exists\r\n# rule:[Current]\r\nif true\r\n{\r\n\tdiscard;\r\n}\r\n";
     let mut rules = read_rules(script);
     assert_eq!(rules[0].name.as_ref().unwrap().as_str(), "Current");
-    rules[0].name = Some(RuleName::new("Renamed"));
+    rules[0].name = Some(RuleName::new("Renamed").unwrap());
     assert_eq!(
         write_rules(script, &rules).unwrap(),
         "# kept: why this rule exists\r\n# rule:[Renamed]\r\nif true\r\n{\r\n\tdiscard;\r\n}\r\n"
@@ -279,7 +291,10 @@ fn a_name_line_after_the_last_rule_names_no_rule_written_after_it() {
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].name, None);
     let mut more = rules.clone();
-    more.push(MailRule::typed(Match::default(), vec![Action::Discard]).named(RuleName::new("New")));
+    more.push(
+        MailRule::typed(Match::default(), vec![Action::Discard])
+            .named(RuleName::new("New").unwrap()),
+    );
     let written = write_rules(script, &more).unwrap();
     assert_eq!(
         written,
@@ -317,17 +332,27 @@ fn a_value_with_a_variable_where_variables_are_required_is_carried_whole() {
 
 #[test]
 fn what_the_writer_cannot_write_is_refused_by_index() {
+    let opaque = read_rules(MANY).remove(4);
+    let mut renamed = opaque.clone();
+    renamed.name = Some(RuleName::new("Renamed").unwrap());
+    renamed.origin = None;
+    let mut disabled = opaque.clone().disabled();
+    disabled.origin = None;
+    let unknown = MailRule::opaque(engine_core::rules::RawRule::new(
+        engine_core::rules::RuleSyntax::Sieve,
+        "keep;\r\n",
+    ));
     let unrenderable = [
+        renamed,
+        disabled,
+        unknown,
         MailRule::typed(
-            Match::all(vec![Condition::HasAttachment]),
-            vec![Action::Discard],
-        )
-        .named(RuleName::new("two\r\nlines")),
-        MailRule::typed(
-            Match::all(vec![Condition::Body(test(TextOp::Contains, &["a\r\nb"]))]),
-            vec![Action::Discard],
-        )
-        .disabled(),
+            Match::default(),
+            vec![Action::FileInto {
+                mailbox: RuleMailbox::Role(MailboxRole::Other("x".into())),
+                copy: false,
+            }],
+        ),
         MailRule::typed(
             Match::all(vec![subject(TextOp::Is, "bare\nline")]),
             vec![Action::Discard],

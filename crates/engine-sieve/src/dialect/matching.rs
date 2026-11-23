@@ -28,6 +28,7 @@ use crate::lex::TokenKind;
 /// A test as written, before it is read as a [`Match`].
 enum Test {
     True,
+    False,
     Not(Box<Test>),
     AllOf(Vec<Test>),
     AnyOf(Vec<Test>),
@@ -39,6 +40,19 @@ pub(super) fn read(cursor: &mut Cursor<'_, '_>) -> Option<Match> {
     to_match(test(cursor)?)
 }
 
+/// Reads an `if`'s test: whether the rule runs, and what it matches. A disabled rule whose test
+/// spans lines, which no `if false # …` comment can hold, is `allof (false, <test>)`.
+pub(super) fn read_rule_test(cursor: &mut Cursor<'_, '_>) -> Option<(bool, Match)> {
+    match test(cursor)? {
+        Test::AllOf(mut items)
+            if matches!(items.first(), Some(Test::False)) && items.len() == 2 =>
+        {
+            Some((false, to_match(items.pop()?)?))
+        }
+        test => Some((true, to_match(test)?)),
+    }
+}
+
 fn test(cursor: &mut Cursor<'_, '_>) -> Option<Test> {
     let name = cursor.next()?;
     if name.kind() != TokenKind::Identifier {
@@ -46,6 +60,7 @@ fn test(cursor: &mut Cursor<'_, '_>) -> Option<Test> {
     }
     match name.text().to_ascii_lowercase().as_str() {
         "true" => Some(Test::True),
+        "false" => Some(Test::False),
         "not" => Some(Test::Not(Box::new(test(cursor)?))),
         "allof" => Some(Test::AllOf(list(cursor)?)),
         "anyof" => Some(Test::AnyOf(list(cursor)?)),
@@ -69,6 +84,7 @@ fn list(cursor: &mut Cursor<'_, '_>) -> Option<Vec<Test>> {
 
 fn to_match(test: Test) -> Option<Match> {
     match test {
+        Test::False => None,
         Test::True => Some(Match::default()),
         Test::Basic(condition) => Some(Match::all(vec![condition])),
         Test::Not(inner) => Some(Match::all(Vec::new()).except(vec![basic(*inner)?])),
@@ -142,14 +158,9 @@ fn header(cursor: &mut Cursor<'_, '_>) -> Option<Condition> {
         return attachment.then_some(Condition::HasAttachment);
     }
     let [name] = <[String; 1]>::try_from(names).ok()?;
-    let field = if name.eq_ignore_ascii_case("subject") {
-        HeaderField::Subject
-    } else {
-        HeaderField::Named(name)
-    };
     Some(Condition::Header {
-        field,
-        test: TextTest::new(op.unwrap_or(TextOp::Is), keys),
+        field: HeaderField::named(name),
+        test: TextTest::new(op.unwrap_or(TextOp::Is), keys).ok()?,
     })
 }
 
@@ -190,7 +201,7 @@ fn address(cursor: &mut Cursor<'_, '_>) -> Option<Condition> {
     Some(Condition::Address {
         field,
         part: part.unwrap_or_default(),
-        test: TextTest::new(op.unwrap_or(TextOp::Is), keys),
+        test: TextTest::new(op.unwrap_or(TextOp::Is), keys).ok()?,
     })
 }
 
@@ -211,8 +222,7 @@ fn body(cursor: &mut Cursor<'_, '_>) -> Option<Condition> {
         }
     }
     let keys = cursor.strings()?;
-    Some(Condition::Body(TextTest::new(
-        op.unwrap_or(TextOp::Is),
-        keys,
-    )))
+    Some(Condition::Body(
+        TextTest::new(op.unwrap_or(TextOp::Is), keys).ok()?,
+    ))
 }

@@ -9,7 +9,7 @@ use crate::{
 };
 
 fn text(op: TextOp, value: &str) -> TextTest {
-    TextTest::new(op, vec![value.to_owned()])
+    TextTest::new(op, vec![value.to_owned()]).unwrap()
 }
 
 /// One rule of every kind, with a secret in every value a rule can carry.
@@ -32,18 +32,18 @@ fn secret_rule() -> MailRule {
         .except(vec![Condition::Size(SizeBound::Over(1))]),
         vec![
             Action::FileInto {
-                mailbox: RuleMailbox::Path(MailboxPath::new("secret-folder")),
+                mailbox: RuleMailbox::Path(MailboxPath::new("secret-folder").unwrap()),
                 copy: true,
             },
             Action::Redirect {
-                to: vec![RuleAddress::new("secret@example.com")],
+                to: vec![RuleAddress::new("secret@example.com").unwrap()],
                 copy: false,
             },
             Action::AddKeywords(keywords),
             Action::Native(NativeAction::new(NativeKind::Gmail, "{\"secret\":2}")),
         ],
     )
-    .named(RuleName::new("secret-name"))
+    .named(RuleName::new("secret-name").unwrap())
 }
 
 #[test]
@@ -65,13 +65,22 @@ fn debug_of_every_rule_part_shows_no_value() {
 #[test]
 fn builders_set_what_they_say() {
     let rule = MailRule::typed(Match::default(), vec![Action::Discard])
-        .named(RuleName::new("Spam"))
+        .named(RuleName::new("Spam").unwrap())
         .disabled()
         .stopping()
-        .with_origin(RuleOrigin::ScriptSegment(3));
+        .with_origin(RuleOrigin::ScriptSegment {
+            script: 7,
+            index: 3,
+        });
     assert_eq!(rule.name.as_ref().map(RuleName::as_str), Some("Spam"));
     assert!(!rule.enabled);
-    assert_eq!(rule.origin, Some(RuleOrigin::ScriptSegment(3)));
+    assert_eq!(
+        rule.origin,
+        Some(RuleOrigin::ScriptSegment {
+            script: 7,
+            index: 3
+        })
+    );
     let RuleBody::Typed(typed) = &rule.body else {
         panic!("typed")
     };
@@ -83,8 +92,11 @@ fn builders_set_what_they_say() {
     let opaque = MailRule::opaque(raw.clone()).stopping();
     assert_eq!(opaque.body, RuleBody::Opaque(raw.clone()));
     assert_eq!((raw.syntax(), raw.text()), (RuleSyntax::Sieve, "keep;"));
-    assert_eq!(MailboxPath::new("a").as_str(), "a");
-    assert_eq!(RuleAddress::new("b@example.com").as_str(), "b@example.com");
+    assert_eq!(MailboxPath::new("a").unwrap().as_str(), "a");
+    assert_eq!(
+        RuleAddress::new("b@example.com").unwrap().as_str(),
+        "b@example.com"
+    );
     let _ = (
         RuleMailbox::Role(MailboxRole::Trash),
         RuleMailbox::Id(MailboxId::try_from("m1").unwrap()),
@@ -99,7 +111,7 @@ fn a_vocabulary_answers_what_it_was_given() {
         .with_exact([RuleFeature::FileInto, RuleFeature::Stop])
         .with(RuleFeature::Forward, Support::Approximated)
         .with_max_redirects(1)
-        .with_opaque(RuleSyntax::Sieve)
+        .with_opaque(RuleSyntax::Sieve, ["fileinto".to_owned()])
         .with_native(NativeKind::Graph);
     assert_eq!(
         vocabulary.support(RuleFeature::FileInto),
@@ -111,7 +123,13 @@ fn a_vocabulary_answers_what_it_was_given() {
     );
     assert_eq!(vocabulary.support(RuleFeature::Discard), None);
     assert_eq!(vocabulary.max_redirects(), Some(1));
-    assert!(vocabulary.stores_opaque(RuleSyntax::Sieve));
+    let raw = RawRule::new(RuleSyntax::Sieve, "keep;");
+    assert!(
+        !vocabulary.stores_opaque(&raw),
+        "what it requires is not known"
+    );
+    assert!(vocabulary.stores_opaque(&raw.clone().requiring(["fileinto".to_owned()])));
+    assert!(!vocabulary.stores_opaque(&raw.requiring(["regex".to_owned()])));
     assert!(vocabulary.stores_native(NativeKind::Graph));
     assert!(!vocabulary.stores_native(NativeKind::Gmail));
     assert_eq!(RuleVocabulary::new().max_redirects(), None);
@@ -134,10 +152,44 @@ fn debug_of_each_action_names_it_and_counts_its_values() {
         [
             Action::Discard,
             Action::Forward {
-                to: vec![RuleAddress::new("secret@example.com")],
+                to: vec![RuleAddress::new("secret@example.com").unwrap()],
             },
             Action::MarkImportance(Importance::High),
         ]
     );
     assert_eq!(shown, "[Discard, Forward { to: 1 }, MarkImportance(High)]");
+}
+
+#[test]
+fn a_rule_value_is_never_empty_and_never_spans_lines() {
+    assert_eq!(RuleName::new(""), Err(RuleValueError::Empty));
+    for bad in ["a\nb", "a\rb", "a\0b"] {
+        assert_eq!(RuleName::new(bad), Err(RuleValueError::LineBreak));
+        assert_eq!(MailboxPath::new(bad), Err(RuleValueError::LineBreak));
+        assert_eq!(RuleAddress::new(bad), Err(RuleValueError::LineBreak));
+    }
+    assert_eq!(
+        TextTest::new(TextOp::Is, Vec::new()).unwrap_err(),
+        RuleValueError::Empty
+    );
+    let test = TextTest::new(TextOp::Regex, vec!["a".to_owned()]).unwrap();
+    assert_eq!(
+        (test.op(), test.values()),
+        (TextOp::Regex, &["a".to_owned()][..])
+    );
+    assert!(RuleValueError::Empty.to_string().contains("empty"));
+    assert!(RuleValueError::LineBreak.to_string().contains("line break"));
+}
+
+#[test]
+fn a_named_header_shows_its_length_not_its_name() {
+    let debug = format!("{:?}", HeaderField::Named("X-Secret".to_owned()));
+    assert_eq!(debug, "Named { len: 8 }");
+    assert_eq!(format!("{:?}", HeaderField::Subject), "Subject");
+    assert!(HeaderField::Named("sUbJeCt".to_owned()).is_subject());
+    let raw = format!(
+        "{:?}",
+        RawRule::new(RuleSyntax::Sieve, "secret").named(RuleName::new("secret").unwrap())
+    );
+    assert!(!raw.contains("secret"), "{raw}");
 }

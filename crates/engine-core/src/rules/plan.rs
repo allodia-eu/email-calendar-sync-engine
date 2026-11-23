@@ -1,8 +1,8 @@
 //! What a target keeps of a rule set, decided before anything is sent.
 
 use super::{
-    Action, Condition, HeaderField, MailRule, MatchMode, RuleBody, RuleFeature, RuleMailbox,
-    RuleVocabulary, Support, TypedRule,
+    Action, Condition, MailRule, MatchMode, RuleBody, RuleFeature, RuleMailbox, RuleVocabulary,
+    Support, TypedRule,
 };
 use crate::mail::{Keyword, MailboxRole, SystemKeyword};
 
@@ -39,10 +39,32 @@ pub enum ForwardingRules {
 #[must_use = "a plan says which rules the target would lose"]
 pub struct RulesPlan {
     /// The rules as they will be written, in order: each kept rule reduced to what the target
-    /// holds. A rule [`NotKept`](Kept::NotKept) is not among them.
-    pub rules: Vec<MailRule>,
+    /// holds, with its index in the rules handed in. A rule [`NotKept`](Kept::NotKept) is not
+    /// among them.
+    pub rules: Vec<PlannedRule>,
     /// One outcome per rule handed in, in the same order.
     pub outcomes: Vec<RuleOutcome>,
+}
+
+/// One rule as it will be written, and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PlannedRule {
+    /// The rule's index in the rules handed in.
+    pub source: usize,
+    /// The rule as it will be written.
+    pub rule: MailRule,
+}
+
+impl RulesPlan {
+    /// The rules as they will be written, without their sources: what a writer takes.
+    #[must_use]
+    pub fn written(&self) -> Vec<MailRule> {
+        self.rules
+            .iter()
+            .map(|planned| planned.rule.clone())
+            .collect()
+    }
 }
 
 /// What became of one rule.
@@ -65,7 +87,8 @@ pub enum Kept {
     Whole,
     /// Without an action, its stop, its name or its order: it does less, never more.
     Reduced,
-    /// All of it, stored disabled for review (an imported forwarding rule).
+    /// Stored disabled for review: an imported rule that sends mail out of the account. What
+    /// else it lost is in its [`losses`](RuleOutcome::losses), as for any rule.
     Disabled,
     /// None of it: what was lost would have widened what it matches, or left it nothing to do.
     NotKept,
@@ -142,6 +165,16 @@ pub enum LossReason {
 ///   ([`Kept::Disabled`]) unless the import says [`ForwardingRules::Enabled`], and not kept where
 ///   the target cannot store a disabled rule. A user's own edit ([`PlanMode::Edit`]) is written as
 ///   given.
+///
+/// A rule carried whole keeps its text, so it keeps the name its text holds and stays enabled:
+/// renaming it is a lost name, and disabling it is not expressible. It goes only to a target that
+/// speaks its language and lists every extension it requires; and an import that arms no
+/// forwarding rule does not carry one that may send mail, since its text cannot be disabled.
+///
+/// The redirect limit ([`RuleVocabulary::max_redirects`]) is checked per rule, over all its
+/// actions' addresses. It bounds one message's delivery, so two rules that each fit can together
+/// exceed it for a message both match; the plan cannot see that, and the server enforces it when
+/// the message arrives.
 pub fn plan_rules(rules: &[MailRule], target: &RuleVocabulary, mode: PlanMode) -> RulesPlan {
     let ordered = rules.len() > 1;
     let mut plan = RulesPlan {
@@ -152,7 +185,10 @@ pub fn plan_rules(rules: &[MailRule], target: &RuleVocabulary, mode: PlanMode) -
         let mut planned = Planned::default();
         let written = planned.rule(rule, target, mode, ordered);
         if !planned.fatal {
-            plan.rules.push(written);
+            plan.rules.push(PlannedRule {
+                source,
+                rule: written,
+            });
         }
         plan.outcomes.push(planned.outcome(source));
     }
@@ -213,8 +249,17 @@ impl Planned {
         let mut written = rule.clone();
         match &mut written.body {
             RuleBody::Opaque(raw) => {
-                if !target.stores_opaque(raw.syntax()) {
+                if !target.stores_opaque(raw) {
                     self.lose(RulePart::Rule, LossReason::OpaqueSource);
+                    self.fatal = true;
+                }
+                // Its text holds its name and runs it: neither can change while it is carried.
+                if written.name.as_ref() != raw.name() {
+                    self.lose(RulePart::Name, LossReason::NotExpressible);
+                    written.name = raw.name().cloned();
+                }
+                if !written.enabled {
+                    self.lose(RulePart::Enabled, LossReason::NotExpressible);
                     self.fatal = true;
                 }
             }
@@ -228,18 +273,25 @@ impl Planned {
         if ordered {
             self.optional(RulePart::Order, target.support(RuleFeature::Order));
         }
-        if !written.enabled {
+        if !written.enabled && matches!(written.body, RuleBody::Typed(_)) {
             self.require(RulePart::Enabled, target.support(RuleFeature::Disabled));
+        }
+        let arming = mode
+            == (PlanMode::Import {
+                forwarding: ForwardingRules::Disabled,
+            });
+        if arming
+            && written.enabled
+            && matches!(&written.body, RuleBody::Opaque(raw) if raw.sends_mail())
+        {
+            // Text that may send mail cannot be stored disabled: an import that arms no
+            // forwarding rule does not carry it at all.
+            self.lose(RulePart::Rule, LossReason::ForwardNotAllowed);
+            self.fatal = true;
         }
         let forwards =
             matches!(&written.body, RuleBody::Typed(typed) if typed.actions.iter().any(sends_out));
-        if written.enabled
-            && forwards
-            && mode
-                == (PlanMode::Import {
-                    forwarding: ForwardingRules::Disabled,
-                })
-        {
+        if written.enabled && forwards && arming {
             if target.support(RuleFeature::Disabled).is_some() {
                 written.enabled = false;
                 self.disabled_for_review = true;
@@ -260,23 +312,29 @@ impl Planned {
             self.require(RulePart::Condition(i), condition_support(condition, target));
         }
         for (i, exception) in when.except.iter().enumerate() {
-            let support = target
-                .support(RuleFeature::Except)
-                .and(condition_support(exception, target));
+            let support = both(
+                target.support(RuleFeature::Except),
+                condition_support(exception, target),
+            );
             self.require(RulePart::Exception(i), support);
         }
         let had_actions = !rule.actions.is_empty();
         let mut kept = Vec::with_capacity(rule.actions.len());
+        // The redirect limit bounds one message's delivery, so the addresses of every action of
+        // the rule count against it together, kept in order while they fit.
+        let mut redirects = 0;
         for (i, action) in rule.actions.iter().enumerate() {
-            let too_many = match action {
-                Action::Redirect { to, .. } | Action::Forward { to } => {
-                    target.max_redirects().is_some_and(|max| to.len() > max)
-                }
-                _ => false,
+            let addresses = match action {
+                Action::Redirect { to, .. } | Action::Forward { to } => to.len(),
+                _ => 0,
             };
-            if too_many {
+            if target
+                .max_redirects()
+                .is_some_and(|max| redirects + addresses > max)
+            {
                 self.lose(RulePart::Action(i), LossReason::ForwardNotAllowed);
             } else if self.optional(RulePart::Action(i), action_support(action, target)) {
+                redirects += addresses;
                 kept.push(action.clone());
             }
         }
@@ -286,6 +344,10 @@ impl Planned {
         rule.actions = kept;
         if rule.stop && !self.optional(RulePart::Stop, target.support(RuleFeature::Stop)) {
             rule.stop = false;
+            // A rule whose one effect was to stop the rules after it does nothing without it.
+            if rule.actions.is_empty() {
+                self.fatal = true;
+            }
         }
     }
 
@@ -313,7 +375,19 @@ impl Planned {
 
 /// Whether `action` sends mail out of the account.
 fn sends_out(action: &Action) -> bool {
-    matches!(action, Action::Redirect { .. } | Action::Forward { .. })
+    match action {
+        Action::Redirect { .. } | Action::Forward { .. } => true,
+        Action::Native(native) => native.sends_mail,
+        _ => false,
+    }
+}
+
+/// The worse of two supports: missing wins, then approximated.
+fn both(a: Option<Support>, b: Option<Support>) -> Option<Support> {
+    match (a?, b?) {
+        (Support::Exact, Support::Exact) => Some(Support::Exact),
+        _ => Some(Support::Approximated),
+    }
 }
 
 /// The worst support among `features`: missing wins, then approximated.
@@ -332,12 +406,12 @@ fn worst(target: &RuleVocabulary, features: &[RuleFeature]) -> Option<Support> {
 fn condition_support(condition: &Condition, target: &RuleVocabulary) -> Option<Support> {
     use super::AddressPart;
     match condition {
-        Condition::Header { field, test } => match field {
-            HeaderField::Subject => worst(target, &[RuleFeature::SubjectText(test.op)]),
-            HeaderField::Named(_) => worst(target, &[RuleFeature::HeaderText(test.op)]),
-        },
+        Condition::Header { field, test } if field.is_subject() => {
+            worst(target, &[RuleFeature::SubjectText(test.op())])
+        }
+        Condition::Header { test, .. } => worst(target, &[RuleFeature::HeaderText(test.op())]),
         Condition::Address { part, test, .. } => {
-            let text = RuleFeature::AddressText(test.op);
+            let text = RuleFeature::AddressText(test.op());
             match part {
                 AddressPart::All => worst(target, &[text]),
                 AddressPart::LocalPart => worst(target, &[text, RuleFeature::AddressLocalPart]),
@@ -345,7 +419,7 @@ fn condition_support(condition: &Condition, target: &RuleVocabulary) -> Option<S
             }
         }
         Condition::SentToMe(_) => worst(target, &[RuleFeature::SentToMe]),
-        Condition::Body(test) => worst(target, &[RuleFeature::Body(test.op)]),
+        Condition::Body(test) => worst(target, &[RuleFeature::Body(test.op())]),
         Condition::Size(super::SizeBound::Over(_)) => worst(target, &[RuleFeature::SizeOver]),
         Condition::Size(super::SizeBound::Under(_)) => worst(target, &[RuleFeature::SizeUnder]),
         Condition::HasAttachment => worst(target, &[RuleFeature::HasAttachment]),
@@ -363,6 +437,8 @@ fn action_support(action: &Action, target: &RuleVocabulary) -> Option<Support> {
                 RuleMailbox::Role(MailboxRole::Inbox) | RuleMailbox::Path(_) => {
                     RuleFeature::FileInto
                 }
+                // A role no transport names has no folder to file into.
+                RuleMailbox::Role(MailboxRole::Other(_)) => return None,
                 RuleMailbox::Role(_) => RuleFeature::FileIntoRole,
                 RuleMailbox::Id(_) => RuleFeature::FileIntoId,
             };
@@ -373,6 +449,9 @@ fn action_support(action: &Action, target: &RuleVocabulary) -> Option<Support> {
             }
         }
         Action::Discard => worst(target, &[RuleFeature::Discard]),
+        // Sending on to nobody, or adding no keyword, is no action any transport writes.
+        Action::Redirect { to, .. } | Action::Forward { to } if to.is_empty() => None,
+        Action::AddKeywords(keywords) if keywords.is_empty() => None,
         Action::Redirect { copy: false, .. } => worst(target, &[RuleFeature::Redirect]),
         Action::Redirect { copy: true, .. } => {
             worst(target, &[RuleFeature::Redirect, RuleFeature::RedirectCopy])

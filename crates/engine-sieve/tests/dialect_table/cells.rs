@@ -13,7 +13,7 @@ use engine_core::{
 };
 
 fn text(op: TextOp) -> TextTest {
-    TextTest::new(op, vec!["value".to_owned()])
+    TextTest::new(op, vec!["value".to_owned()]).unwrap()
 }
 
 fn when(condition: Condition) -> MailRule {
@@ -26,7 +26,7 @@ fn doing(action: Action) -> MailRule {
 
 fn to(count: usize) -> Vec<RuleAddress> {
     (0..count)
-        .map(|i| RuleAddress::new(format!("to{i}@example.com")))
+        .map(|i| RuleAddress::new(format!("to{i}@example.com")).unwrap())
         .collect()
 }
 
@@ -238,7 +238,7 @@ pub(crate) fn table() -> Vec<Cell> {
         cell(
             "file into a path",
             doing(Action::FileInto {
-                mailbox: RuleMailbox::Path(MailboxPath::new("Board")),
+                mailbox: RuleMailbox::Path(MailboxPath::new("Board").unwrap()),
                 copy: false,
             }),
             Whole,
@@ -247,7 +247,7 @@ pub(crate) fn table() -> Vec<Cell> {
         cell(
             "file a copy",
             doing(Action::FileInto {
-                mailbox: RuleMailbox::Path(MailboxPath::new("Board")),
+                mailbox: RuleMailbox::Path(MailboxPath::new("Board").unwrap()),
                 copy: true,
             }),
             Whole,
@@ -347,7 +347,7 @@ pub(crate) fn table() -> Vec<Cell> {
         cell("disabled", doing(Action::Discard).disabled(), Whole, Whole),
         cell(
             "named",
-            doing(Action::Discard).named(RuleName::new("A name")),
+            doing(Action::Discard).named(RuleName::new("A name").unwrap()),
             Whole,
             Whole,
         ),

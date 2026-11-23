@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use engine_core::{
     ids::MailboxId,
-    mail::{Importance, Keyword, MailboxRole},
+    mail::{Importance, Keyword, MailboxRole, SystemKeyword},
     rules::{Action, MailboxPath, RuleAddress, RuleMailbox},
 };
 
@@ -18,10 +18,16 @@ use super::cursor::Cursor;
 use crate::lex::TokenKind;
 
 /// Reads a `{ … }` block: its actions, and whether it ends in `stop`.
+///
+/// Only the order the writer writes reads typed: what marks the message (`addflag`,
+/// `addheader`) before what delivers it (`fileinto`, `redirect`, `discard`). A flag set after a
+/// `fileinto` does not reach the copy already filed (RFC 5232 §3), so a block in another order
+/// means something the typed rule, whose action order the writer does not keep, cannot say.
 pub(super) fn read(cursor: &mut Cursor<'_, '_>) -> Option<(Vec<Action>, bool)> {
     cursor.eat(TokenKind::LeftBrace)?;
     let mut actions: Vec<Action> = Vec::new();
     let mut stop = false;
+    let mut delivered = false;
     while cursor.eat(TokenKind::RightBrace).is_none() {
         if stop {
             // Nothing the dialect writes follows a stop.
@@ -31,11 +37,17 @@ pub(super) fn read(cursor: &mut Cursor<'_, '_>) -> Option<(Vec<Action>, bool)> {
         if name.kind() != TokenKind::Identifier {
             return None;
         }
-        match name.text().to_ascii_lowercase().as_str() {
+        let name = name.text().to_ascii_lowercase();
+        let marks = matches!(name.as_str(), "addflag" | "addheader");
+        if marks && delivered {
+            return None;
+        }
+        delivered |= matches!(name.as_str(), "fileinto" | "redirect" | "discard");
+        match name.as_str() {
             "fileinto" => actions.push(fileinto(cursor)?),
             "redirect" => {
                 let copy = flags(cursor, &["copy"])?.contains("copy");
-                let to = RuleAddress::new(cursor.string()?);
+                let to = RuleAddress::new(cursor.string()?).ok()?;
                 match actions.last_mut() {
                     Some(Action::Redirect {
                         to: list,
@@ -51,7 +63,7 @@ pub(super) fn read(cursor: &mut Cursor<'_, '_>) -> Option<(Vec<Action>, bool)> {
                 let keywords = cursor
                     .strings()?
                     .iter()
-                    .map(|flag| Keyword::from_flag(flag))
+                    .map(|flag| keyword(flag))
                     .collect::<Option<BTreeSet<Keyword>>>()?;
                 match actions.last_mut() {
                     Some(Action::AddKeywords(set)) => set.extend(keywords),
@@ -74,6 +86,24 @@ pub(super) fn read(cursor: &mut Cursor<'_, '_>) -> Option<(Vec<Action>, bool)> {
         cursor.eat(TokenKind::Semicolon)?;
     }
     Some((actions, stop))
+}
+
+/// The keyword a flag the writer writes stands for. A system keyword spelled with `$`
+/// (`$seen`) is an IMAP keyword of that name, not the `\\Seen` flag the writer writes for it, so
+/// it is no flag the dialect reads.
+fn keyword(flag: &str) -> Option<Keyword> {
+    let keyword = Keyword::from_flag(flag)?;
+    let spelled_as_keyword = flag.starts_with('$')
+        && matches!(
+            keyword.as_system(),
+            Some(
+                SystemKeyword::Seen
+                    | SystemKeyword::Flagged
+                    | SystemKeyword::Answered
+                    | SystemKeyword::Draft
+            )
+        );
+    (!spelled_as_keyword).then_some(keyword)
 }
 
 /// The tags before a command's positional arguments, each one of `allowed`; `None` for any
@@ -101,16 +131,22 @@ fn fileinto(cursor: &mut Cursor<'_, '_>) -> Option<Action> {
         }
     }
     let path = cursor.string()?;
+    // A role or an id falls back to a named folder where no folder has it (RFC 8579, RFC 9042).
+    // Only the fallback the writer writes reads typed (`super::render`), since a rewrite writes
+    // that one, and another would change where such a message lands.
     let mailbox = match (role, id) {
         (Some(attribute), None) => match MailboxRole::from_imap_special_use(&attribute) {
             MailboxRole::Other(_) => return None,
-            role => RuleMailbox::Role(role),
+            role if attribute.get(1..) == Some(path.as_str()) => RuleMailbox::Role(role),
+            _ => return None,
         },
-        (None, Some(id)) => RuleMailbox::Id(MailboxId::try_from(id.as_str()).ok()?),
+        (None, Some(id)) if path == super::render::ID_FALLBACK => {
+            RuleMailbox::Id(MailboxId::try_from(id.as_str()).ok()?)
+        }
         // RFC 5228 §4.1: `INBOX` names the inbox, in any case.
         (None, None) if path.eq_ignore_ascii_case("inbox") => RuleMailbox::Role(MailboxRole::Inbox),
-        (None, None) => RuleMailbox::Path(MailboxPath::new(path)),
-        (Some(_), Some(_)) => return None,
+        (None, None) => RuleMailbox::Path(MailboxPath::new(path).ok()?),
+        _ => return None,
     };
     Some(Action::FileInto { mailbox, copy })
 }

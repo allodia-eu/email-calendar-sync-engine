@@ -26,7 +26,7 @@ fn typed(script: &str) -> (Match, Vec<Action>, bool) {
 fn subject(op: TextOp, value: &str) -> Condition {
     Condition::Header {
         field: HeaderField::Subject,
-        test: TextTest::new(op, vec![value.to_owned()]),
+        test: TextTest::new(op, vec![value.to_owned()]).unwrap(),
     }
 }
 
@@ -92,8 +92,8 @@ fn forms_roundcube_does_not_write_but_mean_the_same_read_typed() {
         actions,
         [Action::Redirect {
             to: vec![
-                RuleAddress::new("a@example.com"),
-                RuleAddress::new("b@example.com")
+                RuleAddress::new("a@example.com").unwrap(),
+                RuleAddress::new("b@example.com").unwrap()
             ],
             copy: false,
         }]
@@ -114,10 +114,9 @@ fn forms_roundcube_does_not_write_but_mean_the_same_read_typed() {
     let (when, ..) = typed("if body :contains \"x\" { discard; }");
     assert_eq!(
         when.conditions,
-        [Condition::Body(TextTest::new(
-            TextOp::Contains,
-            vec!["x".to_owned()]
-        ))]
+        [Condition::Body(
+            TextTest::new(TextOp::Contains, vec!["x".to_owned()]).unwrap()
+        )]
     );
     let (when, ..) = typed("if size :under 1k { discard; }");
     assert_eq!(when.conditions, [Condition::Size(SizeBound::Under(1024))]);
@@ -159,7 +158,7 @@ fn a_rule_needing_an_extension_over_a_script_with_no_require_gets_one_first() {
     rules.push(MailRule::typed(
         Match::default(),
         vec![Action::FileInto {
-            mailbox: RuleMailbox::Path(MailboxPath::new("x")),
+            mailbox: RuleMailbox::Path(MailboxPath::new("x").unwrap()),
             copy: false,
         }],
     ));

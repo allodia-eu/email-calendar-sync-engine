@@ -131,7 +131,7 @@ fn every_rule_a_server_keeps_is_written_and_reads_back_as_it_was() {
             continue;
         }
         let script =
-            write_rules("", &plan.rules).unwrap_or_else(|err| panic!("{}: {err}", row.what));
+            write_rules("", &plan.written()).unwrap_or_else(|err| panic!("{}: {err}", row.what));
         let read = read_rules(&script);
         assert_eq!(read.len(), 1, "{}: {script:?}", row.what);
         let mut back = read[0].clone();
@@ -157,7 +157,7 @@ fn every_extension_the_writer_uses_is_one_the_server_lists() {
     ] {
         for row in table() {
             let plan = plan_rules(std::slice::from_ref(&row.rule), &vocabulary, PlanMode::Edit);
-            let script = write_rules("", &plan.rules).unwrap();
+            let script = write_rules("", &plan.written()).unwrap();
             let required =
                 engine_sieve::require::required(&engine_sieve::segment(&script).unwrap()).unwrap();
             for extension in required {
