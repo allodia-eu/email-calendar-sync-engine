@@ -60,18 +60,27 @@ If product pressure changes the order, the domain model tests still need JMAP an
   reads, groups, photos, and contact-write guard strength independently. JMAP and
   Graph are `WriteGuard::Absent`; Google and CardDAV are
   `WriteGuard::Enforced`.
-- **A new optional verb goes on `Provider` with a rejecting default, never on its own
-  sub-trait.** The default is what makes it optional: an adapter that cannot do it
-  implements nothing and says nothing, and `Capabilities` gates the caller before it
-  asks. A sub-trait is for a distinct data domain with its own methods — the
-  `ContactsProvider` above is the one that earns it, and its ten methods are why.
+- **A new capability is its own trait, reached through an accessor on `Provider` that
+  defaults to `None`** (`north-star.md`, Key Decisions). `Provider::mail_importer() ->
+  Option<&dyn MailImporter>` is the first: an adapter that implements the trait answers
+  `Some(self)`, one that cannot implements nothing and answers `None`, and the answer is
+  both the capability check and the means to act on it, so no flag in `Capabilities` has to
+  agree with a method that rejects. `Box<dyn Provider>` delegates every accessor, so a host
+  holding the box reaches the capability without knowing the adapter.
 
-  A one-method sub-trait costs what a rejecting default does not, and the cost lands
-  outside this repo. Rust will not upcast `dyn Provider` to `dyn Sub`, so a host that
-  wants the verb has to widen its trait object where the box is *built* and then through
-  every signature naming the bound. Measured on one host when `report_message` moved off
-  such a sub-trait onto `Provider`: 97 changed files became 36, with no behaviour
-  difference. Ask which half of that a new verb is before adding the trait.
+  The accessor is what makes a sub-trait affordable. A bare sub-trait costs a host what a
+  rejecting default does not: Rust will not upcast `dyn Provider` to `dyn Sub`, so a host
+  that wants the verb has to widen its trait object where the box is *built* and then
+  through every signature naming the bound. Measured on one host when `report_message`
+  moved off such a sub-trait onto `Provider`: 97 changed files became 36, with no behaviour
+  difference. An accessor removes that cost, because the capability is reached *through*
+  `dyn Provider` rather than by casting it. So a sub-trait without an accessor is still
+  wrong.
+
+  The verbs that predate this keep their rejecting defaults and `Capabilities` gates until
+  the planned capability-trait split moves them, as one migration with a guide per host
+  kind (`north-star.md`, "Direction"). Do not move one ahead of that piecemeal.
+  `ContactsProvider` stays the data-domain contract it is.
 
   **A *super*trait is a different thing and does not carry that cost.** `CalendarWrites`
   holds the five calendar verbs and the read of the addresses they schedule as,
