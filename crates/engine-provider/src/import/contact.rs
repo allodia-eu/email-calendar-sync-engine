@@ -4,7 +4,8 @@
 //! It is the calendar half's shape, for the same reasons (the `calendar` module): a card names
 //! itself by its `UID`, so one the book holds is [already there](ImportedContact::already_there);
 //! its state is all inside the vCard, so there is no `kept` until a target that keeps less of it
-//! (Graph, Google People, or E9's converter) is built. What a card adds is its **version**: an
+//! (Graph, Google People, or a vCard writer that converts between versions, not yet in the
+//! engine) is built. What a card adds is its **version**: an
 //! address book names the vCard versions it takes, and a card in another is refused rather than
 //! converted, since converting is a writer's job, not an import's.
 

@@ -279,7 +279,7 @@ it. An adapter that can import implements the trait; there is no capability flag
 - **Cards: `ContactImporter`**, the calendar half's shape for the same reasons. What a card
   adds is its vCard version: `ContactImportLimits` names the versions a book takes
   (`engine_core::contact::VcardVersion`), and `check` refuses a card in another rather than
-  converting it, since converting is a writer's job (E9). Reached through
+  converting it, since converting is the job of a vCard writer that converts between versions (not yet in the engine). Reached through
   `Provider::contact_importer`. CardDAV implements it (`contacts.md` → "CardDAV").
 - **Creating a container is not import.** `CalendarCollections::create_calendar` (outside the
   `import` feature, reached through `Provider::calendar_collections`) makes a new calendar from a

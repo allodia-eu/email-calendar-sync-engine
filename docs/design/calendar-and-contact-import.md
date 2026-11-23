@@ -244,7 +244,8 @@ lookup and a collection's properties answer), with what a card changes:
 
 - The card is stored byte for byte: a vCard schedules nothing.
 - The book's limits add its vCard versions (`supported-address-data`); a card in another, or one
-  stating none, is `item_unavailable` before anything is sent. Converting is E9's.
+  stating none, is `item_unavailable` before anything is sent. Converting is the job of
+  a vCard writer that converts between versions (not yet in the engine).
 - The lookup is `addressbook-query` with `match-type="equals"`, its answer still checked. Both
   harness servers refuse a second `UID` themselves, so on them the lookup only saves a `PUT`; it
   is there for a server that does not (as SabreDAV's backend does not for events), which the

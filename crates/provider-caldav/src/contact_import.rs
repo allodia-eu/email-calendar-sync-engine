@@ -4,8 +4,8 @@
 //!
 //! - **The card is stored as it is.** A vCard schedules nothing, so there is nothing to suppress,
 //!   and its version is the source's: a book that does not name it in `supported-address-data`
-//!   refuses it before anything is sent ([`ContactImportLimits::check`]); converting is E9's
-//!   writer, not an import.
+//!   refuses it before anything is sent ([`ContactImportLimits::check`]); converting is the job of
+//!   a vCard writer that converts between versions (not yet in the engine), not an import.
 //! - **The `UID` is looked up with `addressbook-query`**, `match-type="equals"` (RFC 6352 §10.5.4),
 //!   and the answer still checked, before the `PUT`. Stalwart and Nextcloud refuse a second card
 //!   with a `UID` and name the first (`403` and `409` `no-uid-conflict`), which reads the same as
