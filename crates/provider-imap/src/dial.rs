@@ -10,7 +10,7 @@
 
 use std::future::Future;
 
-use engine_provider::{ConnectObserver, ConnectStep, TlsVersion};
+use engine_provider::{ConnectObserver, ConnectStep, Credential, CredentialProtocol, TlsVersion};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
@@ -19,15 +19,15 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 
 use crate::{
     config::{ImapConfig, ImapSecurity},
-    credentials::{Credentials, with_renewal},
+    credentials::{SignIn, sign_in, with_credential},
     deadline,
     error::{ImapError, ImapResult},
     tls_info,
     transport::Connection,
 };
 
-/// Opens a TCP + TLS connection (implicit or `STARTTLS`), authenticates with the config's
-/// [`Credentials`], and negotiates capabilities (ENABLE QRESYNC + record IDLE): the one
+/// Opens a TCP + TLS connection (implicit or `STARTTLS`), authenticates with a credential from
+/// the config's source, and negotiates capabilities (ENABLE QRESYNC + record IDLE): the one
 /// dial behind [`ImapAccount::connect`](crate::ImapAccount::connect) and every connection
 /// the account's pool opens after it, so the first connection and the hundredth are made
 /// the same way and present the same credential.
@@ -39,7 +39,8 @@ use crate::{
 /// # Errors
 ///
 /// [`ImapError`] on a TCP/TLS/authentication failure or a bad server name, or
-/// [`ImapError::Credential`] when the config's source has no credential to give.
+/// [`ImapError::Credential`] when the config's source does not permit the server, has no
+/// credential to give, or gives none within the dial deadline.
 pub(crate) async fn connect_session(
     config: &ImapConfig,
     connector: &TlsConnector,
@@ -56,9 +57,11 @@ pub(crate) async fn connect_session(
 }
 
 /// The authenticated half of a dial over whatever `open` connects: asks the config's
-/// [`CredentialSource`](crate::CredentialSource) for a credential, and when the server
-/// refuses it and the source renews it, opens a **fresh** connection and presents the
-/// renewal. One re-dial at most, and none for a password, whose source never renews.
+/// [`CredentialSource`](crate::CredentialSource) for a credential to present over IMAP to the
+/// config's [origin](ImapConfig::origin), and when the server refuses it and the source has a
+/// replacement, opens a **fresh** connection and presents that. One re-dial at most, and none
+/// for a fixed password, whose source never replaces. A credential IMAP cannot present opens
+/// no connection at all.
 ///
 /// A new connection rather than a second `AUTHENTICATE` on the refused one, because a
 /// server may close a connection after a failed sign-in, and one that does not has still
@@ -78,11 +81,13 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = ImapResult<(Connection<S>, Option<TlsVersion>)>>,
 {
-    with_renewal(config.credentials.as_ref(), |credentials| {
-        let opening = open();
+    let origin = config.origin();
+    let source = config.credentials.as_ref();
+    with_credential(source, CredentialProtocol::Imap, &origin, |credential| {
+        let opening = sign_in(&credential).map(|_| open());
         async move {
-            let (connection, tls_version) = opening.await?;
-            let connection = finish_session(connection, tls_version, config, &credentials).await?;
+            let (connection, tls_version) = opening?.await?;
+            let connection = finish_session(connection, tls_version, config, &credential).await?;
             Ok((connection, tls_version))
         }
     })
@@ -136,7 +141,7 @@ pub(crate) async fn open_secured(
     Ok((connection, tls_version))
 }
 
-/// Authenticates with `credentials` and negotiates the dialect over an already-greeted
+/// Authenticates with `credential` and negotiates the dialect over an already-greeted
 /// `connection`, reporting [`ConnectStep::TlsEstablished`] (when the handshake agreed a version),
 /// then [`ConnectStep::Authenticated`], then [`ConnectStep::Negotiated`] to the config's
 /// observer.
@@ -153,7 +158,7 @@ pub(crate) async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     mut connection: Connection<S>,
     tls_version: Option<TlsVersion>,
     config: &ImapConfig,
-    credentials: &Credentials,
+    credential: &Credential,
 ) -> Result<Connection<S>, ImapError> {
     let observer: &dyn ConnectObserver = config.connect_observer();
     if let Some(version) = tls_version {
@@ -162,19 +167,16 @@ pub(crate) async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     // A password logs in; an access token goes over SASL, with the mechanism chosen
     // from what this server advertises (`crate::sasl`). Either way the next line is the
     // same: the observer is told the session is authenticated, not *how*.
-    match credentials {
-        Credentials::Password { username, password } => {
+    match sign_in(credential)? {
+        SignIn::Password { username, password } => {
             connection.login(username, password).await?;
         }
-        Credentials::OAuth2 {
-            username,
-            access_token,
-        } => {
+        SignIn::Token { username, token } => {
             // `server_name` (not the dial `addr`) is the host an `OAUTHBEARER` response
             // names: it is the server's own name, which is what a loopback-mapped
             // fixture and a real deployment agree on.
             connection
-                .authenticate_oauth2(username, access_token, &config.server_name, config.port())
+                .authenticate_oauth2(username, token, &config.server_name, config.port())
                 .await?;
         }
     }
@@ -198,3 +200,7 @@ mod tests;
 #[cfg(test)]
 #[path = "dial_renewal_tests.rs"]
 mod renewal_tests;
+
+#[cfg(test)]
+#[path = "dial_credential_tests.rs"]
+mod credential_tests;

@@ -38,9 +38,9 @@ use engine_core::{
     mail::{EmailAddress, Message},
     sync::{SyncState, SyncUpdate, SyncWindow},
 };
-use engine_provider::{Draft, PassMode, Provider};
+use engine_provider::{Credential, Draft, PassMode, Provider};
 use futures_util::StreamExt as _;
-use provider_imap::{Credentials, ImapAccount, ImapConfig};
+use provider_imap::{ImapAccount, ImapConfig};
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
@@ -57,15 +57,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // An access token takes precedence, so switching an account to OAuth is one env var
     // rather than an edit here.
     let credentials = match (env::var("IMAP_TOKEN"), env::var("IMAP_PASS")) {
-        (Ok(token), _) => Credentials::oauth2(user.clone(), token),
-        (Err(_), Ok(pass)) => Credentials::password(user.clone(), pass),
+        (Ok(token), _) => Credential::bearer_for(user.clone(), token),
+        (Err(_), Ok(pass)) => Credential::password(user.clone(), pass),
         (Err(_), Err(_)) => {
             eprintln!("Set IMAP_PASS (a password) or IMAP_TOKEN (an OAuth access token).");
             return Ok(());
         }
     };
     let how = match &credentials {
-        Credentials::OAuth2 { .. } => "OAuth 2.0",
+        Credential::Bearer { .. } => "OAuth 2.0",
         _ => "password",
     };
     let port: u16 = env::var("IMAP_PORT")

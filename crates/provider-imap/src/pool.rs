@@ -327,7 +327,10 @@ impl<S> ImapPool<S> {
 fn refuses_sessions(err: &ImapError) -> bool {
     matches!(
         err,
-        ImapError::Auth(_) | ImapError::RateLimited(_) | ImapError::Bye(_)
+        ImapError::Auth(_)
+            | ImapError::AuthUnsupported(_)
+            | ImapError::RateLimited(_)
+            | ImapError::Bye(_)
     ) || matches!(err, ImapError::No(detail) if opens_with_temporary_code(detail))
 }
 

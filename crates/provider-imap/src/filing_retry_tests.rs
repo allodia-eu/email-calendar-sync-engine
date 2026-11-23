@@ -262,7 +262,7 @@ async fn provider_over(
     let config = ImapConfig::new(
         format!("127.0.0.1:{imap_port}"),
         "127.0.0.1",
-        crate::credentials::Credentials::password("alice@test.local", "pw"),
+        engine_provider::Credential::password("alice@test.local", "pw"),
     )
     .with_smtp_tls(format!("127.0.0.1:{smtp_port}"), "127.0.0.1");
     let provider = ImapAccount::connect(&config, connector)

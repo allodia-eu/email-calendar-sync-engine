@@ -21,10 +21,19 @@ pub enum ImapError {
     #[error("IMAP transport error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Authentication was rejected (`LOGIN`/`AUTHENTICATE` returned `NO`, or SMTP
-    /// `AUTH` failed). The host must re-auth before the call can succeed.
+    /// The server refused the credential presented: `LOGIN`/`AUTHENTICATE` returned `NO`, or
+    /// SMTP `AUTH` answered `535`. The host must re-auth before the call can succeed, and the
+    /// account's credential source is asked once for a replacement.
     #[error("IMAP authentication failed: {0}")]
     Auth(String),
+
+    /// Sign-in failed without the server judging the credential: it offers no mechanism this
+    /// credential can use (no OAuth mechanism advertised; SMTP `504`, `534`, `538`), or it
+    /// answers with something only the user can resolve (SMTP `432`, a password transition).
+    /// Classed as authentication like [`Auth`](Self::Auth), but no replacement is asked for:
+    /// another credential of the same kind would meet the same answer.
+    #[error("IMAP authentication not possible: {0}")]
+    AuthUnsupported(String),
 
     /// The server refused a sign-in for now rather than judging the credential: `LOGIN`
     /// answered `NO [LIMIT]` (RFC 5530), too many connections or logins, or SMTP `AUTH`
@@ -33,8 +42,9 @@ pub enum ImapError {
     #[error("server is limiting sign-ins for this account: {0}")]
     RateLimited(String),
 
-    /// The account's [`CredentialSource`](crate::CredentialSource) could not produce a
-    /// credential, so nothing was dialled. Classified as the source classified it.
+    /// The account's [`CredentialSource`](crate::CredentialSource) did not permit the server,
+    /// had no credential to give, or did not answer within the dial deadline, so nothing was
+    /// dialled. Classified as the source classified it; an unanswered ask is retryable.
     #[error("no credential to sign in with: {0}")]
     Credential(ProviderError),
 
@@ -66,6 +76,11 @@ impl ImapError {
     /// Builds an [`ImapError::Auth`].
     pub(crate) fn auth(detail: impl Into<String>) -> Self {
         Self::Auth(detail.into())
+    }
+
+    /// Builds an [`ImapError::AuthUnsupported`].
+    pub(crate) fn auth_unsupported(detail: impl Into<String>) -> Self {
+        Self::AuthUnsupported(detail.into())
     }
 
     /// Builds an [`ImapError::RateLimited`].
@@ -120,7 +135,7 @@ impl ImapError {
         match self {
             // Connection/read/write/handshake failures are transient.
             Self::Io(_) | Self::Bye(_) => FailureClass::Retryable,
-            Self::Auth(_) => FailureClass::Authentication,
+            Self::Auth(_) | Self::AuthUnsupported(_) => FailureClass::Authentication,
             Self::RateLimited(_) => FailureClass::RateLimited,
             Self::Credential(source) => source.class(),
             Self::No(detail) if opens_with_temporary_code(detail) => FailureClass::Retryable,
@@ -204,6 +219,10 @@ mod tests {
         );
         assert_eq!(
             ImapError::auth("LOGIN NO").failure_class(),
+            FailureClass::Authentication
+        );
+        assert_eq!(
+            ImapError::auth_unsupported("no OAuth mechanism").failure_class(),
             FailureClass::Authentication
         );
         assert_eq!(

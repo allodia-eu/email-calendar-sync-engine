@@ -11,13 +11,12 @@ use engine_core::{
     ids::{MailboxId, MessageIdHeader},
     mail::EmailAddress,
 };
-use engine_provider::{Draft, ProviderError, ProviderResult, SubmissionReceipt};
+use engine_provider::{Credential, Draft, ProviderError, ProviderResult, SubmissionReceipt};
 use tokio::net::TcpListener;
 
 use crate::{
     ImapProvider,
     config::ImapConfig,
-    credentials::Credentials,
     filing::resolve_smtp,
     mock::{MockStream, script},
     transport::Connection,
@@ -99,7 +98,7 @@ async fn a_tls_submission_to_a_server_that_accepts_and_never_speaks_is_retried()
     // kernel completes the connection all the same.
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();
-    let config = ImapConfig::new("h:993", "127.0.0.1", Credentials::password("alice", "pw"))
+    let config = ImapConfig::new("h:993", "127.0.0.1", Credential::password("alice", "pw"))
         .with_smtp_tls(format!("127.0.0.1:{port}"), "127.0.0.1");
     let connector = engine_tls::TlsClientConfig::dangerous_accept_any().connector();
     let sender = resolve_smtp(config.smtp.as_ref().unwrap(), &connector, &config);

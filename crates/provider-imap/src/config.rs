@@ -8,9 +8,7 @@
 
 use std::sync::Arc;
 
-use engine_provider::ConnectObserver;
-
-use crate::credentials::{CredentialSource, Credentials};
+use engine_provider::{ConnectObserver, Credential, CredentialSource, FixedCredential, Origin};
 
 /// How the IMAP session is secured: TLS from the first byte (port 993), or a
 /// cleartext connection upgraded in place with `STARTTLS` (port 143). Both present
@@ -61,8 +59,8 @@ pub(crate) struct SmtpSettings {
 }
 
 /// How to connect an [`ImapAccount`](crate::ImapAccount): the address, the TLS server name,
-/// and where its [`Credentials`] come from. `Debug` redacts the secret (`north-star.md`
-/// security).
+/// and the [`CredentialSource`] every dial and submission asks. `Debug` prints neither the
+/// secret nor the username (`north-star.md` security).
 #[derive(Clone)]
 pub struct ImapConfig {
     pub(crate) addr: String,
@@ -77,22 +75,27 @@ pub struct ImapConfig {
 impl ImapConfig {
     /// Configures an implicit-TLS IMAP connection to `addr` (`host:port`),
     /// presenting `server_name` for TLS (SNI/cert name; may differ from a loopback
-    /// `addr`) and authenticating with `credentials` — a password
-    /// ([`Credentials::password`]) or an OAuth 2.0 access token
-    /// ([`Credentials::oauth2`]).
+    /// `addr`) and authenticating with `credential`, which never changes: a password
+    /// ([`Credential::password`]) or an OAuth 2.0 access token issued for the account
+    /// ([`Credential::bearer_for`]). It signs in under a subject of its own
+    /// ([`FixedCredential::unique`]).
     #[must_use]
     pub fn new(
         addr: impl Into<String>,
         server_name: impl Into<String>,
-        credentials: Credentials,
+        credential: Credential,
     ) -> Self {
-        Self::from_credential_source(addr, server_name, Arc::new(credentials))
+        Self::from_credential_source(
+            addr,
+            server_name,
+            Arc::new(FixedCredential::unique(credential)),
+        )
     }
 
-    /// [`new`](Self::new), with the credential asked of `source` on every dial rather than
-    /// fixed: what an account signing in with OAuth needs, since its pool keeps dialling long
-    /// after the token it connected with has expired. A refused token is renewed once
-    /// ([`CredentialSource::renew`]).
+    /// [`new`](Self::new), with the credential asked of `source` on every dial and every
+    /// submission rather than fixed: what an account signing in with OAuth needs, since its pool
+    /// keeps dialling long after the token it connected with has expired. A refused credential
+    /// is replaced once ([`CredentialSource::replace`]).
     #[must_use]
     pub fn from_credential_source(
         addr: impl Into<String>,
@@ -223,6 +226,21 @@ impl ImapConfig {
     pub(crate) fn port(&self) -> Option<u16> {
         port_of(&self.addr)
     }
+
+    /// Where an IMAP sign-in goes, as the source is told: the TLS server name, the dial port
+    /// (the default for the security when the address has none), and `imaps` or `imap`
+    /// (`STARTTLS`) as the scheme, RFC 8314 §7's service names.
+    pub(crate) fn origin(&self) -> Origin {
+        let (scheme, default_port) = match self.security {
+            ImapSecurity::ImplicitTls => ("imaps", 993),
+            ImapSecurity::StartTls => ("imap", 143),
+        };
+        Origin::new(
+            scheme,
+            &self.server_name,
+            self.port().unwrap_or(default_port),
+        )
+    }
 }
 
 impl core::fmt::Debug for ImapConfig {
@@ -251,35 +269,47 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn debug_redacts_the_secret_whichever_credential_it_holds() {
-        let config = ImapConfig::new(
-            "mail.test:993",
-            "mail.test",
-            Credentials::password("alice", "hunter2"),
-        );
-        let shown = format!("{config:?}");
-        assert!(shown.contains("alice") && shown.contains("mail.test:993"));
-        assert!(
-            !shown.contains("hunter2"),
-            "password must not leak: {shown}"
-        );
+    fn password() -> Credential {
+        Credential::password("u", "p")
+    }
 
-        let config = ImapConfig::new(
-            "mail.test:993",
-            "mail.test",
-            Credentials::oauth2("alice@mail.test", "ya29.secret"),
+    #[test]
+    fn debug_shows_neither_the_secret_nor_the_username_whichever_credential_it_holds() {
+        for credential in [
+            Credential::password("alice", "hunter2"),
+            Credential::bearer_for("alice@mail.test", "ya29.secret"),
+        ] {
+            let config = ImapConfig::new("mail.test:993", "mail.test", credential);
+            let shown = format!("{config:?}");
+            assert!(shown.contains("mail.test:993"), "{shown}");
+            for leaked in ["hunter2", "ya29.secret", "alice"] {
+                assert!(!shown.contains(leaked), "{leaked} leaked: {shown}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_origin_a_source_is_told_is_the_tls_name_the_port_and_how_tls_begins() {
+        let implicit = ImapConfig::new("127.0.0.1:11993", "IMAP.Example.com", password());
+        assert_eq!(
+            implicit.origin(),
+            Origin::new("imaps", "imap.example.com", 11993)
         );
-        let shown = format!("{config:?}");
-        assert!(
-            !shown.contains("ya29.secret"),
-            "access token must not leak: {shown}"
+        let starttls =
+            ImapConfig::new("127.0.0.1:11143", "imap.example.com", password()).with_starttls();
+        assert_eq!(
+            starttls.origin(),
+            Origin::new("imap", "imap.example.com", 11143)
         );
+        // No port in the address: the default for how the session is secured.
+        let bare = ImapConfig::new("imap.example.com", "imap.example.com", password());
+        assert_eq!(bare.origin().port(), 993);
+        assert_eq!(bare.with_starttls().origin().port(), 143);
     }
 
     #[test]
     fn the_dial_port_is_read_off_the_address_for_the_oauthbearer_response() {
-        let port = |addr: &str| ImapConfig::new(addr, "h", Credentials::password("u", "p")).port();
+        let port = |addr: &str| ImapConfig::new(addr, "h", password()).port();
         assert_eq!(port("imap.example.com:993"), Some(993));
         // A bracketed IPv6 literal keeps its colons; only the last one is the separator.
         assert_eq!(port("[::1]:11993"), Some(11993));
@@ -292,7 +322,7 @@ mod tests {
     #[test]
     fn the_builders_set_the_dial_settings_they_name() {
         let since = time::Date::from_calendar_date(2026, time::Month::March, 18).unwrap();
-        let plain = ImapConfig::new("h:993", "h", Credentials::password("u", "p"))
+        let plain = ImapConfig::new("h:993", "h", password())
             .with_since(since)
             .with_smtp("h:25");
         assert_eq!(plain.since, Some(since));
@@ -303,7 +333,7 @@ mod tests {
         // Plaintext MX path (no implicit TLS, no `AUTH PLAIN`).
         assert!(matches!(smtp.security, SmtpSecurity::Plaintext));
 
-        let tls = ImapConfig::new("h:993", "h", Credentials::password("u", "p"))
+        let tls = ImapConfig::new("h:993", "h", password())
             .with_smtp_tls("h:465", "smtp.example.com")
             .smtp
             .expect("smtp configured");
@@ -312,7 +342,7 @@ mod tests {
             matches!(tls.security, SmtpSecurity::ImplicitTls { server_name } if server_name == "smtp.example.com")
         );
 
-        let starttls = ImapConfig::new("h:143", "h", Credentials::password("u", "p"))
+        let starttls = ImapConfig::new("h:143", "h", password())
             .with_starttls()
             .with_smtp_starttls("h:587", "smtp.example.com");
         assert_eq!(starttls.security, ImapSecurity::StartTls);
@@ -325,7 +355,7 @@ mod tests {
 
     #[test]
     fn a_config_without_an_observer_reports_through_the_no_op_default() {
-        let config = ImapConfig::new("h:993", "h", Credentials::password("u", "p"));
+        let config = ImapConfig::new("h:993", "h", password());
         assert!(config.connect_observer.is_none());
         // Exercised rather than asserted on: the default's contract is that it does
         // nothing and does not panic.
@@ -337,10 +367,11 @@ mod tests {
     fn the_configured_observer_is_the_one_the_dial_reports_through() {
         let seen = Arc::new(std::sync::Mutex::new(0_usize));
         let counter = Arc::clone(&seen);
-        let config = ImapConfig::new("h:993", "h", Credentials::password("u", "p"))
-            .with_connect_observer(Arc::new(move |_: &ConnectStep<'_>| {
+        let config = ImapConfig::new("h:993", "h", password()).with_connect_observer(Arc::new(
+            move |_: &ConnectStep<'_>| {
                 *counter.lock().unwrap() += 1;
-            }));
+            },
+        ));
         config.connect_observer().step(&ConnectStep::Authenticated);
         assert_eq!(*seen.lock().unwrap(), 1);
     }

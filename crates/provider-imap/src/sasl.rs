@@ -15,7 +15,12 @@
 //! engine leaking its job outward
 //! (`docs/agent-guidance/imap-smtp.md`).
 
-use crate::error::{ImapError, ImapResult};
+use zeroize::Zeroizing;
+
+use crate::{
+    error::{ImapError, ImapResult},
+    secret_line::{Part, secret_line},
+};
 
 /// A SASL mechanism that presents an OAuth 2.0 bearer token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +71,8 @@ impl Mechanism {
     }
 
     /// The base64 **initial client response** — the credential blob both protocols
-    /// send.
+    /// send. It and the plain blob it encodes carry the token, so both are zeroed when
+    /// dropped.
     ///
     /// `OAUTHBEARER` (RFC 7628 §3.1) is a GS2 header naming the authorization identity
     /// followed by `%x01`-separated key/value pairs, of which only `auth` is required;
@@ -85,24 +91,40 @@ impl Mechanism {
         access_token: &str,
         host: &str,
         port: Option<u16>,
-    ) -> ImapResult<String> {
+    ) -> ImapResult<Zeroizing<String>> {
         let username = clean("username", username)?;
         let access_token = clean("access token", access_token)?;
         let host = clean("host", host)?;
+        // Built at its final length, so no grown buffer leaves a copy of the token behind
+        // (`crate::secret_line`).
         let blob = match self {
             Self::OAuthBearer => {
-                // `port` is a `u16`, so its rendering needs no screening.
+                // `port` is a `u16`, so its rendering needs no screening, and it is no secret.
                 let port = port
                     .map(|port| format!("port={port}\x01"))
                     .unwrap_or_default();
-                format!(
-                    "n,a={username},\x01host={host}\x01{port}\
-                     auth=Bearer {access_token}\x01\x01"
-                )
+                secret_line(&[
+                    Part::Text("n,a="),
+                    Part::Text(username),
+                    Part::Text(",\x01host="),
+                    Part::Text(host),
+                    Part::Text("\x01"),
+                    Part::Text(&port),
+                    Part::Text("auth=Bearer "),
+                    Part::Text(access_token),
+                    Part::Text("\x01\x01"),
+                ])
             }
-            Self::XOAuth2 => format!("user={username}\x01auth=Bearer {access_token}\x01\x01"),
+            Self::XOAuth2 => secret_line(&[
+                Part::Text("user="),
+                Part::Text(username),
+                Part::Text("\x01auth=Bearer "),
+                Part::Text(access_token),
+                Part::Text("\x01\x01"),
+            ]),
         };
-        Ok(crate::base64::encode(blob.as_bytes()))
+        // `encode` allocates its output at its final length too.
+        Ok(Zeroizing::new(crate::base64::encode(blob.as_bytes())))
     }
 
     /// What the client sends when the server answers the credential with an **error

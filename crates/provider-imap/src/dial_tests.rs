@@ -4,13 +4,12 @@
 //! socket: the handshake has already happened by the time [`finish_session`] is called,
 //! which is why the TLS version is passed in rather than read off the stream.
 
-use engine_provider::TlsVersion;
+use engine_provider::{Credential, CredentialProtocol, CredentialRequest, TlsVersion};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::finish_session;
 use crate::{
     config::ImapConfig,
-    credentials::Credentials,
     error::ImapError,
     mock::{MockStream, script, written},
     sasl::Mechanism,
@@ -29,9 +28,11 @@ async fn open_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     tls_version: Option<TlsVersion>,
     config: &ImapConfig,
 ) -> Result<Connection<S>, ImapError> {
+    let origin = config.origin();
+    let request = CredentialRequest::new(CredentialProtocol::Imap, &origin);
     let credentials = config
         .credentials
-        .credentials()
+        .credential(&request)
         .await
         .map_err(ImapError::Credential)?;
     finish_session(
@@ -67,12 +68,8 @@ impl engine_provider::ConnectObserver for Recorder {
 /// Drives the shared dial over a mock stream, returning the steps it reported.
 async fn observed_open_session(server_script: Vec<u8>, tls: Option<TlsVersion>) -> Vec<String> {
     let recorder = std::sync::Arc::new(Recorder::default());
-    let config = ImapConfig::new(
-        "h:993",
-        "h",
-        Credentials::password("alice@test.local", "pw"),
-    )
-    .with_connect_observer(recorder.clone());
+    let config = ImapConfig::new("h:993", "h", Credential::password("alice@test.local", "pw"))
+        .with_connect_observer(recorder.clone());
     let (stream, _recorded) = MockStream::new(server_script);
     open_session(stream, tls, &config).await.expect("session");
     let steps = recorder.0.lock().unwrap();
@@ -89,7 +86,7 @@ async fn an_oauth_config_authenticates_over_sasl_instead_of_logging_in() {
     let config = ImapConfig::new(
         "imap.example.com:993",
         "imap.example.com",
-        Credentials::oauth2("alice@example.com", "ya29.token"),
+        Credential::bearer_for("alice@example.com", "ya29.token"),
     )
     .with_connect_observer(recorder.clone());
     let (stream, wire) = MockStream::new(script(&[
@@ -110,7 +107,10 @@ async fn an_oauth_config_authenticates_over_sasl_instead_of_logging_in() {
         )
         .expect("clean credential");
     assert!(
-        sent.contains(&format!("a2 AUTHENTICATE OAUTHBEARER {expected}\r\n")),
+        sent.contains(&format!(
+            "a2 AUTHENTICATE OAUTHBEARER {}\r\n",
+            expected.as_str()
+        )),
         "{sent}"
     );
     assert!(
@@ -171,7 +171,7 @@ async fn a_failed_login_reports_the_handshake_but_never_authentication() {
     let config = ImapConfig::new(
         "h:993",
         "h",
-        Credentials::password("alice@test.local", "wrong"),
+        Credential::password("alice@test.local", "wrong"),
     )
     .with_connect_observer(recorder.clone());
     let (stream, _recorded) = MockStream::new(script(&[GREETING, "a1 NO bad credentials\r\n"]));

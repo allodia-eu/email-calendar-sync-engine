@@ -28,6 +28,10 @@ tokio-rustls = { workspace = true }
 async-stream = { workspace = true }
 futures-util = { workspace = true }
 async-trait = { workspace = true }
+# Zeroes the copies of a secret this crate derives to put on the wire: the IMAP `LOGIN` line, a
+# SASL blob and its base64, an `AUTH PLAIN` token, and the `AUTHENTICATE` and SMTP `AUTH` lines
+# that carry them (`secret_line.rs`).
+zeroize = { workspace = true }
 thiserror = { workspace = true }
 # Parsing IMAP `INTERNALDATE` (`dd-Mon-yyyy hh:mm:ss +zzzz`) into a UTC instant
 # needs offset normalization with calendar rollover; `time` (the same crate

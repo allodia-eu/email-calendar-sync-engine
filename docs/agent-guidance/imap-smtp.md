@@ -49,7 +49,10 @@ is authoritative for the `provider-caldav` calendar client.
   is classified the same way, since it is the other way into a session. SMTP `AUTH`, with a
   password or a token, follows the same rule in its own terms: a 4xx is "try again later"
   (RFC 5321 §4.2.1), so it is `RateLimited` too, except RFC 4954's `432` (a password
-  transition is needed), which only the user can resolve and stays `Authentication`. Nothing in the adapter waits either
+  transition is needed), which only the user can resolve and stays `Authentication`. Of the
+  `5xx` answers only `535` judged the credential (`ImapError::Auth`); `504`, `530`, `534`, `538`
+  and `432` are `ImapError::AuthUnsupported`, the same `Authentication` class, which asks the
+  credential source for no replacement ("Authentication", below). Nothing in the adapter waits either
   out; the class is the host's cue to back off (`http-throttling.md` covers the HTTP
   adapters, where the engine does the waiting).
 - **A refused command is classed by its response code.** A tagged `NO` is `ImapError::No`
@@ -430,35 +433,61 @@ is authoritative for the `provider-caldav` calendar client.
 
 ## Authentication: a password or an OAuth 2.0 token
 
-`ImapConfig::new(addr, server_name, credentials)` takes a **`Credentials`** —
-`Password` (IMAP `LOGIN`, SMTP `AUTH PLAIN`) or `OAuth2` (a bearer access token over
-SASL). That is the same shape `provider-jmap` and `provider-caldav` already expose, and
-the same posture as Graph and Google: **the engine stays OAuth-agnostic** — acquiring,
-storing and refreshing the token is the host's job (`north-star.md`).
+`ImapConfig::new(addr, server_name, credential)` takes an `engine_provider::Credential`:
+`Password` (IMAP `LOGIN`, SMTP `AUTH PLAIN`) or `Bearer` (an access token over SASL, with the
+account's username, which both SASL mechanisms carry: `Credential::bearer_for`). It is the
+engine's one credential type, which every adapter is moving onto
+(`docs/design/credential-source.md`). The posture is the same as Graph and Google: **the engine
+stays OAuth-agnostic**: acquiring, storing and refreshing the token is the host's job
+(`north-star.md`). `provider_imap::Credentials` remains as a deprecated alias, and its
+`password`/`oauth2` constructors still build the same credentials.
 
-**Every dial asks for its credential.** The config holds a `CredentialSource`, not a
-credential: an async trait with `credentials()` (what to present now) and `renew(refused)`
-(a replacement after the server refused one, `None` by default). A `Credentials` is its own
-source, which is what `ImapConfig::new` wraps; a host whose account signs in with OAuth
-passes its token store to `ImapConfig::from_credential_source`. The source is asked once
-per connection the account's pool dials and once per SMTP submission, because the pool
-dials for as long as the host runs and a token lives about an hour: a pool that presented
-the token it connected with would lose every new connection an hour in, while the sessions
-already open went on working. A session outlives the token that opened it, so nothing
-renews an open one.
+**Every dial asks for its credential.** The config holds an `engine_provider::CredentialSource`,
+not a credential: `subject()` (who it signs in as), `permits(origin)` (default: yes),
+`credential(request)` (what to present now) and `replace(refused, request)` (a replacement after
+the server refused one, `None` by default). `ImapConfig::new` wraps a fixed credential in a
+`FixedCredential` under a subject of its own; a host whose account signs in with OAuth passes its
+token store to `ImapConfig::from_credential_source`. The source is asked once per connection the
+account's pool dials and once per SMTP submission, because the pool dials for as long as the host
+runs and a token lives about an hour: a pool that presented the token it connected with would
+lose every new connection an hour in, while the sessions already open went on working. A session
+outlives the token that opened it, so nothing replaces an open one.
 
-- **A refused token is renewed once, on a fresh connection.** An `Auth` refusal asks the
-  source's `renew`; a replacement is presented on a new connection (a server may drop a
-  connection after a failed sign-in, and counts the attempt either way). One re-dial at
-  most. A password's source never renews, so a refused password is never sent again: the
-  same secret to the same server gets the same answer, at a provider that may be counting
-  towards a lockout. The same rule wraps SMTP, where `AUTH` precedes `MAIL FROM`, so a
-  retried submission has sent nothing. Proof: `dial_renewal_tests.rs` and
-  `filing_smtp_server_tests.rs`.
+- **Each ask says where the credential goes.** The request names the protocol (`Imap` or `Smtp`)
+  and the origin: the **TLS server name** (not the dial address, which a loopback fixture maps),
+  the port, and RFC 8314's service name as the scheme: `imaps` or `imap` (`STARTTLS`) for IMAP,
+  `submissions` or `submission` (`STARTTLS`) for SMTP. A source that does not `permit` the origin
+  fails the dial as `Permanent`, and nothing is dialled.
+- **Each ask runs under the dial deadline** (`deadlines.md`). A source that does not answer in
+  30 s fails the dial as `Retryable`, so a hung token endpoint cannot hang a sync.
+- **A refused credential is replaced once, on a fresh connection.** An `Auth` refusal asks the
+  source's `replace`; a replacement is presented on a new connection (a server may drop a
+  connection after a failed sign-in, and counts the attempt either way). One re-dial at most.
+  Only a judgement of the credential is a refusal: a `NO` to `LOGIN` or `AUTHENTICATE` that is
+  not `[LIMIT]` or a temporary code, and SMTP `535`. A failure that judged none, such as no
+  mechanism the credential can use or SMTP `504`/`534`/`538`/`432`, is
+  `ImapError::AuthUnsupported`: still `Authentication`, but no replacement and no re-dial,
+  because a fresh credential would meet the same answer. A fixed credential never replaces, so a refused
+  password is never sent again: the same secret to the same server gets the same answer, at a
+  provider that may be counting towards a lockout. The same rule wraps SMTP, where `AUTH`
+  precedes `MAIL FROM`, so a retried submission has sent nothing. The ask-and-replace loop is the
+  engine's one helper, `engine_provider::with_credential`; this crate supplies only what counts
+  as a refusal. Proof: `dial_renewal_tests.rs`, `dial_credential_tests.rs`,
+  `filing_smtp_server_tests.rs`, `filing_credential_tests.rs`, and live on Dovecot and Stalwart
+  (`live_imap_credential.rs`).
 - **A source that cannot produce a credential dials nothing.** It fails with
   `ImapError::Credential`, classified as the source classified it: a revoked grant is
-  `Authentication`, an unreachable token endpoint is retryable. It is not a session
-  refusal, so the pool's ceiling does not move.
+  `Authentication`, an unreachable token endpoint is retryable. It is not a session refusal, so
+  the pool's ceiling does not move. A bearer credential without a username dials nothing either
+  (`Permanent`): both SASL mechanisms name the account.
+- **Copies of the secret this crate makes are zeroed.** Every buffer the crate builds around a
+  password or token is `Zeroizing` and allocated once at its final length (`secret_line.rs`),
+  because a `String` that grows frees its old buffer unzeroed: the IMAP `LOGIN` line (built and
+  sent raw, not through `command`, whose `format!` would copy it), the SASL blob and its base64,
+  the `AUTHENTICATE` line and its SASL-IR-less continuation, the `AUTH PLAIN` bytes and token, and
+  every SMTP `AUTH` line, CRLF included (sent with `write_raw`; `write_line` formats a copy and is
+  for lines without a secret). Out of reach: the copies the TLS stack makes as it writes, and
+  whatever the host holds.
 
 **The mechanism is negotiated, never configured.** Two SASL mechanisms carry a bearer
 token, and providers disagree about which:
@@ -518,7 +547,8 @@ would exercise it rested on a documentation claim the server disproves.
   travels in the error, because it is the only place the server says *whether* the token
   was expired, wrongly scoped, or issued for another account.
 - **A token is never downgraded into a password attempt.** A server advertising no OAuth
-  mechanism fails with an `Auth` error naming what it *did* offer — the usual cause is an
+  mechanism fails with an `AuthUnsupported` error (class `Authentication`, and no replacement is
+  asked for, since no token would be taken) naming what it *did* offer — the usual cause is an
   OAuth credential pointed at an account that only takes a password — and no credential
   reaches the wire.
 - **Credential components are screened before encoding.** `%x01` is the key/value

@@ -14,9 +14,9 @@ use engine_core::{
     mail::{Keyword, MailboxRole, SystemKeyword},
     sync::{SyncState, SyncUpdate, SyncWindow},
 };
-use engine_provider::{EmailChunk, MailEdit, Provider};
+use engine_provider::{Credential, EmailChunk, MailEdit, Provider};
 use futures_util::StreamExt as _;
-use provider_imap::{Credentials, ImapAccount, ImapConfig};
+use provider_imap::{ImapAccount, ImapConfig};
 
 /// The account under test, from the environment; `None` skips.
 struct Target {
@@ -43,7 +43,7 @@ impl Target {
         ImapConfig::new(
             format!("{}:{}", self.host, self.port),
             self.host.clone(),
-            Credentials::password(self.user.clone(), self.password.clone()),
+            Credential::password(self.user.clone(), self.password.clone()),
         )
     }
 }

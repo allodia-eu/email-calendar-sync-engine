@@ -15,8 +15,8 @@ use engine_core::{
     mail::MailboxRole,
     sync::SyncUpdate,
 };
-use engine_provider::Provider;
-use provider_imap::{Credentials, ImapAccount, ImapConfig};
+use engine_provider::{Credential, Provider};
+use provider_imap::{ImapAccount, ImapConfig};
 use stalwart_harness::Harness;
 
 /// The token every subject this suite plants carries, so a rerun can find its residue.
@@ -79,7 +79,7 @@ async fn a_message_is_sent_when_its_date_header_says_and_received_when_it_was_st
     let config = ImapConfig::new(
         harness.imap_addr.as_str(),
         host,
-        Credentials::password(auth.0, auth.1),
+        Credential::password(auth.0, auth.1),
     );
     let imap = ImapAccount::connect(
         &config,

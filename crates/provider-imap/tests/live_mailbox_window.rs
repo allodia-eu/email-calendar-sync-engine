@@ -22,10 +22,10 @@ use engine_core::{
     sync::{MailboxWindows, SyncUpdate, SyncWindow},
     time::{CalendarDate, UtcDateTime},
 };
-use engine_provider::Provider;
+use engine_provider::{Credential, Provider};
 use engine_store::{MailSelector, ManualClock, StoreRead, WorkerId};
 use engine_sync::{IgnoreCommits, StreamTuning, sync_mail};
-use provider_imap::{Credentials, ImapAccount, ImapConfig};
+use provider_imap::{ImapAccount, ImapConfig};
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
 use tokio_rustls::client::TlsStream;
@@ -69,7 +69,7 @@ async fn login(harness: &Harness, auth: (&str, &str)) -> LiveAccount {
     let config = ImapConfig::new(
         harness.imap_addr.as_str(),
         host,
-        Credentials::password(auth.0, auth.1),
+        Credential::password(auth.0, auth.1),
     );
     ImapAccount::connect(
         &config,

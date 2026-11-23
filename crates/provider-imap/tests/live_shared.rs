@@ -20,8 +20,8 @@ use engine_core::{
     mail::{EmailAddress, Mailbox, MailboxRole, Message},
     sync::{SyncObject, SyncUpdate},
 };
-use engine_provider::{Draft, Provider, SharedAccount, SharedAccounts};
-use provider_imap::{Credentials, ImapAccount, ImapConfig, ImapProvider};
+use engine_provider::{Credential, Draft, Provider, SharedAccount, SharedAccounts};
+use provider_imap::{ImapAccount, ImapConfig, ImapProvider};
 use stalwart_harness::{Harness, SHARED_GROUP_ACCOUNT};
 use tokio_rustls::client::TlsStream;
 
@@ -51,7 +51,7 @@ fn config(harness: &Harness, user: &str, password: &str) -> ImapConfig {
     ImapConfig::new(
         harness.imap_addr.as_str(),
         host_of(&harness.imap_addr),
-        Credentials::password(user, password),
+        Credential::password(user, password),
     )
 }
 

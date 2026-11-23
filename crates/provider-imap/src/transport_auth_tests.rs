@@ -57,7 +57,10 @@ async fn a_sasl_ir_server_gets_the_credential_inline_on_the_command() {
         )
         .expect("clean credential");
     assert!(
-        sent.contains(&format!("a2 AUTHENTICATE OAUTHBEARER {expected}\r\n")),
+        sent.contains(&format!(
+            "a2 AUTHENTICATE OAUTHBEARER {}\r\n",
+            expected.as_str()
+        )),
         "{sent}"
     );
     // The password path is never taken: no credential is ever sent as a `LOGIN`.
@@ -86,7 +89,10 @@ async fn a_server_without_sasl_ir_is_prompted_for_the_credential() {
             Some(993),
         )
         .expect("clean credential");
-    assert!(sent.contains(&format!("\r\n{expected}\r\n")), "{sent}");
+    assert!(
+        sent.contains(&format!("\r\n{}\r\n", expected.as_str())),
+        "{sent}"
+    );
 }
 
 #[tokio::test]
@@ -153,7 +159,12 @@ async fn a_server_offering_no_oauth_mechanism_says_what_it_does_offer() {
     .await;
 
     let err = outcome.expect_err("no mechanism to present");
-    assert!(matches!(err, ImapError::Auth(_)), "{err:?}");
+    // An authentication failure, but not a refusal: no other token would be taken either.
+    assert!(matches!(err, ImapError::AuthUnsupported(_)), "{err:?}");
+    assert_eq!(
+        err.failure_class(),
+        engine_core::error::FailureClass::Authentication
+    );
     let detail = err.to_string();
     assert!(
         detail.contains("PLAIN") && detail.contains("LOGIN"),

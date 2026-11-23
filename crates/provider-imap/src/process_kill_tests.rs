@@ -143,8 +143,12 @@ async fn stalwart(
     password: &str,
 ) -> ImapProvider<tokio_rustls::client::TlsStream<TcpStream>> {
     let host = imap.rsplit_once(':').map_or("localhost", |(host, _)| host);
-    let config = crate::ImapConfig::new(imap, host, crate::Credentials::password(user, password))
-        .with_smtp(smtp);
+    let config = crate::ImapConfig::new(
+        imap,
+        host,
+        engine_provider::Credential::password(user, password),
+    )
+    .with_smtp(smtp);
     let connector = engine_tls::TlsClientConfig::dangerous_accept_any().connector();
     crate::ImapAccount::connect(&config, connector)
         .await

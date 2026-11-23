@@ -15,8 +15,8 @@ use engine_core::{
     mail::{EmailAddress, MailboxRole, MessageMetadata},
     sync::SyncUpdate,
 };
-use engine_provider::{Draft, Provider};
-use provider_imap::{Credentials, ImapAccount, ImapConfig, ImapProvider};
+use engine_provider::{Credential, Draft, Provider};
+use provider_imap::{ImapAccount, ImapConfig, ImapProvider};
 use stalwart_harness::Harness;
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
@@ -36,7 +36,7 @@ async fn connect(
     let config = ImapConfig::new(
         harness.imap_addr.as_str(),
         host,
-        Credentials::password(harness.account.as_str(), harness.password.as_str()),
+        Credential::password(harness.account.as_str(), harness.password.as_str()),
     );
     ImapAccount::connect(&config, no_verify_connector())
         .await

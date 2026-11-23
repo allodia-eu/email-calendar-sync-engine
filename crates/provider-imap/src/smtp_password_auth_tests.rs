@@ -3,21 +3,18 @@
 //! makes a host ask the user to sign in again.
 
 use engine_core::{ids::MessageIdHeader, mail::EmailAddress};
-use engine_provider::Draft;
+use engine_provider::{Credential, Draft};
 use engine_rfc5322::assemble_message;
 use time::{OffsetDateTime, macros::datetime};
 
 use super::*;
-use crate::{
-    credentials::Credentials,
-    mock::{MockStream, script, written},
-};
+use crate::mock::{MockStream, script, written};
 
 /// The `SmtpAuth` a TLS submission presents. Taken by reference, so the credential is
 /// built by the caller and outlives it.
-fn auth(credentials: &Credentials) -> SmtpAuth<'_> {
+fn auth(credentials: &Credential) -> SmtpAuth<'_> {
     SmtpAuth {
-        credentials,
+        credential: credentials,
         host: "smtp.test.local",
         port: Some(465),
     }
@@ -66,7 +63,7 @@ async fn send_authenticates_with_auth_plain_over_the_stream() {
         "alice@test.local",
         &recipients(&["bob@test.local"]),
         &message,
-        Some(auth(&Credentials::password("alice@test.local", "s3cret"))),
+        Some(auth(&Credential::password("alice@test.local", "s3cret"))),
         &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
@@ -98,7 +95,7 @@ async fn an_auth_rejection_is_an_authentication_error() {
         "alice@test.local",
         &recipients(&["bob@test.local"]),
         &message,
-        Some(auth(&Credentials::password("alice@test.local", "wrong"))),
+        Some(auth(&Credential::password("alice@test.local", "wrong"))),
         &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
@@ -141,6 +138,33 @@ async fn an_auth_asking_for_a_password_transition_stays_an_authentication_error(
     );
 }
 
+#[tokio::test]
+async fn only_535_is_the_server_refusing_the_credential() {
+    // `535` judged the credential, so a source may replace it. The rest judged none (an
+    // unsupported or too weak mechanism, encryption required, a transition only the user can
+    // make): the same class, but a fresh credential would meet the same answer.
+    let err = auth_refused_with("535 5.7.8 Authentication credentials invalid\r\n").await;
+    assert!(matches!(err, ImapError::Auth(_)), "{err:?}");
+    for unjudged in [
+        "504 5.5.4 Unrecognized authentication type\r\n",
+        "534 5.7.9 Authentication mechanism is too weak\r\n",
+        "538 5.7.11 Encryption required for requested authentication mechanism\r\n",
+        "530 5.7.0 Authentication required\r\n",
+        "432 4.7.12 A password transition is needed\r\n",
+    ] {
+        let err = auth_refused_with(unjudged).await;
+        assert!(
+            matches!(err, ImapError::AuthUnsupported(_)),
+            "{unjudged}: {err:?}"
+        );
+        assert_eq!(
+            err.failure_class(),
+            engine_core::error::FailureClass::Authentication,
+            "{unjudged}"
+        );
+    }
+}
+
 async fn auth_refused_with(reply: &str) -> ImapError {
     let server = script(&["220 mail\r\n", "250 AUTH PLAIN\r\n", reply]);
     let (stream, _) = MockStream::new(server);
@@ -151,7 +175,7 @@ async fn auth_refused_with(reply: &str) -> ImapError {
         "alice@test.local",
         &recipients(&["bob@test.local"]),
         &message,
-        Some(auth(&Credentials::password("alice@test.local", "pw"))),
+        Some(auth(&Credential::password("alice@test.local", "pw"))),
         &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await
@@ -170,7 +194,7 @@ async fn auth_without_esmtp_is_a_protocol_error() {
         "alice@test.local",
         &recipients(&["bob@test.local"]),
         &message,
-        Some(auth(&Credentials::password("user", "pass"))),
+        Some(auth(&Credential::password("user", "pass"))),
         &engine_provider::HandOver::new(&engine_provider::Unrecorded),
     )
     .await

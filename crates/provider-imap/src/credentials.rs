@@ -1,165 +1,100 @@
-//! [`Credentials`] — what an IMAP/SMTP account authenticates with.
+//! How IMAP and SMTP get the credential they present: asked of the account's
+//! [`CredentialSource`] on every dial and every submission (`engine_provider::credential`).
 //!
-//! Two shapes, because servers offer two: a password (IMAP `LOGIN`, SMTP `AUTH
-//! PLAIN`) and an OAuth 2.0 access token (SASL `OAUTHBEARER`/`XOAUTH2`, see
-//! [`crate::sasl`]). Which SASL mechanism carries the token is negotiated from what
-//! the server advertises and is deliberately absent here: a caller that could pin one
-//! would be encoding which provider it is talking to.
+//! Two shapes reach the wire, because servers offer two: a password (IMAP `LOGIN`, SMTP `AUTH
+//! PLAIN`) and an OAuth 2.0 access token (SASL `OAUTHBEARER`/`XOAUTH2`, see [`crate::sasl`]).
+//! Which SASL mechanism carries the token is negotiated from what the server advertises and is
+//! deliberately absent from the credential: a caller that could pin one would be encoding which
+//! provider it is talking to.
 //!
-//! The engine stays **OAuth-agnostic**. Acquiring, storing and refreshing the token is
-//! the host's job (`north-star.md`), exactly as for the JMAP, CalDAV, Graph and Google
-//! adapters, which all take a bearer token the same way. What the engine owns is *when* it
-//! asks: an account's connections are dialled for as long as the host runs, long past the
-//! hour a token lives, so every dial asks the config's [`CredentialSource`] for the
-//! credential to present rather than reusing the one the account connected with.
+//! The engine stays **OAuth-agnostic**. Acquiring, storing and refreshing the token is the
+//! host's job (`north-star.md`). What this crate owns is *when* it asks: an account's
+//! connections are dialled for as long as the host runs, long past the hour a token lives, so
+//! every dial asks the source for the credential to present rather than reusing the one the
+//! account connected with.
 
 use std::future::Future;
 
-use async_trait::async_trait;
-use engine_provider::ProviderError;
+use engine_provider::{
+    Credential, CredentialFailure, CredentialProtocol, CredentialRequest, CredentialSource, Origin,
+};
 
-use crate::error::{ImapError, ImapResult};
+use crate::{
+    deadline::BOUNDS,
+    error::{ImapError, ImapResult},
+};
 
-/// How an account proves who it is.
-#[derive(Clone)]
-#[non_exhaustive]
-pub enum Credentials {
-    /// A username and password: IMAP `LOGIN`, SMTP `AUTH PLAIN`. Also the shape of an
-    /// app-specific password, which several providers issue precisely so a client that
-    /// cannot do OAuth still works.
+/// What a credential presents over IMAP or SMTP.
+pub(crate) enum SignIn<'a> {
+    /// IMAP `LOGIN`, SMTP `AUTH PLAIN`.
     Password {
-        /// The account name the server knows.
-        username: String,
-        /// The password or app-specific password.
-        password: String,
+        username: &'a str,
+        password: &'a str,
     },
-    /// A username and an OAuth 2.0 access token, presented over SASL. Required by
-    /// Microsoft (basic auth is switched off for IMAP/SMTP on Exchange Online) and by
-    /// Yahoo, and available on Gmail.
-    OAuth2 {
-        /// The account name — the address the token was issued for, which is what both
-        /// mechanisms carry as the authorization identity.
-        username: String,
-        /// The bearer token. Short-lived: the host refreshes it and reconnects.
-        access_token: String,
-    },
+    /// SASL `OAUTHBEARER` or `XOAUTH2`, which both name the account.
+    Token { username: &'a str, token: &'a str },
 }
 
-impl Credentials {
-    /// A username/password credential.
-    #[must_use]
-    pub fn password(username: impl Into<String>, password: impl Into<String>) -> Self {
-        Self::Password {
-            username: username.into(),
-            password: password.into(),
-        }
-    }
-
-    /// An OAuth 2.0 credential: the account address plus a bearer access token.
-    #[must_use]
-    pub fn oauth2(username: impl Into<String>, access_token: impl Into<String>) -> Self {
-        Self::OAuth2 {
-            username: username.into(),
-            access_token: access_token.into(),
-        }
-    }
-
-    /// The account name, whichever shape the credential takes — the one component that
-    /// is not a secret, so it is the one a `Debug` rendering or a log may name.
-    #[must_use]
-    pub fn username(&self) -> &str {
-        match self {
-            Self::Password { username, .. } | Self::OAuth2 { username, .. } => username,
-        }
-    }
-}
-
-/// Redacts the secret, whichever it is. The variant name is kept: knowing an account
-/// is on OAuth rather than a password is the first question a support report answers,
-/// and it gives nothing away (`north-star.md` security).
-impl core::fmt::Debug for Credentials {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let variant = match self {
-            Self::Password { .. } => "Password",
-            Self::OAuth2 { .. } => "OAuth2",
-        };
-        f.debug_struct(variant)
-            .field("username", &self.username())
-            .field("secret", &"<redacted>")
-            .finish()
-    }
-}
-
-/// Where a connection gets the [`Credentials`] it presents: asked once per IMAP connection
-/// the account dials and once per SMTP submission.
+/// How `credential` signs in over IMAP or SMTP.
 ///
-/// A [`Credentials`] is itself a source that always answers the same, which is all a
-/// password account needs. A host whose account signs in with OAuth implements this over
-/// its token store, so a dial an hour after connecting presents a token that is valid then.
-#[async_trait]
-pub trait CredentialSource: Send + Sync + core::fmt::Debug {
-    /// The credential to present on the dial about to happen. A token source returns one
-    /// that is valid now, refreshing first if its token is near expiry.
-    ///
-    /// # Errors
-    ///
-    /// Whatever stops the host producing one, classified as the host sees it: a revoked
-    /// grant is [`FailureClass::Authentication`](engine_core::error::FailureClass::Authentication),
-    /// an unreachable token endpoint is retryable. The dial fails with
-    /// [`ImapError::Credential`] carrying it, and dials nothing.
-    async fn credentials(&self) -> Result<Credentials, ProviderError>;
-
-    /// A replacement for `refused`, which the server has just refused, or `None` when no
-    /// other is worth presenting. Asked at most once per dial or submission.
-    ///
-    /// The default is `None`: the same password to the same server gets the same answer, at
-    /// a provider that may be counting failures towards a lockout. A token source refreshes
-    /// here even when its token has not reached its stated expiry, because the server has
-    /// just said it is no longer good.
-    ///
-    /// # Errors
-    ///
-    /// As [`credentials`](Self::credentials).
-    async fn renew(&self, refused: &Credentials) -> Result<Option<Credentials>, ProviderError> {
-        let _ = refused;
-        Ok(None)
-    }
-}
-
-/// A fixed credential is its own source: the same answer every time, and no renewal.
-#[async_trait]
-impl CredentialSource for Credentials {
-    async fn credentials(&self) -> Result<Credentials, ProviderError> {
-        Ok(self.clone())
-    }
-}
-
-/// Runs `attempt` with the source's credential, and once more with a renewed one if the
-/// server refused it and the source has a replacement.
+/// # Errors
 ///
-/// `attempt` must fail with [`ImapError::Auth`] only when the credential was refused, before
-/// anything else happened, because a retry repeats the whole attempt. A second refusal is
-/// returned as it came: a fresh credential that is also refused is an answer about the
-/// server, not about the token.
-pub(crate) async fn with_renewal<T, F, Fut>(
+/// [`ImapError::Bad`] for a bearer token without the account's username, which both SASL
+/// mechanisms need, and for a kind of credential neither protocol can present. Either is the
+/// host's mistake, so nothing is sent and no retry will help.
+pub(crate) fn sign_in(credential: &Credential) -> ImapResult<SignIn<'_>> {
+    match credential {
+        Credential::Password { username, password } => Ok(SignIn::Password {
+            username,
+            password: password.expose(),
+        }),
+        Credential::Bearer {
+            username: Some(username),
+            token,
+        } => Ok(SignIn::Token {
+            username,
+            token: token.expose(),
+        }),
+        Credential::Bearer { username: None, .. } => Err(ImapError::bad(
+            "a bearer credential for IMAP or SMTP needs the account's username",
+        )),
+        _ => Err(ImapError::bad(
+            "this kind of credential cannot be presented over IMAP or SMTP",
+        )),
+    }
+}
+
+/// Runs `attempt` with a credential from `source` for `origin`, and once more with a
+/// replacement if the server refused it and the source has one
+/// ([`engine_provider::with_credential`]).
+///
+/// The ask is part of the dial, so it is bounded by the dial deadline, and a source that does
+/// not answer in time fails the dial as retryable. A refusal is [`ImapError::Auth`]: a `NO` to
+/// `LOGIN` or `AUTHENTICATE`, or `535` to SMTP `AUTH`. Never `[LIMIT]`, a temporary code, an
+/// SMTP `4xx` or `5xx` other than `535`, or a server offering no mechanism the credential can
+/// use ([`ImapError::AuthUnsupported`]): none of those judged the credential, so a fresh one
+/// would meet the same answer. Never anything after `AUTH` either, so a replacement repeats no
+/// send. `attempt`
+/// opens a new connection each time, because a server may close one after a failed sign-in and
+/// counts the attempt either way.
+pub(crate) async fn with_credential<T, F, Fut>(
     source: &dyn CredentialSource,
-    mut attempt: F,
+    protocol: CredentialProtocol,
+    origin: &Origin,
+    attempt: F,
 ) -> ImapResult<T>
 where
-    F: FnMut(Credentials) -> Fut,
+    F: FnMut(Credential) -> Fut,
     Fut: Future<Output = ImapResult<T>>,
 {
-    let credentials = source.credentials().await.map_err(ImapError::Credential)?;
-    match attempt(credentials.clone()).await {
-        Err(ImapError::Auth(detail)) => match source
-            .renew(&credentials)
-            .await
-            .map_err(ImapError::Credential)?
-        {
-            Some(renewed) => attempt(renewed).await,
-            None => Err(ImapError::Auth(detail)),
-        },
-        outcome => outcome,
+    let request = CredentialRequest::new(protocol, origin);
+    let is_refusal = |error: &ImapError| matches!(error, ImapError::Auth(_));
+    engine_provider::with_credential(source, &request, BOUNDS.dial(), is_refusal, attempt).await
+}
+
+impl From<CredentialFailure> for ImapError {
+    fn from(failure: CredentialFailure) -> Self {
+        Self::Credential(failure.into_error())
     }
 }
 
@@ -168,25 +103,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn debug_redacts_either_secret_and_keeps_the_shape() {
-        let password = format!("{:?}", Credentials::password("alice", "hunter2"));
-        assert!(password.contains("Password") && password.contains("alice"));
-        assert!(!password.contains("hunter2"), "password leaked: {password}");
-
-        let oauth = format!(
-            "{:?}",
-            Credentials::oauth2("alice@example.com", "ya29.secret")
-        );
-        assert!(oauth.contains("OAuth2") && oauth.contains("alice@example.com"));
-        assert!(!oauth.contains("ya29.secret"), "token leaked: {oauth}");
+    fn a_password_and_a_named_token_sign_in_as_themselves() {
+        let password = Credential::password("alice", "hunter2");
+        assert!(matches!(
+            sign_in(&password),
+            Ok(SignIn::Password {
+                username: "alice",
+                password: "hunter2"
+            })
+        ));
+        let token = Credential::bearer_for("alice@example.com", "ya29.secret");
+        assert!(matches!(
+            sign_in(&token),
+            Ok(SignIn::Token {
+                username: "alice@example.com",
+                token: "ya29.secret"
+            })
+        ));
     }
 
     #[test]
-    fn the_username_reads_out_of_either_shape() {
-        assert_eq!(Credentials::password("alice", "pw").username(), "alice");
+    #[expect(
+        deprecated,
+        reason = "code written against the old names must keep compiling"
+    )]
+    fn the_deprecated_names_still_build_the_same_credentials() {
+        let password = crate::Credentials::password("alice", "hunter2");
+        assert!(matches!(
+            sign_in(&password),
+            Ok(SignIn::Password {
+                username: "alice",
+                ..
+            })
+        ));
+        let token = crate::Credentials::oauth2("alice@example.com", "ya29.secret");
+        assert!(matches!(
+            sign_in(&token),
+            Ok(SignIn::Token {
+                username: "alice@example.com",
+                token: "ya29.secret"
+            })
+        ));
+        // A fixed credential still configures an account directly.
+        let config = crate::ImapConfig::new("h:993", "h", token);
+        assert_eq!(config.origin(), Origin::new("imaps", "h", 993));
+    }
+
+    #[test]
+    fn a_token_without_a_username_cannot_sign_in() {
+        // Both SASL mechanisms name the account, so this is the host's mistake: permanent.
+        let Err(err) = sign_in(&Credential::bearer("ya29.secret")) else {
+            panic!("a token without a username must not sign in");
+        };
+        assert!(matches!(err, ImapError::Bad(_)), "{err:?}");
         assert_eq!(
-            Credentials::oauth2("bob@example.com", "tok").username(),
-            "bob@example.com"
+            err.failure_class(),
+            engine_core::error::FailureClass::Permanent
         );
+        assert!(!err.to_string().contains("ya29.secret"));
     }
 }

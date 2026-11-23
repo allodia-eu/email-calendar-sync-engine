@@ -141,7 +141,7 @@ mod tests {
         let config = ImapConfig::new(
             format!("127.0.0.1:{port}"),
             "127.0.0.1",
-            crate::credentials::Credentials::password("u", "pw"),
+            engine_provider::Credential::password("u", "pw"),
         );
         ImapAccount::connect(&config, tls.connector())
             .await

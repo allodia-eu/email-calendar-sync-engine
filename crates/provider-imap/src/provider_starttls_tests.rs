@@ -100,7 +100,7 @@ async fn starttls_connect_upgrades_and_reports_the_negotiated_version() {
     let config = ImapConfig::new(
         format!("127.0.0.1:{port}"),
         "127.0.0.1",
-        crate::credentials::Credentials::password("alice", "pw"),
+        engine_provider::Credential::password("alice", "pw"),
     )
     .with_starttls();
     let provider: ImapProvider<TlsStream<TcpStream>> =

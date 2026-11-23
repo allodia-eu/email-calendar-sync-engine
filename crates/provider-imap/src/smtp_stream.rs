@@ -92,8 +92,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SmtpStream<S> {
         ))
     }
 
+    /// Writes `line` and its CRLF. For lines that carry no secret: it formats a copy. An `AUTH`
+    /// line is built in a zeroed buffer, CRLF included, and goes out through
+    /// [`write_raw`](Self::write_raw).
     pub(crate) async fn write_line(&mut self, line: &str) -> ImapResult<()> {
         self.write(format!("{line}\r\n").as_bytes()).await
+    }
+
+    /// Writes `bytes` as they are: a line the caller built, CRLF included.
+    pub(crate) async fn write_raw(&mut self, bytes: &[u8]) -> ImapResult<()> {
+        self.write(bytes).await
     }
 
     /// Writes the message dot-stuffed, all of it but the terminator. A server delivers

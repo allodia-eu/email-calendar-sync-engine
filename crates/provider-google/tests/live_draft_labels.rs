@@ -16,10 +16,10 @@ use engine_core::{
     sync::{SyncUpdate, SyncWindow},
     time::CalendarDate,
 };
-use engine_provider::{Draft, KeywordName, MailboxEdit, MailboxWrites, Provider};
+use engine_provider::{Credential, Draft, KeywordName, MailboxEdit, MailboxWrites, Provider};
 use futures_util::StreamExt;
 use provider_google::{GmailProvider, GoogleClient};
-use provider_imap::{Credentials, ImapAccount, ImapConfig};
+use provider_imap::{ImapAccount, ImapConfig};
 
 const SELF_ADDRESS: &str = "allodia.e2e@gmail.com";
 
@@ -61,7 +61,7 @@ async fn over_imap(token: &str, provider: GmailProvider) -> GmailProvider {
     let config = ImapConfig::new(
         "imap.gmail.com:993".to_owned(),
         "imap.gmail.com".to_owned(),
-        Credentials::oauth2(SELF_ADDRESS.to_owned(), token.to_owned()),
+        Credential::bearer_for(SELF_ADDRESS.to_owned(), token.to_owned()),
     );
     let account = ImapAccount::connect(&config, engine_tls::TlsClientConfig::bundled().connector())
         .await

@@ -14,6 +14,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::{
     error::{ImapError, ImapResult},
     sasl::{self, Mechanism},
+    secret_line::{Part, secret_line},
     transport::{Connection, strip_ascii_prefix},
 };
 
@@ -57,11 +58,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     ///
     /// # Errors
     ///
-    /// [`ImapError::Auth`] when the server advertises no OAuth mechanism (the message
-    /// names what it *did* offer, because the usual cause is a token handed to an
-    /// account that only takes a password) or when it rejects the token — carrying the
-    /// decoded challenge, which is the only place the server says whether the token was
-    /// expired, wrongly scoped, or for another account.
+    /// [`ImapError::AuthUnsupported`] when the server advertises no OAuth mechanism (the
+    /// message names what it *did* offer, because the usual cause is a token handed to an
+    /// account that only takes a password), and [`ImapError::Auth`] when it rejects the token —
+    /// carrying the decoded challenge, which is the only place the server says whether the token
+    /// was expired, wrongly scoped, or for another account.
     pub(crate) async fn authenticate_oauth2(
         &mut self,
         username: &str,
@@ -75,7 +76,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             .filter_map(|atom| sasl::advertised_mechanism(atom))
             .collect();
         let mechanism = sasl::select(offered.iter().copied()).ok_or_else(|| {
-            ImapError::auth(format!(
+            ImapError::auth_unsupported(format!(
                 "server advertises no OAuth SASL mechanism (it offers: {})",
                 if offered.is_empty() {
                     "none".to_owned()
@@ -107,8 +108,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let tag = self.next_tag();
         let atom = mechanism.atom();
         if sasl_ir {
-            self.send_raw(format!("{tag} AUTHENTICATE {atom} {initial}\r\n").as_bytes())
-                .await?;
+            let line = secret_line(&[
+                Part::Text(&tag),
+                Part::Text(" AUTHENTICATE "),
+                Part::Text(atom),
+                Part::Text(" "),
+                Part::Text(initial),
+                Part::Text("\r\n"),
+            ]);
+            self.send_raw(line.as_bytes()).await?;
         } else {
             self.send_raw(format!("{tag} AUTHENTICATE {atom}\r\n").as_bytes())
                 .await?;
@@ -116,7 +124,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 // The empty continuation is the server asking for the credential it
                 // would have taken inline.
                 SaslLine::Continuation(_) => {
-                    self.send_raw(format!("{initial}\r\n").as_bytes()).await?;
+                    let line = secret_line(&[Part::Text(initial), Part::Text("\r\n")]);
+                    self.send_raw(line.as_bytes()).await?;
                 }
                 // A server may refuse the mechanism outright rather than prompt.
                 SaslLine::Completion(status, detail) => return complete(&status, &detail, ""),

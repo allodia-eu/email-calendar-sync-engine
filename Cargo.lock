@@ -1622,6 +1622,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "zeroize",
 ]
 
 [[package]]

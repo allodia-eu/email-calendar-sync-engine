@@ -21,10 +21,10 @@ use engine_core::{
     mail::{EmailAddress, MailboxRole, StoredContent},
     sync::{SyncScope, SyncUpdate},
 };
-use engine_provider::{Draft, Provider};
+use engine_provider::{Credential, Draft, Provider};
 use engine_store::{ManualClock, StoreRead, WorkerId};
 use engine_sync::{IgnoreCommits, StreamTuning, submit_mail, sync_mail};
-use provider_imap::{Credentials, ImapAccount, ImapConfig, ImapProvider};
+use provider_imap::{ImapAccount, ImapConfig, ImapProvider};
 use serde::de::DeserializeOwned;
 use stalwart_harness::Harness;
 use store_sqlite::SqliteStore;
@@ -51,7 +51,7 @@ async fn connect_starttls(
     let config = ImapConfig::new(
         harness.imap_starttls_addr.as_str(),
         host_of(&harness.imap_starttls_addr),
-        Credentials::password(harness.account.as_str(), harness.password.as_str()),
+        Credential::password(harness.account.as_str(), harness.password.as_str()),
     )
     .with_starttls();
     ImapAccount::connect(&config, no_verify_connector())
@@ -69,7 +69,7 @@ async fn connect_starttls_submitter(
     let config = ImapConfig::new(
         harness.imap_starttls_addr.as_str(),
         host_of(&harness.imap_starttls_addr),
-        Credentials::password(harness.account.as_str(), harness.password.as_str()),
+        Credential::password(harness.account.as_str(), harness.password.as_str()),
     )
     .with_starttls()
     .with_smtp_starttls(
@@ -92,7 +92,7 @@ async fn connect_tls_submitter(
     let config = ImapConfig::new(
         harness.imap_addr.as_str(),
         host_of(&harness.imap_addr),
-        Credentials::password(harness.account.as_str(), harness.password.as_str()),
+        Credential::password(harness.account.as_str(), harness.password.as_str()),
     )
     .with_smtp_tls(
         harness.smtp_tls_addr.as_str(),

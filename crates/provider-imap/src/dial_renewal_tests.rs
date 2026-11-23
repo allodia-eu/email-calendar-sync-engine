@@ -1,5 +1,5 @@
 //! Offline tests for where a dial gets its credential: asked of the config's
-//! [`CredentialSource`] on every dial, and renewed once when the server refuses a token.
+//! [`CredentialSource`] on every dial, and replaced once when the server refuses a token.
 //!
 //! An access token expires within the hour while an account's pool lives for as long as the
 //! host runs, so a pool that kept presenting the token it was built with would lose every new
@@ -17,12 +17,14 @@ use std::{
 
 use async_trait::async_trait;
 use engine_core::error::FailureClass;
-use engine_provider::{ProviderError, TlsVersion};
+use engine_provider::{
+    Credential, CredentialProtocol, CredentialRequest, CredentialSource, CredentialSubject, Origin,
+    ProviderError, TlsVersion,
+};
 
 use super::dial_with;
 use crate::{
     config::ImapConfig,
-    credentials::{CredentialSource, Credentials},
     error::ImapError,
     mock::{MockStream, Recorded, script, written},
     pool::{Dial, ImapPool},
@@ -30,16 +32,16 @@ use crate::{
     transport::Connection,
 };
 
-const USER: &str = "alice@example.com";
-const HOST: &str = "imap.example.com";
-const GREETING: &str = "* OK ready\r\n";
-const SASL_CAPABILITY: &str =
+pub(super) const USER: &str = "alice@example.com";
+pub(super) const HOST: &str = "imap.example.com";
+pub(super) const GREETING: &str = "* OK ready\r\n";
+pub(super) const SASL_CAPABILITY: &str =
     "* CAPABILITY IMAP4rev1 SASL-IR AUTH=OAUTHBEARER\r\na1 OK CAPABILITY done\r\n";
 /// A rest threshold no test outlives, so a parked connection is never checked.
 const NEVER_CHECK: Duration = Duration::from_hours(1);
 
 /// A server that accepts whatever token it is given.
-fn accepting() -> Vec<u8> {
+pub(super) fn accepting() -> Vec<u8> {
     script(&[
         GREETING,
         SASL_CAPABILITY,
@@ -49,7 +51,7 @@ fn accepting() -> Vec<u8> {
 }
 
 /// A server that refuses the token, as one does when it has expired.
-fn refusing() -> Vec<u8> {
+pub(super) fn refusing() -> Vec<u8> {
     script(&[
         GREETING,
         SASL_CAPABILITY,
@@ -63,24 +65,35 @@ fn presented(token: &str) -> String {
     Mechanism::OAuthBearer
         .initial_response(USER, token, HOST, Some(993))
         .expect("clean credential")
+        .as_str()
+        .to_owned()
 }
 
-/// A host's token source: hands out whatever token is current, and on `renew` switches to
-/// the refreshed one it was given, if any.
-#[derive(Debug, Default)]
-struct TokenSource {
+/// A host's token source: hands out whatever token is current, and on `replace` switches to
+/// the refreshed one it was given, if any. Records what each ask was told.
+#[derive(Debug)]
+pub(super) struct TokenSource {
+    subject: CredentialSubject,
     current: Mutex<String>,
     refreshed: Mutex<Option<String>>,
-    renewals: AtomicUsize,
+    pub(super) renewals: AtomicUsize,
+    pub(super) asked: Mutex<Vec<(CredentialProtocol, Origin)>>,
 }
 
 impl TokenSource {
-    fn new(current: &str, refreshed: Option<&str>) -> Arc<Self> {
+    pub(super) fn new(current: &str, refreshed: Option<&str>) -> Arc<Self> {
         Arc::new(Self {
+            subject: CredentialSubject::new("alice"),
             current: Mutex::new(current.to_owned()),
             refreshed: Mutex::new(refreshed.map(str::to_owned)),
             renewals: AtomicUsize::new(0),
+            asked: Mutex::default(),
         })
+    }
+
+    fn record(&self, request: &CredentialRequest<'_>) {
+        let asked = (request.protocol, request.origin.clone());
+        self.asked.lock().unwrap().push(asked);
     }
 
     /// What a host's refresh does between two dials: the old token is gone.
@@ -91,46 +104,66 @@ impl TokenSource {
 
 #[async_trait]
 impl CredentialSource for TokenSource {
-    async fn credentials(&self) -> Result<Credentials, ProviderError> {
-        Ok(Credentials::oauth2(
+    fn subject(&self) -> &CredentialSubject {
+        &self.subject
+    }
+
+    async fn credential(
+        &self,
+        request: &CredentialRequest<'_>,
+    ) -> Result<Credential, ProviderError> {
+        self.record(request);
+        Ok(Credential::bearer_for(
             USER,
             self.current.lock().unwrap().clone(),
         ))
     }
 
-    async fn renew(&self, _refused: &Credentials) -> Result<Option<Credentials>, ProviderError> {
+    async fn replace(
+        &self,
+        _refused: &Credential,
+        request: &CredentialRequest<'_>,
+    ) -> Result<Option<Credential>, ProviderError> {
+        self.record(request);
         self.renewals.fetch_add(1, Ordering::SeqCst);
         let refreshed = self.refreshed.lock().unwrap().take();
         Ok(refreshed.map(|token| {
             self.rotate(&token);
-            Credentials::oauth2(USER, token)
+            Credential::bearer_for(USER, token)
         }))
     }
 }
 
 /// A source whose grant is gone: it has no credential to give at all.
 #[derive(Debug)]
-struct RevokedSource;
+struct RevokedSource(CredentialSubject);
 
 #[async_trait]
 impl CredentialSource for RevokedSource {
-    async fn credentials(&self) -> Result<Credentials, ProviderError> {
+    fn subject(&self) -> &CredentialSubject {
+        &self.0
+    }
+
+    async fn credential(
+        &self,
+        _request: &CredentialRequest<'_>,
+    ) -> Result<Credential, ProviderError> {
         Err(ProviderError::authentication("the grant was revoked"))
     }
 }
 
-type Opened = Result<(Connection<MockStream>, Option<TlsVersion>), ImapError>;
+pub(super) type Opened = Result<(Connection<MockStream>, Option<TlsVersion>), ImapError>;
 
 /// Scripted servers, handed out one per connection the dial opens, and what the client wrote
 /// on each.
 #[derive(Clone, Default)]
-struct Servers {
+pub(super) struct Servers {
     scripts: Arc<Mutex<VecDeque<Vec<u8>>>>,
     sessions: Arc<Mutex<Vec<Recorded>>>,
 }
 
 impl Servers {
-    fn new(scripts: Vec<Vec<u8>>) -> Self {
+    pub(super) fn new(scripts: Vec<Vec<u8>>) -> Self {
         Self {
             scripts: Arc::new(Mutex::new(scripts.into())),
             sessions: Arc::default(),
@@ -138,7 +171,7 @@ impl Servers {
     }
 
     /// Opens the next scripted connection, as `open_secured` would a real one.
-    fn open(&self) -> impl Future<Output = Opened> + use<> {
+    pub(super) fn open(&self) -> impl Future<Output = Opened> + use<> {
         let server = self
             .scripts
             .lock()
@@ -154,7 +187,7 @@ impl Servers {
         written(&self.sessions.lock().unwrap()[session])
     }
 
-    fn opened(&self) -> usize {
+    pub(super) fn opened(&self) -> usize {
         self.sessions.lock().unwrap().len()
     }
 
@@ -178,7 +211,7 @@ impl Servers {
     }
 }
 
-fn token_config(source: Arc<dyn CredentialSource>) -> ImapConfig {
+pub(super) fn token_config(source: Arc<dyn CredentialSource>) -> ImapConfig {
     ImapConfig::from_credential_source(format!("{HOST}:993"), HOST, source)
 }
 
@@ -254,7 +287,7 @@ async fn a_refused_password_is_not_tried_again() {
     let config = ImapConfig::new(
         format!("{HOST}:993"),
         HOST,
-        Credentials::password(USER, "wrong"),
+        Credential::password(USER, "wrong"),
     );
 
     let err = dial_with(&config, || servers.open())
@@ -284,7 +317,7 @@ async fn a_renewed_token_refused_again_is_reported_rather_than_renewed_again() {
 #[tokio::test]
 async fn a_source_with_no_credential_fails_with_its_own_class_and_dials_nothing() {
     let servers = Servers::new(vec![accepting()]);
-    let config = token_config(Arc::new(RevokedSource));
+    let config = token_config(Arc::new(RevokedSource(CredentialSubject::new("alice"))));
 
     let err = dial_with(&config, || servers.open())
         .await

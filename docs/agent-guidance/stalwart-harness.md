@@ -397,6 +397,16 @@ one scratch account does not, and the runs after the first fail on `429`, before
 about the code. Leave half a minute between repeated runs, and read a `429` in a loop as the
 loop's fault, not the code's.
 
+### The ban on failed sign-ins is not disarmed
+
+`x:Security`'s **`authBanRate`** bans a client IP after **100 failed sign-ins a day** (v1.0.2,
+`authBanPeriod` unset), and every harness test signs in from `127.0.0.1`, so a ban stops every
+live suite at once. The entrypoint leaves it as shipped, because a test that presents a wrong
+password should cost something visible. Such a test counts its wrong attempts against this budget
+and says so in its header: `provider-imap/tests/live_imap_credential.rs` spends three a run.
+Repeated runs of a wrong-password test belong on the Dovecot harness, which bans nobody.
+`x:BlockedIp/get` with `ids: null` lists the addresses banned so far.
+
 When several worktrees share these servers, take a lock (`flock`) around every live run, reseed
 and `docker compose`, so one checkout's reseed cannot land in the middle of another's run.
 
