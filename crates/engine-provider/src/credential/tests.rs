@@ -9,6 +9,7 @@ use super::{
 };
 
 const ADDRESS: &str = "alice@example.com";
+const ADMIN: &str = "master@example.com";
 const PASSWORD: &str = "hunter2-correct-horse";
 const TOKEN: &str = "ya29.a-token-nobody-may-print";
 
@@ -58,6 +59,32 @@ fn a_credential_prints_neither_its_secret_nor_its_username() {
     let shown = format!("{:?}", Credential::bearer(TOKEN));
     assert!(shown.contains("username: <absent>"), "{shown}");
     assert!(!shown.contains(TOKEN), "{shown}");
+}
+
+#[test]
+fn a_credential_acting_as_another_account_prints_neither_account_nor_its_secret() {
+    let credential = Credential::acting_as(ADMIN, PASSWORD, ADDRESS);
+    let shown = format!("{credential:?}");
+    assert_eq!(
+        shown,
+        "ActingAs { username: <present>, password: <redacted>, acting_as: <present> }"
+    );
+    for leaked in [ADMIN, "master", ADDRESS, "alice", PASSWORD] {
+        assert!(!shown.contains(leaked), "{leaked} leaked: {shown}");
+    }
+}
+
+#[test]
+fn a_credential_acting_as_another_account_carries_both_accounts() {
+    let credential = Credential::acting_as(ADMIN, PASSWORD, ADDRESS);
+    // The username is the one that signs in, the administrator's: the mailbox acted as is
+    // not who the password belongs to.
+    assert_eq!(credential.username(), Some(ADMIN));
+    assert!(matches!(
+        &credential,
+        Credential::ActingAs { username, password, acting_as }
+            if username == ADMIN && password.expose() == PASSWORD && acting_as == ADDRESS
+    ));
 }
 
 #[test]

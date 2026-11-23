@@ -124,7 +124,9 @@ impl CredentialSource for Scripted {
 fn token_of(credential: &Credential) -> String {
     match credential {
         Credential::Bearer { token, .. } => token.expose().to_owned(),
-        Credential::Password { password, .. } => password.expose().to_owned(),
+        Credential::Password { password, .. } | Credential::ActingAs { password, .. } => {
+            password.expose().to_owned()
+        }
     }
 }
 
