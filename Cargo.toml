@@ -197,6 +197,7 @@ httpdate = "1.0.3"
 engine-http = { path = "crates/engine-http" }
 engine-tls = { path = "crates/engine-tls" }
 engine-mime = { path = "crates/engine-mime" }
+engine-sieve = { path = "crates/engine-sieve" }
 engine-html = { path = "crates/engine-html" }
 # The iCalendar layer is transport-neutral: iMIP carries it over *mail* on every
 # account type, so it cannot live inside the CalDAV adapter (see the crate docs).

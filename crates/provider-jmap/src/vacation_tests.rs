@@ -43,10 +43,10 @@ pub(super) fn with_sieve(responses: Vec<Value>) -> (JmapProvider, Arc<FakeExecut
     )
 }
 
+/// The calls of the last request: the write, after the listing that decides how to write it.
 pub(super) fn calls(exec: &FakeExecutor) -> Vec<(String, Value)> {
     let requests = exec.requests.lock().unwrap();
-    assert_eq!(requests.len(), 1, "one request");
-    requests[0]["methodCalls"]
+    requests.last().expect("a request")["methodCalls"]
         .as_array()
         .unwrap()
         .iter()
@@ -55,7 +55,16 @@ pub(super) fn calls(exec: &FakeExecutor) -> Vec<(String, Value)> {
 }
 
 pub(super) fn using(exec: &FakeExecutor) -> Value {
-    exec.requests.lock().unwrap()[0]["using"].clone()
+    exec.requests.lock().unwrap().last().expect("a request")["using"].clone()
+}
+
+/// The listing a write of the reply starts with, where none of the user's scripts runs: the
+/// reply is then written with the server's own flag (`crate::vacation_include` says when not).
+/// The shape of a captured `SieveScript/get` (`vacation_set_response.json`, its first call).
+pub(super) fn no_rules_running() -> Value {
+    json!({ "methodResponses": [
+        ["SieveScript/get", { "accountId": "e", "state": "s0", "list": [], "notFound": [] }, "0"]
+    ] })
 }
 
 pub(super) fn away() -> VacationResponse {
@@ -80,7 +89,10 @@ pub(super) fn read_at(state: &str) -> VacationResponse {
 
 #[tokio::test]
 async fn a_write_sends_every_part_guarded_by_the_version_read_between_two_script_listings() {
-    let (provider, exec) = with_sieve(vec![fixture("vacation_set_response.json")]);
+    let (provider, exec) = with_sieve(vec![
+        no_rules_running(),
+        fixture("vacation_set_response.json"),
+    ]);
 
     let receipt = provider
         .set_vacation(
@@ -133,7 +145,9 @@ async fn a_write_sends_every_part_guarded_by_the_version_read_between_two_script
 #[tokio::test]
 async fn the_user_s_script_is_reported_switched_off_by_the_reply_and_still_off_after_it() {
     let (provider, _) = with_sieve(vec![
+        no_rules_running(),
         fixture("vacation_set_deactivates_response.json"),
+        no_rules_running(),
         fixture("vacation_set_off_response.json"),
     ]);
 
@@ -166,7 +180,7 @@ async fn a_write_built_on_a_stale_read_is_a_conflict_that_names_no_content() {
     // The server's description can echo what the request carried; here it does.
     let mut stale = fixture("vacation_set_stale_response.json");
     stale["methodResponses"][1][1]["description"] = json!("ifInState stale for: the ninth");
-    let (provider, _) = with_sieve(vec![stale]);
+    let (provider, _) = with_sieve(vec![no_rules_running(), stale]);
 
     let err = provider
         .set_vacation(
@@ -247,7 +261,13 @@ async fn a_refusal_names_its_type_and_an_unanswered_or_lost_write_may_have_lande
         ["VacationResponse/set", { "newState": "s2" }, "1"],
         ["SieveScript/get", { "list": [] }, "2"]
     ] });
-    let (provider, _) = with_sieve(vec![refused, unanswered]);
+    let (provider, _) = with_sieve(vec![
+        no_rules_running(),
+        refused,
+        no_rules_running(),
+        unanswered,
+        no_rules_running(),
+    ]);
     let vacation = provider.vacation().unwrap();
 
     let err = vacation
@@ -277,7 +297,7 @@ async fn a_refusal_names_its_type_and_an_unanswered_or_lost_write_may_have_lande
         .unwrap_err();
     assert!(err.requires_confirmation(), "{err:?}");
 
-    // The fake has nothing left: the request failed with no answer.
+    // The fake has nothing left after the listing: the write failed with no answer.
     let err = vacation
         .set_vacation(
             &account(),
@@ -296,7 +316,7 @@ async fn a_script_listing_that_fails_leaves_the_rules_unknown_not_the_write() {
         ["VacationResponse/set", { "newState": "s2", "updated": { "singleton": null } }, "1"],
         ["SieveScript/get", { "list": [{ "id": "a", "isActive": true }] }, "2"]
     ] });
-    let (provider, _) = with_sieve(vec![answer]);
+    let (provider, _) = with_sieve(vec![no_rules_running(), answer]);
 
     let receipt = provider
         .set_vacation(
@@ -387,7 +407,7 @@ async fn a_script_listing_that_does_not_bracket_the_write_leaves_the_rules_unkno
         .unwrap()
         .remove("state");
     for answer in [moved(0, "sbh"), moved(2, "sbn"), no_state] {
-        let (provider, _) = with_sieve(vec![answer]);
+        let (provider, _) = with_sieve(vec![no_rules_running(), answer]);
         let receipt = provider
             .set_vacation(
                 &account(),
@@ -404,6 +424,7 @@ async fn a_script_listing_that_does_not_bracket_the_write_leaves_the_rules_unkno
 #[tokio::test]
 async fn a_reply_with_parts_left_out_clears_them_and_reads_back_without_them() {
     let (provider, exec) = with_sieve(vec![
+        no_rules_running(),
         fixture("vacation_set_clears_response.json"),
         fixture("vacation_get_cleared_response.json"),
     ]);
@@ -426,7 +447,7 @@ async fn a_reply_with_parts_left_out_clears_them_and_reads_back_without_them() {
         RulesEffect::Untouched,
         "the reply's own script stays on"
     );
-    let sent = exec.requests.lock().unwrap()[0]["methodCalls"][1][1]["update"]["singleton"].clone();
+    let sent = exec.requests.lock().unwrap()[1]["methodCalls"][1][1]["update"]["singleton"].clone();
     assert_eq!(
         sent,
         json!({ "isEnabled": true, "fromDate": "2030-02-01T08:00:00Z", "toDate": null,

@@ -301,6 +301,12 @@ impl Provider for JmapProvider {
         crate::vacation::reachable(self.executor.session()).then_some(self)
     }
 
+    /// The account's mail rules (`crate::rules`), where the session gives this client an account
+    /// with `urn:ietf:params:jmap:sieve`.
+    fn mail_rules(&self) -> Option<&dyn engine_provider::MailRules> {
+        crate::rules::reachable(self.executor.session()).then_some(self)
+    }
+
     async fn report_message(
         &self,
         _account: &AccountId,

@@ -17,6 +17,8 @@ engine-provider = { workspace = true, features = ["http"] }
 # One throttling answer for every HTTP provider (docs/agent-guidance/http-throttling.md).
 engine-http = { workspace = true }
 engine-tls = { workspace = true, features = ["reqwest"] }
+# Mail rules over JMAP Sieve: the script split at its commands, read and written in the dialect.
+engine-sieve = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

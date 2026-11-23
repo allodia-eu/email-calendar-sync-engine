@@ -1,0 +1,17 @@
+{
+  "methodResponses": [
+    [
+      "VacationResponse/set",
+      {
+        "accountId": "e",
+        "oldState": "steaq",
+        "newState": "stiaq",
+        "updated": {
+          "singleton": null
+        }
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "b4e4d325"
+}

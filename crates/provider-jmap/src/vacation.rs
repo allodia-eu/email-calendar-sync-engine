@@ -93,18 +93,34 @@ impl Vacation for JmapProvider {
     ) -> ProviderResult<VacationReceipt> {
         refuse_unheld_vacation(&vocabulary(), new)?;
         let guard = precondition.version(self.vacation_write_guard())?;
-        Ok(write(self.executor(), guard, new).await?)
+        let executor = self.executor();
+        if let Some(running) = crate::vacation_include::rules_running(executor).await? {
+            let account = vacation_account(executor.session())?;
+            let body = to_json(new);
+            return crate::vacation_include::write(executor, account, guard, &running, new, body)
+                .await;
+        }
+        Ok(write(executor, guard, new).await?)
     }
 }
 
-/// The account's reply, and the state it was read at.
+/// The account's reply, and the state it was read at. Where the account has Sieve, the same
+/// request lists the scripts, and a reply its own flag calls off is on where the user's rules
+/// script runs it (`crate::vacation_include`, [`reply_runs`](crate::sieve_scripts::reply_runs)).
 async fn read(executor: &dyn Executor) -> Result<VacationResponse, JmapError> {
-    let account = vacation_account(executor.session())?;
-    let mut request = Request::new([capability::CORE, capability::VACATION_RESPONSE]);
+    let session = executor.session();
+    let account = vacation_account(session)?;
+    let sieve = session.extension_account(capability::SIEVE);
+    let mut using = vec![capability::CORE, capability::VACATION_RESPONSE];
+    if sieve.is_some() {
+        using.push(capability::SIEVE);
+    }
+    let mut request = Request::new(using);
     let get = request.invoke(
         "VacationResponse/get",
         json!({ "accountId": account, "ids": [SINGLETON] }),
     );
+    let listing = sieve.map(|sieve| crate::sieve_scripts::list_call(&mut request, sieve));
     let response = executor.execute(&request).await?;
     let result = response.result(&get)?;
     let object = result
@@ -121,7 +137,18 @@ async fn read(executor: &dyn Executor) -> Result<VacationResponse, JmapError> {
         .get("state")
         .and_then(Value::as_str)
         .ok_or_else(|| JmapError::protocol("VacationResponse/get answered without a state"))?;
-    Ok(from_json(object)?.with_version(VacationVersion::new(state)))
+    let reply = from_json(object)?.with_version(VacationVersion::new(state));
+    // A listing that failed says nothing about the rules: the reply reads as its flag says.
+    let scripts = listing
+        .filter(|_| !reply.enabled)
+        .and_then(|call| response.result(&call).ok())
+        .and_then(|result| crate::sieve_scripts::parse(result).ok());
+    if let Some(scripts) = scripts
+        && crate::vacation_include::runs(executor, &scripts).await?
+    {
+        return Ok(reply.turned_on());
+    }
+    Ok(reply)
 }
 
 /// Replaces the reply with `new`, guarded by `guard` where there is one, and lists the account's

@@ -66,7 +66,8 @@ If product pressure changes the order, the domain model tests still need JMAP an
   `Some(self)`, one that cannot implements nothing and answers `None`, and the answer is
   both the capability check and the means to act on it, so no flag in `Capabilities` has to
   agree with a method that rejects. `Provider::vacation() -> Option<&dyn Vacation>` (below,
-  "Out-of-office") is the second. `Box<dyn Provider>` delegates every accessor, so a host
+  "Out-of-office") is the second, and `Provider::mail_rules() -> Option<&dyn MailRules>` (below,
+  "Mail rules") the third. `Box<dyn Provider>` delegates every accessor, so a host
   holding the box reaches the capability without knowing the adapter.
 
   The accessor is what makes a sub-trait affordable. A bare sub-trait costs a host what a
@@ -364,6 +365,37 @@ adapter can reach.
 | Graph (`automaticRepliesSetting`) | Planned (slices 4, 5) | `Absent` | both ends, no subject, one body; organization, organization and contacts; outside reply | `Untouched` |
 | Gmail (`VacationSettings`) | Planned (slice 5) | `Absent` | either end, subject, text and HTML; contacts, organization, contacts in organization (Workspace) | `Untouched` |
 | CalDAV / CardDAV | n/a | | | |
+
+On a JMAP server that runs the reply as a script of its own, the JMAP adapter keeps the user's
+rules running: while a script of the user's runs, the reply runs through its `include` of the
+reply's script, and the receipt is `Untouched` (`jmap.md` → "Out-of-office"). `Deactivated` and
+`StillDeactivated` remain for what another client does with the server's own flag.
+
+## Mail rules (`MailRules`)
+
+An account's rules are a setting too, written whole and directly, guarded by the version read
+(decision 1). The model is `engine_core::rules` (`modeling.md`); the capability is
+`engine_provider::MailRules`, reached through `Provider::mail_rules()`.
+
+- **`read_rules`** answers the `RuleSet`: the rules in order, the `RuleSetVersion`, and the
+  provider's own form (`RawRules`). **`replace_rules(base, rules)`** writes the whole set, built on
+  `base`: its version guards the write where `rules_write_guard()` is `Enforced` (a `base` without
+  one is refused before sending, `guard_version`), and its raw form supplies every rule the caller
+  did not change, byte for byte.
+- **What the account cannot hold is decided first**, by `plan_rules` in edit mode against
+  `rule_vocabulary(account)`, and the `RulesReceipt` carries each rule's `RuleOutcome`; adapters
+  add only what the server alone refuses (a script over its size limit, a script it calls invalid:
+  `item_unavailable`). A stale base is a `Conflict`; a lost answer is `requires_confirmation`.
+- **Rule values are content**: names, addresses, folders, test values. Errors and `Debug` carry
+  kinds, positions and counts only.
+
+| Adapter | Rules | Guard | Vocabulary |
+|---|---|---|---|
+| JMAP (Sieve, RFC 9661) | **Implemented** (`jmap.md` → "Mail rules") | `Enforced` (`ifInState` on `SieveScript`) | the dialect's, from the account's `sieveExtensions` and `maxNumberRedirects` |
+| IMAP + ManageSieve | Planned (slice 3): the same dialect, one script with the reply | none (compare the script) | per server's greeting |
+| Graph (`messageRule`) | Planned (slices 4, 5) | **unverified** (`@odata.etag`) | fixed |
+| Gmail (filters) | Planned (slice 5) | `Absent` | fixed: no stop, no order, no disabled rule |
+| CalDAV / CardDAV | n/a | | |
 
 ## Stalwart Test Spine
 

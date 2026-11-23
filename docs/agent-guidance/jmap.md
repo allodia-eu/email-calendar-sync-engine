@@ -220,19 +220,80 @@ the group's.
   whether the `vacation` script is the active one; that script cannot be updated through
   `SieveScript/set` but can be destroyed once inactive (`spec-deviations.md`, STALWART-3); its
   `toDate` test is inclusive (STALWART-4), in UTC.
+- **While the user's rules run, the reply runs through them** (`src/vacation_include.rs`). Stalwart
+  keeps the reply in a script named `vacation` and runs one script at a time, so the server's own
+  flag would switch the rules off. Where a script of the user's runs, a write lists the scripts
+  first, then sends `VacationResponse/set` with the words and `isEnabled: false` (which stores them
+  in the reply's script and activates nothing), then, in a second request guarded by the
+  `newState` the first answered, updates the rules script with its `include` of the reply added
+  (on) or taken out (off). Two requests, because Stalwart ignores a result reference for
+  `ifInState` (`docs/spec-deviations.md`). If the first lands and the second does not, the words
+  are stored and whether it runs is as it was: `requires_confirmation`. A read lists the scripts
+  in the same request and answers on where the reply's script is active, or the running rules
+  script includes it: `sieve_scripts::reply_runs`, the one answer the reply and the rules share.
+
+  **What another client sees.** On such an account `VacationResponse/get` answers
+  `isEnabled: false` while the reply runs, and switching it off there does nothing: the include,
+  not the flag, runs it. Switching it on there activates the reply's script and switches the
+  user's rules off, as without the engine. Rendering the reply into the rules script instead
+  would show another client the same, so this did not decide between the two; the include keeps
+  the reply's words in the one object every JMAP client reads.
 
 Live: `tests/live_vacation.rs` runs as the scratch account `carol@`. It:
 - writes a reply and reads it back;
 - is refused with a stale version and accepted with the current one;
 - writes a reply with no subject, only a start and no HTML over a full one, and reads each part
   back cleared;
-- plants a script of the user's and sees the receipt report it switched off, then still off;
+- plants a script of the user's, turns the reply on and off over it through the include, and sees
+  the user's script keep running; then turns the reply on with the server's own flag, as another
+  client would, and sees the receipt report the user's script still off after it goes off;
 - restores Carol's reply and scripts whatever happens, and fails if they differ afterwards.
 
 Fixtures: `vacation_get_response.json`, `vacation_set_response.json`,
 `vacation_set_deactivates_response.json`, `vacation_set_off_response.json`,
 `vacation_set_stale_response.json`, `vacation_set_clears_response.json`,
 `vacation_get_cleared_response.json`.
+
+## Mail rules (JMAP Sieve)
+
+`JmapProvider` implements `engine_provider::MailRules` (`src/rules.rs`), and `Provider::mail_rules`
+answers it where the session addresses an account with `urn:ietf:params:jmap:sieve`. The account's
+`sieveExtensions`, `maxNumberRedirects` and `maxSizeScript` are read from the session
+(`src/session_sieve.rs`) into the dialect's vocabulary (`engine_sieve::dialect::vocabulary`).
+
+- **One script holds the rules** (`sieve_scripts::Scripts::rules`): the one running; else, where
+  none of the user's runs, the engine's own `rules` script, or the one script besides the reply's;
+  with several and none of them running or named `rules`, the engine starts its own rather than
+  pick one for the user. A first write creates `rules` and activates it. Read: `SieveScript/get`
+  (`name`, `isActive`, `blobId`), then the script's blob from the download URL; the type's
+  `state` is the `RuleSetVersion`, the text is `RawRules`, and the include of the reply is no rule
+  of the user's.
+- **Write**: `plan_rules` in edit mode first, then the dialect writes the kept rules over the
+  script read (a rule the caller did not change is copied byte for byte), with the reply's include
+  first where the reply runs, so no rule's `stop` or `discard` keeps the reply from running
+  (proven by delivery). The script is uploaded to the upload URL, then one `SieveScript/set`
+  updates (or creates) and activates it, with `ifInState` set to the read version; a listing at a
+  newer state is a `Conflict` before anything is sent. A script over `maxSizeScript` is
+  `item_unavailable` before sending.
+- **No validate before set.** `SieveScript/set` refuses an invalid script whole, proven live both
+  ways: an invalid create asking to be activated stores and activates nothing and leaves the
+  state, and an invalid update of the running script leaves its bytes and its flag. So
+  `SieveScript/validate` would add a round trip and no safety, and on Stalwart it cannot see a
+  blob uploaded in the same request anyway. `invalidScript` (Stalwart) and `invalidSieve` (RFC
+  9661) are the same refusal, `item_unavailable`, naming the type and never the description, which
+  quotes the script.
+- **Order matters on delivery.** A flag set after a `fileinto` misses the filed copy on Stalwart,
+  as RFC 5232 §3 says (live); the writer puts `addflag` and `addheader` first.
+
+Live: `tests/live_rules.rs` (rules written, read back typed, guarded both ways, refused whole,
+the vocabulary the server's) and `tests/live_rules_reply.rs` (the reply's script named `vacation`;
+rules and reply running together, proven by delivering mail through a rule that stops, one that
+discards and one that files; the reply on and off through the include) run as `carol@`, Bob
+sending, and restore both.
+
+Fixtures: `sieve_get_rules_and_reply_response.json`, `sieve_set_create_rules_response.json`,
+`sieve_set_update_rules_response.json`, `sieve_set_stale_response.json`,
+`sieve_set_invalid_response.json`, `vacation_set_kept_off_response.json`.
 
 ## JMAP specifics implemented
 
