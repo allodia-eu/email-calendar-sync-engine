@@ -378,14 +378,10 @@ async fn off_takes_the_include_out_without_the_shared_counter() {
         !uploaded.contains("include :"),
         "the include is out: {uploaded}"
     );
-    let requests = exec.requests.lock().unwrap();
-    assert_eq!(
-        requests[2]["methodCalls"][0][1]["ifInState"], "stiaq",
-        "the words' newState"
-    );
+    let step_two = exec.requests.lock().unwrap()[2]["methodCalls"][0][1]["ifInState"].clone();
+    assert_eq!(step_two, "stiaq", "the words' newState");
 
     // Turning it on with the state unread is the flag's, as without the condition.
-    drop(requests);
     let (provider, exec) = over(
         vec![
             reply_state_unread(),
