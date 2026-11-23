@@ -58,6 +58,8 @@ rcgen = "0.13"
 serde = { workspace = true }
 serde_json = { workspace = true }
 stalwart-harness = { path = "../stalwart-harness" }
+# The import claims every adapter's live suite shares (`tests/live_imap_import.rs`).
+engine-provider = { workspace = true, features = ["import-conformance"] }
 # The offline integration + gated live tests drive the full loop through the store.
 engine-store = { workspace = true }
 engine-search = { workspace = true }

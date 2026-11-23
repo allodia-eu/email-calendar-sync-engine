@@ -2,7 +2,7 @@
 //! connection ends the batch, and whether a message may be stored turns on whether its command
 //! was whole when the connection went.
 
-use engine_provider::TargetRefusal;
+use engine_provider::{TargetRefusal, import::not_sent};
 
 use super::*;
 
@@ -38,10 +38,13 @@ async fn a_connection_lost_once_the_message_went_out_may_have_stored_it_and_ends
     let answers = provider.import_messages(&account(), &batch).await;
 
     assert_eq!(answers.len(), 2);
-    assert!(answers[0].as_ref().unwrap_err().requires_confirmation());
+    let ending = answers[0].as_ref().unwrap_err();
+    assert!(ending.requires_confirmation());
     let unsent = answers[1].as_ref().unwrap_err();
     assert!(!unsent.requires_confirmation(), "{unsent}");
     assert_eq!(class(&answers[1]), FailureClass::Retryable);
+    // The one rule every importer answers an unsent message by.
+    assert_eq!(unsent.detail(), not_sent(ending).detail());
 }
 
 #[tokio::test]
@@ -138,7 +141,11 @@ async fn a_batch_that_cannot_get_a_connection_is_answered_whole_by_that_failure(
         .await;
 
     assert_eq!(answers.len(), 2);
-    assert!(answers.iter().all(Result::is_err));
+    for answer in &answers {
+        let unsent = answer.as_ref().unwrap_err();
+        assert!(unsent.detail().starts_with("not sent"), "{unsent}");
+        assert!(!unsent.requires_confirmation());
+    }
     assert_eq!(
         written(&recorded).matches("APPEND").count(),
         1,

@@ -763,7 +763,8 @@ credential.
   `requires_confirmation`. Either ends the batch, the connection is discarded, and every later
   message is answered "not sent". `import_cursor` is the folder's sync cursor from the `SELECT` a
   pass opens it with, so a delta from it through a provider bound to the folder lists what was
-  stored after it (`live_imap_import.rs`, Stalwart and both Dovecot revisions). A server may add
+  stored after it (`live_imap_import.rs`, Stalwart and both Dovecot revisions, through the
+  shared `engine_provider::import::conformance` check the JMAP suite runs too). A server may add
   keywords of its own: Stalwart files every stored message `$hasattachment` or
   `$hasnoattachment`.
 - **A `NO` naming the target's state carries the neutral reason** (`ImapError`'s conversion,

@@ -25,12 +25,19 @@ http = { workspace = true, optional = true }
 # same reason: the pure-logic consumers never speak HTTP. `url` is a leaf crate
 # reqwest already resolves.
 url = { workspace = true, optional = true }
+# Only for the conformance kit's clock (`import-conformance`): the undated control must carry
+# the server's time now, which needs the time now.
+time = { workspace = true, optional = true }
 
 [features]
 # The import seam (`engine_provider::import`): storing an object that already exists, as it was.
 # Not a sync verb, so a host that never imports (a migration, a webmail's upload, an app's file
 # import all do) never compiles it.
 import = []
+# The checks every `MailImporter` must pass against a real target
+# (`engine_provider::import::conformance`), written once for every adapter's live suite. For
+# dev-dependencies only: it panics on a failed claim.
+import-conformance = ["import", "dep:time"]
 # The `HttpVersion::from_http` conversion and the `same_origin` credential guard
 # (and their `http`/`url` dependencies). Enabled by the reqwest-backed adapters:
 # `provider-jmap`, `provider-caldav`, `provider-graph`, `provider-google`.
