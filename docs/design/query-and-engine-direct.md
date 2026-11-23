@@ -1,8 +1,11 @@
 # Design: a sorted, paged mail query, and the store-less facade `engine-direct`
 
-Status: **proposal**, not implemented. Nothing here changes code or the guidance docs yet; the
-slice that ships each part updates `search.md`, `search-coverage.md`, `engine-api.md`,
-`providers.md` and `jmap.md` in the same change (AGENTS.md, "Documentation Currency").
+Status: **accepted**, not implemented. The owner's decisions are listed at the end
+("Decisions (2026-11-23)") and written into the body; no question is left open. Nothing here
+changes code or the guidance docs yet; the slice that ships each part updates `search.md`,
+`search-coverage.md`, `engine-api.md`, `providers.md` and `jmap.md` in the same change
+(AGENTS.md, "Documentation Currency"). The host kinds and principles cited are those of
+`north-star.md` (#378); the credential side is the companion note `credential-source.md` (#381).
 
 ## The problem
 
@@ -26,9 +29,10 @@ more than that, and two of them need it from a place the engine cannot answer fr
 - A **transfer host** (a migration tool) mostly streams (`stream_email`), but its verify and
   spot-check passes ask counted, filtered questions of the source and target servers.
 
-The principle this note follows: **each protocol is known once.** The engine answers the query
-from the store or from the server through one neutral query type and one page type, and the JMAP
-primitives a host still needs become public, so a host-side copy can be deleted.
+The principle this note follows (`north-star.md`, principle 1): **each protocol is known once.**
+The engine answers the query from the store or from the server through one neutral query type and
+one page type, and the JMAP primitives a host still needs become public, so a host-side copy can
+be deleted.
 
 ## Requirements by host
 
@@ -36,7 +40,7 @@ primitives a host still needs become public, so a host-side copy can be deleted.
 |---|---|---|---|
 | answered from | store (server for what the window lacks) | server only | server only |
 | sort | date (received) desc; relevance on request | received desc; others where offered | received or none |
-| filter | text + DSL operators, one mailbox or all, several accounts | one mailbox; text search | mailbox; header/date for spot checks |
+| filter | text + DSL operators, one mailbox or all, several accounts | one mailbox or all but Trash/Junk; unread only; text search | mailbox; `Message-ID`/date for spot checks |
 | paging | "show more" (forward); stable while sync inserts | jump to page *n* (position), open-around-a-message (anchor), forward | forward, whole listing |
 | total | exact count of matches | exact where offered, else estimate or none | exact (verify) |
 | collapse threads | conversation list | yes | no |
@@ -45,9 +49,9 @@ primitives a host still needs become public, so a host-side copy can be deleted.
 | body | cached (`message_body`) | partial: text/HTML values capped in bytes | raw source (exists) |
 | blobs | cached | streamed, never whole in memory | streamed raw source |
 | mailbox counts | from the store | total/unread, messages and threads | totals per mailbox (verify) |
-| push | `Watch` (exists) | per user, many users per process | no |
+| push | `Watch` (exists) | one event stream per active user session, many per process | no |
 | credentials | bound at connect (today) | per request (`CredentialSource`) | per run |
-| writes | outbox (`engine-api`) | direct, host owns retries | direct (append/import) |
+| writes | outbox (`engine-api`) | direct, host owns retries | import seam (`Provider::mail_importer`) |
 | completeness | must say when the window hid matches | the server's own answer | must say when an answer is capped |
 
 ## Provider survey
@@ -77,7 +81,8 @@ What the table says:
    page type with an offset field that Graph and Gmail must fake is the leak AGENTS.md forbids:
    the host would learn which provider it has from which offsets silently fail.
 2. **Relevance order exists only in the store.** No server answers "best match first" through the
-   APIs above. A relevance listing is a store feature, not a query every source answers.
+   APIs above. A relevance listing stays a store capability (decision 7); servers answer the
+   other orders.
 3. **Totals have three kinds**: exact, estimate, none. A host must be told which.
 4. **Gaps sit in different adapters for each verb** (Gmail cannot stream a blob; Graph and IMAP
    cannot count threads; Graph and Gmail cannot cap a body). So each verb reports what it can do
@@ -85,15 +90,23 @@ What the table says:
 
 ## The neutral query
 
-### `MailQuery` gains order and collapse
+### `MailQuery` gains order, collapse and three filters
 
-`engine_search::MailQuery` stays the filter AST and gains two fields, both defaulting to today's
-behaviour so every existing construction (`..Default::default()`) and every parsed query still
-means what it did:
+`engine_search::MailQuery` is extended, not wrapped (decision 3): it stays the one filter AST and
+gains the fields below, each defaulting to today's behaviour so every existing construction
+(`..Default::default()`) and every parsed query still means what it did. It stays in
+`engine-search`, the pure, I/O-free query vocabulary crate that both answerers (the store and the
+providers) depend on; principle 4 asks for one shared definition, and this is it.
 
 ```rust
 pub struct MailQuery {
     // …the existing filters, unchanged…
+    /// Messages with none of these keywords: `$seen` here lists unread mail only.
+    pub not_keyword: Vec<String>,
+    /// Messages in none of these mailboxes: an "all mail" listing without Trash and Junk.
+    pub not_mailbox: Vec<String>,
+    /// Messages whose `Message-ID` is one of these, for a transfer host's spot checks.
+    pub message_id: Vec<MessageIdHeader>,
     /// How the answer is ordered. Default: `Relevance` when there is text, else `Received` desc,
     /// which is what the executor does today.
     pub order: MailOrder,
@@ -114,7 +127,18 @@ pub enum MailSortKey { Received, Sent, Size, From, Subject }
 
 `Received` is JMAP `receivedAt`, IMAP `ARRIVAL` (`INTERNALDATE`), Graph `receivedDateTime`, Gmail
 `internalDate`, and the store's `date_utc` (which falls back to `sent_at`; `search.md`). The DSL
-does not gain a `sort:` operator: order is a host choice, not something typed into a search box.
+does not gain a `sort:` operator, nor operators for the three new filters: order, an unread
+toggle, a folder set and a spot check are host choices, not something typed into a search box.
+
+Every source has a way to express the three filters (decision 5); the two Graph forms marked
+"verify" are settled by the live tests below. Several values combine as JMAP's `AND` operator
+does.
+
+| filter | JMAP (RFC 8621 §4.4.1) | IMAP | Graph | Gmail API | Store |
+|---|---|---|---|---|---|
+| `not_keyword` | `notKeyword` | `UNKEYWORD`; `UNSEEN` for `$seen` | `isRead eq false` for `$seen`, `flag/flagStatus` for `$flagged`; other keywords are categories, `not(categories/any(…))` (verify) | `is:unread` for `$seen`, `-is:starred` for `$flagged`, `-label:` otherwise | anti-join on the keyword rows |
+| `not_mailbox` | `inMailboxOtherThan` | a search runs in one selected mailbox, so an excluded mailbox is not selected | `parentFolderId ne` (verify) | `-in:`/`-label:`; Trash and Spam are left out unless `includeSpamTrash` | anti-join on membership |
+| `message_id` | `header: ["Message-ID", value]` | `HEADER Message-ID` | `internetMessageId eq` | `rfc822msgid:` | the indexed `Message-ID` |
 
 ### The page
 
@@ -143,7 +167,8 @@ pub struct PageRequest {
 /// own resume point in it: the last id and `anchorOffset` 1 for JMAP, the `(sort value, key)`
 /// keyset for the store, a sorted position or UID bound for IMAP, the `@odata.nextLink` for
 /// Graph, the `pageToken` for Gmail. It also carries a fingerprint of the query, so one handed
-/// back with a different query is refused rather than answered wrongly.
+/// back with a different query is refused rather than answered wrongly. It is not sealed; see
+/// "Continuations across an untrusted boundary" below.
 pub struct Continuation(Box<str>);
 
 pub struct QueryPage<T> {
@@ -181,8 +206,8 @@ pub struct QuerySupport {
 one provider: Graph pages a `$search` differently from a `$filter`, and IMAP's answer depends on
 what the server advertised. A request outside it fails with `FailureClass::InvalidState` and a
 reason naming the missing *ability* (`positional paging`), never the provider. An order the source
-cannot give (relevance from a server, `Size` from Gmail) is refused the same way; the engine does
-not quietly substitute another order.
+cannot give (relevance from a server, `Size` from Gmail), or a filter it cannot apply, is refused
+the same way; the engine does not quietly substitute another order or drop the filter.
 
 Emulation is allowed only where it is exact and bounded, and is then simply part of the adapter's
 answer: IMAP without `SORT` can serve `Received` positionally by slicing the UID list from one
@@ -190,21 +215,33 @@ answer: IMAP without `SORT` can serve `Received` positionally by slicing the UID
 for every match. A transport that would have to read a whole mailbox to fake an ability says it
 lacks it.
 
+### Continuations across an untrusted boundary
+
+A direct host may hand a continuation to a browser and get it back on the next request. The engine
+**validates it on return** (decision 4): it must parse, its query fingerprint must match the
+query it comes back with, and a next-link it carries must be same-origin with the account's base
+(the existing `same_origin` check), so a forged one cannot send the user's credential elsewhere.
+The engine does not seal continuations with a host key: the server's own authorisation is the
+real boundary, and a tampered continuation reaches only what that user may already see. A host
+that wants sealing adds it on its side, around the opaque string.
+
 ### Items
 
 Both answers return the same item: the list row the store already projects (`MailListRow`, today
 in `engine-store`, built by `MailListRow::project` from a normalized `Message`), plus the thread's
-size when collapsed. The row moves to `engine-core` (as `MailListItem`) so a provider can return
-it without depending on a store crate. A provider normalizes its summary fetch into a `Message`
-with the existing normalizer and projects it the same way, so "what is a row's sender or preview"
-is decided once.
+size when collapsed. The row moves to `engine-core` as `MailListItem` (decision 2), so the store
+and the server return one row type and a provider can return it without depending on a store
+crate. `engine-store` keeps `MailListRow` as a deprecated re-export for one host pin bump, then
+drops it. A provider normalizes its summary fetch into a `Message` with the existing normalizer
+and projects it the same way, so "what is a row's sender or preview" is decided once.
 
 ## The provider layer
 
 ### Capability traits
 
-Server-answered queries and the reads around them form a domain of their own (six methods, the
-`ContactsProvider` precedent), so they are traits, not more rejecting defaults on `Provider`:
+Server-answered queries and the reads around them form a domain of their own (seven methods), so
+they are capability traits, reached the way `MailImporter` is (#375), not more rejecting defaults
+on `Provider` (decision 1; `north-star.md`, principle 3):
 
 ```rust
 #[async_trait]
@@ -238,25 +275,26 @@ pub trait MailReads: Send + Sync {
 the thread counts are `None` on IMAP and Graph, which do not count threads, rather than a number
 derived by fetching the mailbox.
 
-**This collides with a rule in `providers.md`**: "a new optional verb goes on `Provider` with a
-rejecting default, never on its own sub-trait", because Rust will not upcast `dyn Provider` to
-`dyn Sub` and a host pays for it across its signatures (measured: 97 files against 36). The agreed
-direction is that the general capability-trait split comes *after* this seam. To take neither
-cost now, `Provider` gains two accessors, and the traits stay free-standing:
+`Provider` gains two accessors, as it gained `mail_importer` in #375, each defaulting to `None`
+and delegated by the `Box<dyn Provider>` impl:
 
 ```rust
 fn mail_queries(&self) -> Option<&dyn MailQueries> { None }
 fn mail_reads(&self) -> Option<&dyn MailReads> { None }
 ```
 
-A host holding `Box<dyn Provider>` reaches the capability without upcasting, "not offered" is
-`None` rather than a flag beside a rejecting default, and `engine-direct` can hold an adapter that
-is *only* these traits. This needs the owner's OK and a rewrite of that rule in `providers.md`; it
-is the first open question below.
+A host holding `Box<dyn Provider>` reaches the capability without upcasting, so the cost
+`providers.md` measured for a sub-trait (97 changed files against 36) does not arise; "not
+offered" is `None` rather than a flag beside a rejecting default; and `engine-direct` can hold an
+adapter that is *only* these traits. The change is additive, so it breaks no adapter and no host.
+`north-star.md` (#378) records this as how new capabilities are reached and as the first step of
+the capability-trait split, which lands later as one planned migration, after this seam and the
+credential source. `providers.md` already describes the pattern under "Import"; its older
+"rejecting default, never a sub-trait" bullet is rewritten by the first slice here that adds a
+trait.
 
 `engine-provider` depends on `engine-core` only. It gains a dependency on `engine-search`, which
-is pure (no I/O, no runtime), for `MailQuery`; the alternative is moving the query types to
-`engine-core`.
+is pure (no I/O, no runtime), for `MailQuery` and the page types, which stay there.
 
 ### Writes and push need nothing new
 
@@ -264,9 +302,16 @@ The direct host's writes are the verbs `Provider` already has: `edit_mail`, `put
 `delete_draft`, `edit_mailbox`, `submit_email`. The outbox is one caller of them, not their owner.
 `submit_email` takes a `HandOver` whose log is a trait (`HandOverLog`): `engine-api` passes the
 outbox's, a direct host passes its own (or `Unrecorded`), and an ambiguous send comes back
-classified exactly as it does to the outbox, for the host to resolve. Push is the existing `Watch`
-(`JmapWatcher`, `ImapWatcher`); a direct host with many users per process is the open question on
-push below, not a new trait now.
+classified exactly as it does to the outbox, for the host to resolve. An upload into a mailbox is
+the import seam (`Provider::mail_importer`, #375), with the metadata every stored message carries
+(`engine_core::mail::MessageMetadata`, #383).
+
+Push is the existing `Watch` (`JmapWatcher`, `ImapWatcher`). A direct host with many users per
+process starts with one event stream per active user session (JMAP EventSource, RFC 8620 §7.3),
+opened while that user is signed in and closed with the session (decision 6). It needs no inbound
+endpoint. Webhook-style subscriptions (JMAP `PushSubscription`, §7.2; Graph subscriptions; Gmail
+`watch`) come later, as an option for a host that owns a reachable endpoint; they are not a new
+trait now.
 
 ## The store answers the same query
 
@@ -300,7 +345,7 @@ pub async fn query_mail(&self, accounts: &[AccountId], query: &MailQuery, page: 
 A store holds what its sync window admitted (`store-and-sync.md`, `MailboxWindows`), so a date-
 sorted answer from it is complete down to a date and unknown below it. `search-coverage.md`'s
 `LocalCoverage` can say only "some objects are not local", which is true of every windowed account
-and so tells a host nothing about the page it is holding. The proposal adds the date:
+and so tells a host nothing about the page it is holding. This design adds the date:
 
 ```rust
 pub struct LocalCoverage {
@@ -338,19 +383,23 @@ host depends on.
   renders (the one sanitiser, `html.md`); the adapters behind Cargo features, JMAP first.
 - **Does not contain:** a store, an outbox, a sync loop, a cursor, or SQLite. It never writes to
   disk.
-- **Per-request credentials:** every call takes the account's `CredentialSource` (being designed
-  separately; this note only depends on it). Today `JmapConfig` binds `Credentials` into the
-  transport at connect. The adapter instead asks the source for a credential per HTTP request, so a
-  refreshed token is used at once and one process serves many users. Connecting fetches the JMAP
-  session document; `engine-direct` caches sessions keyed by the authenticated principal (never by
-  token, which rotates) and refetches when a response's `sessionState` differs.
+- **Per-request credentials:** every call takes the account's `CredentialSource`, designed in the
+  companion note `credential-source.md` (#381; this note only depends on it). Today `JmapConfig`
+  binds `Credentials` into the transport at connect. The adapter instead asks the source for a
+  credential per HTTP request, so a refreshed token is used at once and one process serves many
+  users. Connecting fetches the JMAP session document; `engine-direct` caches sessions keyed by
+  the source's `CredentialSource::subject()`, a `CredentialSubject` newtype (decision 8; never by
+  token, which rotates, nor by origin alone), and refetches when a response's `sessionState`
+  differs.
 - **Surface:** `query_mail`, `snippets`, `thread`, `body` (body values, then `engine-html`'s
   reading document), `open_blob`, `mailbox_counts`, and the writes `edit_mail`, `put_draft`,
-  `delete_draft`, `edit_mailbox`, `submit` (with the host's `HandOverLog`), each returning the
-  provider verb's own receipt. Each read checks `QuerySupport` or the trait accessor first and
-  answers a missing ability with its class, never a provider name.
+  `delete_draft`, `edit_mailbox`, `submit` (with the host's `HandOverLog`), and an upload into a
+  mailbox through `mail_importer`, each returning the provider verb's own receipt. Each read
+  checks `QuerySupport` or the trait accessor first and answers a missing ability with its class,
+  never a provider name.
 - **Logging:** none of content, as everywhere in the engine. A continuation handed to a browser
-  carries ids and a server's next-link, never a credential.
+  carries ids and a server's next-link, never a credential, and is validated when it comes back
+  ("Continuations across an untrusted boundary").
 
 ## What `provider-jmap` makes public
 
@@ -376,21 +425,25 @@ template goes.
 
 ## Phasing
 
-1. **Store-answered date-sorted search (#83).** `MailOrder`, `PageRequest`, `QueryPage`, `Total`,
-   `Continuation` in `engine-search`; `MailListItem` moved to `engine-core`; `Engine::query_mail`
-   over several accounts with keyset paging; `complete_since` wired from the recorded windows.
-   Collapse may follow in a second PR. No provider change.
+1. **Store-answered date-sorted search (#83).** `MailOrder`, the three filters, `PageRequest`,
+   `QueryPage`, `Total`, `Continuation` in `engine-search`; `MailListItem` moved to `engine-core`
+   with the deprecated `MailListRow` re-export; `Engine::query_mail` over several accounts with
+   keyset paging; `complete_since` wired from the recorded windows. Collapse may follow in a
+   second PR. No provider change.
 2. **JMAP-answered sorted, paged mailbox list.** The `provider-jmap` primitives above become
    public; `MailQueries` (accessor on `Provider`) implemented for JMAP: one request of
    `Email/query` (`inMailbox`, `receivedAt` descending, `collapseThreads`, `position`/`anchor`,
    `calculateTotal` on request) with back-referenced `Email/get` and `Thread/get`. Live-tested
    (below).
-3. **`engine-direct`** once `CredentialSource` lands: `MailReads` for JMAP (thread, body values,
-   blob stream, counts, snippets) and the direct writes. A direct host's private JMAP client can
+3. **`engine-direct`** once `CredentialSource` lands (`credential-source.md`): `MailReads` for
+   JMAP (thread, body values, blob stream, counts), `MailQueries::snippets`, the direct writes,
+   and one EventSource per active user session for push. A direct host's private JMAP client can
    be deleted.
 4. **The other adapters**, each with its live test: Graph and Gmail as continuation-only sources,
    IMAP per advertised extension.
-5. The capability-trait split, then push for many users.
+5. Webhook-style push (`PushSubscription`, Graph subscriptions, Gmail `watch`) for hosts that own
+   an endpoint. The general capability-trait split is its own planned migration (`north-star.md`);
+   the accessors above already have its shape, so it changes nothing here.
 
 Phases 1 and 2 are independent and can land in either order.
 
@@ -428,33 +481,52 @@ against the harness (`scripts/ci/stalwart-live.sh`), its response captured as a 
     page crossing it is the first one marked incomplete.
 13. **IMAP on the same harness.** Record what Stalwart's IMAP advertises (`SORT`, `ESORT`,
     `CONTEXT=SORT`, `THREAD`, `PARTIAL`, `PREVIEW`) before designing the IMAP adapter's paging.
+14. **Filters, both directions.** `notKeyword: "$seen"`, `inMailboxOtherThan` (Trash and Junk)
+    and `header: ["Message-ID", …]` each leave out what they should, and the same query without
+    the filter returns it; without that arm an adapter that never sent the filter would pass.
 
-Graph and Gmail use their test accounts when phase 4 starts: `$search` with `$orderby` and with
-`$skip` (send both and record the refusal), `$count` on messages, Gmail's order with and without
-`q`, and how far `resultSizeEstimate` is from the true count.
+### Settled by live tests
+
+The claims marked "verify" above are settled by sending the request, not by documentation. Each
+result is recorded in the adapter's guidance doc, and a refusal is recorded only after the request
+that asks for the ability was sent and its answer captured:
+
+- **Graph**, on its test account when phase 4 starts: `$search` with `$orderby`, and `$search`
+  with `$skip` (both community-reported as refused); `$count=true` on messages, with and without
+  `$filter`; `parentFolderId ne` and `not(categories/any(…))` in `$filter`.
+- **Gmail**, on its test account when phase 4 starts: the order of `messages.list` and
+  `threads.list`, with and without `q`; how far `resultSizeEstimate` is from the true count.
+- **Stalwart IMAP**, on the harness before the IMAP adapter's paging is designed: whether it
+  advertises and answers `SORT`, `ESORT`, `CONTEXT=SORT` and `PARTIAL` (item 13).
 
 ## Decisions (2026-11-23)
 
-- **Capabilities are reached through accessors on `Provider`.** A new capability is its own trait, reached through a `Provider` method that defaults to `None` (for example `fn mail_rules(&self) -> Option<&dyn MailRules> { None }`). It is additive, works through `Box<dyn Provider>`, and is the first step of the capability-trait split. It supersedes the `providers.md` rule that rejects sub-traits; that doc changes with the first slice that adds one. This settles open question 1.
+The owner approved these. Each is written into the body above; none is open.
 
-## Open questions
-
-1. **Trait shape.** Free-standing capability traits reached through `Option<&dyn …>` accessors on
-   `Provider`, against the current "rejecting default, never a sub-trait" rule. Needs the owner's
-   OK, and is a breaking change to the provider traits.
-2. **`MailListRow` to `engine-core`.** A public type moves crate (re-exported from `engine-store`
-   for a release, or not).
-3. **Extend `MailQuery` or wrap it.** Extending keeps one type, as agreed; a wrapper
-   (`MailListing { query, order, collapse }`) keeps the filter AST pure. This note extends.
-4. **Continuations across an untrusted boundary.** A direct host may hand them to a browser.
-   Validate on return only (parse, query fingerprint, same-origin next-link, as `same_origin`
-   already does), or also seal them with a host key in `engine-direct`?
-5. **Filters the hosts need that `MailQuery` lacks:** not-keyword (unread only), not-in-mailbox
-   (exclude Trash and Junk), and a header match (`Message-ID`, for a transfer host's spot checks).
-6. **Push for many users per process.** One EventSource per user, or RFC 8620 §7.2
-   `PushSubscription` (and Graph subscriptions, Gmail `watch`), which need an endpoint the host
-   owns.
-7. **Server-side relevance.** None of the four APIs above orders by relevance; Graph's separate
-   Search API ranks and highlights. Is relevance store-only for good?
-8. **Session cache identity.** How `CredentialSource` names the principal a cached session belongs
-   to.
+1. **Capabilities are reached through accessors on `Provider`.** A new capability is its own
+   trait, reached through a `Provider` method that defaults to `None` and is delegated by the
+   `Box<dyn Provider>` impl: here `mail_queries()` and `mail_reads()`, as `mail_importer()` is
+   (merged in #375) and as `north-star.md` records for every new capability (#378). It is
+   additive, so not breaking, works through `Box<dyn Provider>`, and is the first step of the
+   capability-trait split. It supersedes the `providers.md` rule against sub-traits; that bullet
+   is rewritten by the first slice here that adds a trait.
+2. **`MailListRow` moves from `engine-store` to `engine-core` as `MailListItem`**, so the store
+   and the server return one row type. `engine-store` keeps a deprecated `MailListRow` re-export
+   for one host pin bump.
+3. **`MailQuery` is extended** with `order` and `collapse_threads`, not wrapped. It stays in
+   `engine-search`, the pure query vocabulary crate both answerers depend on.
+4. **Continuations crossing an untrusted boundary are validated on return**: they parse, their
+   query fingerprint matches, and a carried next-link is same-origin. The engine does not seal
+   them with a host key; the server's own authorisation is the real boundary, and a tampered
+   continuation reaches only what that user may already see. A host may add sealing on its side.
+5. **`MailQuery` gains the filters hosts need**: `not_keyword` (unread only), `not_mailbox`
+   (exclude Trash and Junk) and `message_id`, a header match on `Message-ID` for a transfer host's
+   spot checks.
+6. **Push for a direct host with many users starts with one event stream per active user
+   session** (JMAP EventSource), which needs no inbound endpoint. Webhook-style subscriptions
+   (JMAP `PushSubscription`, Graph subscriptions, Gmail `watch`) come later, as an option for
+   hosts that own an endpoint.
+7. **Relevance ordering stays a store capability.** Servers answer the other orders; a request
+   for relevance from a server is refused by `QuerySupport`.
+8. **A cached session's identity is the `CredentialSubject`** returned by
+   `CredentialSource::subject()` (`credential-source.md`, #381).
