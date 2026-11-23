@@ -1,10 +1,13 @@
 # `engine-api` — the host facade
 
-`engine-api` is the stable, host-facing entry point to the engine (`north-star.md`:
-*"Host-facing APIs live behind `engine-api`."*). It is the **one composition
-point**: instead of wiring `engine-store`, `engine-sync`, the providers, a search
-layer, and a clock together, every host — mobile (UniFFI), desktop/daemon (the C
-ABI), the CLI, and server adapters — drives the engine through this crate.
+`engine-api` is the stable entry point for a **sync host** (`north-star.md` →
+"Hosts"): one that syncs a window into the engine's store and writes through the
+outbox. It is that host's **composition point**: instead of wiring `engine-store`,
+`engine-sync`, the providers, a search layer, and a clock together, a sync host —
+mobile (UniFFI), desktop/daemon (the C ABI), the CLI, or a server — drives the
+engine through this crate. It is a convenience, not a gate: any host may use the
+provider layer directly, as a transfer host always does, and a direct host gets
+its own store-less facade, `engine-direct` (planned).
 
 This doc is authoritative for the facade's shape and the order its slices land.
 Read it before touching `engine-api` or adding a binding/reference-host seam.
