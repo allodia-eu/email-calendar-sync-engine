@@ -14,7 +14,7 @@ use engine_core::{
     ids::{AccountId, AddressBookId},
     mail::{Mailbox, Message},
     raw::RawMime,
-    sync::{JmapDataType, MailboxWindows, SyncScope, SyncState},
+    sync::{JmapDataType, MailboxWindows, SyncScope, SyncState, Widening},
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HandOver, MessageReport,
@@ -76,6 +76,13 @@ impl JmapProvider {
     /// Wraps an executor, snapshotting its advertised capabilities.
     pub(crate) fn with_executor(executor: Box<dyn Executor>) -> Self {
         let capabilities = executor.session().capabilities();
+        // Where it syncs mail, this adapter widens by band (`crate::email_band`): a fact of the
+        // adapter rather than of the server, so it is added here and not read off the session.
+        let capabilities = if capabilities.mail() {
+            capabilities.with_band_widening()
+        } else {
+            capabilities
+        };
         Self {
             executor,
             capabilities,
@@ -208,6 +215,9 @@ impl Provider for JmapProvider {
         // Newest-first, so a fresh sync surfaces recent mail before it finishes.
         let sort = json!([{ "property": "receivedAt", "isAscending": false }]);
         let filter = email_filter(&window);
+        // A band in progress rides beside the `Email` state; the delta runs from the state.
+        let (cursor, band) = cursor.map(crate::email_band::split).unzip();
+        let band = band.flatten();
         Box::pin(async_stream::try_stream! {
             let account = self.mail_account()?;
             let fetch = MemberFetch {
@@ -220,7 +230,8 @@ impl Provider for JmapProvider {
             // The JMAP round trip is atomic, so each page is fetched whole and
             // re-chunked for incremental commit; intermediate chunks hold the cursor
             // and a final marker advances it (JMAP is not cheaply resumable mid-pass).
-            let mut pass = fetch::MemberPass::new(&fetch, sort, filter, fetch_batch, cursor);
+            let mut pass =
+                fetch::MemberPass::new(&fetch, sort, filter, fetch_batch, cursor.as_ref());
             let updated = UpdatedAsState {
                 properties: EMAIL_STATE_PROPERTIES,
                 normalize: state_from_json,
@@ -255,7 +266,10 @@ impl Provider for JmapProvider {
             // The final marker carries the cursor (and, for reconcile, tombstones
             // against the accumulated present set).
             yield match mode.unwrap_or(PassMode::Additive) {
+                // A delta tombstones nothing, so a band in progress continues after it; a
+                // snapshot may have tombstoned what the band stored, and starts it over.
                 PassMode::Additive => {
+                    let final_cursor = crate::email_band::carried(final_cursor, band.as_ref());
                     EmailChunk::additive(Vec::new(), Vec::new(), total, final_cursor)
                 }
                 PassMode::Reconcile => {
@@ -263,6 +277,18 @@ impl Provider for JmapProvider {
                 }
             };
         })
+    }
+
+    /// Walks only the bands the widening adds, keeping the `Email` state (`crate::email_band`).
+    fn widen_email<'a>(
+        &'a self,
+        _account: &'a AccountId,
+        cursor: &'a SyncState,
+        widening: &'a Widening,
+        fetch_batch: usize,
+        chunk_size: usize,
+    ) -> EmailStream<'a> {
+        self.band_stream(cursor, widening, fetch_batch, chunk_size)
     }
 
     // `put_event` is deliberately **not** implemented: replacing a whole stored document is

@@ -330,7 +330,8 @@ counts against the upload quota for an hour, so the suite can run about six time
   it with `split_page` (a **snapshot** page becomes `Reconcile` chunks, a **delta**
   page `Additive` chunks), then yields a final marker chunk carrying the cursor. JMAP
   is not cheaply resumable mid-pass, so intermediate chunks **hold** the cursor
-  (`additive_held`) and a crash re-runs the pass. A **snapshot** is the anchored walk
+  (`additive_held`) and a crash re-runs the pass (a widening's band is the exception: it
+  checkpoints its place after every page, below). A **snapshot** is the anchored walk
   above, sorted `receivedAt` descending (newest first), with `calculateTotal:true` for
   the progress total; each page's new ids are its `present` share. A **delta** page is
   `Email/changes` bounded by `maxChanges`, paging on `hasMoreChanges` and resuming from
@@ -347,14 +348,35 @@ counts against the upload quota for an hour, so the suite can run about six time
   `Email/changes` takes no filter, so a delta carries an old message moved into scope; the
   engine drops it on apply (`SyncWindow::admits`, `store-and-sync.md`), which is where the
   bound holds for every adapter. `default_sync_window` (the full history) backs the
-  whole-scope `sync_email` drain. A mailbox the host holds further back (`MailboxWindows`)
-  adds an `inMailbox` condition with its own `after` (none for its whole history), joined to
-  the account's `after` by an `OR` `FilterOperator` (RFC 8620 §5.5, `email_window.rs`), so
-  the one `Email` scope fetches that mailbox's older mail and no other's
-  (`store-and-sync.md`). A mailbox the server does not have matches nothing: Stalwart answers
-  an unknown `inMailbox` with the other conditions' ids, not an error (observed).
-  `tests/live_mailbox_window.rs` deepens Sent after a first pass and sees its older mail
-  arrive on the next.
+  whole-scope `sync_email` drain. The filter is built from the window's bands
+  (`MailboxWindows::bands`, `email_window.rs`), one condition each: the account's `{after}`, and
+  for a mailbox the host holds further back an `{inMailbox, after, before}` from its own floor
+  (no `after` for its whole history) up to the account's, all joined by an `OR`
+  `FilterOperator` (RFC 8620 §5.5), so the one `Email` scope fetches that mailbox's older mail
+  and no other's (`store-and-sync.md`). `after` is "same or after" and `before` "strictly
+  before" on the UTC instant `receivedAt`, so two bands meeting on a day are exact complements,
+  cut on the UTC day the engine judges mail by. A mailbox the server does not have matches
+  nothing: Stalwart answers an unknown `inMailbox` with the other conditions' ids, not an error
+  (observed). `tests/live_mailbox_window.rs` deepens Sent after a first pass and sees its older
+  mail arrive on the next.
+- **Widening by band (`email_band.rs`).** A pass asked for more than its cursor covers runs its
+  delta, then `widen_email`: the widening's bands as one filter (`Widening::bands`), walked by
+  anchor as a snapshot is and closed by a listing, as additive chunks that tombstone nothing.
+  The cursor keeps the `Email` state it was handed, which predates the walk, so every change to
+  band mail during or after it is replayed by the next `Email/changes`. After every page the
+  cursor stores the band's place beside that state, `band:<last 8 ids read>\n<state>`. When the
+  caller says the widening resumes (`Widening::resumes`), the band continues after those ids
+  (`Walk::resumed`), stepping back through them when the last was destroyed and starting from the
+  top when none is left, and its closing listing fetches only what the query places after them
+  and the resumed walk did not see. That holds because the walk is `Order::Fixed` on
+  `receivedAt`; the one known server placement that moves an id behind the walk, Stalwart sorting
+  a message it has just stored, concerns a message created after the kept state, which
+  `Email/changes` replays. Otherwise the place is ignored: only the caller knows whether a pass
+  under a narrower window ran in between. A delta carries the
+  place through; a `cannotCalculateChanges` snapshot drops it, since its reconcile may have
+  tombstoned what the band stored. `tests/live_email_band.rs` sends `before` to Stalwart for
+  the first time, and kills a band mid-walk, destroys its anchor, files a message in the gap,
+  and resumes.
 - **Delta vs snapshot.** First sync (no cursor) is a snapshot; thereafter a delta,
   recovering to a snapshot on a `cannotCalculateChanges` method error (mapped to
   `FailureClass::NeedsResync`) — recovery happens on the first page, so a recovered
