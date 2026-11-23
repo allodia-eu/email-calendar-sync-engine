@@ -161,6 +161,16 @@ pub(crate) struct Negotiated {
 }
 
 impl Negotiated {
+    /// The largest message, in bytes, the server takes for any mailbox: `APPENDLIMIT=<n>`
+    /// (RFC 7889 §2). A bare `APPENDLIMIT` means the limit differs per mailbox and is asked
+    /// through `STATUS`, so it states none here.
+    #[cfg(feature = "import")]
+    pub(crate) fn append_limit(&self) -> Option<u64> {
+        self.advertised
+            .iter()
+            .find_map(|atom| atom.strip_prefix("appendlimit=")?.parse().ok())
+    }
+
     /// Records what the server advertised. Any previously confirmed `ENABLE` is dropped:
     /// a fresh capability list belongs to a fresh session (a STARTTLS upgrade, a re-dial).
     pub(crate) fn from_capabilities(capabilities: &[String]) -> Self {

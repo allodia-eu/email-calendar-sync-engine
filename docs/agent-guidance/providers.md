@@ -242,9 +242,9 @@ it. An adapter that can import implements the trait; there is no capability flag
   accessor on `Provider` that defaults to `None`, delegated by the `Box<dyn Provider>` impl.
   `Box<dyn MailImporter>` and `Arc<dyn MailImporter>` are importers too, for code generic over
   `I: MailImporter`.
-- **Not yet:** no adapter implements it yet (IMAP `APPEND` and JMAP `Email/import` are next), and
-  calendar and contact import (CalDAV and CardDAV `PUT` without scheduling) come with their first
-  adapter.
+- **Who implements it:** IMAP (`APPEND`, `imap-smtp.md` → "Import"). JMAP `Email/import` is
+  next; Graph and Gmail are sources only. Calendar and contact import (CalDAV and CardDAV `PUT`
+  without scheduling) come with their first adapter.
 
 ## Stalwart Test Spine
 

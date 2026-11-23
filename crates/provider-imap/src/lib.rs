@@ -90,6 +90,8 @@ mod gmail;
 mod gmail_read;
 mod header_section;
 mod idle;
+#[cfg(feature = "import")]
+mod import;
 mod listing;
 mod mail;
 mod mailbox_write;
