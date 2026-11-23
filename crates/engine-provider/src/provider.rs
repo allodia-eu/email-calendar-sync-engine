@@ -460,6 +460,13 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
         None
     }
 
+    /// This adapter as [`MailRules`](crate::MailRules), the account's mail rules, or `None` where
+    /// the account has none the adapter can reach (the default), as for
+    /// [`vacation`](Self::vacation).
+    fn mail_rules(&self) -> Option<&dyn crate::MailRules> {
+        None
+    }
+
     /// This adapter as a [`CalendarImporter`](crate::import::CalendarImporter), or `None` where
     /// it cannot import events (the default), as for [`mail_importer`](Self::mail_importer).
     #[cfg(feature = "import")]
