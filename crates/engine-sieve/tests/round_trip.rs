@@ -1,8 +1,12 @@
 //! The segmenter's promise, over many scripts: the segments' texts, in order, are the script,
 //! byte for byte; there is one segment per top-level command; and each segment, split on its
 //! own, is that one command again. The first holds by construction (the segments are adjacent
-//! spans), so it proves little alone: the other two are what fail when a string, a comment or
-//! a bracket hides a `;` or a `}` from the splitter.
+//! spans), so it proves little alone.
+//!
+//! Only the generated scripts carry an oracle, the commands they were built from, so only they
+//! catch a lexer that misreads a string, a comment or a bracket consistently (seen red with
+//! backslash escapes ignored). The arbitrary ones have none: they catch a splitter that panics
+//! or cuts a command off at the wrong place (seen red with the rest of a line always taken).
 //!
 //! The scripts are generated from a seeded generator, so a failure reproduces, out of every
 //! construct that can hide a `;` or a `}` from a careless splitter: quoted strings with escapes,
@@ -175,9 +179,41 @@ fn every_generated_script_splits_into_its_commands_and_joins_back() {
 
 #[test]
 fn arbitrary_text_never_panics_and_each_segment_is_one_command() {
+    // Whole commands and the pieces that hide a `;` or a `}`, so that many scripts split, and
+    // many hold several commands on one line.
     let alphabet = [
-        "if", "else", "elsif", " ", "\r\n", "\n", "{", "}", "[", "]", "(", ")", ";", ",", "\"",
-        "\\", "#", "/*", "*/", "text:", ".", "keep", ":is", "10K", "é", "@",
+        "keep;",
+        "stop ;",
+        "if true",
+        "if",
+        "else",
+        "elsif",
+        " ",
+        "\r\n",
+        "\n",
+        "{",
+        "}",
+        "[",
+        "]",
+        "(",
+        ")",
+        ";",
+        ",",
+        "\"",
+        "\\",
+        "\"a;}\"",
+        "# c ; }\r\n",
+        "/*",
+        "*/",
+        "/* ; */",
+        "text:\r\n",
+        ".\r\n",
+        "keep",
+        ":is",
+        "10K",
+        "é",
+        "@",
+        "anyof (true, false)",
     ];
     let mut rng = Rng(0xfeed_f00d_dead_beef);
     let mut split = 0;
