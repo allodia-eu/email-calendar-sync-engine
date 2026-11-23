@@ -384,16 +384,42 @@ async fn a_base_without_its_raw_form_is_written_over_the_server_s_script() {
 }
 
 #[tokio::test]
-async fn where_the_reply_and_the_scripts_do_not_share_a_state_the_reply_is_not_included() {
-    // The condition: one counter for both types, in one response. A reply state other than the
-    // scripts' leaves the include out, and the reply that ran through it stops.
+async fn where_the_states_differ_an_include_is_kept_and_none_is_added() {
+    // Keeping the include the running script has needs no shared counter: the write keeps what
+    // the read reports, and the reply keeps running.
     let mut apart = listing();
     apart["methodResponses"][1][1]["state"] = json!("elsewhere");
     let (provider, exec) = over(
-        vec![apart, fixture("sieve_set_update_rules_response.json")],
+        vec![
+            apart.clone(),
+            fixture("sieve_set_update_rules_response.json"),
+        ],
         RUNNING,
     );
     let base = RuleSet::new(Vec::new()).with_version(RuleSetVersion::new("steaq"));
+    let receipt = provider
+        .replace_rules(&account(), &base, &[discard_all()])
+        .await
+        .unwrap();
+    assert_eq!(receipt.reply, ReplyEffect::Untouched);
+    let uploaded = String::from_utf8(exec.uploads.lock().unwrap()[0].2.clone()).unwrap();
+    assert!(
+        uploaded.contains("include :personal :optional \"vacation\";"),
+        "{uploaded}"
+    );
+
+    // Adding one needs the condition: with no script to edit and the reply's own script running,
+    // the new script cannot include it, and the reply stops.
+    let mut only_reply = reply_running_rules_idle();
+    only_reply["methodResponses"][0][1]["list"]
+        .as_array_mut()
+        .unwrap()
+        .remove(1);
+    only_reply["methodResponses"][1][1]["state"] = json!("elsewhere");
+    let (provider, exec) = over(
+        vec![only_reply, fixture("sieve_set_create_rules_response.json")],
+        "",
+    );
     let receipt = provider
         .replace_rules(&account(), &base, &[discard_all()])
         .await

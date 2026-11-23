@@ -298,7 +298,7 @@ async fn without_the_condition_the_reply_is_written_and_read_with_its_own_flag()
 }
 
 #[tokio::test]
-async fn a_read_falls_back_to_the_flag_where_the_rules_cannot_be_read_or_the_states_differ() {
+async fn a_read_falls_back_to_the_flag_where_the_rules_cannot_be_read_and_follows_the_include() {
     let doc = |state: &str| {
         json!({ "methodResponses": [
             ["VacationResponse/get", { "accountId": "e", "state": state, "list": [{
@@ -318,9 +318,10 @@ async fn a_read_falls_back_to_the_flag_where_the_rules_cannot_be_read_or_the_sta
     );
     let provider = JmapProvider::with_executor(Box::new(exec));
     assert!(!provider.read_vacation(&account()).await.unwrap().enabled);
-    // B5: the include is there, but the reply's state is not the scripts'.
+    // The include is there and the reply's state is not the scripts': the server still runs the
+    // reply through it at delivery, so it reads as on.
     let (provider, _) = over(vec![doc("elsewhere")], WITH);
-    assert!(!provider.read_vacation(&account()).await.unwrap().enabled);
+    assert!(provider.read_vacation(&account()).await.unwrap().enabled);
 }
 
 #[tokio::test]
@@ -343,4 +344,97 @@ async fn a_switch_answered_with_neither_map_asks_for_a_read_too() {
         .await
         .unwrap_err();
     assert!(err.requires_confirmation(), "{err:?}");
+}
+
+/// The listing with the reply's state unread: its `VacationResponse/get` failed.
+fn reply_state_unread() -> Value {
+    let mut doc = rules_running();
+    doc["methodResponses"][1] = json!(["error", { "type": "serverFail" }, "1"]);
+    doc
+}
+
+#[tokio::test]
+async fn off_takes_the_include_out_without_the_shared_counter() {
+    // NEW-1: the reply's state could not be read; taking the include out needs only the script.
+    let (provider, exec) = over(
+        vec![
+            reply_state_unread(),
+            fixture("vacation_set_kept_off_response.json"),
+            fixture("sieve_set_update_rules_response.json"),
+        ],
+        WITH,
+    );
+    let receipt = provider
+        .set_vacation(
+            &account(),
+            VacationPrecondition::IfUnchanged(&read_at("steaq")),
+            &away().turned_off(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.rules, RulesEffect::Untouched);
+    let uploaded = String::from_utf8(exec.uploads.lock().unwrap()[0].2.clone()).unwrap();
+    assert!(
+        !uploaded.contains("include :"),
+        "the include is out: {uploaded}"
+    );
+    let requests = exec.requests.lock().unwrap();
+    assert_eq!(
+        requests[2]["methodCalls"][0][1]["ifInState"], "stiaq",
+        "the words' newState"
+    );
+
+    // Turning it on with the state unread is the flag's, as without the condition.
+    drop(requests);
+    let (provider, exec) = over(
+        vec![
+            reply_state_unread(),
+            fixture("vacation_set_deactivates_response.json"),
+        ],
+        WITHOUT,
+    );
+    let receipt = provider
+        .set_vacation(
+            &account(),
+            VacationPrecondition::IfUnchanged(&read_at("sbi")),
+            &away(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.rules, RulesEffect::Deactivated);
+    assert_eq!(exec.uploads.lock().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn off_is_refused_before_anything_is_written_where_the_include_cannot_be_taken_out() {
+    // NEW-1, the reviewer's probe: the running script includes the reply and cannot be
+    // rewritten. The flag would answer "off" while the include kept the reply running.
+    let probe = "require 5;\r\ninclude :personal :optional \"vacation\";\r\nkeep;";
+    let (provider, exec) = over(vec![rules_running()], probe);
+    let err = provider
+        .set_vacation(
+            &account(),
+            VacationPrecondition::IfUnchanged(&read_at("steaq")),
+            &away().turned_off(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.is_item_unavailable(), "{err:?}");
+    assert_eq!(exec.request_count(), 1, "the listing alone");
+    // A script that cannot be read may include it: refused with the download's own class.
+    let exec = Arc::new(FakeExecutor::from_session(
+        &session(),
+        vec![rules_running()],
+    ));
+    let provider = JmapProvider::with_executor(Box::new(exec.clone()));
+    let err = provider
+        .set_vacation(
+            &account(),
+            VacationPrecondition::IfUnchanged(&read_at("steaq")),
+            &away().turned_off(),
+        )
+        .await
+        .unwrap_err();
+    assert!(!err.requires_confirmation(), "{err:?}");
+    assert_eq!(exec.request_count(), 1);
 }

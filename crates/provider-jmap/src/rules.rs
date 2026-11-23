@@ -193,7 +193,10 @@ async fn write(
     let target = scripts.rules();
     let running = target.is_some_and(|script| script.active);
     let reply_ran = reply_runs(scripts, running.then_some(base_text.as_str()));
-    let include = reply_ran && listing.include_usable(session);
+    // Keeping an include the running script has needs nothing more; adding one needs the
+    // condition. So the write keeps exactly what a read reports (`reply_runs`).
+    let include =
+        reply_ran && (sieve_scripts::includes_reply(&base_text) || listing.include_usable(session));
     let text = sieve_scripts::compose(&base_text, &plan.written(), include).map_err(|err| {
         ProviderError::item_unavailable(format!("the rules cannot be written as Sieve: {err}"))
     })?;
@@ -258,7 +261,7 @@ async fn write(
         RulesStored::CreatedRunning
     };
     Ok(RulesReceipt::new(version, plan.outcomes)
-        .stored(stored)
+        .with_stored(stored)
         .with_reply(reply))
 }
 

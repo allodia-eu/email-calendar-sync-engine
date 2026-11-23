@@ -8,12 +8,14 @@
 //! the rules script's `include` of it. A delivery test showed the included reply fires with
 //! `isEnabled` false, which is why the include, not the flag, is what turns it off here.
 //!
-//! It is taken only where it holds (`jmap.md`, "the condition"), checked on every write: a script
-//! of the user's runs, the account lists `include`, the `SieveScript` and `VacationResponse`
-//! states read in one response are one counter, and the running script can be read and, where the
-//! reply's state changes, rewritten. Otherwise the reply is written with the server's own flag,
-//! as without rules, and the receipt says what that did to them; the engine never refuses the
-//! reply for want of the include.
+//! What is possible is decided before anything is sent ([`path`]). Where the running script
+//! already says what the reply should, only the words are written. Adding the include needs the
+//! condition (`jmap.md`, "the condition"): the account lists `include`, and the `SieveScript` and
+//! `VacationResponse` states read in one response are one counter; where it fails, or the script
+//! cannot take the include, the reply goes on with the server's own flag, and the receipt says
+//! what that did to the rules. Taking the include out needs only the script, so turning the
+//! reply off never answers success through the flag while the running script still includes it:
+//! a script that cannot be read or rewritten then is refused before anything is written.
 //!
 //! Two requests, because Stalwart does not resolve a result reference for `ifInState`: it
 //! ignored `#ifInState` pointing at the first call's `newState` even when that call failed
@@ -39,49 +41,83 @@ use crate::{
     sieve_scripts::{self, ComposeError, Script, Scripts, includes_reply, reply_runs},
 };
 
-/// What the include path needs, read where it holds ([module docs](self)).
+/// What the include path needs: the scripts listed, the running one, and its text.
 pub(crate) struct Prepared {
-    scripts: Scripts,
+    listing: rules::Listing,
     running: Script,
-    text: String,
 }
 
-impl Prepared {
-    /// The running script with the include for `enabled`: `None` where it already has it as
-    /// `enabled` says, and no script needs writing.
-    pub(crate) fn toggled(&self, enabled: bool) -> Result<Option<String>, ComposeError> {
-        if includes_reply(&self.text) == enabled {
-            return Ok(None);
-        }
-        let user = sieve_scripts::user_rules(&self.text);
-        sieve_scripts::compose(&self.text, &user, enabled).map(Some)
-    }
+/// How a reply is written, decided before anything is sent.
+pub(crate) enum Path {
+    /// With the server's own flag, as without rules: no script of the user's runs, or the reply
+    /// is to go on and the running script cannot take the include.
+    Flag,
+    /// Through the running script: the words, then, where `toggled` is a script, the include
+    /// added or taken out.
+    Include {
+        prepared: Prepared,
+        toggled: Option<String>,
+    },
 }
 
-/// The include path's facts, where they hold: the account has Sieve, a script of the user's runs,
-/// the condition holds, and that script can be read. `None` otherwise, and the reply is written
-/// with the server's own flag.
-pub(crate) async fn prepare(executor: &dyn Executor) -> Result<Option<Prepared>, JmapError> {
+/// How to write a reply that is to be `enabled` ([module docs](self)), decided before anything
+/// is sent, so nothing is half-written for a reason known in advance.
+///
+/// - Where the running script already says what the reply should (it includes the reply, or not),
+///   only the words are written.
+/// - Turning the reply on adds the include where the condition holds and the script can take it;
+///   otherwise the server's own flag, whose effect on the rules the receipt reports.
+/// - Turning it off takes an include out, which needs only the script, not the shared counter: a
+///   script that may include the reply and cannot be read, or cannot be rewritten without it, is
+///   refused, because the flag would answer "off" while the include kept the reply running.
+///
+/// # Errors
+///
+/// The listing's or the download's own class; `item_unavailable` for a script that includes the
+/// reply and cannot be rewritten without it.
+pub(crate) async fn path(executor: &dyn Executor, enabled: bool) -> ProviderResult<Path> {
     let session = executor.session();
     if !rules::reachable(session) {
-        return Ok(None);
+        return Ok(Path::Flag);
     }
     let listing = rules::list(executor).await?;
     let Some(running) = listing.scripts.rules_running().cloned() else {
-        return Ok(None);
+        return Ok(Path::Flag);
     };
-    if !listing.include_usable(session) {
-        return Ok(None);
-    }
     let account = sieve_account(session)?;
-    let Ok(text) = sieve_scripts::download(executor, account, &running.blob).await else {
-        return Ok(None);
+    let text = match sieve_scripts::download(executor, account, &running.blob).await {
+        Ok(text) => text,
+        // It may include the reply: switching it off by the flag could leave it running.
+        Err(err) if !enabled => return Err(err.into()),
+        Err(_) => return Ok(Path::Flag),
     };
-    Ok(Some(Prepared {
-        scripts: listing.scripts,
-        running,
-        text,
-    }))
+    let toggled = if includes_reply(&text) == enabled {
+        None
+    } else if enabled {
+        if !listing.include_usable(session) {
+            return Ok(Path::Flag);
+        }
+        match compose(&text, true) {
+            Ok(text) => Some(text),
+            Err(_) => return Ok(Path::Flag),
+        }
+    } else {
+        Some(compose(&text, false).map_err(|err| {
+            ProviderError::item_unavailable(format!(
+                "the rules script runs the reply and cannot be rewritten without it: {err}"
+            ))
+        })?)
+    };
+    Ok(Path::Include {
+        prepared: Prepared { listing, running },
+        toggled,
+    })
+}
+
+/// The running script's text with the include for `on`.
+fn compose(text: &str, on: bool) -> Result<String, ComposeError> {
+    let user = sieve_scripts::user_rules(text);
+    sieve_scripts::compose(text, &user, on)
 }
 
 /// Whether the reply runs through the running rules script, as `scripts` say: `false` where that
@@ -97,7 +133,7 @@ pub(crate) async fn runs(executor: &dyn Executor, scripts: &Scripts) -> bool {
     reply_runs(scripts, text.as_deref())
 }
 
-/// Writes `new` while the user's rules run ([module docs](self)): the words, then, where
+/// Writes the reply's words while the user's rules run ([module docs](self)), then, where
 /// `toggled` is a script, the include.
 pub(crate) async fn write(
     executor: &dyn Executor,
@@ -107,10 +143,13 @@ pub(crate) async fn write(
     toggled: Option<String>,
     body: Value,
 ) -> ProviderResult<VacationReceipt> {
-    let Prepared {
-        scripts, running, ..
-    } = prepared;
-    if guard.is_some_and(|version| version.as_str() != scripts.state) {
+    let Prepared { listing, running } = prepared;
+    let scripts = &listing.scripts;
+    // A reply read before the listing's state is stale: refused before anything is sent. (Where
+    // the listing could not read the reply's state, the words' own `ifInState` refuses it.)
+    if let (Some(version), Some(listed)) = (guard, listing.reply_state.as_deref())
+        && version.as_str() != listed
+    {
         return Err(ProviderError::conflict(
             "the out-of-office reply changed since it was read; read it again",
         ));
@@ -154,20 +193,26 @@ pub(crate) async fn write(
              read it again before writing again",
         )
     };
-    // The include goes into the script as it was listed. If anything landed between that
-    // listing and the words (an unguarded write does not check), that script may not be the
-    // user's latest, so it is not written over.
-    if state("oldState") != Some(scripts.state.as_str()) {
+    // 2. The include, guarded by the `SieveScript` state the script was composed at. Where the
+    // words left from that very state, the two types are one counter (as on Stalwart), and the
+    // words moved it: the guard is the state they left. Where they did not and the counters are
+    // known to be one, something landed between the listing and the words (an unguarded write
+    // does not check), and the script is not written over. Otherwise the counters are apart, and
+    // the listed state guards it.
+    let listed = scripts.state.as_str();
+    let step_two = if state("oldState") == Some(listed) {
+        written
+    } else if listing.reply_state.as_deref() == Some(listed) {
         return Err(half_done());
-    }
-
-    // 2. On or off: the include, guarded by the state the first write left.
+    } else {
+        listed.to_owned()
+    };
     let mut request = Request::new([capability::CORE, capability::SIEVE]);
     let set = request.invoke(
         "SieveScript/set",
         json!({
             "accountId": account,
-            "ifInState": written,
+            "ifInState": step_two,
             "update": { running.id.as_str(): { "blobId": blob.as_str() } },
         }),
     );

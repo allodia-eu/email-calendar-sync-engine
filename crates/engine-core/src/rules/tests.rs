@@ -144,7 +144,7 @@ fn a_receipt_carries_its_version_and_outcomes() {
     );
     let created = receipt
         .clone()
-        .stored(RulesStored::CreatedRunning)
+        .with_stored(RulesStored::CreatedRunning)
         .with_reply(ReplyEffect::Stopped);
     assert_eq!(
         (created.stored, created.reply),

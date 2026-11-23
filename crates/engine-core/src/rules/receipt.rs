@@ -32,7 +32,7 @@ impl RulesReceipt {
     }
 
     /// Records where the rules were stored (builder-style).
-    pub fn stored(mut self, stored: RulesStored) -> Self {
+    pub fn with_stored(mut self, stored: RulesStored) -> Self {
         self.stored = stored;
         self
     }

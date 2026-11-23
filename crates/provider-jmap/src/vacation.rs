@@ -101,19 +101,17 @@ impl Vacation for JmapProvider {
         refuse_unheld_vacation(&vocabulary(), new)?;
         let guard = precondition.version(self.vacation_write_guard())?;
         let executor = self.executor();
-        // While the user's rules run and the condition holds, through their include; where the
-        // running script cannot take the include, with the server's own flag, as without rules.
-        if let Some(prepared) = crate::vacation_include::prepare(executor).await?
-            && let Ok(toggled) = prepared.toggled(new.enabled)
-        {
-            let account = vacation_account(executor.session())?;
-            let body = to_json(new);
-            return crate::vacation_include::write(
-                executor, account, guard, &prepared, toggled, body,
-            )
-            .await;
+        // While the user's rules run, through their include where it can be; otherwise with the
+        // server's own flag, as without rules (`crate::vacation_include::path`).
+        match crate::vacation_include::path(executor, new.enabled).await? {
+            crate::vacation_include::Path::Include { prepared, toggled } => {
+                let account = vacation_account(executor.session())?;
+                let body = to_json(new);
+                crate::vacation_include::write(executor, account, guard, &prepared, toggled, body)
+                    .await
+            }
+            crate::vacation_include::Path::Flag => Ok(write(executor, guard, new).await?),
         }
-        Ok(write(executor, guard, new).await?)
     }
 }
 
@@ -156,8 +154,8 @@ async fn read(executor: &dyn Executor) -> Result<VacationResponse, JmapError> {
         .filter(|_| !reply.enabled)
         .and_then(|call| response.result(&call).ok())
         .and_then(|result| crate::sieve_scripts::parse(result).ok());
+    // The include runs the reply at delivery whatever the counters are: on, as the server does.
     if let Some(scripts) = scripts
-        && crate::sieve_scripts::include_usable(session, &scripts.state, Some(state))
         && crate::vacation_include::runs(executor, &scripts).await
     {
         return Ok(reply.turned_on());

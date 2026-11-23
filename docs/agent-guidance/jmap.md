@@ -232,10 +232,15 @@ the group's.
   in the same request and answers on where the reply's script is active, or the running rules
   script includes it: `sieve_scripts::reply_runs`, the one answer the reply and the rules share.
 
-  **The condition**, checked on every request, not by server name. The include path is taken
-  only where all of these hold; otherwise the reply is written and read with the server's own flag,
-  as without rules, and the receipt reports what that did to them (`RulesEffect`), never a
-  refusal:
+  **The condition**, checked on every request, not by server name, gates *adding* an include:
+  where it fails, a reply turned on is written with the server's own flag, as without rules, and
+  the receipt reports what that did to them (`RulesEffect`). Keeping an include, or taking one
+  out, needs only the script: the second write is guarded by the `SieveScript` state the script
+  was composed at (the words' `newState` where the two are one counter), so turning the reply off
+  never answers success through the flag while the running script still includes it, and a script
+  that includes the reply and cannot be read or rewritten is refused before anything is written.
+  A read, and a rules write, take "the running script includes the reply" as on, whatever the
+  counters, because that is what the server does at delivery.
 
   | Fact | How it is checked | On Stalwart v1.0.2 | Where it does not hold |
   |---|---|---|---|
@@ -243,7 +248,7 @@ the group's.
   | The account lists `include` | the session's `sieveExtensions` | yes | the flag |
   | `VacationResponse` and `SieveScript` are one counter | both states, read in one response, equal | yes (live) | the flag |
   | The running script can be read, and rewritten where the reply's state changes | its blob downloads as UTF-8, and the dialect can write it | for scripts it can split | the flag |
-  | The reply's script is named `vacation` | **not checkable**: the constant `REPLY_SCRIPT`, observed, pinned by `live_rules_reply` | yes (live) | a server that names it otherwise: the include names nothing (`:optional`), the reply does not run through the rules, and the suite turns red |
+  | The reply's script is named `vacation` | **not checkable**: the constant `REPLY_SCRIPT`, observed, pinned by `live_rules_reply` | yes (live) | a server that names it otherwise: the include names nothing (`:optional`). Its reply script, while active, is taken for the user's rules: `replace_rules` writing over it is refused `forbidden` (RFC 9661 §4; `Permanent`), and `set_vacation` lands its words, then has the include refused, answering `requires_confirmation`. Nothing is lost, Stalwart is unaffected, and `live_rules_reply` turns red on a rename |
 
   The same surface on the other transports, for the "provider-neutral" survey: ManageSieve (slice
   3) keeps the reply and the rules in one script the engine writes, so there is no second script
