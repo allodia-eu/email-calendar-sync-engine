@@ -7,7 +7,8 @@ use async_trait::async_trait;
 use super::Credential;
 use crate::ProviderError;
 
-/// Who a source signs in as: stable, not secret, and unique within the process.
+/// Who a source signs in as: stable, not secret, and unique within the process. `Debug` does not
+/// print the name.
 ///
 /// Everything authenticated is keyed by it: an IMAP connection, a JMAP session, a request gate.
 /// The host names it (a sync host its account id, a transfer host one side of a mailbox pair, a
@@ -39,12 +40,16 @@ impl CredentialSubject {
     }
 }
 
+/// Says whether the subject is named by the host or minted, and nothing else. A host's name
+/// is often personal (an account address, one side of a mailbox pair, a tenant and the user's
+/// OIDC subject), so it stays out of a `{:?}` for the reason a credential's username does.
 impl core::fmt::Debug for CredentialSubject {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match &self.0 {
-            Subject::Named(name) => f.debug_tuple("CredentialSubject").field(name).finish(),
-            Subject::Unique(n) => write!(f, "CredentialSubject(unique #{n})"),
-        }
+        let kind = match &self.0 {
+            Subject::Named(_) => "<named>",
+            Subject::Unique(_) => "<minted>",
+        };
+        write!(f, "CredentialSubject({kind})")
     }
 }
 

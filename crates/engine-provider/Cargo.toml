@@ -1,6 +1,6 @@
 [package]
 name = "engine-provider"
-description = "Provider/transport trait surface for the PIM sync engine: a minimal, provider-neutral contract that adapters (JMAP now; IMAP/SMTP/CalDAV later) implement to return normalized SyncUpdate batches plus opaque cursors, expose capabilities, and classify failures. No network dependencies, and of the async runtime only tokio's timer (the deadline on asking a credential source); connections live in the provider crates."
+description = "Provider/transport trait surface for the PIM sync engine: a minimal, provider-neutral contract that adapters (JMAP now; IMAP/SMTP/CalDAV later) implement to return normalized SyncUpdate batches plus opaque cursors, expose capabilities, and classify failures. No network dependencies and no async runtime: only tokio's timer, which bounds an ask to a credential source on the host's own runtime; connections live in the provider crates."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -33,8 +33,10 @@ time = { workspace = true, optional = true }
 zeroize = { workspace = true }
 # Only the timer: an ask to a host's `CredentialSource` runs under the deadline of the step it
 # belongs to, so a hung token endpoint or broker cannot hang a dial or a request
-# (`credential::with_credential`). Every adapter already runs on tokio.
-tokio = { workspace = true, features = ["time"] }
+# (`credential::with_credential`). Not the workspace entry, whose `macros`, `rt` and
+# `rt-multi-thread` would pull a runtime into every crate that depends on this one: the timer
+# runs on whatever runtime the host already drives.
+tokio = { version = "1.52.3", default-features = false, features = ["time"] }
 
 [features]
 # The import seam (`engine_provider::import`): storing an object that already exists, as it was.

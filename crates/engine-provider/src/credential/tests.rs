@@ -23,6 +23,11 @@ fn a_secret_prints_nothing_of_itself() {
     assert_eq!(secret.expose(), PASSWORD);
 }
 
+/// A compile-time check that `Secret` declares `ZeroizeOnDrop`. It is circular on its own:
+/// the trait is a marker, implemented by hand, so this proves the declaration is there and
+/// nothing about memory. The guarantee is the field type, `Arc<Zeroizing<Box<str>>>`, whose
+/// `Zeroizing` zeroes the buffer when the last clone drops; `clones_of_a_secret_share_one_buffer`
+/// pins the sharing that makes "last clone" mean every copy.
 #[test]
 fn a_secret_is_zeroized_on_drop() {
     fn zeroized_on_drop<T: ZeroizeOnDrop>() {}
@@ -57,10 +62,14 @@ fn a_credential_prints_neither_its_secret_nor_its_username() {
 
 #[test]
 fn a_fixed_credential_prints_nothing_secret_or_personal() {
-    let fixed = FixedCredential::unique(Credential::password(ADDRESS, PASSWORD));
-    let shown = format!("{fixed:?}");
-    for leaked in [ADDRESS, PASSWORD] {
-        assert!(!shown.contains(leaked), "{leaked} leaked: {shown}");
+    let credential = Credential::password(ADDRESS, PASSWORD);
+    // A host names its subjects after accounts as often as not.
+    let named = FixedCredential::new(CredentialSubject::new(ADDRESS), credential.clone());
+    for fixed in [named, FixedCredential::unique(credential)] {
+        let shown = format!("{fixed:?}");
+        for leaked in [ADDRESS, "alice", PASSWORD] {
+            assert!(!shown.contains(leaked), "{leaked} leaked: {shown}");
+        }
     }
 }
 
@@ -106,8 +115,9 @@ fn a_minted_subject_never_equals_one_a_host_names() {
     );
     assert_eq!(
         format!("{:?}", CredentialSubject::new("acct-1")),
-        "CredentialSubject(\"acct-1\")"
+        "CredentialSubject(<named>)"
     );
+    assert_eq!(format!("{minted:?}"), "CredentialSubject(<minted>)");
 }
 
 #[test]

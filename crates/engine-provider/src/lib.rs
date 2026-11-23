@@ -31,9 +31,9 @@
 //!
 //! The trait is deliberately **shaped by JMAP** and kept minimal: it covers the
 //! mail spine (mailboxes + email), calendar, submission, and contact contracts.
-//! It depends on `engine-core`, and on tokio only for the timer that bounds an ask to a
-//! credential source; network access and the rest of the async runtime live in the concrete
-//! provider crates (`provider-jmap`,
+//! It depends on `engine-core`, and on tokio's timer alone (no runtime) to bound an ask to a
+//! credential source; network access and the runtime live in the concrete provider crates and
+//! the host (`provider-jmap`,
 //! plus `provider-imap`/`provider-smtp`/`provider-caldav`). `engine-sync` drives
 //! the provider-neutral scopes.
 

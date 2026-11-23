@@ -66,6 +66,11 @@ impl From<CredentialFailure> for ProviderError {
 ///
 /// The attempt's error, or the source's failure converted into `E`.
 ///
+/// # Panics
+///
+/// Outside a tokio runtime with the timer enabled (`enable_time`, or `enable_all`), as
+/// [`tokio::time::timeout`] does: the ask's deadline runs on the caller's runtime.
+///
 /// [`Permanent`]: engine_core::error::FailureClass::Permanent
 /// [`Retryable`]: engine_core::error::FailureClass::Retryable
 pub async fn with_credential<T, E, F, Fut>(
