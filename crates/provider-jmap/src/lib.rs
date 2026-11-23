@@ -86,7 +86,7 @@ pub use config::{Credentials, JmapConfig};
 use engine_core::ids::BlobId;
 use engine_http::Exchange;
 use engine_provider::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
-pub use error::JmapError;
+pub use error::{JmapError, ServerText};
 pub use provider::JmapProvider;
 pub use request::{CallId, Request, ResultRef, capability};
 use reqwest::Url;
