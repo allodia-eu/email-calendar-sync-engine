@@ -49,11 +49,12 @@ fn a_malformed_require_is_refused_at_its_segment() {
 #[test]
 fn one_require_is_written_as_roundcube_writes_it() {
     assert_eq!(
-        require_command(&names(&["imap4flags", "body", "copy"])).as_deref(),
+        require_command(&names(&["imap4flags", "body", "copy"]))
+            .unwrap()
+            .as_deref(),
         Some("require [\"body\",\"copy\",\"imap4flags\"];\r\n")
     );
-    assert_eq!(require_command(&BTreeSet::new()), None);
-    assert_eq!(require_command(&names(&["a\nb"])), None);
+    assert_eq!(require_command(&BTreeSet::new()), Ok(None));
 }
 
 #[test]
@@ -71,5 +72,25 @@ fn a_merge_keeps_the_script_s_requires_when_they_name_enough() {
     assert_eq!(
         merged(&[], &names(&["fileinto"])).unwrap().as_deref(),
         Some("require [\"fileinto\"];\r\n")
+    );
+}
+
+#[test]
+fn a_require_that_cannot_be_written_is_an_error_never_nothing_to_add() {
+    let unwritable = SieveErrorKind::UnwritableValue;
+    assert_eq!(
+        require_command(&names(&["a\nb"])).unwrap_err().kind(),
+        unwritable
+    );
+    let segments = segment("require \"fileinto\";\r\nkeep;\r\n").unwrap();
+    assert_eq!(
+        merged(&segments, &names(&["a\nb"])).unwrap_err().kind(),
+        unwritable
+    );
+    // A name read from a `text:` block keeps its CRLF, which a quoted string can hold.
+    let segments = segment("require text:\r\nfoo\r\nbar\r\n.\r\n;\r\nkeep;\r\n").unwrap();
+    assert_eq!(
+        merged(&segments, &names(&["fileinto"])).unwrap().as_deref(),
+        Some("require [\"fileinto\",\"foo\r\nbar\r\n\"];\r\n")
     );
 }

@@ -239,8 +239,15 @@ fn multi_line(bytes: &[u8], at: usize, after_colon: usize) -> Result<usize, Siev
     if bytes.get(i) == Some(&b'#') {
         i = line_end(bytes, i);
     }
-    // The first line of the block starts after the line end that closes the `text:` line.
-    i = next_line(bytes, i).ok_or_else(unterminated)?;
+    // The first line of the block starts after the line end that closes the `text:` line;
+    // anything else on that line is no part of the grammar.
+    i = match next_line(bytes, i) {
+        Some(first) => first,
+        None if i < bytes.len() => {
+            return Err(SieveError::new(SieveErrorKind::UnexpectedCharacter, i));
+        }
+        None => return Err(unterminated()),
+    };
     loop {
         let end = line_end(bytes, i);
         if &bytes[i..end] == b"." {

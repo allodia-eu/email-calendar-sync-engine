@@ -79,13 +79,19 @@ pub fn required(segments: &[Segment<'_>]) -> Result<BTreeSet<String>, SieveError
 }
 
 /// One `require` naming `names`, as Roundcube writes it: `require ["a","b"];` and CRLF, names
-/// sorted. `None` where `names` is empty, or where a name cannot be a quoted string.
-pub fn require_command(names: &BTreeSet<String>) -> Option<String> {
+/// sorted; `None` where `names` is empty.
+///
+/// # Errors
+///
+/// [`SieveErrorKind::UnwritableValue`] where a name cannot be a quoted string
+/// ([`string::quoted`]).
+pub fn require_command(names: &BTreeSet<String>) -> Result<Option<String>, SieveError> {
     if names.is_empty() {
-        return None;
+        return Ok(None);
     }
     let quoted: Option<Vec<String>> = names.iter().map(|name| string::quoted(name)).collect();
-    Some(format!("require [{}];\r\n", quoted?.join(",")))
+    let quoted = quoted.ok_or(SieveError::new(SieveErrorKind::UnwritableValue, 0))?;
+    Ok(Some(format!("require [{}];\r\n", quoted.join(","))))
 }
 
 /// The `require` a script needs once its changed rules need `needed`: `None` where its own
@@ -93,7 +99,8 @@ pub fn require_command(names: &BTreeSet<String>) -> Option<String> {
 ///
 /// # Errors
 ///
-/// What [`required`] answers.
+/// What [`required`] answers, or what [`require_command`] answers for the union: never `None`
+/// for a require it could not write.
 pub fn merged(
     segments: &[Segment<'_>],
     needed: &BTreeSet<String>,
@@ -102,7 +109,7 @@ pub fn merged(
     if needed.is_subset(&have) {
         return Ok(None);
     }
-    Ok(require_command(&have.union(needed).cloned().collect()))
+    require_command(&have.union(needed).cloned().collect())
 }
 
 #[cfg(test)]

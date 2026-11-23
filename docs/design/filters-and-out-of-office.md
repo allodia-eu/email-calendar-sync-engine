@@ -136,11 +136,17 @@ parser would buy semantics the model does not use. The segmenter is fuzzed besid
 MIME and iCalendar targets.
 
 The recognised dialect is the one the engine writes, and the engine writes Roundcube's: its
-managesieve plugin marks each rule with `# rule:[name]` and a disabled one with `if false # …`
-(**live**: the bytes are pinned from scripts the plugin wrote, `engine-sieve`'s
-`tests/fixtures/roundcube/`, whose README says how they were made and what they show). Roundcube is the most widely used
-webmail on Sieve servers, so a user who also uses it reads and edits the same named rules there,
-and rules it wrote read back typed here. When the account has no active script, the engine creates
+managesieve plugin marks each rule with `# rule:[name]` and a disabled one with `if false # …`.
+The bytes are pinned from scripts the plugin's own writer produced, run offline, which its own
+parser read back identically (not **live**: no server was involved; `engine-sieve`'s
+`tests/fixtures/roundcube/README.md` says how they were made and what they show). What they
+show: one `require ["a","b"];` first, names sorted; per rule a `# rule:[name]` line (none for an
+unnamed rule), `if <test>`, then `{`, one tab-indented action per line, and `}`, every line ending
+in CRLF; several tests as `allof (a, b)` or `anyof (a, b)`; a rule for every message as `if true`;
+a disabled rule as `if false # <its tests as they would be written>`. The segmenter splits each
+into one segment per rule, the name comment travelling with its `if`. Roundcube is the most
+widely used webmail on Sieve servers, so a user who also uses it reads and edits the same named
+rules there, and rules it wrote read back typed here. When the account has no active script, the engine creates
 one named `rules` and activates it; otherwise it edits the active script in place. On a JMAP
 server that runs the reply as a script of its own, the active script may be the reply's, which
 `SieveScript/set` may not change and which activating `rules` would switch off; slice 1 found this
@@ -666,16 +672,6 @@ then by `provider-jmap/tests/live_vacation.rs` (2026-11-23). Captured, scrubbed,
   while active is refused (`scriptIsActive`). Destroying it once inactive **succeeds**, which RFC
   9661 §4 forbids (`docs/spec-deviations.md`, STALWART-3). The next `VacationResponse/set` makes a
   new one.
-
-**Settled in slice 2.** The byte layout of Roundcube's dialect, from scripts its managesieve plugin
-(1.6.11) wrote for rule sets built as its forms build them, captured as
-`engine-sieve/tests/fixtures/roundcube/*.sieve`: one `require ["a","b"];` first, names sorted; per
-rule a `# rule:[name]` line (none for an unnamed rule), `if <test>`, then `{`, one tab-indented
-action per line, and `}`, every line ending in CRLF; several tests as `allof (a, b)` or
-`anyof (a, b)`; a rule for every message as `if true`; a disabled rule as
-`if false # <its tests as they would be written>`. The plugin read each of those scripts back and
-wrote it again byte for byte. The segmenter splits each into one segment per rule, the name
-comment travelling with its `if`.
 
 **What this changes for slice 2.** On a JMAP account whose server runs the reply as its own
 script, rules in a separate active script and the reply cannot both run: whichever was activated

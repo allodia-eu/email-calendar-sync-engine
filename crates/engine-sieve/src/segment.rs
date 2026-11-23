@@ -51,6 +51,11 @@ impl<'a> Segment<'a> {
         self.start
     }
 
+    /// Where the segment ends: the offset of the byte after it.
+    pub fn end(&self) -> usize {
+        self.start + self.text.len()
+    }
+
     /// What the segment holds.
     pub fn kind(&self) -> SegmentKind {
         self.kind
@@ -95,11 +100,19 @@ impl fmt::Debug for Segment<'_> {
 
 /// Splits `script` at its top-level commands.
 ///
+/// It holds every token of the script twice while it works, about 64 bytes for each byte of a
+/// script made of one-byte tokens. A script comes from a server that bounds it (JMAP Sieve's
+/// `maxSizeScript`, 100 KB on the harness); a caller that reads one from anywhere else caps its
+/// size first.
+///
 /// # Errors
 ///
 /// A [`SieveError`] where the script cannot be tokenized, where a top-level token is not a
 /// command name, where brackets do not balance, or where it ends inside a command. A script
-/// that cannot be split cannot be edited a rule at a time; a caller keeps it whole.
+/// that cannot be split cannot be edited a rule at a time: a caller reads it as one rule it
+/// carries whole, and refuses to write over it rule by rule. That includes a script that starts
+/// with a UTF-8 byte order mark, which RFC 5228 §8.1 gives no token
+/// ([`SieveErrorKind::UnexpectedCharacter`] at offset 0).
 pub fn segment(script: &str) -> Result<Vec<Segment<'_>>, SieveError> {
     let tokens = tokenize(script)?;
     let mut segments = Vec::new();

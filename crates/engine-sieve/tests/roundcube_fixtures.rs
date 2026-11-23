@@ -64,7 +64,9 @@ fn the_require_names_what_the_plugin_required() {
     assert_eq!(names, ["body", "copy", "fileinto", "imap4flags", "regex"]);
     // The plugin's layout is the one `require_command` writes.
     assert_eq!(
-        require::require_command(&names.into_iter().collect()).as_deref(),
+        require::require_command(&names.into_iter().collect())
+            .unwrap()
+            .as_deref(),
         Some(segments[0].text())
     );
 }

@@ -27,6 +27,7 @@ fn a_rule_takes_its_name_comment_and_the_line_end_after_its_brace() {
     assert_eq!(rule.trailer(), "\r\n");
     assert_eq!(rule.identifier(), Some("if"));
     assert_eq!(rule.start(), "require [\"fileinto\"];\r\n".len());
+    assert_eq!(rule.end(), segments[2].start());
     assert_eq!(segments[2].leading(), "# rule:[Rest]\r\n");
     assert_eq!(texts(script).concat(), script);
 }
@@ -93,6 +94,11 @@ fn a_script_that_cannot_be_split_is_refused_where_it_breaks() {
     );
     assert_eq!(error("keep"), (SieveErrorKind::UnterminatedCommand, 0));
     assert_eq!(error("keep; @"), (SieveErrorKind::UnexpectedCharacter, 6));
+    assert_eq!(
+        error("\u{feff}keep;"),
+        (SieveErrorKind::UnexpectedCharacter, 0),
+        "a byte order mark is no token"
+    );
 }
 
 #[test]

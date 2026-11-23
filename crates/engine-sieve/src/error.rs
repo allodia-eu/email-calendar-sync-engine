@@ -35,6 +35,9 @@ pub enum SieveErrorKind {
     MalformedRequire,
     /// The script is not UTF-8 (RFC 5228 §2.1).
     NotUtf8,
+    /// A value to be written that no Sieve string can hold: a CR or LF outside a CRLF pair, or a
+    /// NUL. It was never in a script, so its offset is 0.
+    UnwritableValue,
 }
 
 impl SieveError {
@@ -65,6 +68,7 @@ impl fmt::Display for SieveError {
             SieveErrorKind::UnterminatedCommand => "the script ends inside a command",
             SieveErrorKind::MalformedRequire => "a require names no string or string list",
             SieveErrorKind::NotUtf8 => "the script is not UTF-8",
+            SieveErrorKind::UnwritableValue => "a value cannot be written as a Sieve string",
         };
         write!(f, "Sieve script: {what} (at byte {})", self.offset)
     }
@@ -88,6 +92,7 @@ mod tests {
             SieveErrorKind::UnterminatedCommand,
             SieveErrorKind::MalformedRequire,
             SieveErrorKind::NotUtf8,
+            SieveErrorKind::UnwritableValue,
         ];
         let texts: std::collections::BTreeSet<String> = kinds
             .iter()

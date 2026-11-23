@@ -1,5 +1,8 @@
-//! The segmenter's one promise, over many scripts: the segments' texts, in order, are the
-//! script, byte for byte, and there is one segment per top-level command.
+//! The segmenter's promise, over many scripts: the segments' texts, in order, are the script,
+//! byte for byte; there is one segment per top-level command; and each segment, split on its
+//! own, is that one command again. The first holds by construction (the segments are adjacent
+//! spans), so it proves little alone: the other two are what fail when a string, a comment or
+//! a bracket hides a `;` or a `}` from the splitter.
 //!
 //! The scripts are generated from a seeded generator, so a failure reproduces, out of every
 //! construct that can hide a `;` or a `}` from a careless splitter: quoted strings with escapes,
@@ -10,6 +13,22 @@
 use std::fmt::Write as _;
 
 use engine_sieve::{Segment, SegmentKind, segment};
+
+/// Each command segment, split on its own, is exactly one command segment with the same text:
+/// a splitter that cut a command in two, or ran two together, fails here.
+fn each_segment_is_one_command(segments: &[Segment<'_>]) {
+    for part in segments
+        .iter()
+        .filter(|segment| segment.kind() != SegmentKind::Trailing)
+    {
+        let alone = segment(part.text()).expect("a segment splits on its own");
+        assert_eq!(alone.len(), 1, "{:?}", part.text());
+        assert_eq!(
+            (alone[0].text(), alone[0].kind()),
+            (part.text(), part.kind())
+        );
+    }
+}
 
 /// xorshift64: small, seeded, and the same on every platform.
 struct Rng(u64);
@@ -150,11 +169,12 @@ fn every_generated_script_splits_into_its_commands_and_joins_back() {
             .map(|segment| segment.identifier().unwrap())
             .collect();
         assert_eq!(commands, names, "round {round}: {script:?}");
+        each_segment_is_one_command(&segments);
     }
 }
 
 #[test]
-fn arbitrary_text_never_panics_and_what_splits_joins_back() {
+fn arbitrary_text_never_panics_and_each_segment_is_one_command() {
     let alphabet = [
         "if", "else", "elsif", " ", "\r\n", "\n", "{", "}", "[", "]", "(", ")", ";", ",", "\"",
         "\\", "#", "/*", "*/", "text:", ".", "keep", ":is", "10K", "é", "@",
@@ -167,6 +187,7 @@ fn arbitrary_text_never_panics_and_what_splits_joins_back() {
             split += 1;
             let joined: String = segments.iter().map(Segment::text).collect();
             assert_eq!(joined, script);
+            each_segment_is_one_command(&segments);
         }
     }
     assert!(

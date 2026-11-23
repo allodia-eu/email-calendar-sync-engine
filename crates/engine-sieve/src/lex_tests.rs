@@ -133,9 +133,11 @@ fn unterminated_strings_and_comments_are_errors_at_their_start() {
         error("x text:\r\nno end\r\n"),
         (SieveErrorKind::UnterminatedMultiLine, 2)
     );
+    assert_eq!(error("x text:"), (SieveErrorKind::UnterminatedMultiLine, 2));
+    // Anything but white space or a comment after `text:` is no token at all.
     assert_eq!(
-        error("x text: junk"),
-        (SieveErrorKind::UnterminatedMultiLine, 2)
+        error("x text: junk\r\n.\r\n"),
+        (SieveErrorKind::UnexpectedCharacter, 8)
     );
     assert_eq!(error("x /* open"), (SieveErrorKind::UnterminatedComment, 2));
 }
