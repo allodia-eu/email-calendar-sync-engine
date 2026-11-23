@@ -176,8 +176,9 @@ never as a narrower one; it belongs to neither the reply nor the rules, so a hos
 `UnreadReply::sends_mail` says whether it may send mail, for a preflight. It is written over only
 when the caller names it (`write_reply_over`): that keeps its name, every command after `vacation`
 and any `elsif` or `else`, and `vacation`'s unmodelled arguments where `vacation` could be read,
-and discards the rest. A reply that is on is refused where another rule also runs `vacation`
-(RFC 5230 §4.7 makes two an error, and Dovecot then sends neither). The window is written to the second and
+and discards the rest. A reply that is on is refused where any enabled rule of the user's runs
+`vacation` in any branch (it may match the same message, RFC 5230 §4.7 makes two an error, and
+Dovecot then sends neither), and beside an `include`, which the dialect does not follow. The window is written to the second and
 never wider than asked; one that holds no whole second is refused. Text only for now: a `:mime`
 body holding HTML is a follow-up. The bytes are pinned from the plugin's own output, one script
 saved through its settings page (`tests/fixtures/roundcube/README.md`).

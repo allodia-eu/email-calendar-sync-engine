@@ -38,6 +38,7 @@ mod read;
 mod render;
 pub mod reply;
 mod reply_read;
+mod reply_render;
 mod vocabulary;
 mod write;
 

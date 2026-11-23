@@ -82,19 +82,20 @@ pub(super) fn write(base: &str, rules: &[MailRule]) -> Result<String, DialectErr
 }
 
 /// Where the reply rule, segment `reply` of the script, goes among written rules read from
-/// `origins`: before the first whose segment came after it, so it still runs before every rule it
-/// ran before and a rule inserted ahead of those cannot come between; else after the last whose
-/// segment came before it. A new rule, read from nowhere, moves it neither way; where every written
-/// rule is new, it keeps its place among the script's commands.
+/// `origins`: after the last whose segment came before it, so every rule that ran ahead of it
+/// (a `discard; stop` among them) still does, however the rules moved; else before the first
+/// whose segment came after it. Where a moved rule puts the two at odds, this errs toward fewer
+/// replies. A new rule, read from nowhere, moves it neither way; where every written rule is new,
+/// it keeps its place among the script's commands.
 fn reply_position(segments: &[Segment<'_>], reply: usize, origins: &[Option<usize>]) -> usize {
     origins
         .iter()
-        .position(|origin| origin.is_some_and(|at| at > reply))
+        .rposition(|origin| origin.is_some_and(|at| at < reply))
+        .map(|before| before + 1)
         .or_else(|| {
             origins
                 .iter()
-                .rposition(|origin| origin.is_some_and(|at| at < reply))
-                .map(|before| before + 1)
+                .position(|origin| origin.is_some_and(|at| at > reply))
         })
         .unwrap_or_else(|| {
             segments[..reply]

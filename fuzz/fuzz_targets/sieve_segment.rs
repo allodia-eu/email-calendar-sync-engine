@@ -50,7 +50,9 @@ fn reply_reads_back(script: &str) {
                         matches!(
                             err.kind(),
                             DialectErrorKind::Reply(
-                                ReplyRefusal::EmptyWindow | ReplyRefusal::OtherVacation
+                                ReplyRefusal::EmptyWindow
+                                    | ReplyRefusal::OtherVacation
+                                    | ReplyRefusal::Include
                             ) | DialectErrorKind::Require(_)
                         ),
                         "{err:?}"
@@ -84,7 +86,11 @@ fn reply_reads_back(script: &str) {
                 Err(err) => assert!(
                     matches!(
                         err.kind(),
-                        DialectErrorKind::Reply(ReplyRefusal::Expanded | ReplyRefusal::OtherVacation)
+                        DialectErrorKind::Reply(
+                            ReplyRefusal::Expanded
+                                | ReplyRefusal::OtherVacation
+                                | ReplyRefusal::Include
+                        )
                             | DialectErrorKind::Require(_)
                     ),
                     "{err:?}"

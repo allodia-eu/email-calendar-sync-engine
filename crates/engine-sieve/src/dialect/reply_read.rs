@@ -67,13 +67,11 @@ impl Found {
             })
     }
 
-    /// Whether the rule runs `vacation` again after its first: in its block, or in an `elsif` or
-    /// `else` after it.
+    /// Whether the rule runs `vacation` again in the block where its first runs. A `vacation` in an
+    /// `elsif` or `else` after the block runs only where the first does not, so it is no second.
     pub(super) fn holds_second_vacation(&self) -> bool {
         self.others
             .iter()
-            .map(String::as_str)
-            .chain(core::iter::once(self.after.as_str()))
             .any(|text| tokenize(text).map_or(true, |tokens| holds_vacation(&tokens)))
     }
 
@@ -180,31 +178,51 @@ fn reply(script: &str, segment: &Segment<'_>, literal: bool) -> Option<Found> {
     })
 }
 
-/// Whether a test is made only of what the plugin writes for a window ([module docs](self)).
+/// Whether a test is made only of what the plugin writes for a window ([module docs](self)):
+/// `true`, `currentdate` tests (`allof` for several), or, without the `date` extension, exactly
+/// its `header :regex "received" "<days>"` tests, `anyof` for several
+/// (`rcube_sieve_vacation.php:296-301` and `:325`).
 fn window_only(test: &[&Token<'_>]) -> bool {
-    let regex_received = test.iter().any(|token| token.is_tag("regex"))
-        && test.iter().any(|token| {
-            token.kind() == TokenKind::QuotedString
-                && token.text().eq_ignore_ascii_case("\"received\"")
-        });
-    !test.is_empty()
-        && test
-            .iter()
+    let dated = || {
+        test.iter()
             .filter(|token| token.kind() == TokenKind::Identifier)
             .all(|token| {
                 token.is_identifier("allof")
                     || token.is_identifier("currentdate")
                     || token.is_identifier("true")
-                    // Without `date`, the plugin writes its window as `header :regex "received"`
-                    // tests, `anyof` for several (`rcube_sieve_vacation.php:296-301` and `:325`).
-                    || ((token.is_identifier("header") || token.is_identifier("anyof"))
-                        && regex_received)
             })
+    };
+    !test.is_empty() && (dated() || received_only(test))
+}
+
+/// Whether `test` is the plugin's received-header window: one `header :regex "received" "<v>"`,
+/// or `anyof` of several, and nothing else.
+fn received_only(test: &[&Token<'_>]) -> bool {
+    let one = |tokens: &[&Token<'_>]| {
+        matches!(tokens, [header, regex, name, value]
+            if header.is_identifier("header")
+                && regex.is_tag("regex")
+                && name.kind() == TokenKind::QuotedString
+                && name.text().eq_ignore_ascii_case("\"received\"")
+                && value.kind() == TokenKind::QuotedString)
+    };
+    match test {
+        [anyof, open, inner @ .., close]
+            if anyof.is_identifier("anyof")
+                && open.kind() == TokenKind::LeftParen
+                && close.kind() == TokenKind::RightParen =>
+        {
+            inner
+                .split(|token| token.kind() == TokenKind::Comma)
+                .all(one)
+        }
+        _ => one(test),
+    }
 }
 
 /// Where the rule's block opens: the first `{` outside the test's parentheses and brackets. A
 /// `{` inside them is no block of this rule's, whatever a malformed test holds.
-fn block_start(tokens: &[&Token<'_>]) -> Option<usize> {
+pub(super) fn block_start(tokens: &[&Token<'_>]) -> Option<usize> {
     let mut depth = 0usize;
     for (at, token) in tokens.iter().enumerate() {
         match token.kind() {
@@ -218,7 +236,7 @@ fn block_start(tokens: &[&Token<'_>]) -> Option<usize> {
 }
 
 /// The `}` closing the `{` at `open`.
-fn matching_brace(tokens: &[&Token<'_>], open: usize) -> Option<usize> {
+pub(super) fn matching_brace(tokens: &[&Token<'_>], open: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (at, token) in tokens.iter().enumerate().skip(open) {
         match token.kind() {

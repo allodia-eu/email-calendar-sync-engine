@@ -11,7 +11,8 @@ use engine_sieve::{
     dialect::{
         DialectError, DialectErrorKind, read_rules,
         reply::{
-            ReplyRefusal, ScriptReply, UnreadReply, read_reply, write_reply, write_reply_over,
+            ReplyRefusal, ScriptReply, UnreadReply, includes, read_reply, write_reply,
+            write_reply_over,
         },
         write_rules,
     },
@@ -71,6 +72,15 @@ fn the_reply_keeps_its_place_among_rules_inserted_deleted_and_moved() {
     let spam = named(&read_rules(&base), "Spam");
     let written = write_rules(&base, &[new_rule("New"), spam]).unwrap();
     assert_eq!(order(&written), ["New", "Spam", "Out-of-Office"]);
+    // A rule that ran after the reply moved to the top: the reply stays after Spam.
+    let base = script(&[
+        &rule("Spam", "discard;\r\n\tstop"),
+        REPLY,
+        &rule("B", "keep"),
+    ]);
+    let rules = read_rules(&base);
+    let written = write_rules(&base, &[named(&rules, "B"), named(&rules, "Spam")]).unwrap();
+    assert_eq!(order(&written), ["B", "Spam", "Out-of-Office"]);
 
     let base = script(&[&rule("A", "keep"), REPLY, &rule("B", "keep")]);
     let rules = read_rules(&base);
@@ -78,11 +88,11 @@ fn the_reply_keeps_its_place_among_rules_inserted_deleted_and_moved() {
     let cases: [(Vec<MailRule>, [&str; 3]); 2] = [
         (
             vec![a.clone(), new_rule("C"), b.clone()],
-            ["A", "C", "Out-of-Office"],
+            ["A", "Out-of-Office", "C"],
         ),
         (
             vec![b.clone(), a.clone(), new_rule("C")],
-            ["Out-of-Office", "B", "A"],
+            ["B", "A", "Out-of-Office"],
         ),
     ];
     for (rules, expected) in cases {
@@ -151,14 +161,12 @@ fn an_overwrite_keeps_every_command_after_vacation_and_any_else_and_adds_no_stra
 fn a_brace_inside_the_test_s_parentheses_is_no_block_of_the_rule() {
     // Found by the fuzz target: the `{` inside `allof (…)` was taken for the rule's block, and the
     // overwrite left the test's `)` behind, which no Sieve parser splits.
-    let torn = "require [\"date\"];\r\nif allof (currentdate :te \n{\r\n\tvacation \"Away.\";\r\n}\t\
-                one \"+le-190\")\r\n{\r\n\tvacatio\tn \"Away.\";\r\n}\r\n";
-    match read_reply(torn) {
-        ScriptReply::Unreadable(_) => {
-            overwritten(torn);
-        }
-        other => assert_eq!(other, ScriptReply::Absent),
-    }
+    let torn = "require [\"date\",\"relational\",\"vacation\"];\r\nif allof (currentdate { true } \
+                :zone \"+0000\" :value \"ge\" \"iso8601\" \"2030-01-02T09:00:00Z\")\r\n\
+                {\r\n\tvacation \"Away.\";\r\n}\r\n";
+    // Read from its real block: the reply, with a window the reader does not read.
+    assert!(matches!(read_reply(torn), ScriptReply::Unreadable(_)));
+    overwritten(torn);
 }
 
 #[test]
@@ -207,16 +215,53 @@ fn a_reply_that_is_on_where_another_rule_runs_vacation_is_refused() {
     );
     // Off, it sends nothing, and is written.
     assert!(write_reply(&base, &reply("Away.").turned_off()).is_ok());
-    // A disabled rule never runs.
+    // A disabled rule's first branch never runs; what follows it can.
     let disabled = boss.replace("if header", "if false # header");
     assert!(write_reply(&script(&[&disabled]), &reply("Away.")).is_ok());
-    // Nor may an overwrite keep a second vacation of its own.
-    let second =
-        "if true\r\n{\r\n\tvacation \"a\";\r\n}\r\nelse\r\n{\r\n\tvacation \"b\";\r\n}\r\n";
+    let disabled_else = format!("{disabled}else\r\n{{\r\n\tvacation \"x\";\r\n}}\r\n");
     assert_eq!(
-        refusal(write_reply_over(second, &reply("New."), &unread(second))),
+        refusal(write_reply(&script(&[&disabled_else]), &reply("Away."))),
         ReplyRefusal::OtherVacation
     );
+    // Every branch of another rule counts.
+    let otherwise = format!(
+        "{}else\r\n{{\r\n\tvacation \"x\";\r\n}}\r\n",
+        rule("Other", "keep")
+    );
+    assert_eq!(
+        refusal(write_reply(&script(&[&otherwise]), &reply("Away."))),
+        ReplyRefusal::OtherVacation
+    );
+    // The reply's own `else` runs only where its `vacation` does not: no second reply.
+    let own_else =
+        "if true\r\n{\r\n\tvacation \"a\";\r\n}\r\nelse\r\n{\r\n\tvacation \"b\";\r\n}\r\n";
+    assert!(write_reply_over(own_else, &reply("New."), &unread(own_else)).is_ok());
+    // A second `vacation` in its own block runs with the first.
+    let twice = "if true\r\n{\r\n\tvacation \"a\";\r\n\tvacation \"b\";\r\n}\r\n";
+    assert_eq!(
+        refusal(write_reply_over(twice, &reply("New."), &unread(twice))),
+        ReplyRefusal::OtherVacation
+    );
+}
+
+#[test]
+fn a_reply_that_is_on_beside_an_include_is_refused() {
+    // The dialect reads no included script, which may reply too.
+    let base = script(&[
+        "include :personal :optional \"vacation\";\r\n",
+        &rule("A", "keep"),
+    ]);
+    assert!(includes(&base));
+    assert!(!includes(&script(&[&rule("A", "keep")])));
+    assert!(
+        !includes("# include \"x\";\r\nkeep;\r\n"),
+        "a comment includes nothing"
+    );
+    assert_eq!(
+        refusal(write_reply(&base, &reply("Away."))),
+        ReplyRefusal::Include
+    );
+    assert!(write_reply(&base, &reply("Away.").turned_off()).is_ok());
 }
 
 #[test]
@@ -227,4 +272,11 @@ fn the_plugin_s_received_header_window_is_the_reply_unread() {
     assert_eq!(found.segment(), 1);
     assert!(!found.does_more());
     assert!(read_rules(RECEIVED).is_empty(), "not one of the rules");
+    // Exactly the plugin's tests: another header test beside them makes it the user's rule.
+    let mixed = RECEIVED.replace(
+        "header :regex \"received\" \"([ 0]1|[ 0]2) Feb 2030\"",
+        "header :contains \"from\" \"boss\"",
+    );
+    assert_ne!(mixed, RECEIVED);
+    assert_eq!(read_reply(&mixed), ScriptReply::Absent);
 }

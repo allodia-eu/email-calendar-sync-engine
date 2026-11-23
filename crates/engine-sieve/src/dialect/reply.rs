@@ -22,9 +22,11 @@
 //!   `:seconds`, `:addresses`, `:handle`, `:from`); first where there is none. Every other rule is
 //!   copied byte for byte. It refuses to write over an unread reply ([`ReplyRefusal::Unread`])
 //!   unless the caller names it ([`write_reply_over`], which says what it keeps and what it
-//!   discards), and a reply that is on where another rule also runs `vacation`
-//!   ([`ReplyRefusal::OtherVacation`]): RFC 5230 §4.7 makes two an error, and Dovecot then sends
-//!   neither.
+//!   discards). A reply that is on is refused where any enabled rule of the user's runs `vacation`
+//!   in any branch ([`ReplyRefusal::OtherVacation`]): any such rule may match the same message, and
+//!   RFC 5230 §4.7 makes two `vacation` actions an error (Dovecot then sends neither). It is
+//!   refused too beside an `include` ([`ReplyRefusal::Include`]): the dialect reads no other
+//!   script, so it cannot know whether that one replies.
 //!
 //! An unread reply belongs to neither list: [`read_rules`](super::read_rules) leaves its rule out,
 //! and [`read_reply`] does not read it, so an action inside it, a redirect among them, is in
@@ -37,24 +39,22 @@
 //! end, which the plugin writes with `le`. Its text is written with CRLF line ends, as every Sieve
 //! string holds them, and read back with LF.
 
-use core::fmt::Write as _;
 use std::collections::BTreeSet;
 
 use engine_core::{
     raw::RawVacation,
     rules::RuleName,
-    time::UtcDateTime,
-    vacation::{ReplyAudience, VacationResponse, VacationWindow},
+    vacation::{VacationResponse, VacationWindow},
 };
 
 use super::{
     DialectError, read,
-    reply_read::{self, Found, Kept},
-    write,
+    reply_read::{self, Found},
+    reply_render, write,
 };
 use crate::{
+    lex::Token,
     segment::{Segment, SegmentKind},
-    string,
 };
 
 /// The name a new reply rule gets: the plugin's own, from its `set_vacation`.
@@ -159,9 +159,14 @@ pub enum ReplyRefusal {
     /// It holds `${` where the script requires `variables` or `encoded-character`, which would
     /// expand it.
     Expanded,
-    /// It is on, and another rule of the script runs `vacation` too: RFC 5230 §4.7 makes two
-    /// `vacation` actions for one message an error.
+    /// It is on, and another enabled rule of the script runs `vacation` in some branch, or the
+    /// reply's own block runs it twice: RFC 5230 §4.7 makes two `vacation` actions for one message
+    /// an error (Dovecot then sends neither), and any rule of the user's may match the same
+    /// message as the reply, so any such rule blocks a reply that is on.
     OtherVacation,
+    /// It is on, and the script runs another through `include`, which may reply too: the dialect
+    /// reads no other script, so it refuses rather than risk two replies ([`includes`]).
+    Include,
     /// The script's reply rule is one the reader does not read, and the caller did not name it
     /// ([`write_reply_over`]), or named another.
     Unread,
@@ -233,7 +238,8 @@ fn neutral(found: &Found, text: &str) -> Option<VacationResponse> {
 /// written; [`DialectErrorKind::Reply`](super::DialectErrorKind::Reply) with the
 /// [`ReplyRefusal`] where the rule cannot hold `reply`, where `base`'s reply rule is one the
 /// reader does not read ([`ReplyRefusal::Unread`]), or where `reply` is on and another rule runs
-/// `vacation` ([`ReplyRefusal::OtherVacation`]).
+/// `vacation` ([`ReplyRefusal::OtherVacation`]) or the script includes another
+/// ([`ReplyRefusal::Include`]: `include` is not followed).
 pub fn write_reply(base: &str, reply: &VacationResponse) -> Result<String, DialectError> {
     write_over(base, reply, None)
 }
@@ -289,10 +295,13 @@ fn write_over(
         .unwrap_or_default();
     let reply_at = existing.as_ref().map(|(at, _)| *at);
     // A reply that is on, beside another `vacation` that may run for the same message.
+    if reply.enabled && includes(base) {
+        return Err(DialectError::reply(ReplyRefusal::Include));
+    }
     if reply.enabled && (another_vacation(&segments, reply_at) || found.holds_second_vacation()) {
         return Err(DialectError::reply(ReplyRefusal::OtherVacation));
     }
-    let (text, needs) = render(reply, &kept, &found, &leading, &name)?;
+    let (text, needs) = reply_render::render(reply, &kept, &found, &leading, &name)?;
     if !literal && text.contains("${") {
         return Err(DialectError::reply(ReplyRefusal::Expanded));
     }
@@ -316,6 +325,11 @@ fn write_over(
 /// The reply rule's text and what it requires.
 /// Whether a rule of the script other than the reply's runs `vacation`: one that is not disabled
 /// (`if false # …`).
+///
+/// Every branch of another rule counts: a `vacation` in its `else` may run for the same message as
+/// the reply. A disabled rule (`if false # …`) disables its first branch alone, so an `elsif` or
+/// `else` after it counts too. An `include` is not followed (the dialect reads no other script);
+/// [`includes`] says whether there is one.
 fn another_vacation(segments: &[Segment<'_>], reply: Option<usize>) -> bool {
     segments
         .iter()
@@ -327,154 +341,28 @@ fn another_vacation(segments: &[Segment<'_>], reply: Option<usize>) -> bool {
                 .iter()
                 .filter(|token| !token.kind().is_trivia())
                 .collect();
-            let disabled = matches!(significant.as_slice(), [first, second, ..]
-                if first.is_identifier("if") && second.is_identifier("false"));
-            !disabled && reply_read::holds_vacation(segment.tokens())
+            let runs: &[&Token<'_>] = match significant.as_slice() {
+                [first, second, ..]
+                    if first.is_identifier("if") && second.is_identifier("false") =>
+                {
+                    // Only what follows the first block can run.
+                    reply_read::block_start(&significant)
+                        .and_then(|open| reply_read::matching_brace(&significant, open))
+                        .map_or(&[], |close| &significant[close + 1..])
+                }
+                all => all,
+            };
+            runs.iter().any(|token| token.is_identifier("vacation"))
         })
 }
 
-fn render(
-    reply: &VacationResponse,
-    kept: &Kept,
-    found: &Found,
-    leading: &str,
-    name: &RuleName,
-) -> Result<(String, Vec<&'static str>), DialectError> {
-    let refuse = |reason| Err(DialectError::reply(reason));
-    if reply.reply.html.is_some() {
-        return refuse(ReplyRefusal::Html);
-    }
-    if reply.audience != ReplyAudience::Everyone {
-        return refuse(ReplyRefusal::Audience);
-    }
-    if reply.outside_reply.is_some() {
-        return refuse(ReplyRefusal::OutsideReply);
-    }
-    let Some(text) = reply.reply.text.as_deref() else {
-        return refuse(ReplyRefusal::NoText);
-    };
-    let (start, end) =
-        window(&reply.window).ok_or(DialectError::reply(ReplyRefusal::EmptyWindow))?;
-    let value =
-        |text: &str| value(text).ok_or(DialectError::reply(ReplyRefusal::ForbiddenCharacter));
-
-    // As the plugin requires: `vacation-seconds` in place of `vacation` where `:seconds` is used
-    // (`rcube_sieve_script::as_text`), which RFC 6131 §2's capability implies.
-    let mut needs = vec![if kept.seconds.is_some() {
-        "vacation-seconds"
-    } else {
-        "vacation"
-    }];
-    let mut tests = Vec::new();
-    if let Some(start) = start {
-        tests.push(bound("ge", start));
-    }
-    if let Some(last) = end {
-        tests.push(bound("le", last));
-    }
-    if !tests.is_empty() {
-        needs.extend(["date", "relational"]);
-    }
-    let condition = match tests.as_slice() {
-        [] => "true".to_owned(),
-        [one] => one.clone(),
-        many => format!("allof ({})", many.join(", ")),
-    };
-    let mut out = String::from(leading.trim_end_matches([' ', '\t']));
-    let _ = write!(out, "# rule:[{}]\r\n", name.as_str());
-    out.push_str(if reply.enabled { "if " } else { "if false # " });
-    out.push_str(&condition);
-    out.push_str("\r\n{\r\n\tvacation");
-    // In the plugin's order (`rcube_sieve_script::as_text`): the interval, `:addresses`,
-    // `:subject`, `:handle`, `:from`, then the reason.
-    if let Some(seconds) = kept.seconds {
-        let _ = write!(out, " :seconds {seconds}");
-    } else if let Some(days) = kept.days {
-        let _ = write!(out, " :days {days}");
-    }
-    if let Some(addresses) = &kept.addresses {
-        let rendered = addresses
-            .iter()
-            .map(|address| value(address))
-            .collect::<Result<Vec<_>, _>>()?;
-        let _ = write!(out, " :addresses [{}]", rendered.join(","));
-    }
-    if let Some(subject) = &reply.reply.subject {
-        let _ = write!(out, " :subject {}", value(subject)?);
-    }
-    if let Some(handle) = &kept.handle {
-        let _ = write!(out, " :handle {}", value(handle)?);
-    }
-    if let Some(from) = &kept.from {
-        let _ = write!(out, " :from {}", value(from)?);
-    }
-    let _ = write!(out, " {};\r\n", value(text)?);
-    for other in &found.others {
-        // A command that ended in a block ended there: a `;` after it would be a syntax error.
-        let end = if other.ends_with('}') { "" } else { ";" };
-        let _ = write!(out, "\t{other}{end}\r\n");
-    }
-    out.push('}');
-    if found.after.is_empty() {
-        out.push_str("\r\n");
-    } else {
-        // The `elsif` or `else` after the block, and the rest of its line, as written.
-        out.push_str(&found.after);
-        if !found.after.ends_with('\n') {
-            out.push_str("\r\n");
-        }
-    }
-    Ok((out, needs))
-}
-
-/// The whole seconds the window holds: the first, and the last (written with `le`), each where
-/// the window has that end; `None` where it holds none.
-fn window(window: &VacationWindow) -> Option<(Option<UtcDateTime>, Option<UtcDateTime>)> {
-    let second = core::time::Duration::from_secs(1);
-    let first = match window.start {
-        Some(start) => Some(ceil(start)?),
-        None => None,
-    };
-    let last = match window.end {
-        Some(end) => Some(floor(end).checked_sub(second)?),
-        None => None,
-    };
-    match (first, last) {
-        (Some(first), Some(last)) if last < first => None,
-        held => Some(held),
-    }
-}
-
-/// `at`, its fraction of a second dropped.
-fn floor(at: UtcDateTime) -> UtcDateTime {
-    at.checked_sub(core::time::Duration::from_nanos(u64::from(at.nanosecond())))
-        .unwrap_or(at)
-}
-
-/// The first whole second at or after `at`.
-fn ceil(at: UtcDateTime) -> Option<UtcDateTime> {
-    if at.nanosecond() == 0 {
-        return Some(at);
-    }
-    floor(at).checked_add(core::time::Duration::from_secs(1))
-}
-
-/// One bound of the window, as the plugin writes it.
-fn bound(relation: &str, at: UtcDateTime) -> String {
-    format!("currentdate :zone \"+0000\" :value \"{relation}\" \"iso8601\" \"{at}\"")
-}
-
-/// A value as the plugin writes one: quoted on one line, a `text:` block across lines, every line
-/// end a CRLF.
-fn value(text: &str) -> Option<String> {
-    let lf = text.replace("\r\n", "\n");
-    if lf.contains('\r') {
-        return None;
-    }
-    let crlf = lf.replace('\n', "\r\n");
-    if crlf.contains('\n') {
-        string::multi_line(&format!("{crlf}\r\n"))
-    } else {
-        string::quoted(&crlf)
-    }
+/// Whether `script` runs another script through `include` (RFC 6609), anywhere outside a comment.
+/// The dialect reads no other script, so it cannot tell whether that one replies too; a host that
+/// can read it decides, and [`write_reply`] refuses a reply that is on beside one
+/// ([`ReplyRefusal::Include`]).
+#[must_use]
+pub fn includes(script: &str) -> bool {
+    crate::tokenize(script).map_or(true, |tokens| {
+        tokens.iter().any(|token| token.is_identifier("include"))
+    })
 }
