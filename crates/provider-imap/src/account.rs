@@ -297,7 +297,10 @@ fn capabilities<S>(connection: &Connection<S>, smtp: bool) -> Capabilities {
         // draft without them, and the receipt says so (`crate::place`).
         .with_draft_keywords()
         // `CREATE`/`RENAME`/`DELETE` are base protocol on both dialects.
-        .with_mailbox_writes();
+        .with_mailbox_writes()
+        // `UID SEARCH UID 1:n SINCE … BEFORE …` is base protocol, so a widening fetches only the
+        // folder's older mail and keeps its cursor (`crate::band`).
+        .with_band_widening();
     if smtp {
         // Both submission capabilities ride the same SMTP transport: the assembler
         // (`engine-rfc5322`) builds the whole message, so this adapter owns every

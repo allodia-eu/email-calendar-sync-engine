@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey, SharedAccountId},
     mail::{Mailbox, Message, MessageMetadata},
-    sync::{MailboxWindows, SyncScope, SyncState, SyncUpdate, SyncWindow},
+    sync::{MailboxWindows, SyncScope, SyncState, SyncUpdate, SyncWindow, Widening},
     time::CalendarDate,
 };
 use engine_provider::{
@@ -28,7 +28,6 @@ use engine_provider::{
     ProviderError, ProviderResult, ReportReceipt, ScopeSync, SharedAccount, SharedAccounts,
     SourceStream, SubmissionReceipt,
 };
-use futures_util::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
@@ -48,7 +47,7 @@ pub struct ImapProvider<S> {
     /// `pub(crate)` so the [`crate::filing`] submission/draft helpers (split out to keep this
     /// file under the size limit) can borrow a session.
     pub(crate) pool: Arc<ImapPool<S>>,
-    mailbox: MailboxId,
+    pub(crate) mailbox: MailboxId,
     /// The resolved SMTP transport, or `None` when submission is unconfigured.
     /// `pub(crate)` so [`crate::filing`] (which owns the submission dispatch) reads it.
     pub(crate) smtp: Option<Arc<SmtpSender>>,
@@ -236,49 +235,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
         } else {
             self.default_sync_window()
         };
-        Box::pin(async_stream::stream! {
-            let mut connection = match self.session().await {
-                Ok(connection) => connection,
-                Err(err) => {
-                    yield Err(err);
-                    return;
-                }
-            };
-            // A provider scoped to a shared store syncs that store's folders only. Binding any
-            // other folder to it would put that folder's mail in the shared mailbox's account
-            // — refused, not synced.
-            if self.shared_account.is_some()
-                && let Err(refusal) = self.check_in_store(&mut connection, &self.mailbox).await
-            {
-                connection.discard();
-                yield Err(refusal);
-                return;
-            }
-            // The stream holds its connection for as long as it lives, and hands it back
-            // healthy only if every item was: a pass that failed mid-way has left the session
-            // in a state no one should inherit. One abandoned mid-fetch parks normally — the
-            // connection drains the leftover response before its next command.
-            let mut failed = false;
-            {
-                let pass = crate::stream::stream_email(
-                    &mut connection,
-                    Some(&self.pool),
-                    &self.mailbox,
-                    cursor,
-                    window,
-                    fetch_batch,
-                    chunk_size,
-                );
-                futures_util::pin_mut!(pass);
-                while let Some(item) = pass.next().await {
-                    failed = item.is_err();
-                    yield item;
-                }
-            }
-            if failed {
-                connection.discard();
-            }
-        })
+        self.folder_stream(cursor, window, fetch_batch, chunk_size)
+    }
+
+    /// Fetches the bound folder's band of `widening` (`crate::band`): only the older mail the
+    /// wider window adds, keeping the delta cursor, its position checkpointed at each fetch group.
+    fn widen_email<'a>(
+        &'a self,
+        _account: &'a AccountId,
+        cursor: &'a SyncState,
+        widening: &'a Widening,
+        fetch_batch: usize,
+        chunk_size: usize,
+    ) -> EmailStream<'a> {
+        self.band_stream(cursor, widening, fetch_batch, chunk_size)
     }
 
     /// Submits `draft` over the configured SMTP transport and files the sent copy in

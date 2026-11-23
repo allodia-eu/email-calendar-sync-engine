@@ -71,6 +71,7 @@
 
 mod account;
 mod acl;
+mod band;
 mod base64;
 mod bodystructure;
 mod capability;
@@ -107,6 +108,7 @@ mod pool;
 mod pool_lease;
 mod probe;
 mod provider;
+mod provider_stream;
 mod qresync;
 mod report;
 mod resync;

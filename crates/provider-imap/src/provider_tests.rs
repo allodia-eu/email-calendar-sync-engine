@@ -63,6 +63,12 @@ async fn scopes_are_imap_shaped() {
     assert!(!provider.connection_info().capabilities.sent_copy_keywords());
     // A draft is an `APPEND`, so it needs no SMTP, and its keywords ride that `APPEND`.
     assert!(provider.connection_info().capabilities.draft_keywords());
+    assert!(
+        provider
+            .connection_info()
+            .capabilities
+            .widens_mail_by_band()
+    );
     assert!(!provider.connection_info().capabilities.calendars());
     // This provider's connection never ran CAPABILITY negotiation, so push (IDLE) is
     // not advertised — it is gated on the server, like submission is on SMTP.

@@ -33,6 +33,7 @@ use engine_core::{
     ids::{MailboxId, ProviderKey},
     mail::Message,
     sync::{SyncState, SyncWindow},
+    time::CalendarDate,
 };
 use engine_provider::{EmailChunk, PassMode, ProviderError, ProviderResult, SyncKind, split_page};
 use futures_util::Stream;
@@ -107,6 +108,7 @@ where
                 backfill_low: None,
                 reconciled: is_fresh,
                 version: crate::cursor::CURSOR_VERSION,
+                band_low: None,
             };
             let (groups, windowed_total) =
                 backfill_groups(conn, high, since.as_deref(), fetch_batch).await?;
@@ -115,19 +117,19 @@ where
             let total = windowed_total
                 .or_else(|| Some(usize::try_from(select.exists).unwrap_or(usize::MAX)));
             let empty = groups.is_empty();
+            let completion = Completion::Backfill { frontier, is_fresh };
             let scan = backfill_scan(
                 conn,
                 pool,
                 mailbox,
                 uid_validity,
                 groups,
-                &frontier,
+                completion,
                 total,
                 chunk_size,
-                is_fresh,
             );
             for await chunk in scan {
-                yield chunk?;
+                yield within(chunk?, window);
             }
             // An empty mailbox has no group to carry the completing cursor, so mark it
             // here (the last group already advances to `frontier` when non-empty). A
@@ -179,13 +181,15 @@ where
                 chunk_size,
             );
             for chunk in chunks {
-                yield chunk;
+                yield within(chunk, window);
             }
             if is_last {
                 break next_cursor;
             }
             page_token = page.next_page;
         };
+        // A band in progress rides through the delta on the same UID space (`crate::band`).
+        let final_cursor = crate::band::carried(final_cursor, prior);
         let marker = match mode.unwrap_or(PassMode::Additive) {
             PassMode::Additive => {
                 EmailChunk::additive(Vec::new(), Vec::new(), total, final_cursor)
@@ -208,22 +212,22 @@ where
 /// [`reconcile_last`](EmailChunk::reconcile_last) carrying it, so the store tombstones
 /// local rows the server no longer has. A resumed backfill (`is_fresh` false) saw only
 /// part of the set this session, so it completes additively (no tombstone).
-#[allow(clippy::too_many_arguments)] // the fetch inputs plus the reconcile flag are all distinct
-fn backfill_scan<'c, S>(
+#[allow(clippy::too_many_arguments)] // the fetch inputs plus how the scan completes are all distinct
+pub(crate) fn backfill_scan<'c, S>(
     conn: &'c mut Connection<S>,
     pool: Option<&'c Arc<ImapPool<S>>>,
     mailbox: &'c MailboxId,
     uid_validity: u32,
     groups: Vec<(String, u32)>,
-    frontier: &'c MailboxCursor,
+    completion: Completion,
     total: Option<usize>,
     chunk_size: usize,
-    is_fresh: bool,
 ) -> impl Stream<Item = ProviderResult<EmailChunk>> + 'c
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
 {
     async_stream::try_stream! {
+        let is_fresh = completion.reconciles();
         let last_index = groups.len().saturating_sub(1);
         // The full in-window key set, accumulated across groups for the fresh-pass
         // reconcile (left empty on a resume, which does not tombstone).
@@ -284,27 +288,70 @@ where
             }
             let changed = core::mem::take(&mut buf);
             if index == last_index {
-                // The completing chunk advances to `frontier` (steady state) and, for a
-                // fresh pass, reconciles against the accumulated present set.
+                // The completing chunk advances to the steady-state cursor and, for a fresh
+                // pass, reconciles against the accumulated present set.
                 yield if is_fresh {
                     EmailChunk::reconcile_last(
                         changed,
                         core::mem::take(&mut present),
                         total,
-                        frontier.encode(),
+                        completion.last(),
                     )
                 } else {
-                    EmailChunk::additive(changed, Vec::new(), total, frontier.encode())
+                    EmailChunk::additive(changed, Vec::new(), total, completion.last())
                 };
             } else {
                 // An intermediate group checkpoints its lowest UID (the resume point).
-                let checkpoint = MailboxCursor {
-                    backfill_low: Some(group_low),
-                    reconciled: false,
-                    ..*frontier
-                };
-                yield EmailChunk::additive(changed, Vec::new(), total, checkpoint.encode());
+                let checkpoint = completion.checkpoint(group_low);
+                yield EmailChunk::additive(changed, Vec::new(), total, checkpoint);
             }
+        }
+    }
+}
+
+/// How a [`backfill_scan`] checkpoints its groups and what its last chunk advances to.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Completion {
+    /// A cold backfill: each group checkpoints `backfill_low`, and the last advances to the
+    /// `frontier`, reconciling when the pass started fresh.
+    Backfill {
+        /// The cursor the backfill completes on.
+        frontier: MailboxCursor,
+        /// Whether the pass saw the whole window this session, and so reconciles.
+        is_fresh: bool,
+    },
+    /// A widening's band: each group checkpoints the band watermark, and the last advances to
+    /// the delta cursor the band kept (`crate::band`).
+    Band {
+        /// The delta cursor, with no band in it.
+        kept: MailboxCursor,
+    },
+}
+
+impl Completion {
+    fn reconciles(self) -> bool {
+        matches!(self, Self::Backfill { is_fresh: true, .. })
+    }
+
+    fn checkpoint(self, low: u32) -> SyncState {
+        match self {
+            Self::Backfill { frontier, .. } => MailboxCursor {
+                backfill_low: Some(low),
+                reconciled: false,
+                ..frontier
+            },
+            Self::Band { kept } => MailboxCursor {
+                band_low: Some(low),
+                ..kept
+            },
+        }
+        .encode()
+    }
+
+    fn last(self) -> SyncState {
+        match self {
+            Self::Backfill { frontier, .. } => frontier.encode(),
+            Self::Band { kept } => kept.encode(),
         }
     }
 }
@@ -366,7 +413,7 @@ fn full_range_groups(high: u32, low_floor: u32, fetch_batch: usize) -> Vec<(Stri
 }
 
 /// Groups a descending UID list into compact set specs of `fetch_batch` UIDs each.
-fn list_groups(uids_desc: &[u32], fetch_batch: usize) -> Vec<(String, u32)> {
+pub(crate) fn list_groups(uids_desc: &[u32], fetch_batch: usize) -> Vec<(String, u32)> {
     let step = if fetch_batch == 0 {
         uids_desc.len().max(1)
     } else {
@@ -385,15 +432,37 @@ fn list_groups(uids_desc: &[u32], fetch_batch: usize) -> Vec<(String, u32)> {
 
 /// The IMAP `dd-Mon-yyyy` floor for a sync-depth window, or `None` for the full
 /// history.
-fn imap_since(window: SyncWindow) -> ProviderResult<Option<String>> {
-    let Some(date) = window.floor() else {
-        return Ok(None);
-    };
+///
+/// It names the day **before** the floor. `SINCE` compares the server's day of a message's
+/// `INTERNALDATE`, which can be a day off the UTC day the engine judges by: on a server behind UTC,
+/// a message the engine dates on the floor is the server's day before. The extra day is dropped by
+/// the window as the chunks go out ([`within`], and the caller's filter on additive chunks).
+pub(crate) fn imap_since(window: SyncWindow) -> ProviderResult<Option<String>> {
+    window
+        .floor()
+        .map(|floor| imap_date(floor.checked_add_days(-1).unwrap_or(floor)))
+        .transpose()
+}
+
+/// `chunk` with the whole messages `window` does not admit taken out of a reconcile, their keys
+/// left present: what the day searched past the floor adds is enumerated, so nothing held is
+/// tombstoned for it, and not stored. An additive chunk is the caller's to judge (`into_update`).
+fn within(mut chunk: EmailChunk, window: SyncWindow) -> EmailChunk {
+    if chunk.mode == PassMode::Reconcile && window.is_bounded() {
+        chunk
+            .changed
+            .retain(|message| window.admits(message.received_at.or(message.sent_at)));
+    }
+    chunk
+}
+
+/// A calendar date as an IMAP search names it, `dd-Mon-yyyy`.
+pub(crate) fn imap_date(date: CalendarDate) -> ProviderResult<String> {
     let month = Month::try_from(date.month())
         .map_err(|_| ProviderError::invalid_state("sync window has an invalid month"))?;
     let date = time::Date::from_calendar_date(date.year(), month, date.day())
         .map_err(|_| ProviderError::invalid_state("sync window is not a real date"))?;
-    Ok(Some(format_imap_date(date)))
+    Ok(format_imap_date(date))
 }
 
 #[cfg(test)]

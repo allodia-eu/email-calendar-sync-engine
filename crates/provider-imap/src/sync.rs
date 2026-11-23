@@ -92,6 +92,7 @@ where
         highest_modseq: select.highest_modseq,
         backfill_low: None,
         version: crate::cursor::CURSOR_VERSION,
+        band_low: None,
         // Every page-path pass ends in a reconcile, or in a QRESYNC delta that misses nothing,
         // or skips a folder whose prior cursor already was.
         reconciled: true,
