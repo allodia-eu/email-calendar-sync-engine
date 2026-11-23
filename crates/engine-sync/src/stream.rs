@@ -26,7 +26,7 @@ use engine_core::{
     search_index::project_state_change,
     sync::{MailboxWindows, SyncScope, SyncState, SyncUpdate},
 };
-use engine_provider::{EmailChunk, PassMode, Provider};
+use engine_provider::Provider;
 use engine_store::{ApplyBatch, LeaseRequest, Store, StoreError, StoreRead, SyncApplied};
 use futures_util::StreamExt;
 
@@ -221,7 +221,9 @@ where
             let total = chunk.total;
             let is_reconcile_final = chunk.is_reconcile_final();
             let projected = Instant::now();
-            let (update, advance_to) = build_update(chunk, &tuning.window, &mut present);
+            // The shared window and patch rules (`EmailChunk::into_update`). On the snapshot path
+            // depth is the adapter's, and `prune_account_mail_outside_window` is the backstop.
+            let (update, advance_to) = chunk.into_update(&tuning.window, &mut present);
             let advance_to = advance_to.map(|cursor| window_cursor::stamp(cursor, &depth));
             let mut derived = derive_messages(changed_of(&update));
             for change in update.patched() {
@@ -316,82 +318,6 @@ impl RunningApplied {
             reconciled: self.reconciled,
         }
     }
-}
-
-/// Turns one chunk into the [`SyncUpdate`] to apply and the cursor to advance to.
-///
-/// - [`PassMode::Additive`]: a delta (upserts + explicit removals); advance to the chunk's
-///   checkpoint.
-/// - [`PassMode::Reconcile`]: intermediate chunks apply additively and hold the cursor while
-///   `present` accumulates; the final chunk applies a snapshot against the whole accumulated
-///   present set (tombstoning) and advances the cursor.
-///
-/// The chunk's state changes go **into the update** rather than beside it, so this driver and
-/// the whole-scope [`drain_email`](engine_provider::stream) reach the same two conclusions from
-/// the same code: a key that also arrived whole drops its patch (the object is the later word),
-/// and a snapshot carries no partials at all, because it is already the scope's whole current
-/// state. Carrying them alongside made the update an incomplete account of the pass — which is
-/// how a message moved into Sent by a state change was invisible to the recipient observations.
-fn build_update(
-    chunk: EmailChunk,
-    window: &MailboxWindows,
-    present: &mut BTreeSet<ProviderKey>,
-) -> (SyncUpdate<Message>, Option<SyncState>) {
-    let EmailChunk {
-        mode,
-        changed,
-        patched,
-        removed,
-        present: page_present,
-        advance_to,
-        ..
-    } = chunk;
-    let update = match mode {
-        // A delta's arrivals are new to *us* rather than recent — every protocol reports a
-        // message filed into a folder as one, and none of them can carry a date filter — so
-        // without this, mail the user asked not to keep walks back in and no later pass
-        // removes it. This is the only place that can say no: a delta has no present set, so
-        // nothing downstream ever revisits the decision.
-        PassMode::Additive => SyncUpdate::delta(admitted(changed, window), removed),
-        // A reconcile is **not** filtered here, and that is deliberate. Its `present` set is
-        // the adapter's own enumeration of the window, and the store tombstones by diffing
-        // against it, so the adapter already decided — with its server's date semantics, which
-        // are not ours. Re-deciding with a second rule can only disagree: IMAP `SINCE`
-        // compares `INTERNALDATE` in the *server's* timezone, so a message a snapshot
-        // deliberately asked for can read as out-of-window here and be dropped while its key
-        // stays in `present`. Depth on the snapshot path is the adapter's job, and
-        // `prune_account_mail_outside_window` is the backstop.
-        PassMode::Reconcile => {
-            present.extend(page_present);
-            if advance_to.is_some() {
-                SyncUpdate::snapshot(changed, core::mem::take(present))
-            } else {
-                SyncUpdate::delta(changed, removed)
-            }
-        }
-    };
-    (update.with_patched(patched), advance_to)
-}
-
-/// The messages a window admits, by the mailboxes they are filed in and the date the store will
-/// sort and filter them on.
-///
-/// A message in a deepened mailbox is judged by that mailbox's window, so a pass that fetched a
-/// folder further back keeps what it fetched: a fresh IMAP backfill commits its groups as
-/// additive chunks before its completing reconcile, and those chunks pass through here.
-fn admitted(changed: Vec<Message>, window: &MailboxWindows) -> Vec<Message> {
-    if !window.account().is_bounded() {
-        return changed;
-    }
-    changed
-        .into_iter()
-        .filter(|message| {
-            window.admits(
-                message.mailboxes.iter(),
-                message.received_at.or(message.sent_at),
-            )
-        })
-        .collect()
 }
 
 /// The depth `scope` fetches under: its own folder's window where it is bound to one, else

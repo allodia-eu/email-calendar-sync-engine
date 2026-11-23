@@ -461,8 +461,10 @@ and the two are different jobs:
   floor resumes: a host computes the floor from today, so it moves on every day. The record
   is what starts the scope over; clearing the cursors (`clear_mail_cursors`) is what stops a
   pass already running under the old window, at its next commit, rather than after it ends.
-- **What a `PassMode::Additive` delta stores.** The orchestrator drops any incoming message
-  the window does not admit (`SyncWindow::admits`) before the apply. A delta's "new arrival"
+- **What a `PassMode::Additive` delta stores.** Any incoming message the window does not
+  admit (`MailboxWindows::admits`) is dropped before the apply. The rule lives on the chunk,
+  `EmailChunk::into_update` in `engine-provider`, so `engine-sync`'s streaming loop and a host
+  that applies `stream_email` to its own store share one implementation. A delta's "new arrival"
   is new to *us*, not recent: IMAP has no in-place edit, so filing a three-year-old message
   into a folder mints a UID above the cursor; Graph, Gmail and JMAP report a move the same
   way. Unfiltered, mail the user asked this device not to keep walks back in through every
