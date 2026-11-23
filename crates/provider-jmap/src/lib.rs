@@ -33,6 +33,7 @@
 //!   blob sub-step. Calendar raw (`RawJsCalendar`) *is* preserved on the object
 //!   (`docs/agent-guidance/jmap.md`).
 
+mod adapter;
 mod auth;
 mod base64;
 pub mod blob;
@@ -86,12 +87,12 @@ mod watch;
 
 use core::fmt;
 
+pub use adapter::JmapProvider;
 pub use config::{Credentials, JmapConfig};
 use engine_core::ids::BlobId;
 use engine_http::Exchange;
 use engine_provider::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 pub use error::{JmapError, ServerText};
-pub use provider::JmapProvider;
 pub use request::{CallId, Request, ResultRef, capability};
 use reqwest::Url;
 pub use response::Response;

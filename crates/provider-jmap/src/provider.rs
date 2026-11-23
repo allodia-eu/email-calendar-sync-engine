@@ -5,29 +5,28 @@
 //! Each `sync_*` delegates to a shared container/member fetcher that picks
 //! **snapshot** (first sync, or `cannotCalculateChanges` recovery) or **delta**
 //! (`Foo/changes` → `Foo/get` over a result back-reference). Method execution goes
-//! through the [`Executor`] seam so the orchestration is unit-tested offline
-//! against captured Stalwart response documents; the live [`JmapClient`] is the
-//! production executor.
+//! through the [`Executor`](crate::executor::Executor) seam so the orchestration is unit-tested
+//! offline against captured Stalwart response documents; the live
+//! [`JmapClient`](crate::JmapClient) is the production executor. The adapter handle itself, and
+//! the helpers every capability module shares, are in `crate::adapter`.
 
 use async_trait::async_trait;
 use engine_core::{
-    ids::{AccountId, AddressBookId},
+    ids::AccountId,
     mail::{Mailbox, Message},
     raw::RawMime,
     sync::{JmapDataType, MailboxWindows, SyncScope, SyncState, Widening},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, HandOver, MessageReport,
-    PassMode, Provider, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
-    SharedAccount, SourceStream, SubmissionReceipt, SyncKind, split_page,
+    ConnectionInfo, Draft, EmailChunk, EmailStream, HandOver, MessageReport, PassMode, Provider,
+    ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SharedAccount,
+    SourceStream, SubmissionReceipt, SyncKind, split_page,
 };
 use serde_json::json;
 
 use crate::{
-    JmapClient, JmapConfig,
+    JmapProvider,
     email_window::email_filter,
-    error::JmapError,
-    executor::Executor,
     fetch,
     fetch::{MemberFetch, UpdatedAsState},
     fetch_scope,
@@ -35,124 +34,8 @@ use crate::{
         EMAIL_PROPERTIES, EMAIL_STATE_PROPERTIES, mailbox_from_json, message_from_json,
         state_from_json,
     },
-    request::{Request, capability},
+    request::capability,
 };
-
-/// The JMAP provider adapter.
-///
-/// Construct one with [`JmapProvider::connect`]. It implements
-/// [`engine_provider::Provider`] for the step-4 mail spine (mailboxes + email);
-/// submission and calendar land in later slices.
-pub struct JmapProvider {
-    pub(crate) executor: Box<dyn Executor>,
-    capabilities: Capabilities,
-    /// The address book host-facing contact writes target, once
-    /// [`JmapProvider::with_contact_address_book`] has bound one. `None` until then:
-    /// JMAP has no well-known default book, so a fabricated id would advertise a
-    /// destination the server will reject.
-    pub(crate) contact_address_book: Option<AddressBookId>,
-}
-
-impl core::fmt::Debug for JmapProvider {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("JmapProvider")
-            .field("capabilities", &self.capabilities)
-            .field("contact_address_book", &self.contact_address_book)
-            .finish_non_exhaustive()
-    }
-}
-
-impl JmapProvider {
-    /// Connects to a JMAP server and discovers its session.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`JmapError`] on a connect/HTTP failure or a malformed session.
-    pub async fn connect(config: JmapConfig) -> Result<Self, JmapError> {
-        let client = JmapClient::connect(config).await?;
-        Ok(Self::with_executor(Box::new(client)))
-    }
-
-    /// Wraps an executor, snapshotting its advertised capabilities.
-    pub(crate) fn with_executor(executor: Box<dyn Executor>) -> Self {
-        let capabilities = executor.session().capabilities();
-        // Where it syncs mail, this adapter widens by band (`crate::email_band`): a fact of the
-        // adapter rather than of the server, so it is added here and not read off the session.
-        let capabilities = if capabilities.mail() {
-            capabilities.with_band_widening()
-        } else {
-            capabilities
-        };
-        Self {
-            executor,
-            capabilities,
-            contact_address_book: None,
-        }
-    }
-
-    /// Binds host-facing contact writes to one **discovered** address book.
-    ///
-    /// Until this is called the provider advertises no contact destination, so a host
-    /// that forgot to bind one fails at its own validation rather than on the wire.
-    #[must_use]
-    pub fn with_contact_address_book(mut self, address_book: AddressBookId) -> Self {
-        self.contact_address_book = Some(address_book);
-        self
-    }
-
-    pub(crate) fn executor(&self) -> &dyn Executor {
-        self.executor.as_ref()
-    }
-
-    pub(crate) fn contact_account(&self) -> Result<String, JmapError> {
-        Ok(self.executor.session().contact_account_id()?.to_string())
-    }
-
-    pub(crate) async fn contact_call(
-        &self,
-        method: &str,
-        arguments: serde_json::Value,
-    ) -> Result<serde_json::Value, JmapError> {
-        let mut request = Request::new([capability::CORE, capability::CONTACTS]);
-        let call = request.invoke(method, arguments);
-        let response = self.executor.execute(&request).await?;
-        Ok(response.result(&call)?.clone())
-    }
-
-    pub(crate) async fn download_contact_blob(
-        &self,
-        blob: &str,
-        media_type: Option<&str>,
-    ) -> Result<Vec<u8>, JmapError> {
-        let account = self.contact_account()?;
-        let template = self
-            .executor
-            .session()
-            .download_url()
-            .ok_or_else(|| JmapError::session("server advertised no downloadUrl"))?;
-        // `media_type` comes from the server's JSContact payload, not from a fixed
-        // literal, so the substitution must be encoded: an unencoded `?`/`#`/`&`/`..`
-        // in it would re-point or re-parameterize the download URL.
-        let url = crate::blob::fill_download(
-            template,
-            &account,
-            blob,
-            media_type.unwrap_or("application/octet-stream"),
-            "contact-photo",
-        );
-        self.executor.download(&url).await
-    }
-
-    /// The JMAP (server-side) mail account id for mail method arguments.
-    pub(crate) fn mail_account(&self) -> Result<String, JmapError> {
-        Ok(self.executor.session().mail_account_id()?.to_string())
-    }
-
-    /// The JMAP (server-side) calendar account id for calendar method arguments.
-    pub(crate) fn calendar_account(&self) -> Result<String, JmapError> {
-        Ok(self.executor.session().calendar_account_id()?.to_string())
-    }
-}
 
 #[async_trait]
 impl Provider for JmapProvider {

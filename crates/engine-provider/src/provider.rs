@@ -225,18 +225,9 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
     /// `metadata` is the whole of what the stored draft should carry, so a re-save without a
     /// keyword takes it off.
     ///
-    /// **The returned key is the one to keep, and it need not be `replacing`.** A
-    /// transport whose stored messages are immutable writes a new one and removes the
-    /// old, so the key moves (IMAP `APPEND` then delete, JMAP `Email/set` create then
-    /// destroy, Graph `POST` then delete); one with a draft object of its own rewrites
-    /// it and returns the key it was given (Gmail `drafts.update`). A caller stores
-    /// whatever comes back rather than assuming either, which is the whole reason this
-    /// is one verb.
-    ///
-    /// Replacing is not atomic everywhere: where the old message has to be removed
-    /// separately, a failure between the two leaves both, and the next Drafts sync is
-    /// what the user sees. That is a duplicate draft, never a lost one, which is the
-    /// right way round for a message nobody has sent.
+    /// **The returned key is the one to keep, and it need not be `replacing`**: why it moves on
+    /// some transports and not on others, and what a replace that fails halfway leaves, is
+    /// [`DraftReceipt`]'s to say.
     ///
     /// Providers advertising [`Capabilities::mail_drafts`] override this; the default
     /// rejects, so a capability-checking caller never relies on it. The write is
