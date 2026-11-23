@@ -1,7 +1,7 @@
 # Design note: calendar and contact import
 
 Status: proposed with its first adapter. The calendar half (CalDAV) lands with this note; the
-contact half (CardDAV) lands on top of it. Both follow `providers.md` → "Import", which said
+contact half (CardDAV) lands on top of it, in a change of its own. Both follow `providers.md` → "Import", which said
 calendar and contact import "come with their first adapter": this is that adapter, so this note
 designs the seam.
 
@@ -79,6 +79,8 @@ drops the parameter on save gets server scheduling back.
 | A rich vCard 4.0 (26 properties, `PHOTO` data URI, `X-` property, `RELATED`, `GEO`) | every property kept, values re-serialized (`TYPE` upper-cased) | stored as sent |
 | A second card with a held `UID` | `403` `no-uid-conflict` naming the holder | `409` `no-uid-conflict` |
 | Not a vCard | **`412`** `supported-address-data` | `415` |
+| `addressbook-query`, `UID` `text-match` with `match-type="equals"` | exact | exact |
+| How a card `PUT` to `uid%40example.com.vcf` is listed | `uid@example.com.vcf` | `uid@example.com.vcf` |
 
 The SabreDAV fixture serves no CardDAV.
 
@@ -235,6 +237,22 @@ scheduling inbox or outbox without advertising scheduling.
 Errors on these paths carry a class and an HTTP status, never the server's text
 (`CalDavError::content_free`): an error body can echo an event's summary.
 
+### The CardDAV importer
+
+The calendar importer's steps, read through the same module (`dav_import`: what a `PUT`, a `UID`
+lookup and a collection's properties answer), with what a card changes:
+
+- The card is stored byte for byte: a vCard schedules nothing.
+- The book's limits add its vCard versions (`supported-address-data`); a card in another, or one
+  stating none, is `item_unavailable` before anything is sent. Converting is E9's.
+- The lookup is `addressbook-query` with `match-type="equals"`, its answer still checked. Both
+  harness servers refuse a second `UID` themselves, so on them the lookup only saves a `PUT`; it
+  is there for a server that does not (as SabreDAV's backend does not for events), which the
+  harness cannot show for cards.
+- A card without a `UID` (optional in vCard 3.0) is named by its bytes' hash, so a retry meets
+  its own write; it cannot be looked up.
+- The name is the event's rule (`href::resource_name`): both servers list the `@` raw.
+
 ## Three-host check
 
 | | Sync host | Transfer host | Direct host |
@@ -287,3 +305,6 @@ default. Behaviour that changes on existing paths:
   compare; importing a calendar of such `UID`s grows with the square of its size.
 - **Google's CalDAV is unsurveyed** (GOOGLE-2): a live check with the Google test account is
   needed before a host imports into it.
+- **No live CardDAV server without `UID` enforcement.** The card lookup runs live (a re-import
+  and another client's card are found by it), but no harness server would store the duplicate
+  without it; adding CardDAV to the SabreDAV fixture would show that.

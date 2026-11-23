@@ -85,7 +85,7 @@ pub use calendar_write::{
 };
 pub use capability::Capabilities;
 pub use capability_calendar::{OverrideSurvival, RsvpControls};
-pub use collection::{CalendarCollections, NewCalendar};
+pub use collection::{AddressBookCollections, CalendarCollections, NewAddressBook, NewCalendar};
 pub use connect_observer::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 pub use connection::{ConnectionInfo, HttpVersion, ObservedTlsVersion, TlsVersion};
 #[cfg(feature = "http")]

@@ -21,8 +21,10 @@ Contacts are the engine's third provider-neutral domain. An `AddressBook` and a
 derived `Person` view joins source records conservatively. Provider records
 always remain individually addressable and lossless.
 
-Groups and address books are readable. Creating, editing, deleting, or mutating
-group membership and address books is deferred. Contact photos are readable and
+Groups and address books are readable. An address book can be created
+(`AddressBookCollections::create_address_book`, CardDAV extended `MKCOL`), and cards
+imported as they are (`ContactImporter`, below under CardDAV). Renaming or deleting an
+address book, and mutating groups or their membership, is deferred. Contact photos are readable and
 cached; photo upload and deletion are deferred.
 
 ## Identity and membership
@@ -209,6 +211,17 @@ mail/calendar/identity scopes.
 - Embedded and authenticated URI photos are fetched on demand. Both photo cache
   keys hash the resource URI — an inline `PHOTO;ENCODING=b` *is* a `data:` URI
   holding the whole image, and neither key may carry it.
+
+- **Import** (`contact_import.rs`, the `import` feature; `providers.md` → "Import",
+  `docs/design/calendar-and-contact-import.md`) stores a card byte for byte. A book's
+  `supported-address-data` names the vCard versions it takes (Stalwart 4.0, 3.0, 2.1; Nextcloud
+  3.0, 4.0), and a card in another is refused before anything is sent, never converted. The
+  `UID` is looked up with `addressbook-query` (`match-type="equals"`, honoured by both), and a
+  `403`/`409` `no-uid-conflict` names the card that holds it, so a card the book holds is
+  already there; a card without a `UID` is named by its bytes' hash. Both servers keep every one
+  of 26 properties of a rich 4.0 card (Stalwart re-serializes; Nextcloud stores as sent and
+  converts on read), so there is no per-field `kept` yet. Live in
+  `tests/contacts/import.rs`, on Stalwart and Nextcloud (the SabreDAV fixture serves no CardDAV).
 
 The Stalwart fixture writes the shared person/group cards over CardDAV; the
 gated `provider-caldav/tests/live_contacts.rs` reads them through both JMAP and

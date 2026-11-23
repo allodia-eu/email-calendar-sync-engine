@@ -276,12 +276,19 @@ it. An adapter that can import implements the trait; there is no capability flag
   it can keep the import silent. CalDAV implements it, offered where the server advertises
   `calendar-auto-schedule` or has nothing to schedule with (no scheduling inbox or outbox;
   `caldav.md` → "Import"). The item is UTF-8 text, as `RawIcal` is.
+- **Cards: `ContactImporter`**, the calendar half's shape for the same reasons. What a card
+  adds is its vCard version: `ContactImportLimits` names the versions a book takes
+  (`engine_core::contact::VcardVersion`), and `check` refuses a card in another rather than
+  converting it, since converting is a writer's job (E9). Reached through
+  `Provider::contact_importer`. CardDAV implements it (`contacts.md` → "CardDAV").
 - **Creating a container is not import.** `CalendarCollections::create_calendar` (outside the
   `import` feature, reached through `Provider::calendar_collections`) makes a new calendar from a
   name, a description and a colour, and answers it as the target holds it, which is the receipt of
   what was kept. A sync host creating a calendar for its user and a transfer host creating one to
   import into are the same act, as mail import shares `MailboxWrites::edit_mailbox`. A time zone
-  joins `NewCalendar` with an event-to-iCalendar writer that builds `VTIMEZONE` from tzdb (not yet in the engine).
+  joins `NewCalendar` with an event-to-iCalendar writer that builds `VTIMEZONE` from tzdb (not
+  yet in the engine). `AddressBookCollections::create_address_book` (through
+  `Provider::address_book_collections`) does the same for address books.
 - **When the target's own state refuses, the reason is named, once for every adapter and every
   kind of object.** `ProviderError::refused_by_target(TargetRefusal)` (`engine-provider`,
   `error.rs`) is `FailureClass::InvalidState`: not retryable as it stands, and with no wait,

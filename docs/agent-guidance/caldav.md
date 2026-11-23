@@ -77,7 +77,9 @@ are split escape-aware so the writer and the parser agree.
   `discovery`/`calendar` (principal → home → collection listing), `sync` (the
   `sync-collection` REPORT snapshot/delta logic), `write` (the conditional
   `PUT`/`DELETE` of event resources), `provider` (the `Provider` impl),
-  `calendar_create` (`MKCALENDAR`) and `calendar_import` (the `import` feature; "Import" below).
+  `calendar_create` (`MKCALENDAR`) and `calendar_import` (the `import` feature; "Import" below),
+  `contact_create` and `contact_import` beside them, and `dav_import`, what an import's
+  `PUT`, `UID` lookup and collection properties answer, read once for both.
 
 ## How CalDAV differs from JMAP (the shape)
 
@@ -859,9 +861,10 @@ what a client would assume:
   the caller's job in this slice (the engine supplies the conditional-`PUT`
   transport + outbox, not the serialization). The lossy projection is never
   re-serialized to the wire.
-- **CardDAV collection mutation is out of scope.** Existing address books and
-  group cards are readable; address-book/group create, rename, delete, and
-  membership mutation remain deferred.
+- **An address book is created, never renamed or deleted.** An extended `MKCOL`
+  (RFC 5689, `contact_create.rs`) backs `AddressBookCollections::create_address_book`, and
+  cards are imported by `contact_import.rs` (`contacts.md` → "CardDAV"); group create, rename,
+  delete and membership mutation remain deferred.
 - **Custom (non-IANA) `VTIMEZONE` expansion is staged.** A `TZID` is resolved as
   an IANA zone; a genuinely custom embedded `VTIMEZONE` is preserved in `RawIcal`
   but not parsed into the expander, so such an event stores with no occurrences

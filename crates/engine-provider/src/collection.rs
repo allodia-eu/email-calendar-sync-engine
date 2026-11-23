@@ -1,4 +1,5 @@
-//! Creating a calendar: the one verb that makes a new collection for events, for any host.
+//! Creating a calendar or an address book: the one verb per domain that makes a new container,
+//! for any host.
 //!
 //! A transfer host creates a calendar on the target before it imports the source calendar's
 //! events into it, and a sync host creates one when its user does. Both are the same act, so it
@@ -11,7 +12,7 @@
 //! read-back is the receipt: a field the target did not keep is missing from it.
 
 use async_trait::async_trait;
-use engine_core::{calendar::Calendar, ids::AccountId};
+use engine_core::{calendar::Calendar, contact::AddressBook, ids::AccountId};
 
 use crate::ProviderResult;
 
@@ -99,5 +100,78 @@ impl<T: CalendarCollections + ?Sized> CalendarCollections for std::sync::Arc<T> 
         new: &NewCalendar,
     ) -> ProviderResult<Calendar> {
         (**self).create_calendar(account, new).await
+    }
+}
+
+/// An address book to create.
+///
+/// Built with [`new`](Self::new) and [`with_description`](Self::with_description), so a part
+/// added later does not break a caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NewAddressBook {
+    /// The display name.
+    pub name: String,
+    /// A free-text description.
+    pub description: Option<String>,
+}
+
+impl NewAddressBook {
+    /// An address book named `name`, with no description.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+        }
+    }
+
+    /// Describes the address book (builder-style).
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+}
+
+/// Creates address books, as [`CalendarCollections`] creates calendars.
+#[async_trait]
+pub trait AddressBookCollections: Send + Sync {
+    /// Creates a new address book and answers it as the target now holds it: always a new one,
+    /// and a create whose answer was lost is
+    /// [`requires_confirmation`](crate::ProviderError::requires_confirmation).
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`](crate::ProviderError): the target refused the
+    /// address book, or could not be asked.
+    async fn create_address_book(
+        &self,
+        account: &AccountId,
+        new: &NewAddressBook,
+    ) -> ProviderResult<AddressBook>;
+}
+
+/// A boxed creator creates address books.
+#[async_trait]
+impl<T: AddressBookCollections + ?Sized> AddressBookCollections for Box<T> {
+    async fn create_address_book(
+        &self,
+        account: &AccountId,
+        new: &NewAddressBook,
+    ) -> ProviderResult<AddressBook> {
+        (**self).create_address_book(account, new).await
+    }
+}
+
+/// A shared creator creates address books.
+#[async_trait]
+impl<T: AddressBookCollections + ?Sized> AddressBookCollections for std::sync::Arc<T> {
+    async fn create_address_book(
+        &self,
+        account: &AccountId,
+        new: &NewAddressBook,
+    ) -> ProviderResult<AddressBook> {
+        (**self).create_address_book(account, new).await
     }
 }

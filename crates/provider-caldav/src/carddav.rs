@@ -60,8 +60,8 @@ fn no_address_books() -> ContactUnavailable {
 
 /// CardDAV adapter bound to one address-book collection.
 pub struct CardDavProvider {
-    executor: Box<dyn DavExecutor>,
-    home_href: String,
+    pub(crate) executor: Box<dyn DavExecutor>,
+    pub(crate) home_href: String,
     /// The `current-user-principal` the server named during discovery, if it named one.
     principal: Option<String>,
     collection: AddressBookId,
@@ -208,6 +208,17 @@ impl Provider for CardDavProvider {
             tls_version: self.executor.tls_version(),
             ..ConnectionInfo::new(self.capabilities)
         }
+    }
+
+    /// CardDAV imports cards by `PUT` (`crate::contact_import`), on a server with address books.
+    #[cfg(feature = "import")]
+    fn contact_importer(&self) -> Option<&dyn engine_provider::import::ContactImporter> {
+        self.advertised.then_some(self)
+    }
+
+    /// An extended `MKCOL` (`crate::contact_create`), on a server with address books.
+    fn address_book_collections(&self) -> Option<&dyn engine_provider::AddressBookCollections> {
+        self.advertised.then_some(self)
     }
 }
 

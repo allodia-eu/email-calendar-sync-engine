@@ -222,6 +222,49 @@ pub(crate) fn uid_query(uid: &str) -> String {
     )
 }
 
+#[cfg(feature = "import")]
+/// `PROPFIND` (Depth 0) of an address book for what an import needs: the largest card it takes
+/// (RFC 6352 §6.2.3), the vCard versions it takes (§6.2.2), and its contents marker.
+pub(crate) const CONTACT_IMPORT_PROPFIND: &str = concat!(
+    r#"<?xml version="1.0" encoding="utf-8"?>"#,
+    r#"<d:propfind xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav" "#,
+    r#"xmlns:cs="http://calendarserver.org/ns/"><d:prop><a:max-resource-size/>"#,
+    r#"<a:supported-address-data/><d:sync-token/><cs:getctag/></d:prop></d:propfind>"#,
+);
+
+/// An extended `MKCOL` body (RFC 5689) making an address book with a name and, where given, a
+/// description.
+pub(crate) fn mkcol_address_book(name: &str, description: Option<&str>) -> String {
+    let element = |tag: &str, value: &str| format!("<{tag}>{}</{tag}>", xml_escape(value));
+    let mut body = String::from(concat!(
+        r#"<?xml version="1.0" encoding="utf-8"?>"#,
+        r#"<d:mkcol xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav"><d:set><d:prop>"#,
+        r#"<d:resourcetype><d:collection/><a:addressbook/></d:resourcetype>"#,
+    ));
+    body.push_str(&element("d:displayname", name));
+    if let Some(description) = description {
+        body.push_str(&element("a:addressbook-description", description));
+    }
+    body.push_str("</d:prop></d:set></d:mkcol>");
+    body
+}
+
+#[cfg(feature = "import")]
+/// An `addressbook-query` REPORT (RFC 6352 §8.6) for the card whose `UID` equals `uid`
+/// (`match-type="equals"`, §10.5.4), with its data so the caller can check the match itself.
+pub(crate) fn card_uid_query(uid: &str) -> String {
+    format!(
+        concat!(
+            r#"<?xml version="1.0" encoding="utf-8"?>"#,
+            r#"<a:addressbook-query xmlns:d="DAV:" xmlns:a="urn:ietf:params:xml:ns:carddav">"#,
+            r#"<d:prop><d:getetag/><a:address-data/></d:prop><a:filter>"#,
+            r#"<a:prop-filter name="UID"><a:text-match collation="i;octet" match-type="equals">"#,
+            r#"{uid}</a:text-match></a:prop-filter></a:filter></a:addressbook-query>"#,
+        ),
+        uid = xml_escape(uid),
+    )
+}
+
 fn multiget(open: &str, prop: &str, close: &str, hrefs: &[String]) -> String {
     let mut body = format!(r#"<?xml version="1.0" encoding="utf-8"?>{open}{prop}"#);
     for href in hrefs {

@@ -171,7 +171,7 @@ pub(crate) async fn list_address_books(
         .collect()
 }
 
-fn address_book(response: &DavResponse) -> Result<AddressBook, CalDavError> {
+pub(crate) fn address_book(response: &DavResponse) -> Result<AddressBook, CalDavError> {
     let id = AddressBookId::try_from(response.href())
         .map_err(|error| CalDavError::protocol(error.to_string()))?;
     let mut book = AddressBook::new(

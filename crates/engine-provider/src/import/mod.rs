@@ -8,14 +8,16 @@
 //! it is not a sync verb: the sync [`Provider`](crate::Provider) contract does not change, and a
 //! host that never imports never compiles it.
 //!
-//! [`MailImporter`] is the mail half and [`CalendarImporter`] the calendar half (the `calendar`
-//! module says where the two differ). An adapter that can import implements it; one that cannot
+//! [`MailImporter`] is the mail half, [`CalendarImporter`] the calendar half and
+//! [`ContactImporter`] the contact half (the `calendar` and `contact` modules say where they
+//! differ from mail). An adapter that can import implements it; one that cannot
 //! does not, so there is no capability flag to check. A host that picks its adapter at runtime
 //! holds it as a `Box<dyn MailImporter>` or an `Arc<dyn MailImporter>` beside its
 //! `dyn Provider`, and both are importers themselves, so a function generic over
 //! `I: MailImporter` takes either.
 
 mod calendar;
+mod contact;
 #[cfg(feature = "import-conformance")]
 pub mod conformance;
 mod message;
@@ -24,6 +26,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 pub use calendar::{CalendarImportLimits, CalendarImporter, EventImport, ImportedEvent};
+pub use contact::{ContactImport, ContactImportLimits, ContactImporter, ImportedContact};
 use engine_core::{
     ids::{AccountId, MailboxId},
     sync::SyncState,

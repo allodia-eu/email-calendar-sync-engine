@@ -209,3 +209,23 @@ async fn nextcloud_contact_write_round_trip() {
         .await
         .expect("clean up");
 }
+
+#[cfg(feature = "import")]
+#[path = "contacts/import.rs"]
+mod contact_import;
+
+/// Contact import against Nextcloud (`contacts/import.rs`).
+#[cfg(feature = "import")]
+#[tokio::test]
+async fn nextcloud_contact_import_round_trip() {
+    let Some(provider) = connect("nextcloud_contact_import_round_trip", BOOK).await else {
+        return;
+    };
+    let server = contact_import::DavServer {
+        base: format!("http://{}", std::env::var("NEXTCLOUD_HTTP_ADDR").unwrap()),
+        user: std::env::var("NEXTCLOUD_USER").unwrap_or_else(|_| "alice".to_owned()),
+        pass: std::env::var("NEXTCLOUD_PASS").unwrap_or_else(|_| "nextcloud-alice-pw".to_owned()),
+    };
+    let account = AccountId::try_from("nextcloud-contact-import").unwrap();
+    contact_import::import_round_trip(&provider, &account, &server).await;
+}

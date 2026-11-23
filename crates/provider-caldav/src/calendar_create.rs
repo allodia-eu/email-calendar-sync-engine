@@ -71,10 +71,10 @@ impl CalendarCollections for CalDavProvider {
     }
 }
 
-/// A path segment no earlier create chose: 128 bits from two hashers the standard library seeds
-/// from the operating system's randomness, mixed with the clock. Unique, not secret, and free of
-/// anything a host said.
-fn fresh_segment() -> String {
+/// A path segment no earlier create chose (a calendar's or an address book's): 128 bits from two
+/// hashers the standard library seeds from the operating system's randomness, mixed with the clock.
+/// Unique, not secret, and free of anything a host said.
+pub(crate) fn fresh_segment() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
