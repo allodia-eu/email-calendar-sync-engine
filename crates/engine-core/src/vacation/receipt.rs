@@ -43,8 +43,10 @@ pub enum RulesEffect {
     ///
     /// Read from which script is active, which is what a server reports. A server that ran the
     /// user's script from inside the reply's (Sieve `include`, RFC 6609) would still apply it,
-    /// and this would overstate the loss; Stalwart does not, and slice 2 of the design note
-    /// settles whether the engine's own rules do.
+    /// and this would overstate the loss; Stalwart does not. The JMAP adapter never causes it
+    /// itself: while the user's rules run, it runs the reply through their `include` of the
+    /// reply's script instead (`filters-and-out-of-office.md`, "Settled in slice 2"), so this
+    /// reports what the server did for another client's write.
     Deactivated,
     /// The write turned the reply off, and none of the account's own rule scripts runs, though
     /// it has some: a script the reply switched off when it went on stays off. A host offers to
