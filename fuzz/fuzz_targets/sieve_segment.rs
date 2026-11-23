@@ -49,8 +49,9 @@ fn reply_reads_back(script: &str) {
                     assert!(
                         matches!(
                             err.kind(),
-                            DialectErrorKind::Reply(ReplyRefusal::EmptyWindow)
-                                | DialectErrorKind::Require(_)
+                            DialectErrorKind::Reply(
+                                ReplyRefusal::EmptyWindow | ReplyRefusal::OtherVacation
+                            ) | DialectErrorKind::Require(_)
                         ),
                         "{err:?}"
                     );
@@ -69,14 +70,22 @@ fn reply_reads_back(script: &str) {
             // `${` the script would expand in what is kept of it.
             assert_eq!(
                 write_reply(script, &ours).unwrap_err().kind(),
-                DialectErrorKind::Reply(ReplyRefusal::UnreadReply)
+                DialectErrorKind::Reply(ReplyRefusal::Unread)
             );
             match write_reply_over(script, &ours, &unread) {
-                Ok(written) => assert!(read_reply(&written).segment().is_some()),
+                Ok(written) => {
+                    let again = read_reply(&written);
+                    assert!(again.segment().is_some(), "{written:?}");
+                    // Where nothing but `vacation` was kept, the reply written reads back whole.
+                    if !unread.does_more() {
+                        assert!(matches!(again, ScriptReply::Read { .. }), "{written:?}");
+                    }
+                }
                 Err(err) => assert!(
                     matches!(
                         err.kind(),
-                        DialectErrorKind::Variable { .. } | DialectErrorKind::Require(_)
+                        DialectErrorKind::Reply(ReplyRefusal::Expanded | ReplyRefusal::OtherVacation)
+                            | DialectErrorKind::Require(_)
                     ),
                     "{err:?}"
                 ),

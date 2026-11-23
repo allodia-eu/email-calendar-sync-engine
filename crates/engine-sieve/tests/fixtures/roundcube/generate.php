@@ -3,7 +3,13 @@
 // what the plugin writes for each, base64-encoded so CR LF survive, beside what it writes again
 // after reading its own output back. It calls the plugin and copies none of it; `README.md` says
 // how to run it.
+// Roundcube's bootstrap, so the vacation engine's own window builder can be called below.
+chdir('/usr/src/roundcubemail');
+define('INSTALL_PATH', '/usr/src/roundcubemail/');
+require 'program/include/iniset.php';
 require '/usr/src/roundcubemail/plugins/managesieve/lib/Roundcube/rcube_sieve_script.php';
+require '/usr/src/roundcubemail/plugins/managesieve/lib/Roundcube/rcube_sieve_engine.php';
+require '/usr/src/roundcubemail/plugins/managesieve/lib/Roundcube/rcube_sieve_vacation.php';
 $caps = ['fileinto','reject','envelope','vacation','imap4flags','copy','body','relational','regex','mailbox','date','variables','editheader','include','subaddress','index','mime','special-use','mailboxid','duplicate','enotify','vacation-seconds'];
 function rule($name, $tests, $actions, $join = false, $disabled = false) {
     return ['type' => 'if', 'tests' => $tests, 'actions' => $actions, 'join' => $join, 'disabled' => $disabled, 'name' => $name];
@@ -93,6 +99,15 @@ function zoned_test($type, $local) {
 $sets['reply_zone'] = [
     rule('Out-of-Office', [zoned_test('ge', '2030-01-02 10:00'), zoned_test('le', '2030-01-09 18:30')],
          [['type' => 'vacation', 'subject' => 'Away', 'reason' => 'Away.']], true),
+];
+// Without `date`, the window is the plugin's `header :regex "received"` tests, built by its own
+// `build_regexp_tests` (`rcube_sieve_vacation.php:580`) and joined with `anyof` (`:325`).
+$build = new ReflectionMethod('rcube_sieve_vacation', 'build_regexp_tests');
+$build->setAccessible(true);
+$error = null;
+$sets['reply_received'] = [
+    rule('Out-of-Office', $build->invokeArgs(null, ['2030-01-30', '2030-02-02', &$error]),
+         [['type' => 'vacation', 'subject' => 'Away', 'reason' => 'Away.']], false),
 ];
 $sets['reply_arguments'] = [
     rule('Out-of-Office', [['test' => 'true']],

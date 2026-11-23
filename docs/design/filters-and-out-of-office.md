@@ -168,10 +168,16 @@ reads it into the neutral `VacationResponse` and writes one over a script, in pl
 `:from`) and any action after it, every other rule copied byte for byte. The reply rule is the
 reply's alone: `read_rules` leaves it out of the user's rules, and `write_rules` copies it where it
 was, so a host that hides it and writes the rules back keeps the reply, and a migration does not
-carry the `vacation` twice. A reply rule holding more than the model says (another action, a
-`:mime` body, a date in the server's own zone, a `${` the script would expand) is read as a reply
-the engine cannot show, never as a narrower one, and is written over only when the caller names it
-(`write_reply_over`, which keeps what was read of it). The window is written to the second and
+carry the `vacation` twice; `write_rules` keeps it before the first written rule it ran before, so
+a rule a host inserts or moves cannot come between it and a rule it answered ahead of. A reply rule
+holding more than the model says (another action, an `elsif` or `else`, a `:mime` body, a date in
+the server's own zone, a `${` the script would expand) is read as a reply the engine cannot show,
+never as a narrower one; it belongs to neither the reply nor the rules, so a host shows it, and
+`UnreadReply::sends_mail` says whether it may send mail, for a preflight. It is written over only
+when the caller names it (`write_reply_over`): that keeps its name, every command after `vacation`
+and any `elsif` or `else`, and `vacation`'s unmodelled arguments where `vacation` could be read,
+and discards the rest. A reply that is on is refused where another rule also runs `vacation`
+(RFC 5230 §4.7 makes two an error, and Dovecot then sends neither). The window is written to the second and
 never wider than asked; one that holds no whole second is refused. Text only for now: a `:mime`
 body holding HTML is a follow-up. The bytes are pinned from the plugin's own output, one script
 saved through its settings page (`tests/fixtures/roundcube/README.md`).

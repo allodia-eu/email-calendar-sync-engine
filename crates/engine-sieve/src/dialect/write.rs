@@ -17,6 +17,8 @@ pub(super) fn write(base: &str, rules: &[MailRule]) -> Result<String, DialectErr
     let mut needs = render::Extensions::new();
     let mut needed: BTreeSet<String> = BTreeSet::new();
     let mut pieces: Vec<(bool, String)> = Vec::with_capacity(rules.len());
+    // The segment each written rule was read from, where it was read from this script.
+    let mut origins: Vec<Option<usize>> = Vec::with_capacity(rules.len());
     for (index, rule) in rules.iter().enumerate() {
         // An origin names a segment of the script it was read from, and of no other.
         let origin = match rule.origin {
@@ -26,6 +28,7 @@ pub(super) fn write(base: &str, rules: &[MailRule]) -> Result<String, DialectErr
             }) if from == script.fingerprint => segments.get(at).map(|segment| (at, segment)),
             _ => None,
         };
+        origins.push(origin.map(|(at, _)| at));
         if let Some((at, segment)) = origin
             && read::rule(segment, at, &script).as_ref() == Some(rule)
         {
@@ -66,19 +69,39 @@ pub(super) fn write(base: &str, rules: &[MailRule]) -> Result<String, DialectErr
         pieces.push((true, text));
     }
     needed.extend(needs.into_iter().map(str::to_owned));
-    // The reply rule is the reply's, not one of the rules (`super::reply`): it stays where it was
-    // among them, byte for byte.
+    // The reply rule is the reply's, not one of the rules (`super::reply`): it is copied byte for
+    // byte, and stays between the rules it was between.
     if let Some((at, _)) = reply_read::find(base, &segments, script.literal) {
-        let before = segments[..at]
-            .iter()
-            .filter(|segment| segment.kind() == SegmentKind::Command)
-            .count();
+        let position = reply_position(&segments, at, &origins);
         pieces.insert(
-            before.min(pieces.len()),
+            position.min(pieces.len()),
             (false, segments[at].text().to_owned()),
         );
     }
     assemble(&segments, &needed, pieces)
+}
+
+/// Where the reply rule, segment `reply` of the script, goes among written rules read from
+/// `origins`: before the first whose segment came after it, so it still runs before every rule it
+/// ran before and a rule inserted ahead of those cannot come between; else after the last whose
+/// segment came before it. A new rule, read from nowhere, moves it neither way; where every written
+/// rule is new, it keeps its place among the script's commands.
+fn reply_position(segments: &[Segment<'_>], reply: usize, origins: &[Option<usize>]) -> usize {
+    origins
+        .iter()
+        .position(|origin| origin.is_some_and(|at| at > reply))
+        .or_else(|| {
+            origins
+                .iter()
+                .rposition(|origin| origin.is_some_and(|at| at < reply))
+                .map(|before| before + 1)
+        })
+        .unwrap_or_else(|| {
+            segments[..reply]
+                .iter()
+                .filter(|segment| segment.kind() == SegmentKind::Command)
+                .count()
+        })
 }
 
 /// The script from `segments`: one `require` naming what they named and `needed`, then `pieces`

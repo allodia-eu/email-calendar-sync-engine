@@ -18,10 +18,19 @@
 //!   [`ScriptReply::Unreadable`]: read as anything less, it would answer people or do things the
 //!   read does not say.
 //! - [`write_reply`] writes a reply over a script: in place of the reply rule, keeping its name,
-//!   the comments before it, the `vacation` arguments the model leaves to the script (`:days`,
-//!   `:seconds`, `:addresses`, `:handle`, `:from`) and any action after it; first where there is
-//!   none. It refuses to write over an unread reply ([`ReplyRefusal::UnreadReply`]) unless the
-//!   caller names it ([`write_reply_over`]). Every other rule is copied byte for byte.
+//!   the comments before it and the `vacation` arguments the model leaves to the script (`:days`,
+//!   `:seconds`, `:addresses`, `:handle`, `:from`); first where there is none. Every other rule is
+//!   copied byte for byte. It refuses to write over an unread reply ([`ReplyRefusal::Unread`])
+//!   unless the caller names it ([`write_reply_over`], which says what it keeps and what it
+//!   discards), and a reply that is on where another rule also runs `vacation`
+//!   ([`ReplyRefusal::OtherVacation`]): RFC 5230 §4.7 makes two an error, and Dovecot then sends
+//!   neither.
+//!
+//! An unread reply belongs to neither list: [`read_rules`](super::read_rules) leaves its rule out,
+//! and [`read_reply`] does not read it, so an action inside it, a redirect among them, is in
+//! neither and [`plan_rules`](engine_core::rules::plan_rules) never sees it. A host shows
+//! [`ScriptReply::Unreadable`] for what it is, and [`UnreadReply::sends_mail`] says whether it may
+//! send mail out of the account, for a preflight to list.
 //!
 //! The window is written to the second and never wider than asked: a reply starts at the first
 //! whole second at or after its start, and stops after the last whole second that ends by its
@@ -43,7 +52,10 @@ use super::{
     reply_read::{self, Found, Kept},
     write,
 };
-use crate::{segment::SegmentKind, string};
+use crate::{
+    segment::{Segment, SegmentKind},
+    string,
+};
 
 /// The name a new reply rule gets: the plugin's own, from its `set_vacation`.
 pub const REPLY_RULE_NAME: &str = "Out-of-Office";
@@ -63,7 +75,8 @@ pub enum ScriptReply {
         segment: usize,
     },
     /// The reply rule, in a shape the reader does not read ([module docs](self)). Writing over
-    /// it takes this back ([`write_reply_over`]).
+    /// it takes this back ([`write_reply_over`]). What it does is in neither the reply nor the
+    /// rules [`read_rules`](super::read_rules) reads, so a host must show it.
     Unreadable(UnreadReply),
 }
 
@@ -75,6 +88,8 @@ pub struct UnreadReply {
     segment: usize,
     /// The text of the rule, so the opt-in names this rule and no later one.
     text: String,
+    sends_mail: bool,
+    does_more: bool,
 }
 
 impl core::fmt::Debug for UnreadReply {
@@ -82,6 +97,8 @@ impl core::fmt::Debug for UnreadReply {
         f.debug_struct("UnreadReply")
             .field("segment", &self.segment)
             .field("len", &self.text.len())
+            .field("sends_mail", &self.sends_mail)
+            .field("does_more", &self.does_more)
             .finish()
     }
 }
@@ -91,6 +108,22 @@ impl UnreadReply {
     #[must_use]
     pub fn segment(&self) -> usize {
         self.segment
+    }
+
+    /// Whether the rule may send mail out of the account besides its reply: a `redirect`, a
+    /// `notify`, a second `vacation`, or a command the reader does not know, after `vacation` or
+    /// in an `elsif` or `else` after the block. A preflight lists it, since
+    /// [`plan_rules`](engine_core::rules::plan_rules) never sees it.
+    #[must_use]
+    pub fn sends_mail(&self) -> bool {
+        self.sends_mail
+    }
+
+    /// Whether the rule does anything besides `vacation`: commands after it in the block, or an
+    /// `elsif` or `else` after the block, which [`write_reply_over`] keeps.
+    #[must_use]
+    pub fn does_more(&self) -> bool {
+        self.does_more
     }
 }
 
@@ -120,11 +153,18 @@ pub enum ReplyRefusal {
     NoText,
     /// Its window holds no whole second: it would never be sent.
     EmptyWindow,
-    /// It holds a value no Sieve string can (a CR outside a line end, a NUL).
-    Value,
+    /// Its text, or its subject, holds a character no Sieve string can: a CR outside a line end,
+    /// or a NUL.
+    ForbiddenCharacter,
+    /// It holds `${` where the script requires `variables` or `encoded-character`, which would
+    /// expand it.
+    Expanded,
+    /// It is on, and another rule of the script runs `vacation` too: RFC 5230 §4.7 makes two
+    /// `vacation` actions for one message an error.
+    OtherVacation,
     /// The script's reply rule is one the reader does not read, and the caller did not name it
     /// ([`write_reply_over`]), or named another.
-    UnreadReply,
+    Unread,
 }
 
 /// The reply `script` holds ([module docs](self)). A script that cannot be split at its commands,
@@ -150,6 +190,8 @@ pub fn read_reply(script: &str) -> ScriptReply {
             None => ScriptReply::Unreadable(UnreadReply {
                 segment,
                 text: segments[segment].text().to_owned(),
+                sends_mail: found.sends_mail(),
+                does_more: found.does_more(),
             }),
         },
     }
@@ -188,21 +230,27 @@ fn neutral(found: &Found, text: &str) -> Option<VacationResponse> {
 /// # Errors
 ///
 /// A [`DialectError`]: `base` cannot be split at its commands or its `require` cannot be
-/// written; [`DialectErrorKind::Reply`](super::DialectErrorKind::Reply) with the reason where
-/// the rule cannot hold `reply`, or where `base`'s reply rule is one the reader does not read
-/// ([`ReplyRefusal::UnreadReply`]); [`DialectErrorKind::Variable`](super::DialectErrorKind) for a
-/// value with `${` over a script that would expand it.
+/// written; [`DialectErrorKind::Reply`](super::DialectErrorKind::Reply) with the
+/// [`ReplyRefusal`] where the rule cannot hold `reply`, where `base`'s reply rule is one the
+/// reader does not read ([`ReplyRefusal::Unread`]), or where `reply` is on and another rule runs
+/// `vacation` ([`ReplyRefusal::OtherVacation`]).
 pub fn write_reply(base: &str, reply: &VacationResponse) -> Result<String, DialectError> {
     write_over(base, reply, None)
 }
 
 /// [`write_reply`], replacing the unread reply rule `unread` names, as [`read_reply`] found it in
-/// `base`. What was read of it is kept: its name, `vacation`'s other arguments, and any action
-/// after `vacation`.
+/// `base`: a deliberate overwrite.
+///
+/// Kept, as written: the rule's name and the comments before it; every command after `vacation`
+/// in its block; an `elsif` or `else` after the block; and `vacation`'s `:days`, `:seconds`,
+/// `:addresses`, `:handle` and `:from`, where `vacation` could be read. Replaced by `reply`: the
+/// window, whether the rule is on, and `vacation`'s subject and text. Discarded: the window's
+/// tests as they were, and all of `vacation`'s arguments where `vacation` could not be read
+/// (a `:mime` body, a `${` the script would expand, an argument the reader does not know).
 ///
 /// # Errors
 ///
-/// As [`write_reply`]; [`ReplyRefusal::UnreadReply`] where `base`'s reply rule is not the one
+/// As [`write_reply`]; [`ReplyRefusal::Unread`] where `base`'s reply rule is not the one
 /// `unread` names.
 pub fn write_reply_over(
     base: &str,
@@ -229,15 +277,24 @@ fn write_over(
             let leading = read::without_names(segment.leading());
             (found.clone(), leading, read::name(segment.leading()))
         }
-        Some(_) => return Err(DialectError::reply(ReplyRefusal::UnreadReply)),
-        None if unread.is_some() => return Err(DialectError::reply(ReplyRefusal::UnreadReply)),
+        Some(_) => return Err(DialectError::reply(ReplyRefusal::Unread)),
+        None if unread.is_some() => return Err(DialectError::reply(ReplyRefusal::Unread)),
         None => (Found::default(), String::new(), None),
     };
     let name = name.unwrap_or_else(|| RuleName::new(REPLY_RULE_NAME).expect("a valid name"));
-    let kept = found.action.map(|action| action.kept).unwrap_or_default();
-    let (text, needs) = render(reply, &kept, &found.others, &leading, &name)?;
+    let kept = found
+        .action
+        .as_ref()
+        .map(|action| action.kept.clone())
+        .unwrap_or_default();
+    let reply_at = existing.as_ref().map(|(at, _)| *at);
+    // A reply that is on, beside another `vacation` that may run for the same message.
+    if reply.enabled && (another_vacation(&segments, reply_at) || found.holds_second_vacation()) {
+        return Err(DialectError::reply(ReplyRefusal::OtherVacation));
+    }
+    let (text, needs) = render(reply, &kept, &found, &leading, &name)?;
     if !literal && text.contains("${") {
-        return Err(DialectError::variable(0));
+        return Err(DialectError::reply(ReplyRefusal::Expanded));
     }
 
     let mut pieces: Vec<(bool, String)> = segments
@@ -257,10 +314,29 @@ fn write_over(
 }
 
 /// The reply rule's text and what it requires.
+/// Whether a rule of the script other than the reply's runs `vacation`: one that is not disabled
+/// (`if false # …`).
+fn another_vacation(segments: &[Segment<'_>], reply: Option<usize>) -> bool {
+    segments
+        .iter()
+        .enumerate()
+        .filter(|(at, segment)| Some(*at) != reply && segment.kind() == SegmentKind::Command)
+        .any(|(_, segment)| {
+            let significant: Vec<_> = segment
+                .tokens()
+                .iter()
+                .filter(|token| !token.kind().is_trivia())
+                .collect();
+            let disabled = matches!(significant.as_slice(), [first, second, ..]
+                if first.is_identifier("if") && second.is_identifier("false"));
+            !disabled && reply_read::holds_vacation(segment.tokens())
+        })
+}
+
 fn render(
     reply: &VacationResponse,
     kept: &Kept,
-    others: &[String],
+    found: &Found,
     leading: &str,
     name: &RuleName,
 ) -> Result<(String, Vec<&'static str>), DialectError> {
@@ -279,7 +355,8 @@ fn render(
     };
     let (start, end) =
         window(&reply.window).ok_or(DialectError::reply(ReplyRefusal::EmptyWindow))?;
-    let value = |text: &str| value(text).ok_or(DialectError::reply(ReplyRefusal::Value));
+    let value =
+        |text: &str| value(text).ok_or(DialectError::reply(ReplyRefusal::ForbiddenCharacter));
 
     // As the plugin requires: `vacation-seconds` in place of `vacation` where `:seconds` is used
     // (`rcube_sieve_script::as_text`), which RFC 6131 §2's capability implies.
@@ -332,10 +409,21 @@ fn render(
         let _ = write!(out, " :from {}", value(from)?);
     }
     let _ = write!(out, " {};\r\n", value(text)?);
-    for other in others {
-        let _ = write!(out, "\t{other};\r\n");
+    for other in &found.others {
+        // A command that ended in a block ended there: a `;` after it would be a syntax error.
+        let end = if other.ends_with('}') { "" } else { ";" };
+        let _ = write!(out, "\t{other}{end}\r\n");
     }
-    out.push_str("}\r\n");
+    out.push('}');
+    if found.after.is_empty() {
+        out.push_str("\r\n");
+    } else {
+        // The `elsif` or `else` after the block, and the rest of its line, as written.
+        out.push_str(&found.after);
+        if !found.after.ends_with('\n') {
+            out.push_str("\r\n");
+        }
+    }
     Ok((out, needs))
 }
 

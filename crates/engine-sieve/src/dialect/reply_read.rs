@@ -17,7 +17,7 @@
 
 use engine_core::time::UtcDateTime;
 
-use super::cursor::Cursor;
+use super::{cursor::Cursor, facts};
 use crate::{
     lex::{Token, TokenKind, tokenize},
     segment::Segment,
@@ -43,6 +43,9 @@ pub(super) struct Found {
     /// The commands after `vacation` in the rule's block, each as written without its `;`:
     /// Roundcube's own "then also" action (`discard`, `redirect`), or anything a user added.
     pub(super) others: Vec<String>,
+    /// What follows the block's `}` in the rule, as written: an `elsif` or `else` chain, a
+    /// comment, and the line end.
+    pub(super) after: String,
     /// Whether the rule's shape is the one the model reads: one block, no `elsif` or `else`, no
     /// `${` the script would expand.
     pub(super) plain: bool,
@@ -53,6 +56,39 @@ impl Found {
     /// that answers or does less than it does.
     pub(super) fn readable(&self) -> bool {
         self.plain && self.window.is_some() && self.action.is_some() && self.others.is_empty()
+    }
+
+    /// Whether the rule does more than `vacation`: commands after it in the block, or an `elsif`
+    /// or `else` after the block.
+    pub(super) fn does_more(&self) -> bool {
+        !self.others.is_empty()
+            || tokenize(&self.after).map_or(true, |tokens| {
+                tokens.iter().any(|token| !token.kind().is_trivia())
+            })
+    }
+
+    /// Whether the rule runs `vacation` again after its first: in its block, or in an `elsif` or
+    /// `else` after it.
+    pub(super) fn holds_second_vacation(&self) -> bool {
+        self.others
+            .iter()
+            .map(String::as_str)
+            .chain(core::iter::once(self.after.as_str()))
+            .any(|text| tokenize(text).map_or(true, |tokens| holds_vacation(&tokens)))
+    }
+
+    /// Whether what the rule does besides `vacation` may send mail out of the account, or answer
+    /// with a second `vacation` ([`facts::sends_mail`]).
+    pub(super) fn sends_mail(&self) -> bool {
+        self.others
+            .iter()
+            .map(String::as_str)
+            .chain(core::iter::once(self.after.as_str()))
+            .any(|text| {
+                tokenize(text).map_or(true, |tokens| {
+                    facts::sends_mail(&tokens) || holds_vacation(&tokens)
+                })
+            })
     }
 }
 
@@ -84,14 +120,20 @@ pub(super) fn find(
     literal: bool,
 ) -> Option<(usize, Found)> {
     segments.iter().enumerate().find_map(|(index, segment)| {
-        let found = reply(script, segment.tokens(), literal)?;
+        let found = reply(script, segment, literal)?;
         Some((index, found))
     })
 }
 
-/// The reply rule `tokens` (one segment's) holds, or `None` where it is not the reply.
-fn reply(script: &str, tokens: &[Token<'_>], literal: bool) -> Option<Found> {
-    let significant: Vec<&Token<'_>> = tokens
+/// Whether `tokens` hold a `vacation` command.
+pub(super) fn holds_vacation(tokens: &[Token<'_>]) -> bool {
+    tokens.iter().any(|token| token.is_identifier("vacation"))
+}
+
+/// The reply rule `segment` holds, or `None` where it is not the reply.
+fn reply(script: &str, segment: &Segment<'_>, literal: bool) -> Option<Found> {
+    let significant: Vec<&Token<'_>> = segment
+        .tokens()
         .iter()
         .filter(|token| token.kind() != TokenKind::Whitespace)
         .collect();
@@ -125,7 +167,9 @@ fn reply(script: &str, tokens: &[Token<'_>], literal: bool) -> Option<Found> {
         return None;
     }
     let after = &significant[close + 1..];
+    let block_end = significant[close].end();
     Some(Found {
+        after: script[block_end..segment.end()].to_owned(),
         enabled,
         window: window(&mut Cursor::new(test.iter().copied(), literal)),
         action: action(&mut Cursor::new(first[1..].iter().copied(), literal)),
@@ -153,7 +197,10 @@ fn window_only(test: &[&Token<'_>]) -> bool {
                 token.is_identifier("allof")
                     || token.is_identifier("currentdate")
                     || token.is_identifier("true")
-                    || (token.is_identifier("header") && regex_received)
+                    // Without `date`, the plugin writes its window as `header :regex "received"`
+                    // tests, `anyof` for several (`rcube_sieve_vacation.php:296-301` and `:325`).
+                    || ((token.is_identifier("header") || token.is_identifier("anyof"))
+                        && regex_received)
             })
 }
 

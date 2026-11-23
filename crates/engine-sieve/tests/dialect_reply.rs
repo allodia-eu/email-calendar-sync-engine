@@ -144,7 +144,7 @@ fn a_reply_rule_holding_more_than_the_model_says_is_unread_not_narrowed() {
         // Found by the fuzz target: no string the writer writes holds a NUL.
         ("a NUL in the text", vacation("true", "vacation \"a\0b\"")),
         (
-            "the plugin's received fallback",
+            "the plugin's received fallback, one test",
             vacation("header :regex \"received\" \"2030\"", "vacation \"x\""),
         ),
         (
@@ -178,12 +178,13 @@ fn debug_shows_no_word_of_a_reply_read_or_unread() {
 #[test]
 fn a_rule_that_answers_some_senders_is_the_user_s_rule_not_the_reply() {
     // Roundcube would take it as the reply with a narrower audience; the engine reads no audience
-    // but everyone, so it stays an ordinary rule, and a new reply goes before it.
+    // but everyone, so it stays an ordinary rule, and a new reply goes before it (switched off
+    // here: on, two `vacation` actions would answer the boss, `dialect_reply_overwrite.rs`).
     let boss = "require [\"vacation\"];\r\n# rule:[Boss]\r\n\
                 if header :contains \"from\" \"boss\"\r\n{\r\n\tvacation \"In a meeting.\";\r\n}\r\n";
     assert_eq!(read_reply(boss), ScriptReply::Absent);
     assert_eq!(read_rules(boss).len(), 1);
-    let written = write_reply(boss, &reply("Away.")).unwrap();
+    let written = write_reply(boss, &reply("Away.").turned_off()).unwrap();
     assert!(
         written.ends_with(&boss[boss.find("# rule:[Boss]").unwrap()..]),
         "{written}"
@@ -306,7 +307,7 @@ fn a_rewritten_reply_keeps_its_place_name_and_unmodelled_arguments_and_touches_n
 fn an_unread_reply_is_written_over_only_when_named_and_what_was_read_of_it_survives() {
     assert_eq!(
         refusal(write_reply(REDIRECT, &reply("Away."))),
-        ReplyRefusal::UnreadReply
+        ReplyRefusal::Unread
     );
     let written = write_reply_over(REDIRECT, &reply("Away."), &unread(REDIRECT)).unwrap();
     assert!(
@@ -340,11 +341,11 @@ fn an_unread_reply_is_written_over_only_when_named_and_what_was_read_of_it_survi
     let stale = unread(NO_ZONE);
     assert_eq!(
         refusal(write_reply_over(REDIRECT, &reply("x"), &stale)),
-        ReplyRefusal::UnreadReply
+        ReplyRefusal::Unread
     );
     assert_eq!(
         refusal(write_reply_over(ONE_RULE, &reply("x"), &stale)),
-        ReplyRefusal::UnreadReply
+        ReplyRefusal::Unread
     );
 }
 
@@ -448,14 +449,12 @@ fn a_reply_the_rule_cannot_hold_is_refused_with_its_reason() {
     );
     assert_eq!(
         refusal(write_reply(ONE_RULE, &reply("a\rb"))),
-        ReplyRefusal::Value
+        ReplyRefusal::ForbiddenCharacter
     );
     // A value a script requiring `variables` would expand.
     let variables = "require [\"variables\"];\r\nset \"a\" \"b\";\r\n";
-    assert!(matches!(
-        write_reply(variables, &reply("costs ${a}"))
-            .unwrap_err()
-            .kind(),
-        DialectErrorKind::Variable { .. }
-    ));
+    assert_eq!(
+        refusal(write_reply(variables, &reply("costs ${a}"))),
+        ReplyRefusal::Expanded
+    );
 }

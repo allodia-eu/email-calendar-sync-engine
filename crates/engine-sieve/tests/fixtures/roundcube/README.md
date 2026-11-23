@@ -71,6 +71,10 @@ rule. `reply_zone` computes its zone and values with the plugin's own expression
 - `reply_zone`: the `iso8601` part in `+0100`;
 - `reply_arguments`: every argument the plugin writes, in its order (`:seconds`, `:addresses`,
   `:subject`, `:handle`, `:from`), and `require ["vacation-seconds"]` alone, as it requires;
+- `reply_received`: the window the plugin writes without the `date` extension, `anyof` of
+  `header :regex "received"` tests from its own `build_regexp_tests` (called by reflection;
+  `generate.php` loads Roundcube's bootstrap for it), which the engine reads as the reply with a
+  window it cannot read as instants;
 - `reply_redirect`: a reply that also redirects, the plugin's "incoming message" action, which the
   engine reads as a reply it cannot show and keeps when it writes over it.
 
