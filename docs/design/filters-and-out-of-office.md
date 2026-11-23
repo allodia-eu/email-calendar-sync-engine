@@ -1,9 +1,10 @@
 # Filters and out-of-office: design note
 
-Status: **proposal, nothing implemented.** Written 2026-11-23, when the owner moved message rules
-and automatic replies into scope. `north-star.md` still lists them as non-goals; the change that
-lands the first slice rewrites that paragraph (and `providers.md`, `modeling.md`) in the same
-commit, per "Documentation currency".
+Status: **design settled, nothing implemented.** Written 2026-11-23, when the owner moved message
+rules and automatic replies into scope; every question it raised was decided the same day
+(section 7). `north-star.md` already records the scope and the accessor pattern (#378). The
+change that lands the first slice updates `modeling.md`, and `providers.md` for the new traits, in
+the same commit, per "Documentation currency".
 
 Marks used below: **live** = observed against a harness server on 2026-11-23; **docs** = read from
 the RFC or vendor reference cited; **unverified** = believed, not yet checked, and must be proven
@@ -22,7 +23,7 @@ kinds of host need them:
 | Import | — | Write the source's rules and reply to the target, and say per rule what the target kept | — |
 | Preflight | — | Tell the operator *before* writing what will not carry | — |
 | Concurrency | Refuse an edit built on a stale read where the transport can | Write once into a target nobody else edits yet | Must refuse a stale write: two tabs, one user |
-| Offline | Not needed (see open question 1) | — | — |
+| Offline | Not needed: settings are written directly, not through the outbox (decision 1) | — | — |
 
 What the three share is one neutral model of a rule set and a reply, a capability that says what a
 given account's rule language can express, and a receipt that reports what was kept. What differs
@@ -75,7 +76,8 @@ JMAP account shared read-only lists neither `sieve` nor `vacationresponse` (capt
   read-only shares advertise neither capability. `SieveScript/get` answers an empty list;
   `VacationResponse/get` answers the singleton `{isEnabled: false, fromDate: null, toDate: null,
   subject: null, textBody: null, htmlBody: null}`. Both answer `state: "n"`: whether the two types
-  share one state counter is **unverified** and matters for the guard (open question 5).
+  share one state counter is **unverified**; slice 1 settles it, and section 4 says what a host
+  sees either way.
 - **Stalwart v1.0.2, ManageSieve.** Listening on 4190 inside the container, **not published** by
   `docker/stalwart/docker-compose.yml`. Greeting: `VERSION "1.0"`, `STARTTLS`, `SASL ""` before
   TLS (mechanisms come after `STARTTLS`, RFC 5804 §1.7), `MAXREDIRECTS "1"`, the same extension
@@ -116,9 +118,8 @@ and it can say everything Graph and Gmail can say and more. It is the wrong spin
 4. **Capability checks need structure.** "Can this account express this rule?" is a question
    about conditions and actions against a vocabulary, not about text.
 
-**Recommendation: a typed, ordered rule list is the model; Sieve is one rendering of it; the raw
-form is always kept.** For a Sieve source the engine segments the script at top-level commands
-(a lexer that knows strings, `text:` blocks, comments and brackets, no semantics), merges
+**Decision: a typed, ordered rule list is the model; Sieve is one rendering of it; the raw form
+is always kept.** For a Sieve source the engine segments the script at top-level commands, merges
 `require`, and reads each top-level `if` it recognises as a typed rule. Everything else, a rule it
 does not recognise, a `set`, a bare `keep`, becomes an **opaque rule** holding its exact bytes, in
 place. A write re-renders only the rules the host changed and copies every other segment verbatim,
@@ -126,10 +127,19 @@ so a hand-written script survives an edit made in the app. This is the engine's 
 ("a write re-derives every modelled property from the normalized value", `modeling.md`) applied to
 a script.
 
-The recognised dialect is the one the engine writes. Writing the de-facto webmail convention
-(Roundcube's managesieve plugin marks each rule with `# rule:[name]` and a disabled one with
-`if false # …`; **unverified** in detail) would let a user who also uses such a webmail see the same
-named rules there; open question 3.
+The segmenter lives in a new pure crate, `engine-sieve`, and is small and hand-written: a lexer
+that knows strings, `text:` blocks, comments and brackets, splits the script at its top-level
+commands, and understands nothing else. Stalwart's `sieve-rs` is `AGPL-3.0-only OR
+LicenseRef-SEL` (its source headers on docs.rs), which the MPL engine cannot take, and a full
+parser would buy semantics the model does not use. The segmenter is fuzzed beside the existing
+MIME and iCalendar targets.
+
+The recognised dialect is the one the engine writes, and the engine writes Roundcube's: its
+managesieve plugin marks each rule with `# rule:[name]` and a disabled one with `if false # …`
+(the byte detail is **unverified**; slice 2 pins it, section 7). Roundcube is the most widely used
+webmail on Sieve servers, so a user who also uses it reads and edits the same named rules there,
+and rules it wrote read back typed here. When the account has no active script, the engine creates
+one named `rules` and activates it; otherwise it edits the active script in place.
 
 ### Types (sketch, `engine-core::rules`)
 
@@ -174,7 +184,7 @@ pub enum Condition {
     Size(SizeBound),             // Over(bytes) | Under(bytes)
     HasAttachment,
     Importance(Importance),      // engine_core's existing type
-    Native(NativeCondition),     // provider-only: an Exchange message class, a Gmail query
+    Native(NativeCondition),     // provider-only: an Exchange message class, an unparsed Gmail query
 }
 
 pub struct TextTest { pub op: TextOp, pub values: Vec<String> } // values are any-of
@@ -198,6 +208,12 @@ category is a named keyword, as `KeywordName` already treats it. `Native` holds 
 JSON fragment and its kind, so a host can show "a condition this app cannot display" and the
 engine can carry it to the same kind of provider; it never crosses kinds.
 
+A Gmail filter's `query` and `negatedQuery` are parsed when every term is one of a small subset:
+`from:`, `to:`, `subject:`, `has:attachment` and `larger:`, read as `Address`, `Header`,
+`HasAttachment` and `Size(Over)` conditions (a `negatedQuery` lands in `except`). A query with any
+other term or operator stays whole, as one `Native` condition: it carries to Gmail unchanged, and on
+a non-Gmail target the rule is `NotKept`, because a lost condition drops the rule (section 4).
+
 No rule-level `Reject` (RFC 5429) in the first slices: no non-Sieve provider has it, so it reads as
 an opaque rule until a host asks.
 
@@ -220,8 +236,8 @@ either has to say when they are lost. Graph's `externalAudience` maps `all`→`E
 `none`→`Organisation`, `contactsOnly`→`OrganisationAndContacts`; Gmail's `restrictToContacts`→
 `Contacts`, `restrictToDomain`→`Organisation` (both set is lossy: contacts inside the domain).
 Graph's zoned schedule is read as instants (a cut-off, not a wall-clock event) and its zone stays in
-`raw`. The Sieve reply interval (`:days`) is not modelled: three of four transports leave it to the
-server; open question 6.
+`raw`. The Sieve reply interval (`:days`, `:seconds`) is not modelled and is left to the server, as
+three of the four transports leave it; a Sieve source's value is preserved in the raw script.
 
 ### Content and logs
 
@@ -233,17 +249,19 @@ Rule values, names, addresses and reply text are content. Every type here gets t
 
 ### Capability as a type
 
-The agreed direction is that a capability is a trait reachable through any handle, not a flag.
-Rules and vacation are a data domain with several verbs, the case `providers.md` keeps a
-sub-trait for (`ContactsProvider`). To avoid the upcast cost `providers.md` measured, the domain is
-reached through an accessor on `Provider` with a `None` default, which `Box<dyn Provider>`
-delegates like every other method:
+A capability is its own trait, reached through an accessor on `Provider` that defaults to `None`,
+as `mail_importer` does (#375; `north-star.md`, "Key Decisions", #378). `Box<dyn Provider>`
+delegates the accessor like every other method, so a host holding one reaches the domain without
+knowing the adapter and without the upcast cost `providers.md` measured for sub-traits. An adapter
+that implements the trait answers `Some(self)`; there is no capability flag beside it.
 
 ```rust
 trait Provider {
     // …
     fn mail_rules(&self) -> Option<&dyn MailRules> { None }
     fn vacation(&self) -> Option<&dyn Vacation> { None }
+    #[cfg(feature = "import")]
+    fn rules_importer(&self) -> Option<&dyn RulesImporter> { None }
 }
 
 #[async_trait]
@@ -269,9 +287,21 @@ pub trait Vacation: Send + Sync {
 ```
 
 `Some(..)` is the capability; `vocabulary()` is what it can express. JMAP answers `Some` only for
-an account listing the capability (so not on a read-only share). An IMAP provider answers `Some`
-only when the host gave it a ManageSieve endpoint and the greeting succeeded. On ManageSieve, rules
-and vacation are one script, so both traits are one object and share its version.
+an account listing the capability (so not on a read-only share). ManageSieve is a module of
+`provider-imap`, sharing the adapter's TLS, SASL and the account's connection budget; its endpoint
+comes from host configuration, with no SRV discovery (RFC 5804 §1.8) for now. An IMAP provider
+answers `Some` only when the host gave it that endpoint and the greeting succeeded. On ManageSieve,
+rules and vacation are one script, so both traits are one object and share its version.
+
+Rules and the reply are account settings, edited online in every client surveyed, so every host
+kind writes them directly, guarded by the version it read; they never go through the outbox and
+have no store tables. A sync host reads them on demand, as a direct host does.
+
+On JMAP the guard is `Enforced` whether or not Stalwart moves the `SieveScript` state when the
+vacation reply changes (slice 1 answers it). If it does, a rules write built on a read taken
+before a reply change is refused once with `stateMismatch`, though no rule moved; the host re-reads
+and writes again, as after any stale read. Nothing is lost, and the refusal is the guard working
+at the grain the server keeps.
 
 `replace_rules` is whole-set because order is a property of the set and two transports store the
 set as one script. Graph and Gmail adapters diff `base` against `rules` and issue per-rule calls;
@@ -283,7 +313,8 @@ per-rule failure lands in the receipt rather than failing the call.
 What a target keeps is decided before anything is sent, by one pure function in `engine-core`:
 
 ```rust
-pub fn plan_rules(rules: &[MailRule], target: &RuleVocabulary) -> RulesPlan;
+pub fn plan_rules(rules: &[MailRule], target: &RuleVocabulary, mode: PlanMode) -> RulesPlan;
+// PlanMode: Edit | Import { forwarding: ForwardingRules }   // ForwardingRules: Disabled (default) | Enabled
 // RulesPlan { rules: Vec<MailRule> /* what will be written */, outcomes: Vec<RuleOutcome> }
 ```
 
@@ -321,20 +352,23 @@ Two safety rules are part of the plan, not host policy:
   `Reduced` as long as one action remains.
 - **A rule that sends mail out of the account (`Redirect`, `Forward`) is imported `Disabled`.**
   Planted forwarding rules are a known way an attacker keeps reading a compromised Microsoft 365
-  mailbox, and a migration should not quietly arm one on a new server. The operator re-enables
-  after review. On a target that cannot store a disabled rule (Gmail), it is `NotKept`. Open
-  question 2 asks the owner to confirm this default.
+  mailbox, and a migration should not quietly arm one on a new server. Each such rule is listed
+  in the transfer host's preflight report, and the operator re-enables after review, or turns on a
+  per-project switch that imports them enabled; the host passes that switch to the import call.
+  On a target that cannot store a disabled rule (Gmail), the rule is `NotKept` and the receipt
+  says so. An edit through `replace_rules` is the user's own and is written as given.
 
 ### Import (the `import` feature)
 
-The import seam (in review: `MailImporter` behind the `import` feature) gains a sibling:
+The import seam (`engine_provider::import`, behind the `import` feature: `MailImporter`, #375, with
+IMAP import, #376) gains a sibling, reached the same way, through `Provider::rules_importer`:
 
 ```rust
 #[async_trait]
 pub trait RulesImporter: Send + Sync {
     /// Appends `rules` after the target's own, never replacing them, and answers per rule.
-    async fn import_rules(&self, account: &AccountId, rules: &[MailRule])
-        -> ProviderResult<Vec<RuleOutcome>>;
+    async fn import_rules(&self, account: &AccountId, rules: &[MailRule],
+        forwarding: ForwardingRules) -> ProviderResult<Vec<RuleOutcome>>;
     async fn import_vacation(&self, account: &AccountId, reply: &VacationResponse)
         -> ProviderResult<VacationReceipt>;
 }
@@ -345,7 +379,15 @@ rules, and applies the import-only defaults above. The host rewrites each `RuleM
 source to target mailbox ids first, with the folder map the mail import already built; an id it
 cannot map stays, and the plan reports `MissingMailbox`. Errors follow `MailImporter`:
 `requires_confirmation` means the script or a rule may have been stored; `item_unavailable`
-means it never will be.
+means it never will be. Unlike `import_messages`, the call answers one result for the set,
+because a Sieve target stores the set as one script; what each rule kept is in its
+`RuleOutcome`, as an imported message reports the `MessageMetadata` the target kept (#383).
+
+A transfer host reads the source and writes the target with administrative access where the
+provider offers it: Graph application permissions (shared-mailbox settings need them; delegated
+`mailboxSettings` is self-only, `graph.md`), Google domain-wide delegation, a Sieve or IMAP master
+user. Per-user credentials are the fallback. The adapter is the same either way; only the
+credential the host supplies differs (the `CredentialSource` design note, #381).
 
 ### Example: Graph rules to a Dovecot target over ManageSieve
 
@@ -370,7 +412,7 @@ rule 0  Reduced  Action(1) NotExpressible        # markImportance: no editheader
 rule 1  NotKept  Exception(0) NotExpressible     # dropping it would also move auto-replies
 ```
 
-Written script (the dialect comment is illustrative):
+Written script, in the Roundcube dialect (section 3; layout as slice 2 pins it):
 
 ```sieve
 require ["fileinto", "mailbox"];
@@ -408,7 +450,7 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 | Has attachment | ≈ `exists :mime :anychild` heuristics (ext `mime`) | ✓ `hasAttachments` | ✓ `hasAttachment` |
 | Importance | ≈ header tests over `Importance::HEADERS` | ✓ `importance` | ✗ (Gmail's `important` is its own classifier) |
 | `Native`: Exchange class (`isMeetingRequest`, `isAutomaticReply`, `sensitivity`, `categories`, `messageActionFlag`, …) | ✗ (a few ≈ through headers, not attempted) | ✓ | ✗ |
-| `Native`: Gmail `query` | ✗ | ✗ | ✓ |
+| `Native`: unparsed Gmail `query` | ✗ | ✗ | ✓ |
 
 ### Actions and rule properties
 
@@ -442,7 +484,7 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 | `audience` Contacts | ✗ | ✗ | ≈ `contactsOnly` (external only) | ✓ `restrictToContacts` |
 | `outside_reply` | ✗ | ≈ sender-domain branch | ✓ `externalReplyMessage` | ✗ |
 
-## 6. Phasing, tests, open questions
+## 6. Phasing and tests
 
 ### Phasing
 
@@ -452,16 +494,18 @@ Each slice is proven live before the next starts (`AGENTS.md`).
    `provider-jmap` get/set with `ifInState`. Live on Stalwart, which also settles the RFC 9661 §4
    question: does setting a reply create a `SieveScript`, does it move the `SieveScript` state, and
    does activating it deactivate a user's script? The answer shapes slice 2.
-2. **Rules over JMAP Sieve.** A pure `engine-sieve` crate (segmenter, dialect reader, renderer,
-   fuzzed beside the existing MIME/iCalendar targets), `plan_rules`, `MailRules` on
+2. **Rules over JMAP Sieve.** The pure `engine-sieve` crate (segmenter, Roundcube dialect reader,
+   renderer, fuzzed beside the existing MIME/iCalendar targets), `plan_rules`, `MailRules` on
    `provider-jmap` (upload, `SieveScript/set` with `ifInState` and `onSuccessActivateScript`,
-   `SieveScript/validate` before storing). Live on Stalwart.
-3. **ManageSieve.** The harness publishes 4190 (Stalwart) and 34190 (Dovecot); a ManageSieve client
-   over the IMAP adapter's TLS and SASL; vacation and rules in one script. Live on both, which
-   exercises two vocabularies.
+   `SieveScript/validate` before storing; a new script is named `rules`). Live on Stalwart.
+3. **ManageSieve.** The harness publishes 4190 (Stalwart) and 34190 (Dovecot); a `managesieve`
+   module of `provider-imap` over the adapter's TLS, SASL and connection budget, at a
+   host-configured endpoint; vacation and rules in one script. Live on both, which exercises two
+   vocabularies.
 4. **Import from Graph.** Read `messageRules` and `automaticRepliesSetting` into the model;
-   `RulesImporter` on the JMAP and ManageSieve targets; per-rule receipts. Live against a
-   work/school test tenant (the personal account answered `403`).
+   `RulesImporter` on the JMAP and ManageSieve targets; per-rule receipts; the preflight list of
+   forwarding rules. Live against a work/school test tenant with application permissions (the
+   personal account answered `403`).
 5. **Gmail read**, then Graph and Gmail writes for the sync and direct hosts.
 
 ### Tests
@@ -480,34 +524,51 @@ Each slice is proven live before the next starts (`AGENTS.md`).
   rules (a lost exception drops the rule; a redirect imports disabled).
 - **Redaction.** `Debug` of every rule, reply and receipt prints no value.
 
-### Decisions (2026-11-23)
+## 7. Decisions (2026-11-23)
 
-- **Forwarding and redirect rules import disabled by default.** Each one is listed in the transfer host's preflight report, and an explicit per-project switch imports them enabled. Where a target cannot store a disabled rule, the rule is not kept and the receipt says so. This settles the question about forwarding rules.
-- **Rules and the vacation reply are written directly, with a version guard,** for every host kind. They are settings, not messages, so they do not go through the outbox.
-- **Transfer hosts read and write with administrative access** where the provider offers it (Graph application permissions, which shared-mailbox settings need; Google domain-wide delegation; a Sieve or IMAP master user), with per-user credentials as the fallback (`credential-source.md`).
-- **Capabilities are reached through accessors on `Provider`.** A new capability is its own trait, reached through a `Provider` method that defaults to `None` (for example `fn mail_rules(&self) -> Option<&dyn MailRules> { None }`). It is additive, works through `Box<dyn Provider>`, and is the first step of the capability-trait split. It supersedes the `providers.md` rule that rejects sub-traits; that doc changes with the first slice that adds one.
+The owner approved each of these; the body of the note is written to match.
 
-## Open questions for the owner
+1. **Rules and the vacation reply are written directly, with a version guard,** for every host
+   kind. They are settings, not messages, so they do not go through the outbox, and the store
+   keeps no tables for them (section 4).
+2. **Forwarding and redirect rules import disabled by default.** Each one is listed in the
+   transfer host's preflight report, and a per-project switch imports them enabled. Where a
+   target cannot store a disabled rule, the rule is `NotKept` and the receipt says so
+   (section 4).
+3. **The engine writes Roundcube's Sieve dialect,** `# rule:[name]` per rule, so the most widely
+   used webmail reads and edits what the engine writes. A new script, when the account has no
+   active one, is named `rules` (section 3).
+4. **A Gmail filter's `query` is parsed for a small subset** (`from:`, `to:`, `subject:`,
+   `has:attachment`, `larger:`) into typed conditions. Anything else stays `Native` and is
+   reported as not kept on a non-Gmail target (section 3).
+5. **A new crate, `engine-sieve`, holds a small hand-written segmenter** that splits a script at
+   its top-level commands and understands nothing else. Stalwart's `sieve-rs` is AGPL, which the
+   MPL engine cannot take. It is fuzzed beside the existing parsers (section 3, slice 2).
+6. **The Sieve reply interval (`:days`) is left to the server.** The source's value is preserved
+   in the raw script (section 3).
+7. **ManageSieve is a module of `provider-imap`,** sharing TLS, SASL and the account's connection
+   budget. Its endpoint comes from host configuration; there is no SRV discovery for now
+   (section 4, slice 3).
+8. **Transfer hosts use administrative access where the provider offers it** (Graph application
+   permissions, which shared-mailbox settings need; Google domain-wide delegation; a Sieve or IMAP
+   master user), with per-user credentials as the fallback (section 4).
+9. **Capabilities are reached through accessors on `Provider` that default to `None`,** as
+   `mail_importer` does (#375; `north-star.md`, #378): `mail_rules()`, `vacation()`, and
+   `rules_importer()` behind the `import` feature. The `providers.md` rule against sub-traits is
+   superseded; that doc is rewritten to match (#386).
 
-1. **Direct writes, not the outbox.** Rules and the reply are account settings, edited online in
-   every client surveyed. Proposed: guarded direct writes, no store tables, read on demand. This
-   departs from "writes are outbox mediated" for this domain. Agree?
-2. **Forwarding rules import disabled** (section 4), and are `NotKept` where a disabled rule cannot
-   be stored. Agree, or should the operator choose per migration?
-3. **Which Sieve dialect to write.** Roundcube's `# rule:[name]` convention (readable by the most
-   common webmail) or the engine's own; and the script's name when the account has no active
-   script.
-4. **Where ManageSieve lives:** a module of `provider-imap` (shares TLS, SASL, the account's
-   connection budget) or its own crate; and whether its endpoint is host-configured only or also
-   found by SRV (RFC 5804 §1.8).
-5. **The JMAP guard.** If Stalwart moves `SieveScript` state when the vacation reply changes, a rules
-   write after a reply change is refused once. Acceptable as `Enforced`, or document it?
-6. **Reply interval** (`:days`): leave to the server (proposed), or model it for Sieve targets?
-7. **Gmail `query`.** Parse a small subset (`from:`, `to:`, `subject:`, `has:attachment`,
-   `larger:`) into typed conditions, or carry every query as `Native` (so a Gmail filter with a
-   query never reaches a Sieve target)?
-8. **Graph credential.** Delegated `mailboxSettings` is self-only (`graph.md`). A transfer host
-   migrating shared mailboxes needs application permissions; is that the migration host's model?
-9. **A Sieve parser dependency.** Stalwart's `sieve-rs` is `AGPL-3.0-only OR LicenseRef-SEL`
-   (its source headers on docs.rs), which the MPL engine cannot take; the proposal is a small
-   hand-written segmenter that understands no semantics.
+### Settled by live tests
+
+These are facts to observe, not choices; the design holds whichever way each falls.
+
+- **Whether Stalwart moves the `SieveScript` state when the vacation reply changes** (slice 1).
+  The guard is `Enforced` either way; if it does, a host sees one `stateMismatch` on the next rules
+  write and re-reads (section 4).
+- **RFC 9661 §4 on Stalwart** (slice 1): whether setting a reply creates a `SieveScript`, and
+  whether activating it deactivates the user's script. The answer decides how slice 2 places the
+  vacation segment.
+- **The byte layout of Roundcube's dialect** (slice 2), including `if false # …` for a disabled
+  rule, pinned from scripts the plugin wrote, scrubbed as fixtures.
+- **The Graph and Gmail items marked unverified** (slices 4 and 5): `@odata.etag` with `If-Match`
+  on `messageRule`, the Exchange rules quota, OR within one predicate, rules on a shared mailbox,
+  and Gmail's verified-forwarding-address requirement.
