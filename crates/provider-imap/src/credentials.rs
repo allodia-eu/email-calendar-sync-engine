@@ -1,8 +1,10 @@
 //! How IMAP and SMTP get the credential they present: asked of the account's
 //! [`CredentialSource`] on every dial and every submission (`engine_provider::credential`).
 //!
-//! Two shapes reach the wire, because servers offer two: a password (IMAP `LOGIN`, SMTP `AUTH
-//! PLAIN`) and an OAuth 2.0 access token (SASL `OAUTHBEARER`/`XOAUTH2`, see [`crate::sasl`]).
+//! Three shapes reach the wire: a password (IMAP `LOGIN`, SMTP `AUTH PLAIN`), an OAuth 2.0
+//! access token (SASL `OAUTHBEARER`/`XOAUTH2`, see [`crate::sasl`]), and an administrator's
+//! password acting as another account (IMAP `AUTHENTICATE PLAIN` with an authorization
+//! identity, RFC 4616; never SMTP).
 //! Which SASL mechanism carries the token is negotiated from what the server advertises and is
 //! deliberately absent from the credential: a caller that could pin one would be encoding which
 //! provider it is talking to.
@@ -13,10 +15,12 @@
 //! every dial asks the source for the credential to present rather than reusing the one the
 //! account connected with.
 
-use std::future::Future;
+use std::{future::Future, sync::OnceLock};
 
+use engine_core::error::FailureClass;
 use engine_provider::{
     Credential, CredentialFailure, CredentialProtocol, CredentialRequest, CredentialSource, Origin,
+    ProviderError,
 };
 
 use crate::{
@@ -33,20 +37,59 @@ pub(crate) enum SignIn<'a> {
     },
     /// SASL `OAUTHBEARER` or `XOAUTH2`, which both name the account.
     Token { username: &'a str, token: &'a str },
+    /// IMAP `AUTHENTICATE PLAIN`: the administrator `username` acting as `acting_as`.
+    ActingAs {
+        username: &'a str,
+        password: &'a str,
+        acting_as: &'a str,
+    },
 }
 
-/// How `credential` signs in over IMAP or SMTP.
+impl SignIn<'_> {
+    /// The account whose mailbox the session opens: the username, or the account acted as.
+    pub(crate) fn identity(&self) -> &str {
+        match self {
+            Self::Password { username, .. } | Self::Token { username, .. } => username,
+            Self::ActingAs { acting_as, .. } => acting_as,
+        }
+    }
+}
+
+/// How `credential` signs in over `protocol`, IMAP or SMTP.
 ///
 /// # Errors
 ///
 /// [`ImapError::Bad`] for a bearer token without the account's username, which both SASL
-/// mechanisms need, and for a kind of credential neither protocol can present. Either is the
-/// host's mistake, so nothing is sent and no retry will help.
-pub(crate) fn sign_in(credential: &Credential) -> ImapResult<SignIn<'_>> {
+/// mechanisms need; for a credential acting as another account over SMTP, or naming no account
+/// to act as; and for a kind of credential neither protocol can present. Each is the host's
+/// mistake, so nothing is sent and no retry will help.
+pub(crate) fn sign_in(
+    credential: &Credential,
+    protocol: CredentialProtocol,
+) -> ImapResult<SignIn<'_>> {
     match credential {
         Credential::Password { username, password } => Ok(SignIn::Password {
             username,
             password: password.expose(),
+        }),
+        // Submitting mail as another account is a different grant from reading its mailbox,
+        // and no server has been seen to take it: refused rather than guessed at.
+        Credential::ActingAs { .. } if protocol != CredentialProtocol::Imap => {
+            Err(acting_as_over_smtp())
+        }
+        // An empty authorization identity means "the authentication identity's own" (RFC 4616
+        // §2), which would open the administrator's mailbox in place of the one asked for.
+        Credential::ActingAs { acting_as, .. } if acting_as.is_empty() => Err(ImapError::bad(
+            "a credential acting as another account names no account to act as",
+        )),
+        Credential::ActingAs {
+            username,
+            password,
+            acting_as,
+        } => Ok(SignIn::ActingAs {
+            username,
+            password: password.expose(),
+            acting_as,
         }),
         Credential::Bearer {
             username: Some(username),
@@ -62,6 +105,12 @@ pub(crate) fn sign_in(credential: &Credential) -> ImapResult<SignIn<'_>> {
             "this kind of credential cannot be presented over IMAP or SMTP",
         )),
     }
+}
+
+/// The refusal of a credential acting as another account over SMTP: the host's mistake,
+/// [`ImapError::Bad`].
+pub(crate) fn acting_as_over_smtp() -> ImapError {
+    ImapError::bad("a credential acting as another account is presented over IMAP only")
 }
 
 /// Runs `attempt` with a credential from `source` for `origin`, and once more with a
@@ -98,6 +147,57 @@ impl From<CredentialFailure> for ImapError {
     }
 }
 
+/// The account an account's connections sign in as, remembered from the first dial that
+/// signed in, so that a later credential naming another account fails its dial before anything
+/// is sent (`docs/design/credential-source.md`, "Direct host").
+///
+/// Every connection in one pool must belong to one mailbox: the pool hands them out
+/// interchangeably, so a connection signed in as another account would serve that account's
+/// mail to whoever borrowed it. That would be a host bug (a source answering for the wrong
+/// subject), and this check makes it a failed dial instead of a silent mix. The identity is
+/// the account whose mailbox opens ([`SignIn::identity`]): for a credential acting as another
+/// account, that account, not the administrator. Compared exactly, as the server was sent it.
+#[derive(Default)]
+pub(crate) struct PresentedIdentity(OnceLock<Box<str>>);
+
+impl PresentedIdentity {
+    /// Whether a dial may present `identity`: always before the first sign-in, and afterwards
+    /// only the identity that signed in.
+    ///
+    /// # Errors
+    ///
+    /// [`ImapError::Credential`], classed [`FailureClass::InvalidState`], for another account.
+    /// It names neither account.
+    pub(crate) fn check(&self, identity: &str) -> ImapResult<()> {
+        match self.0.get() {
+            Some(known) if **known != *identity => Err(ImapError::Credential(ProviderError::new(
+                FailureClass::InvalidState,
+                "the credential source answered for another account than the one this \
+                     account's connections signed in as",
+            ))),
+            _ => Ok(()),
+        }
+    }
+
+    /// Remembers `identity` once a dial has signed in with it; the first one to sign in stays.
+    pub(crate) fn remember(&self, identity: &str) {
+        self.0.get_or_init(|| identity.into());
+    }
+}
+
+impl core::fmt::Debug for PresentedIdentity {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let known = if self.0.get().is_some() {
+            "<present>"
+        } else {
+            "<absent>"
+        };
+        f.debug_tuple("PresentedIdentity")
+            .field(&format_args!("{known}"))
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,7 +206,7 @@ mod tests {
     fn a_password_and_a_named_token_sign_in_as_themselves() {
         let password = Credential::password("alice", "hunter2");
         assert!(matches!(
-            sign_in(&password),
+            sign_in(&password, CredentialProtocol::Imap),
             Ok(SignIn::Password {
                 username: "alice",
                 password: "hunter2"
@@ -114,7 +214,7 @@ mod tests {
         ));
         let token = Credential::bearer_for("alice@example.com", "ya29.secret");
         assert!(matches!(
-            sign_in(&token),
+            sign_in(&token, CredentialProtocol::Imap),
             Ok(SignIn::Token {
                 username: "alice@example.com",
                 token: "ya29.secret"
@@ -130,7 +230,7 @@ mod tests {
     fn the_deprecated_names_still_build_the_same_credentials() {
         let password = crate::Credentials::password("alice", "hunter2");
         assert!(matches!(
-            sign_in(&password),
+            sign_in(&password, CredentialProtocol::Imap),
             Ok(SignIn::Password {
                 username: "alice",
                 ..
@@ -138,7 +238,7 @@ mod tests {
         ));
         let token = crate::Credentials::oauth2("alice@example.com", "ya29.secret");
         assert!(matches!(
-            sign_in(&token),
+            sign_in(&token, CredentialProtocol::Imap),
             Ok(SignIn::Token {
                 username: "alice@example.com",
                 token: "ya29.secret"
@@ -152,7 +252,7 @@ mod tests {
     #[test]
     fn a_token_without_a_username_cannot_sign_in() {
         // Both SASL mechanisms name the account, so this is the host's mistake: permanent.
-        let Err(err) = sign_in(&Credential::bearer("ya29.secret")) else {
+        let Err(err) = sign_in(&Credential::bearer("ya29.secret"), CredentialProtocol::Imap) else {
             panic!("a token without a username must not sign in");
         };
         assert!(matches!(err, ImapError::Bad(_)), "{err:?}");
@@ -161,5 +261,75 @@ mod tests {
             engine_core::error::FailureClass::Permanent
         );
         assert!(!err.to_string().contains("ya29.secret"));
+    }
+
+    const MASTER: &str = "master@example.com";
+    const ALICE: &str = "alice@example.com";
+
+    #[test]
+    fn an_administrator_acting_as_an_account_signs_in_over_imap_as_that_account() {
+        let credential = Credential::acting_as(MASTER, "master-pw", ALICE);
+        let signed = sign_in(&credential, CredentialProtocol::Imap).expect("IMAP presents it");
+        assert!(matches!(
+            signed,
+            SignIn::ActingAs {
+                username: MASTER,
+                password: "master-pw",
+                acting_as: ALICE
+            }
+        ));
+        // The mailbox that opens is the one acted as, not the administrator's.
+        assert_eq!(signed.identity(), ALICE);
+        let own = Credential::password(ALICE, "pw");
+        let own = sign_in(&own, CredentialProtocol::Imap).unwrap();
+        assert_eq!(own.identity(), ALICE);
+    }
+
+    #[test]
+    fn acting_as_another_account_is_refused_over_smtp_and_without_an_account() {
+        let over_smtp = Credential::acting_as(MASTER, "master-pw", ALICE);
+        let nobody = Credential::acting_as(MASTER, "master-pw", "");
+        for (credential, protocol) in [
+            (&over_smtp, CredentialProtocol::Smtp),
+            (&nobody, CredentialProtocol::Imap),
+        ] {
+            let Err(err) = sign_in(credential, protocol) else {
+                panic!("{credential:?} must not sign in over {protocol:?}");
+            };
+            assert!(matches!(err, ImapError::Bad(_)), "{err:?}");
+            assert_eq!(
+                err.failure_class(),
+                engine_core::error::FailureClass::Permanent
+            );
+            for leaked in [MASTER, ALICE, "master-pw"] {
+                assert!(!err.to_string().contains(leaked), "{err}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_dial_may_present_only_the_identity_that_signed_in_first() {
+        let presented = PresentedIdentity::default();
+        // Before anything signed in, any account may.
+        presented
+            .check("bob@example.com")
+            .expect("nothing remembered yet");
+        presented.remember(ALICE);
+        presented.check(ALICE).expect("the same account again");
+
+        let err = presented
+            .check("bob@example.com")
+            .expect_err("another account");
+        assert!(matches!(err, ImapError::Credential(_)), "{err:?}");
+        assert_eq!(
+            err.failure_class(),
+            engine_core::error::FailureClass::InvalidState
+        );
+        assert!(!err.to_string().contains("example.com"), "{err}");
+        assert_eq!(format!("{presented:?}"), "PresentedIdentity(<present>)");
+
+        // The first identity stays: a later sign-in cannot move it.
+        presented.remember("bob@example.com");
+        presented.check(ALICE).expect("still the first one");
     }
 }

@@ -25,6 +25,7 @@ use engine_provider::{
 use super::dial_with;
 use crate::{
     config::ImapConfig,
+    credentials::PresentedIdentity,
     error::ImapError,
     mock::{MockStream, Recorded, script, written},
     pool::{Dial, ImapPool},
@@ -196,14 +197,17 @@ impl Servers {
     }
 
     /// The pool's dial over these servers, through the same credential path a live dial takes.
-    fn dial(&self, config: ImapConfig) -> Dial<MockStream> {
+    pub(super) fn dial(&self, config: ImapConfig) -> Dial<MockStream> {
         let config = Arc::new(config);
+        // Shared by every dial, as an account's live dial shares it.
+        let presented = Arc::new(PresentedIdentity::default());
         let servers = self.clone();
         Arc::new(move || {
             let config = Arc::clone(&config);
+            let presented = Arc::clone(&presented);
             let servers = servers.clone();
             Box::pin(async move {
-                dial_with(&config, || servers.open())
+                dial_with(&config, &presented, || servers.open())
                     .await
                     .map(|(connection, _)| connection)
             })
@@ -245,7 +249,7 @@ async fn a_refused_token_is_renewed_once_and_the_dial_retried_with_it() {
     let servers = Servers::new(vec![refusing(), accepting()]);
     let config = token_config(source.clone());
 
-    dial_with(&config, || servers.open())
+    dial_with(&config, &PresentedIdentity::default(), || servers.open())
         .await
         .expect("the renewed token authenticates");
 
@@ -290,7 +294,7 @@ async fn a_refused_password_is_not_tried_again() {
         Credential::password(USER, "wrong"),
     );
 
-    let err = dial_with(&config, || servers.open())
+    let err = dial_with(&config, &PresentedIdentity::default(), || servers.open())
         .await
         .expect_err("a refused password must fail");
 
@@ -305,7 +309,7 @@ async fn a_renewed_token_refused_again_is_reported_rather_than_renewed_again() {
     let servers = Servers::new(vec![refusing(), refusing(), accepting()]);
     let config = token_config(source.clone());
 
-    let err = dial_with(&config, || servers.open())
+    let err = dial_with(&config, &PresentedIdentity::default(), || servers.open())
         .await
         .expect_err("two refusals must fail");
 
@@ -319,7 +323,7 @@ async fn a_source_with_no_credential_fails_with_its_own_class_and_dials_nothing(
     let servers = Servers::new(vec![accepting()]);
     let config = token_config(Arc::new(RevokedSource(CredentialSubject::new("alice"))));
 
-    let err = dial_with(&config, || servers.open())
+    let err = dial_with(&config, &PresentedIdentity::default(), || servers.open())
         .await
         .expect_err("no credential, no session");
 

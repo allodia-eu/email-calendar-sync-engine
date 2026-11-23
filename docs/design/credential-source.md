@@ -1,7 +1,7 @@
 # Design note: one provider-neutral `CredentialSource`
 
-Status: accepted; step 1 of "Phasing" has landed (`engine_provider::credential`, and IMAP/SMTP
-on it). The direction is principle 7 of `north-star.md`: **credentials are asked for, not
+Status: accepted; steps 1 and 2 of "Phasing" have landed (`engine_provider::credential`, IMAP/SMTP
+on it, and the IMAP authorization identity). The direction is principle 7 of `north-star.md`: **credentials are asked for, not
 held.** The owner settled every open question on 2026-11-23 ("Decisions", at the end), and
 the body below states each decision where it applies. One `CredentialSource` is a "Next" step in
 `north-star.md` ("Direction"); the capability-trait split comes after it and the query seam
@@ -137,7 +137,12 @@ identity, sent as `AUTHENTICATE PLAIN` with an `authzid` (RFC 4616), which is al
 master user signs in as another user. `Credential` gains one variant for it, carrying the
 administrator's username and secret and the mailbox to act as. It is a new request shape, so it
 ships only after a live Dovecot test with a master user proves it ("Phasing", step 2).
-`#[non_exhaustive]` lets it arrive without breaking anyone.
+`#[non_exhaustive]` lets it arrive without breaking anyone. As built it is
+`Credential::ActingAs { username, password, acting_as }` (`Credential::acting_as`). **The engine
+cannot verify that the server honoured the authorization identity**: IMAP has no way to ask whose
+session opened, and a server that ignores it signs the administrator in to its own mailbox
+without an error (Stalwart does, `spec-deviations.md`, STALWART-NEW-1). A host uses the variant
+only against servers it has verified honour it.
 
 `Debug` on `Credential` prints the variant and `username: <present>`, never the username itself.
 Today's IMAP, JMAP and CalDAV types print it. A host serving thousands of tenants must not have
@@ -276,10 +281,12 @@ let provider = jmap.bind(Arc::new(SessionSource::from(&oidc_session)));
   users of one JMAP server have different sessions.
 - **IMAP sockets are authenticated**, so the endpoint holds a pool registry keyed by `(origin,
   subject)`. Each pool has the existing per-subject ceiling, and the registry adds a process-wide
-  ceiling. A pool remembers the username its first dial presented (for the authorization-identity
-  variant, the mailbox acted as, not the administrator), and a later credential naming another
-  fails the dial (`InvalidState`). That cheaply catches a host bug that gives one user's subject
-  another user's credential.
+  ceiling. A pool remembers the username its first dial signed in with (for the
+  authorization-identity variant, the mailbox acted as, not the administrator), and a later
+  credential naming another fails the dial (`InvalidState`). That cheaply catches a host bug that
+  gives one user's subject another user's credential. This check landed in step 2, on today's
+  per-account pool (`provider_imap::credentials::PresentedIdentity`); a dial whose credential was
+  refused fixes nothing.
 - **Eviction has engine defaults that the host can override.** The per-subject caches are bounded
   in size and evicted when idle, and the IMAP pool registry has a process-wide ceiling and an idle
   timeout. The engine sets defaults, so a host that sets nothing is still bounded, and a host
@@ -383,7 +390,19 @@ These live in `mail-calendar/crates/mailcal-account`, read-only here:
    the scheme: `imaps`/`imap` (`STARTTLS`), `submissions`/`submission` (`STARTTLS`).
 2. **The authorization-identity variant for IMAP** (`AUTHENTICATE PLAIN` with an `authzid`), for
    transfer hosts. It is a new request shape, so the live Dovecot master-user test comes first and
-   the variant ships only once that passes.
+   the variant ships only once that passes. *Landed.* As built: `Credential::ActingAs` (`Debug`
+   shows only that the administrator and the account are present); one RFC 4616 builder,
+   `provider_imap::sasl::plain_response`, which SMTP `AUTH PLAIN` uses too; IMAP signs in with
+   `AUTHENTICATE PLAIN` (`SASL-IR` where advertised, the `+` prompt otherwise), refusals classed
+   as for `LOGIN`, and a plain password keeps `LOGIN`. SMTP refuses the variant before dialling
+   (`Permanent`): submitting as another account is a different grant, and no server has been
+   seen to take it. The pool check from "Direct host" landed with it, per account: the first dial
+   that signs in fixes the account its connections belong to (for this variant, the one acted
+   as), and a later credential naming another fails its dial as `InvalidState` before anything
+   is opened. Proven live on both Dovecot services with a master user
+   (`provider-imap/tests/live_imap_acting_as.rs`); Stalwart was found to ignore the authorization
+   identity (its impersonation takes `target%admin` as the username, which is a `Password`), and
+   that is pinned in both directions. See "Types" for the hazard this leaves to the host.
 3. **JMAP**, together with `engine-http::send_authenticated` and the plaintext rule. This is the
    first per-request HTTP ask, and it deletes `RefreshingJmapProvider`.
 4. **CalDAV/CardDAV**: `permits` absorbs `CredentialHosts`, and the scope is keyed by subject.
@@ -428,7 +447,10 @@ Live (`AGENTS.md`: any new request shape is run against a real server):
 - **IMAP authorization identity**: Dovecot with a master user configured. The administrator signs
   in as a test user with `AUTHENTICATE PLAIN` and an `authzid`, and the session selects that
   user's mailbox, not the administrator's. A wrong `authzid` is refused. This runs before the
-  variant ships ("Phasing", step 2).
+  variant ships ("Phasing", step 2). As run: the harness's static passdb knows every name, so a
+  "wrong" `authzid` is one the signing-in account may not act as (an account that is not a master
+  user), beside a wrong master password; both are `NO [AUTHENTICATIONFAILED]`. An `authzid`
+  naming no account cannot be shown on this harness.
 - **SMTP**: Stalwart submission on 465 and 587, wrong then right.
 - **JMAP**: Stalwart, wrong Basic then right. This proves the replayed request and that the `401`
   offered `Basic` (re-framing and replacement must not both fire).

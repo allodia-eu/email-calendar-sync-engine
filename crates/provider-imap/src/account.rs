@@ -31,6 +31,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream};
 use crate::{
     capability::Extension,
     config::ImapConfig,
+    credentials::PresentedIdentity,
     dial::connect_session,
     error::ImapError,
     filing::{SmtpSender, resolve_smtp},
@@ -99,8 +100,10 @@ impl ImapAccount<TlsStream<TcpStream>> {
             .smtp
             .as_ref()
             .map(|settings| resolve_smtp(settings, &connector, config));
-        let (connection, tls_version) = connect_session(config, &connector).await?;
-        let dial = dial_tls(config.clone(), connector);
+        // One identity for every connection the account opens, the first included.
+        let presented = Arc::new(PresentedIdentity::default());
+        let (connection, tls_version) = connect_session(config, &presented, &connector).await?;
+        let dial = dial_tls(config.clone(), presented, connector);
         Ok(Self::build(
             connection,
             dial,
@@ -114,14 +117,20 @@ impl ImapAccount<TlsStream<TcpStream>> {
 /// The pool's dial for a live account: the same TCP, TLS and authentication sequence as the
 /// first connection, from the same config. Each dial asks the config's
 /// [`CredentialSource`](crate::CredentialSource) afresh, so a connection opened an hour after
-/// [`ImapAccount::connect`] presents a token that is valid then.
-fn dial_tls(config: ImapConfig, connector: TlsConnector) -> Dial<TlsStream<TcpStream>> {
+/// [`ImapAccount::connect`] presents a token that is valid then, and every one signs in as the
+/// account the first connection signed in as (`presented`).
+fn dial_tls(
+    config: ImapConfig,
+    presented: Arc<PresentedIdentity>,
+    connector: TlsConnector,
+) -> Dial<TlsStream<TcpStream>> {
     let config = Arc::new(config);
     Arc::new(move || {
         let config = Arc::clone(&config);
+        let presented = Arc::clone(&presented);
         let connector = connector.clone();
         Box::pin(async move {
-            connect_session(&config, &connector)
+            connect_session(&config, &presented, &connector)
                 .await
                 .map(|(connection, _tls_version)| connection)
         })

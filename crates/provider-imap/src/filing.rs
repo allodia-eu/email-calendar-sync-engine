@@ -97,7 +97,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                 let prepared = &sub;
                 let (source, smtp) = (credentials.as_ref(), CredentialProtocol::Smtp);
                 let result = with_credential(source, smtp, origin, |credentials| async move {
-                    sign_in(&credentials)?;
+                    sign_in(&credentials, smtp)?;
                     let tcp = deadline::connect(addr).await?;
                     let tls = tls_connect(connector, server_name, tcp).await?;
                     let (ehlo, from, to) = (&prepared.ehlo, &prepared.from, &prepared.to);
@@ -118,7 +118,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                 let prepared = &sub;
                 let (source, smtp) = (credentials.as_ref(), CredentialProtocol::Smtp);
                 let result = with_credential(source, smtp, origin, |credentials| async move {
-                    sign_in(&credentials)?;
+                    sign_in(&credentials, smtp)?;
                     let tcp = deadline::connect(addr).await?;
                     // Cleartext STARTTLS handshake, then upgrade the socket and transmit
                     // (authenticating) over the now-established TLS.

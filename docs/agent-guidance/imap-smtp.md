@@ -431,11 +431,12 @@ is authoritative for the `provider-caldav` calendar client.
   keyword and whose last is a bare `.`, so read as data it invents a mailbox named `.`.
 
 
-## Authentication: a password or an OAuth 2.0 token
+## Authentication: a password, an OAuth 2.0 token, or an administrator acting as an account
 
 `ImapConfig::new(addr, server_name, credential)` takes an `engine_provider::Credential`:
-`Password` (IMAP `LOGIN`, SMTP `AUTH PLAIN`) or `Bearer` (an access token over SASL, with the
-account's username, which both SASL mechanisms carry: `Credential::bearer_for`). It is the
+`Password` (IMAP `LOGIN`, SMTP `AUTH PLAIN`), `Bearer` (an access token over SASL, with the
+account's username, which both SASL mechanisms carry: `Credential::bearer_for`), or `ActingAs`
+(an administrator's password signing in as another account, IMAP only: below). It is the
 engine's one credential type, which every adapter is moving onto
 (`docs/design/credential-source.md`). The posture is the same as Graph and Google: **the engine
 stays OAuth-agnostic**: acquiring, storing and refreshing the token is the host's job
@@ -488,6 +489,41 @@ outlives the token that opened it, so nothing replaces an open one.
   every SMTP `AUTH` line, CRLF included (sent with `write_raw`; `write_line` formats a copy and is
   for lines without a secret). Out of reach: the copies the TLS stack makes as it writes, and
   whatever the host holds.
+
+**An administrator acting as another account** (`Credential::acting_as(admin, password,
+account)`) signs in with `AUTHENTICATE PLAIN` and an authorization identity (RFC 4616,
+`authzid NUL authcid NUL passwd`): how a Dovecot master user works, and what a transfer host
+holds where a server grants administrative access. The PLAIN token is built once, in
+`sasl::plain_response`, which SMTP's `AUTH PLAIN` uses too (with no authorization identity); a
+NUL in any field is refused before anything is encoded, since it would move the field
+boundaries.
+
+- **IMAP only.** It needs `AUTH=PLAIN` advertised (`AuthUnsupported` otherwise, naming what was
+  offered), and goes inline where `SASL-IR` is advertised and after the `+` prompt where it is
+  not. Dovecot (both services) and Stalwart advertise `SASL-IR AUTH=PLAIN` over TLS. A refusal is
+  classed as for `LOGIN`: Dovecot answers a wrong master password and an account that may not
+  act as the one named with the same `NO [AUTHENTICATIONFAILED]`, `Authentication`. A plain
+  password keeps `LOGIN`, which has no field for an authorization identity. SMTP refuses the
+  variant before dialling (`Permanent`): submitting as another account is a different grant from
+  reading its mailbox, and no server has been seen to take it. An empty account to act as is
+  refused too, since an empty authorization identity means the administrator's own.
+- **The engine cannot check that the server honoured it.** IMAP has no "whose session is
+  this?": `NAMESPACE`, `ID` and `MYRIGHTS` name no account. Stalwart's `GETACL INBOX` names the
+  owner, but only where the ACL extension is offered, in an identifier format of the server's
+  own (`admin` beside `alice@test.local`); a server without the extension has nothing to ask. Stalwart (v1.0.2)
+  ignores the authorization identity and signs the administrator in to its **own** mailbox with
+  `OK` (`spec-deviations.md`, STALWART-NEW-1); its impersonation takes `target%admin` as the
+  username instead, a plain `Password` to the engine. So a host uses `ActingAs` only against a
+  server it has verified honours it. Proof: `transport_acting_as_tests.rs` (Dovecot's observed
+  lines), and live in `live_imap_acting_as.rs`: on both Dovecot services the administrator acting
+  as alice reads alice's seeded INBOX and acting as bob reads bob's; a non-master naming alice and
+  a wrong master password are refused; on Stalwart both directions of the deviation are pinned.
+- **An account's connections all sign in as one account.** The first dial that signs in fixes
+  it (`credentials::PresentedIdentity`, shared by `ImapAccount::connect` and its pool's dial):
+  the username, or for `ActingAs` the account acted as. A later credential naming another fails
+  its dial as `ImapError::Credential`, `InvalidState`, before anything is opened, so a source
+  answering for the wrong subject cannot put another mailbox's session in the pool. A refused
+  credential fixes nothing; compared exactly. Proof: `dial_identity_tests.rs`.
 
 **The mechanism is negotiated, never configured.** Two SASL mechanisms carry a bearer
 token, and providers disagree about which:

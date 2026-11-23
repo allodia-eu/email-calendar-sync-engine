@@ -1,4 +1,5 @@
-//! The IMAP `AUTHENTICATE` half of the transport: SASL OAuth 2.0.
+//! The IMAP `AUTHENTICATE` half of the transport: SASL OAuth 2.0, and `PLAIN` for an
+//! administrator acting as another account.
 //!
 //! Split from `transport` (which is at the file-size limit) but operating on the same
 //! [`Connection`], exactly as the STARTTLS and `APPEND` halves are. `LOGIN` stays in
@@ -8,12 +9,15 @@
 //! chosen from what the server advertises — and that does not fit alongside it.
 //!
 //! The mechanism-specific bytes live in [`crate::sasl`]; this module is the framing.
+//!
+//! A plain password still signs in with `LOGIN`, as it always has: `LOGIN` has no field for an
+//! authorization identity, and nothing else about a password sign-in changes.
 
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     error::{ImapError, ImapResult},
-    sasl::{self, Mechanism},
+    sasl,
     secret_line::{Part, secret_line},
     transport::{Connection, strip_ascii_prefix},
 };
@@ -23,6 +27,42 @@ use crate::{
 /// error challenge); the cap is what stops a server that answers every acknowledgement
 /// with another challenge from parking the dial forever.
 const MAX_CONTINUATIONS: usize = 8;
+
+/// The mechanism-specific half of one `AUTHENTICATE` exchange.
+struct Exchange {
+    /// The mechanism name on the command line.
+    atom: &'static str,
+    /// What answers a challenge sent after the credential ([`sasl::Mechanism::cancel_response`]).
+    cancel: &'static str,
+}
+
+/// The SASL mechanisms a `CAPABILITY` response advertised (`AUTH=<mechanism>`).
+fn offered_mechanisms(capabilities: &[String]) -> Vec<&str> {
+    capabilities
+        .iter()
+        .filter_map(|atom| sasl::advertised_mechanism(atom))
+        .collect()
+}
+
+/// The advertised mechanisms, for an error that says what a server did offer.
+fn describe_offered(offered: &[&str]) -> String {
+    if offered.is_empty() {
+        "none".to_owned()
+    } else {
+        offered.join(" ")
+    }
+}
+
+/// Whether a server takes the credential on the `AUTHENTICATE` line itself.
+///
+/// RFC 4959's initial response saves a round trip, but only where the server says it takes
+/// one: an unadvertised initial response is a syntax error, and the two-step exchange works
+/// everywhere.
+fn takes_initial_response(capabilities: &[String]) -> bool {
+    capabilities
+        .iter()
+        .any(|atom| atom.eq_ignore_ascii_case("SASL-IR"))
+}
 
 /// One line read during an `AUTHENTICATE` exchange, once the untagged noise a server
 /// may interleave has been skipped.
@@ -71,34 +111,66 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         port: Option<u16>,
     ) -> ImapResult<()> {
         let capabilities = self.capabilities().await?;
-        let offered: Vec<&str> = capabilities
-            .iter()
-            .filter_map(|atom| sasl::advertised_mechanism(atom))
-            .collect();
+        let offered = offered_mechanisms(&capabilities);
         let mechanism = sasl::select(offered.iter().copied()).ok_or_else(|| {
             ImapError::auth_unsupported(format!(
                 "server advertises no OAuth SASL mechanism (it offers: {})",
-                if offered.is_empty() {
-                    "none".to_owned()
-                } else {
-                    offered.join(" ")
-                }
+                describe_offered(&offered)
             ))
         })?;
         let initial = mechanism.initial_response(username, access_token, host, port)?;
-        // RFC 4959's initial response saves a round trip, but only where the server
-        // says it takes one: an unadvertised initial response is a syntax error, and
-        // the two-step exchange below works everywhere.
-        let sasl_ir = capabilities
+        let exchange = Exchange {
+            atom: mechanism.atom(),
+            cancel: mechanism.cancel_response(),
+        };
+        self.run_sasl(exchange, &initial, takes_initial_response(&capabilities))
+            .await
+    }
+
+    /// Signs in as the administrator `username` with `password`, acting as the account
+    /// `acting_as`: SASL `PLAIN` with an authorization identity (RFC 4616), which is how a
+    /// Dovecot master user signs in.
+    ///
+    /// # Errors
+    ///
+    /// [`ImapError::AuthUnsupported`] when the server does not advertise `AUTH=PLAIN` (the
+    /// message names what it did offer), [`ImapError::Bad`] for a component holding a NUL, and a
+    /// refusal classed as for `LOGIN` ([`ImapError::refused_sign_in`]): Dovecot answers a wrong
+    /// password and an account the administrator may not act as with the same
+    /// `NO [AUTHENTICATIONFAILED]`.
+    pub(crate) async fn authenticate_acting_as(
+        &mut self,
+        username: &str,
+        password: &str,
+        acting_as: &str,
+    ) -> ImapResult<()> {
+        let capabilities = self.capabilities().await?;
+        let offered = offered_mechanisms(&capabilities);
+        if !offered
             .iter()
-            .any(|atom| atom.eq_ignore_ascii_case("SASL-IR"));
-        self.run_sasl(mechanism, &initial, sasl_ir).await
+            .any(|name| name.eq_ignore_ascii_case("PLAIN"))
+        {
+            return Err(ImapError::auth_unsupported(format!(
+                "server advertises no AUTH=PLAIN, which acting as another account needs (it \
+                 offers: {})",
+                describe_offered(&offered)
+            )));
+        }
+        let initial = sasl::plain_response(Some(acting_as), username, password)?;
+        // `PLAIN` sends everything up front and defines no challenge after it, so a server
+        // that sends one anyway is answered with RFC 9051 §6.2.2's cancellation.
+        let exchange = Exchange {
+            atom: "PLAIN",
+            cancel: "*",
+        };
+        self.run_sasl(exchange, &initial, takes_initial_response(&capabilities))
+            .await
     }
 
     /// Drives one `AUTHENTICATE` exchange to its tagged completion.
     async fn run_sasl(
         &mut self,
-        mechanism: Mechanism,
+        exchange: Exchange,
         initial: &str,
         sasl_ir: bool,
     ) -> ImapResult<()> {
@@ -106,7 +178,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         // leftover lines read as this exchange's, exactly as `command` guards against.
         self.drain_pending().await?;
         let tag = self.next_tag();
-        let atom = mechanism.atom();
+        let atom = exchange.atom;
         if sasl_ir {
             let line = secret_line(&[
                 Part::Text(&tag),
@@ -140,7 +212,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                     // protocol's own error path — sending none leaves the connection
                     // parked mid-SASL, turning a stale token into a hang.
                     challenge = sasl::describe_challenge(&payload);
-                    self.send_raw(format!("{}\r\n", mechanism.cancel_response()).as_bytes())
+                    self.send_raw(format!("{}\r\n", exchange.cancel).as_bytes())
                         .await?;
                 }
                 SaslLine::Completion(status, detail) => {
@@ -220,3 +292,7 @@ fn continuation_payload(line: &[u8]) -> Option<&[u8]> {
 #[cfg(test)]
 #[path = "transport_auth_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "transport_acting_as_tests.rs"]
+mod acting_as_tests;
