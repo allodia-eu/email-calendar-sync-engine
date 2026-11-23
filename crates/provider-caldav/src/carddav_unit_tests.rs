@@ -8,7 +8,7 @@ use engine_tls::TlsClientConfig;
 
 use crate::{
     CardDavConfig, CardDavProvider, Credentials,
-    carddav_ops::{bind_collection, decode_data_uri, discover_home, encode_segment, stable_suffix},
+    carddav_ops::{bind_collection, decode_data_uri, discover_home, unnamed_card_name},
     test_support::{Replay, ok, options},
     transport::HttpResponse,
 };
@@ -49,7 +49,10 @@ fn collection_uri_and_stable_resource_helpers_cover_edge_input() {
             .as_str(),
         "/dav/books/alice/team/"
     );
-    assert_eq!(encode_segment("Ada + Zoë"), "Ada%20%2B%20Zo%C3%AB");
+    assert_eq!(
+        crate::href::resource_name("Ada + Zoë@example.test"),
+        "Ada%20%2B%20Zo%C3%AB@example.test"
+    );
     let report = crate::request::addressbook_multiget_report(&["/book/a&b.vcf".to_owned()]);
     assert!(report.contains("/book/a&amp;b.vcf"));
 
@@ -66,7 +69,13 @@ fn collection_uri_and_stable_resource_helpers_cover_edge_input() {
         PropertyId::new("email").unwrap(),
         ContactProperty::new(ContactEmail::new("ada@example.test")),
     );
-    assert!(stable_suffix(&card).starts_with("contact-"));
+    // A card with no `UID` is named by a SHA-256 of what identifies it, the same on every Rust
+    // release (`DefaultHasher` is not), so a retried create meets its own earlier write.
+    let name = unnamed_card_name(&card);
+    assert!(name.starts_with("sha256-"), "{name}");
+    assert_eq!(unnamed_card_name(&card), name);
+    card.emails.clear();
+    assert_ne!(unnamed_card_name(&card), name);
 
     assert_eq!(decode_data_uri("image/png;base64,AQID").unwrap(), [1, 2, 3]);
     assert!(decode_data_uri("image/png;base64").is_err());

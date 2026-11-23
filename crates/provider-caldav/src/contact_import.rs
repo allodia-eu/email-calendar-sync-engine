@@ -39,7 +39,7 @@ use crate::{
     dav::MultiStatus,
     dav_import::{PutAnswer, cursor_of, holder, max_size, name_held_by, read_put},
     error::CalDavError,
-    href::{hashed_name, resource_name},
+    href::{collection_href, hashed_name, resource_name},
     request::{CONTACT_IMPORT_PROPFIND, card_uid_query},
     transport::{DavExecutor, DavMethod, Precondition, WriteRequest},
     vcard::unfold,
@@ -114,22 +114,20 @@ impl CardDavProvider {
                 ));
             }
         };
-        let book = card.address_book.as_str();
-        let collection = if book.ends_with('/') {
-            book.to_owned()
-        } else {
-            format!("{book}/")
-        };
+        let collection = collection_href(card.address_book.as_str())
+            .map_err(|err| err.content_free("importing a card"))?;
         let name = uid
             .as_deref()
             .map_or_else(|| hashed_name(text.as_bytes()), resource_name);
         let href = format!("{collection}{name}.vcf");
         let key = |href: &str| ContactId::try_from(href).ok();
-        // A card is the one asked for when it has the same `UID`, or, for a card without one, the
-        // same bytes (its name is their hash).
+        // A card is the one asked for when it has the same `UID`. A card without one is named by
+        // the SHA-256 of its bytes, and the server may rewrite what it stores (Stalwart writes 3.0
+        // as 4.0, Nextcloud gives the card a `UID` of its own: observed), so any one card at that
+        // name is taken as ours: only those bytes lead to it.
         let holds = |data: &str| match (&uid, one_card(data)) {
             (Some(uid), Some(OneCard::Uid(held))) => held == *uid,
-            (None, Some(OneCard::NoUid)) => data == text,
+            (None, Some(_)) => true,
             _ => false,
         };
         let held = async || match &uid {
@@ -200,11 +198,18 @@ fn one_card(text: &str) -> Option<OneCard> {
     if count("BEGIN:VCARD") != 1 || count("END:VCARD") != 1 {
         return None;
     }
+    // The value starts after the first `:` outside a quoted parameter (RFC 6350 §3.3).
     let uid = lines.iter().find_map(|line| {
-        let (head, value) = line.split_once(':')?;
+        let mut quoted = false;
+        let colon = line.char_indices().find_map(|(at, c)| {
+            if c == '"' {
+                quoted = !quoted;
+            }
+            (c == ':' && !quoted).then_some(at)
+        })?;
+        let (head, value) = (&line[..colon], line[colon + 1..].trim());
         let name = head.split(';').next()?.rsplit('.').next()?;
-        (name.trim().eq_ignore_ascii_case("UID") && !value.trim().is_empty())
-            .then(|| value.trim().to_owned())
+        (name.trim().eq_ignore_ascii_case("UID") && !value.is_empty()).then(|| value.to_owned())
     });
     Some(uid.map_or(OneCard::NoUid, OneCard::Uid))
 }
@@ -240,8 +245,10 @@ fn limits_of(props: &MultiStatus, body: &str) -> ContactImportLimits {
 }
 
 /// The vCard versions a `supported-address-data` names (RFC 6352 §6.2.2): each
-/// `address-data-type` whose `content-type` is `text/vcard`. `None` where the body names none, so
-/// a server that states nothing is not read as taking nothing.
+/// `address-data-type` whose media type, its parameters aside, is `text/vcard`. The DTD's
+/// defaults apply (§10.3): a type naming no `content-type` is `text/vcard`, and one naming no
+/// `version` is 3.0. `None` where the body names no `address-data-type`, so a server that states
+/// nothing is not read as taking nothing; a book naming only other media types takes no vCard.
 fn vcard_versions(body: &str) -> Option<BTreeSet<VcardVersion>> {
     let mut reader = Reader::from_str(body);
     let mut versions = BTreeSet::new();
@@ -254,6 +261,7 @@ fn vcard_versions(body: &str) -> Option<BTreeSet<VcardVersion>> {
                     .into_inner()
                     .eq_ignore_ascii_case("address-data-type") =>
             {
+                stated = true;
                 let attribute = |name: &str| {
                     element
                         .try_get_attribute(name)
@@ -261,16 +269,13 @@ fn vcard_versions(body: &str) -> Option<BTreeSet<VcardVersion>> {
                         .flatten()
                         .map(|value| value.value.into_owned())
                 };
-                if attribute("content-type")
-                    .is_some_and(|kind| kind.eq_ignore_ascii_case("text/vcard"))
+                let media = attribute("content-type").unwrap_or_else(|| "text/vcard".to_owned());
+                let bare = media.split(';').next().unwrap_or_default().trim();
+                if bare.eq_ignore_ascii_case("text/vcard")
+                    && let Some(version) =
+                        VcardVersion::from_token(attribute("version").as_deref().unwrap_or("3.0"))
                 {
-                    stated = true;
-                    if let Some(version) = attribute("version")
-                        .as_deref()
-                        .and_then(VcardVersion::from_token)
-                    {
-                        versions.insert(version);
-                    }
+                    versions.insert(version);
                 }
             }
             Ok(Event::Eof) | Err(_) => break,

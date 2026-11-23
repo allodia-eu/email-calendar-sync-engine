@@ -22,7 +22,8 @@ use engine_core::{
 use crate::{ProviderError, ProviderResult};
 
 /// One card to import: its vCard, exactly as the source held it, and the address book it goes
-/// in. `Debug` prints the size, never the text ([`RawVcard`]).
+/// in. It is UTF-8 text, as [`RawVcard`] is: a vCard 2.1 card in another charset (Latin-1 is
+/// common) is decoded first. `Debug` prints the size, never the text.
 ///
 /// Built with [`new`](Self::new), so a part added later does not break a caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +45,9 @@ impl ContactImport {
         }
     }
 
-    /// The version the card states in its `VERSION`, if it states one this engine knows.
+    /// The version the card states in its `VERSION`, if it states one this engine knows. Read with
+    /// a line scan of its own: the engine's vCard parser lives in the CardDAV adapter, which this
+    /// crate does not depend on, and `VERSION` takes no parameters to misread.
     #[must_use]
     pub fn version(&self) -> Option<VcardVersion> {
         self.vcard

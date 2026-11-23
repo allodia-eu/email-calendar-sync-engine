@@ -21,8 +21,8 @@ use crate::{
     carddav_config::CardDavConfig,
     carddav_ops::{
         ADDRESSBOOK, advertised_classes, bind_collection, contact_id, contact_report,
-        contact_update, decode_data_uri, discover_home, encode_segment, fallback_contact_sync,
-        list_address_books, normalize_response, require_writable, stable_suffix, supported_fields,
+        contact_update, decode_data_uri, discover_home, fallback_contact_sync, list_address_books,
+        normalize_response, require_writable, supported_fields, unnamed_card_name,
     },
     ctag_sync::{is_ctag_cursor, refuses_sync_collection},
     error::CalDavError,
@@ -372,12 +372,12 @@ impl ContactsProvider for CardDavProvider {
                 "CardDAV draft targets a different address book",
             ));
         }
-        let suffix = draft
-            .card
-            .uid
-            .as_deref()
-            .map_or_else(|| stable_suffix(&draft.card), str::to_owned);
-        let href = format!("{}{}.vcf", self.href(), encode_segment(&suffix));
+        // One naming rule for every create, an event's and an import's included.
+        let name = draft.card.uid.as_deref().map_or_else(
+            || unnamed_card_name(&draft.card),
+            crate::href::resource_name,
+        );
+        let href = format!("{}{name}.vcf", self.href());
         self.executor
             .send_write(WriteRequest {
                 method: DavMethod::Put,

@@ -220,7 +220,11 @@ mail/calendar/identity scopes.
   `403`/`409` `no-uid-conflict` names the card that holds it, so a card the book holds is
   already there; a card without a `UID` is named by its bytes' hash. Both servers keep every one
   of 26 properties of a rich 4.0 card (Stalwart re-serializes; Nextcloud stores as sent and
-  converts on read), so there is no per-field `kept` yet. Live in
+  converts on read), so there is no per-field `kept` yet. An `address-data-type` naming no
+  `content-type` or `version` takes RFC 6352 §10.3's defaults (`text/vcard`, 3.0). A card is
+  named by the rule every create uses (`href::resource_name`; `create_contact` too, and a card
+  with no `UID` by a SHA-256 of its name and addresses), a taken name is read back before it is
+  linked, and a refusal is judged by the one write classifier (`caldav.md` → "Import"). Live in
   `tests/contacts/import.rs`, on Stalwart and Nextcloud (the SabreDAV fixture serves no CardDAV).
 
 The Stalwart fixture writes the shared person/group cards over CardDAV; the

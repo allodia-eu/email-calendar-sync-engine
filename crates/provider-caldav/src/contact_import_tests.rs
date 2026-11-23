@@ -311,3 +311,143 @@ async fn a_server_without_address_books_offers_neither_verb() {
     assert!(with_books.contact_importer().is_some());
     assert!(with_books.address_book_collections().is_some());
 }
+
+/// From an independent review (R4) and its nits: the DTD defaults of `address-data-type`, a
+/// quoted `:` before the `UID`, a book named by anything but its href.
+mod review {
+    use super::*;
+
+    fn supported(inner: &str) -> String {
+        format!(
+            "<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:carddav\">\
+             <D:response><D:href>/b/</D:href><D:propstat><D:prop>\
+             <C:supported-address-data>{inner}</C:supported-address-data></D:prop>\
+             <D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"
+        )
+    }
+
+    #[tokio::test]
+    async fn an_address_data_type_reads_with_rfc_6352s_defaults() {
+        let v3 = Some(vec![VcardVersion::V3]);
+        for (inner, expected) in [
+            (
+                "<C:address-data-type content-type=\"text/vcard\"/>",
+                v3.clone(),
+            ),
+            ("<C:address-data-type/>", v3.clone()),
+            (
+                "<C:address-data-type content-type=\"text/vcard; charset=utf-8\" version=\"4.0\"/>",
+                Some(vec![VcardVersion::V4]),
+            ),
+            (
+                "<C:address-data-type content-type=\"TEXT/VCARD\" version=\"4.0\"/>",
+                Some(vec![VcardVersion::V4]),
+            ),
+            (
+                "<C:address-data-type content-type=\"application/vcard+json\" version=\"4.0\"/>",
+                Some(Vec::new()),
+            ),
+        ] {
+            let (provider, _) = target(vec![ok(&supported(inner))]).await;
+            let limits = provider
+                .contact_import_limits(&account(), &book())
+                .await
+                .unwrap();
+            assert_eq!(
+                limits
+                    .versions()
+                    .map(|v| v.iter().copied().collect::<Vec<_>>()),
+                expected,
+                "{inner}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_quoted_colon_before_the_uid_is_not_its_end() {
+        let quoted = CARD.replace(
+            "UID:capture-1@example.com",
+            "UID;X-NOTE=\"a:b\":capture-1@example.com",
+        );
+        let (answer, replay) = import_one(&quoted, vec![ok(PROPS), ok(HELD)]).await;
+        assert!(answer.expect("linked").already_there);
+        let reads = replay.reads();
+        let query = reads
+            .iter()
+            .find(|read| read.0 == DavMethod::Report)
+            .expect("looked up");
+        assert!(query.3.contains(">capture-1@example.com<"), "{}", query.3);
+    }
+
+    #[tokio::test]
+    async fn a_book_that_is_not_an_href_is_refused_before_anything_is_sent() {
+        let (provider, replay) = target(vec![ok(PROPS)]).await;
+        let nameless = ContactImport::new(
+            RawVcard::new(CARD),
+            AddressBookId::try_from("friends").unwrap(),
+        );
+        let answers = provider.import_contacts(&account(), &[nameless]).await;
+        assert_eq!(
+            answers[0].as_ref().unwrap_err().class(),
+            FailureClass::Permanent
+        );
+        assert!(replay.writes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_name_taken_by_another_card_is_a_conflict() {
+        let other = CARD.replace("capture-1@example.com", "someone-else@example.com");
+        let (answer, _) = import_one(
+            CARD,
+            vec![
+                ok(PROPS),
+                ok(NONE_HELD),
+                status(412, ""),
+                status(200, &other),
+            ],
+        )
+        .await;
+        assert_eq!(answer.unwrap_err().class(), FailureClass::Conflict);
+    }
+
+    #[tokio::test]
+    async fn a_book_that_refuses_every_card_says_so() {
+        let (answer, _) = import_one(CARD, vec![ok(PROPS), ok(NONE_HELD), status(403, "")]).await;
+        assert_eq!(
+            answer.unwrap_err().target_refusal(),
+            Some(engine_provider::TargetRefusal::ReadOnlyContainer)
+        );
+    }
+}
+
+/// A card without a `UID` taken at its own name is ours however the server rewrote it, a `UID` of
+/// the server's own included; what is there must still be one card (found live: Stalwart stores a
+/// 3.0 card as 4.0, Nextcloud adds a `UID`).
+#[tokio::test]
+async fn a_card_without_a_uid_meets_its_own_earlier_write() {
+    let anonymous = CARD.replace("UID:capture-1@example.com\r\n", "");
+    let stored = anonymous.replace("VERSION:4.0", "VERSION:4.0\r\nPRODID:-//Server//EN");
+    let (answer, _) = import_one(
+        &anonymous,
+        vec![ok(PROPS), status(412, ""), status(200, &stored)],
+    )
+    .await;
+    assert!(answer.expect("linked").already_there);
+
+    let (answer, _) = import_one(
+        &anonymous,
+        vec![ok(PROPS), status(412, ""), status(200, CARD)],
+    )
+    .await;
+    assert!(
+        answer.expect("linked").already_there,
+        "a UID the server gave it"
+    );
+
+    let (answer, _) = import_one(
+        &anonymous,
+        vec![ok(PROPS), status(412, ""), status(200, "not a card")],
+    )
+    .await;
+    assert_eq!(answer.unwrap_err().class(), FailureClass::Conflict);
+}

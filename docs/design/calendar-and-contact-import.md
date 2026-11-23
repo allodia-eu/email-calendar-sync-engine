@@ -250,8 +250,16 @@ lookup and a collection's properties answer), with what a card changes:
   is there for a server that does not (as SabreDAV's backend does not for events), which the
   harness cannot show for cards.
 - A card without a `UID` (optional in vCard 3.0) is named by its bytes' hash, so a retry meets
-  its own write; it cannot be looked up.
+  its own write; it cannot be looked up. Read back after a bare `412`, any one card at that name
+  is taken as ours: the servers rewrite what they store (Stalwart writes 3.0 as 4.0, Nextcloud
+  gives the card a `UID` of its own, both found live), and only those bytes lead to the name.
 - The name is the event's rule (`href::resource_name`): both servers list the `@` raw.
+  `create_contact` names a card the same way, and a card with no `UID` by a SHA-256 of its name
+  and addresses (no longer `DefaultHasher`, which is not stable across Rust releases).
+- `address-data-type` takes RFC 6352 §10.3's defaults: no `content-type` is `text/vcard`, no
+  `version` is 3.0; the media type is compared without its parameters.
+- A bare `412`, a refusal, a throttle and the lookup's answers are read as for events
+  (`dav_import`, `write_refusal`).
 
 ## Three-host check
 
