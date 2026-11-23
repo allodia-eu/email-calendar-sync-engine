@@ -411,6 +411,13 @@ impl Provider for JmapProvider {
         (self.capabilities.mail_writes() && crate::import::takes_blobs(session)).then_some(self)
     }
 
+    /// The account's out-of-office reply (`crate::vacation`), where the session gives this
+    /// client an account with `urn:ietf:params:jmap:vacationresponse`: not on a read-only share,
+    /// which lists none.
+    fn vacation(&self) -> Option<&dyn engine_provider::Vacation> {
+        crate::vacation::reachable(self.executor.session()).then_some(self)
+    }
+
     async fn report_message(
         &self,
         _account: &AccountId,

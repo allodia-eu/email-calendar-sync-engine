@@ -459,4 +459,13 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
     fn mail_importer(&self) -> Option<&dyn crate::import::MailImporter> {
         None
     }
+
+    /// This adapter as a [`Vacation`](crate::Vacation), the account's out-of-office reply, or
+    /// `None` where the account has none the adapter can reach (the default).
+    ///
+    /// Reached as [`mail_importer`](Self::mail_importer) is: the answer is the capability, and an
+    /// adapter answers per account, so a read-only share without the setting answers `None`.
+    fn vacation(&self) -> Option<&dyn crate::Vacation> {
+        None
+    }
 }

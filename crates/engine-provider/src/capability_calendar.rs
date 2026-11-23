@@ -5,46 +5,10 @@
 //! ([`WriteGuard`]), which of the controls around an RSVP it honours
 //! ([`RsvpControls`]), and what a series-level edit does to the occurrences the user
 //! changed individually ([`OverrideSurvival`]). They live beside the capability set rather
-//! than inside it so that file carries the set alone.
+//! than inside it so that file carries the set alone. [`WriteGuard`] is shared with every other
+//! guarded write and lives in `write_guard.rs`.
 
-/// What a transport can promise about the **lost-update guard** on a calendar write.
-///
-/// Every calendar write in this crate names the revision the caller read, so the
-/// server can refuse an edit built on a copy that has since moved on. Whether the
-/// server actually refuses is *not* universal, and a caller that assumes it is will
-/// silently clobber a concurrent edit. So the promise is a post-connect fact a host
-/// reads off [`Capabilities::calendar_write_guard`](crate::Capabilities::calendar_write_guard)
-/// **before** it writes, not a property the write API implies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WriteGuard {
-    /// A write whose guard names a superseded revision is **rejected**, so a stale
-    /// edit can never overwrite a newer one.
-    ///
-    /// CalDAV: the event's `ETag` rides an `If-Match` and a stale one is a `412`
-    /// (RFC 7232, RFC 4791 §5.3.2) — proven live against both harness servers.
-    Enforced,
-    /// The transport offers **no enforceable per-object precondition**: a stale edit
-    /// silently wins, and last-writer-wins is the real semantics. A host that needs
-    /// to detect a concurrent edit on such a transport must do so above the engine.
-    ///
-    /// JMAP: a `CalendarEvent` carries no revision token at all
-    /// ([`RevisionTokens::is_empty`](engine_core::version::RevisionTokens::is_empty)),
-    /// and the only precondition RFC 8620 §5.3 offers — `ifInState` — is scoped to
-    /// "all objects of this type in the account" rather than to the object, so it
-    /// rejects on *unrelated* concurrent changes instead of on a lost update.
-    ///
-    /// Note this is **not** a server shortcoming to be waited out. Stalwart enforces
-    /// `ifInState` correctly from v0.16.14, and correct enforcement is exactly what
-    /// makes it unusable here: an inbound iTIP invitation moves the attendee's
-    /// `CalendarEvent` state while they sit idle, so guarding their next edit with it
-    /// refuses a write nothing conflicted with. Demonstrated live in
-    /// `provider-jmap/tests/live_calendar_precondition.rs`; the reasoning is in
-    /// `jmap.md`.
-    ///
-    /// The lost update JMAP genuinely cannot detect is two writers patching the **same**
-    /// property; disjoint properties merge, because `/set` takes a PatchObject.
-    Absent,
-}
+use crate::WriteGuard;
 
 /// What a transport lets the user control about an **RSVP**, beyond the answer itself.
 ///

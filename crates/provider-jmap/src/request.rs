@@ -33,6 +33,12 @@ pub mod capability {
     /// `urn:ietf:params:jmap:blob` (RFC 9404): `Blob/get` and `Blob/upload`, many blobs in one
     /// method call.
     pub const BLOB: &str = "urn:ietf:params:jmap:blob";
+    /// `urn:ietf:params:jmap:vacationresponse` (RFC 8621 §8): the account's out-of-office
+    /// reply, `VacationResponse/get` and `/set`.
+    pub const VACATION_RESPONSE: &str = "urn:ietf:params:jmap:vacationresponse";
+    /// `urn:ietf:params:jmap:sieve` (RFC 9661): the account's Sieve scripts, `SieveScript/get`
+    /// and `/set`.
+    pub const SIEVE: &str = "urn:ietf:params:jmap:sieve";
 }
 
 /// The id of one method call within a [`Request`] (RFC 8620 §3.2, the `callId`).

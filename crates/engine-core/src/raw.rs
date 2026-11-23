@@ -148,6 +148,15 @@ raw_text! {
     RawProviderJson
 }
 
+raw_text! {
+    /// A provider's own form of an out-of-office reply, preserved verbatim: the JMAP
+    /// `VacationResponse` object, or later Graph's `automaticRepliesSetting` and Gmail's
+    /// `VacationSettings` JSON, which carry facts the neutral
+    /// [`VacationResponse`](crate::vacation::VacationResponse) does not (Graph's schedule zone).
+    /// It holds the reply's subject and text, so its `Debug` shows only the length.
+    RawVacation
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

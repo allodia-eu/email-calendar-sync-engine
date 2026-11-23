@@ -256,7 +256,7 @@ and the cross-compile build.
 | --- | --- | --- |
 | `alice@test.local` | **the whole shared seed** (mail, calendar, contacts) | every read/sync/write suite; several assert its exact mailbox and calendar counts |
 | `bob@test.local` | nothing | scratch: the SMTP recipient in the submission tests, the **organizer** in the scheduling suite, the **grantor** of the read-only share below, and the dated mail the mailbox-window suites plant (`Harness::plant_dated_email_as`) and remove again |
-| `carol@test.local` | nothing | scratch: the **attendee** in the scheduling suite, and the import target of `provider-imap`'s and `provider-jmap`'s live import suites, which delete the folders they make |
+| `carol@test.local` | nothing | scratch: the **attendee** in the scheduling suite, the import target of `provider-imap`'s and `provider-jmap`'s live import suites, which delete the folders they make, and the account whose out-of-office reply and Sieve scripts `provider-jmap`'s `live_vacation` writes and then restores |
 | `dave@test.local` | one calendar, `Dave Shared`, with one event | the **calendar-only** grantor: shares that calendar with Alice read-only, and no mail |
 | `support@test.local` | `12-shared.eml` in its INBOX, `support-rota.ics` in its calendar | a **group** principal — a mailbox with no credentials of its own, which Alice belongs to |
 

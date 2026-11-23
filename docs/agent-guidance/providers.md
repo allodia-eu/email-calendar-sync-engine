@@ -65,7 +65,8 @@ If product pressure changes the order, the domain model tests still need JMAP an
   Option<&dyn MailImporter>` is the first: an adapter that implements the trait answers
   `Some(self)`, one that cannot implements nothing and answers `None`, and the answer is
   both the capability check and the means to act on it, so no flag in `Capabilities` has to
-  agree with a method that rejects. `Box<dyn Provider>` delegates every accessor, so a host
+  agree with a method that rejects. `Provider::vacation() -> Option<&dyn Vacation>` (below,
+  "Out-of-office") is the second. `Box<dyn Provider>` delegates every accessor, so a host
   holding the box reaches the capability without knowing the adapter.
 
   The accessor is what makes a sub-trait affordable. A bare sub-trait costs a host what a
@@ -299,6 +300,45 @@ it. An adapter that can import implements the trait; there is no capability flag
 
   A throttle or a refused credential ends the batch on every adapter, since it reaches every
   message after it; a refusal of one message never does.
+
+## Out-of-office (`Vacation`)
+
+An account's automatic reply is a setting, not a message: every host kind writes it directly,
+guarded by the version it read, never through the outbox, and the store keeps no copy
+(`docs/design/filters-and-out-of-office.md`, decision 1). The model is
+`engine_core::vacation` (`modeling.md`); the capability is `engine_provider::Vacation`, reached
+through `Provider::vacation()`, which answers `Some` only for an account that has a reply the
+adapter can reach.
+
+- **`read_vacation`** answers the reply with its `version`. **`set_vacation(precondition, new)`**
+  writes every modelled part of `new`, a part left out cleared, under a precondition the caller
+  spells out: `VacationPrecondition::IfUnchanged(&read)` is guarded by the read reply's version
+  where `vacation_write_guard()` is `Enforced`, and refused before sending if that reply carries
+  none (`Permanent`), so a guard is never quietly dropped; `Unconditional` is a deliberate
+  overwrite. A stale read is a `Conflict`; a lost answer is `requires_confirmation` (read before
+  writing again).
+- **A part the account cannot hold is refused, never dropped.** `vocabulary(account)` (async,
+  per account, as `mail_import_limits` is) states what the account holds: its `WindowSupport`
+  (none, either end, both ends), a subject, its `ReplyBodies` (one, or text and HTML), the
+  audiences, an outside reply. `VacationVocabulary::lost_parts` is the one rule for what a reply
+  would lose, and `refuse_unheld_vacation` is how every adapter refuses, before sending, a lost
+  part or a window that ends at or before its start: `item_unavailable`, naming the parts and
+  never their words, so a host tells "change the reply" from "may have landed". A reply limited to
+  contacts written as one to everyone would answer every stranger.
+- **The receipt says what the write did to the account's rules** (`RulesEffect`). On a JMAP
+  server that runs the reply as a Sieve script of its own, turning it on switches the user's own
+  filter script off, silently, and turning it off leaves it off (observed on Stalwart); the
+  adapter observes both and reports `Deactivated`, then `StillDeactivated`, so a host can offer to
+  switch the rules back on. The engine never does it for them. `Unknown` is an adapter that cannot
+  see the rules, or could not show that nothing else changed between its listings.
+
+| Adapter | Reply | Guard | Vocabulary | Rules effect |
+|---|---|---|---|---|
+| JMAP (`VacationResponse`, RFC 8621 §8) | **Implemented** (`jmap.md` → "Out-of-office") | `Enforced` (`ifInState`) | either end, subject, text and HTML; everyone; one reply | observed through JMAP Sieve, else `Unknown` |
+| IMAP + ManageSieve | Planned (slice 3): the `vacation` action in the active script | the script's | per server (`date`, `vacation-seconds`) | `Untouched`: one script holds both |
+| Graph (`automaticRepliesSetting`) | Planned (slices 4, 5) | `Absent` | both ends, no subject, one body; organization, organization and contacts; outside reply | `Untouched` |
+| Gmail (`VacationSettings`) | Planned (slice 5) | `Absent` | either end, subject, text and HTML; contacts, organization, contacts in organization (Workspace) | `Untouched` |
+| CalDAV / CardDAV | n/a | | | |
 
 ## Stalwart Test Spine
 
