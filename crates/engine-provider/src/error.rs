@@ -30,7 +30,51 @@ pub struct ProviderError {
     retry_after: Option<Duration>,
     confirmation_needed: bool,
     item_unavailable: bool,
+    target_refusal: Option<TargetRefusal>,
     source: Option<BoxError>,
+}
+
+/// Why a target refused to store something into a container, where the reason is the target's
+/// own state: what a host must change before sending again, which waiting does not.
+///
+/// One reason per situation, the same on every adapter and for every kind of object (a message
+/// into a mailbox, an event into a calendar, a card into an address book), so a host decides
+/// once what each means to it; `providers.md` ("Import") has each adapter's mapping. Built with
+/// [`ProviderError::refused_by_target`] and read with [`ProviderError::target_refusal`].
+///
+/// # Examples
+///
+/// ```
+/// use engine_core::error::FailureClass;
+/// use engine_provider::{ProviderError, TargetRefusal};
+///
+/// let refused = ProviderError::refused_by_target(TargetRefusal::StorageFull);
+/// assert_eq!(refused.class(), FailureClass::InvalidState);
+/// assert_eq!(refused.target_refusal(), Some(TargetRefusal::StorageFull));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TargetRefusal {
+    /// The account's storage is full (IMAP `OVERQUOTA`, JMAP `overQuota` on a store). Freeing or
+    /// raising the quota clears it; a rate limit on uploads is a throttle, not this.
+    StorageFull,
+    /// The container the object names does not exist (a mailbox, a calendar, an address book).
+    /// Creating it, or naming the one that does, clears it.
+    NoSuchContainer,
+    /// The credential may not write into the container (a read-only or shared mailbox, calendar
+    /// or address book). Granting the right, or choosing another container, clears it.
+    ReadOnlyContainer,
+}
+
+impl TargetRefusal {
+    /// The engine's own words for the reason, which a refusal carries as its detail.
+    fn detail(self) -> &'static str {
+        match self {
+            Self::StorageFull => "the target refused: the account's storage is full",
+            Self::NoSuchContainer => "the target refused: the container does not exist",
+            Self::ReadOnlyContainer => "the target refused: the container may not be written",
+        }
+    }
 }
 
 impl ProviderError {
@@ -43,6 +87,7 @@ impl ProviderError {
             retry_after: None,
             confirmation_needed: false,
             item_unavailable: false,
+            target_refusal: None,
             source: None,
         }
     }
@@ -130,6 +175,25 @@ impl ProviderError {
             confirmation_needed: true,
             ..Self::new(FailureClass::InvalidState, detail)
         }
+    }
+
+    /// The target refused because of its own state, for `reason`
+    /// ([`FailureClass::InvalidState`]): not retryable as it stands and with no wait to name,
+    /// since the target's state must change first. Its detail is the engine's own words for
+    /// the reason, never the server's.
+    #[must_use]
+    pub fn refused_by_target(reason: TargetRefusal) -> Self {
+        Self {
+            target_refusal: Some(reason),
+            ..Self::new(FailureClass::InvalidState, reason.detail())
+        }
+    }
+
+    /// Why the target refused, where it was its own state
+    /// ([`refused_by_target`](Self::refused_by_target)).
+    #[must_use]
+    pub fn target_refusal(&self) -> Option<TargetRefusal> {
+        self.target_refusal
     }
 
     /// Attaches the underlying protocol/transport error as the
@@ -282,5 +346,35 @@ mod tests {
         // Display carries the class + detail; the source chain carries the cause.
         assert!(err.to_string().contains("transport"));
         assert!(std::error::Error::source(&err).is_some());
+    }
+
+    /// The target refused because of its own state, which waiting does not change: the class
+    /// is `InvalidState`, with no wait, and the reason is there to read back, under a detail
+    /// of the engine's own words.
+    #[test]
+    fn a_refusal_by_the_target_s_state_says_which_and_is_not_a_wait() {
+        let reasons = [
+            TargetRefusal::StorageFull,
+            TargetRefusal::NoSuchContainer,
+            TargetRefusal::ReadOnlyContainer,
+        ];
+        let mut details = std::collections::BTreeSet::new();
+        for reason in reasons {
+            let refused = ProviderError::refused_by_target(reason);
+            assert_eq!(refused.class(), FailureClass::InvalidState);
+            assert_eq!(refused.target_refusal(), Some(reason));
+            assert_eq!(refused.retry_after(), None);
+            assert!(!refused.is_retryable());
+            assert!(!refused.is_item_unavailable() && !refused.requires_confirmation());
+            details.insert(refused.detail().to_owned());
+        }
+        assert_eq!(details.len(), reasons.len(), "each reason says itself");
+        assert_eq!(ProviderError::invalid_state("x").target_refusal(), None);
+        assert_eq!(
+            ProviderError::refused_by_target(TargetRefusal::StorageFull)
+                .with_source(std::io::Error::other("x"))
+                .target_refusal(),
+            Some(TargetRefusal::StorageFull)
+        );
     }
 }
