@@ -1,0 +1,169 @@
+//! What one account's rule language can express.
+
+use std::collections::BTreeMap;
+
+use super::{NativeKind, RuleSyntax, TextOp};
+
+/// One thing a rule can say, as a target either can or cannot hold it.
+///
+/// The grain is where the transports differ (`filters-and-out-of-office.md`, §5): Sieve tests a
+/// header with a regular expression only where `regex` is listed, Graph cannot test any header
+/// but by "contains", Gmail cannot stop. A feature added later is an addition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum RuleFeature {
+    /// Conditions combined so that any one suffices.
+    MatchAny,
+    /// Exceptions that veto the rule.
+    Except,
+    /// The subject tested by an operation.
+    SubjectText(TextOp),
+    /// Another header field tested by an operation.
+    HeaderText(TextOp),
+    /// A whole address tested by an operation.
+    AddressText(TextOp),
+    /// The local part of an address tested.
+    AddressLocalPart,
+    /// The domain of an address tested.
+    AddressDomain,
+    /// The account's own address among the recipients.
+    SentToMe,
+    /// The text body tested by an operation.
+    Body(TextOp),
+    /// Size larger than a bound.
+    SizeOver,
+    /// Size smaller than a bound.
+    SizeUnder,
+    /// Has an attachment.
+    HasAttachment,
+    /// States an importance.
+    Importance,
+    /// Files into a folder named by path.
+    FileInto,
+    /// Files a copy, keeping the message where it was.
+    FileIntoCopy,
+    /// Files into the folder with a role.
+    FileIntoRole,
+    /// Files into a folder by id.
+    FileIntoId,
+    /// Deletes for good.
+    Discard,
+    /// Sends on, the original sender kept.
+    Redirect,
+    /// Sends on and keeps it.
+    RedirectCopy,
+    /// Sends on as the account.
+    Forward,
+    /// Marks read (`$seen`).
+    MarkRead,
+    /// Flags (`$flagged`).
+    Flag,
+    /// Adds any other keyword.
+    NamedKeyword,
+    /// Marks an importance.
+    MarkImportance,
+    /// Stops evaluating later rules.
+    Stop,
+    /// Stores a rule that does not run.
+    Disabled,
+    /// Stores a rule's name.
+    Name,
+    /// Applies rules in the order given.
+    Order,
+}
+
+/// How a target holds a feature it has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Support {
+    /// As the model means it.
+    Exact,
+    /// With a stated difference: Sieve's `addheader "Importance"` for Graph's importance, a
+    /// `redirect :copy` for Exchange's forward.
+    Approximated,
+}
+
+/// What an account's rule language can express: which [`RuleFeature`]s it holds and how, how
+/// many addresses one rule may send a message to, and which kinds of carried rule it can store
+/// back.
+///
+/// Read per account, because two servers speaking one protocol list different extensions
+/// (`filters-and-out-of-office.md`, "Observed on the harness"); a constant for a transport whose
+/// language is fixed. Built with [`new`](Self::new) and the `with_*` methods; its fields are
+/// private, so what a later transport needs is an addition.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuleVocabulary {
+    features: BTreeMap<RuleFeature, Support>,
+    max_redirects: Option<usize>,
+    opaque: Option<RuleSyntax>,
+    native: Option<NativeKind>,
+}
+
+impl RuleVocabulary {
+    /// A language that can express nothing yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Holds `feature` as `support` says (builder-style).
+    #[must_use]
+    pub fn with(mut self, feature: RuleFeature, support: Support) -> Self {
+        self.features.insert(feature, support);
+        self
+    }
+
+    /// Holds every one of `features` exactly (builder-style).
+    #[must_use]
+    pub fn with_exact(mut self, features: impl IntoIterator<Item = RuleFeature>) -> Self {
+        for feature in features {
+            self.features.insert(feature, Support::Exact);
+        }
+        self
+    }
+
+    /// Lets one message be sent on to at most `max` addresses (builder-style): JMAP Sieve's
+    /// `maxNumberRedirects`.
+    #[must_use]
+    pub fn with_max_redirects(mut self, max: usize) -> Self {
+        self.max_redirects = Some(max);
+        self
+    }
+
+    /// Stores rules carried in `syntax` back as they were (builder-style).
+    #[must_use]
+    pub fn with_opaque(mut self, syntax: RuleSyntax) -> Self {
+        self.opaque = Some(syntax);
+        self
+    }
+
+    /// Stores `kind`'s own conditions and actions (builder-style).
+    #[must_use]
+    pub fn with_native(mut self, kind: NativeKind) -> Self {
+        self.native = Some(kind);
+        self
+    }
+
+    /// How the language holds `feature`, or `None` where it cannot.
+    #[must_use]
+    pub fn support(&self, feature: RuleFeature) -> Option<Support> {
+        self.features.get(&feature).copied()
+    }
+
+    /// How many addresses one message may be sent on to, or `None` for no stated limit.
+    #[must_use]
+    pub fn max_redirects(&self) -> Option<usize> {
+        self.max_redirects
+    }
+
+    /// Whether a rule carried in `syntax` can be stored back.
+    #[must_use]
+    pub fn stores_opaque(&self, syntax: RuleSyntax) -> bool {
+        self.opaque == Some(syntax)
+    }
+
+    /// Whether `kind`'s own conditions and actions can be stored.
+    #[must_use]
+    pub fn stores_native(&self, kind: NativeKind) -> bool {
+        self.native == Some(kind)
+    }
+}

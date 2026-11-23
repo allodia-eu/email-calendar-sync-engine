@@ -1,0 +1,49 @@
+//! Mail rules: one provider-neutral model of an account's filters.
+//!
+//! Every transport the engine speaks keeps an account's rules on the server, in a language of
+//! its own: a Sieve script over JMAP (RFC 9661) or ManageSieve (RFC 5804), Microsoft Graph's
+//! `messageRule`s, Gmail's filters. The model is a typed, ordered rule list, and each language
+//! is one rendering of it (`docs/design/filters-and-out-of-office.md`, §3):
+//!
+//! - [`RuleSet`] is the account's rules as read, in evaluation order, with the [`RuleSetVersion`] a
+//!   write is guarded by and the provider's own form ([`RawRules`]), from which a write copies
+//!   every rule the caller did not change.
+//! - [`MailRule`] is one rule: its name, whether it runs, and its [`RuleBody`], either a
+//!   [`TypedRule`] ([`Match`], [`Action`]s, stop) or a rule the engine carries but cannot show,
+//!   kept byte for byte ([`RawRule`]).
+//! - [`RuleVocabulary`] is what one account's rule language can express, per [`RuleFeature`].
+//! - [`plan_rules`] is the one rule for what a target keeps of a set, before anything is sent, and
+//!   [`RulesPlan`] / [`RuleOutcome`] say it per rule, by position and class.
+//! - [`RulesReceipt`] is what a write answers.
+//!
+//! Rule values, names, addresses and folder paths are content: every type here that carries
+//! them has a `Debug` that shows only kinds, counts and lengths.
+//!
+//! [`RuleSetVersion`]: crate::version::RuleSetVersion
+//! [`RawRules`]: crate::raw::RawRules
+
+mod action;
+mod condition;
+mod plan;
+mod receipt;
+mod rule;
+mod vocabulary;
+
+pub use action::{Action, NativeAction, NativeCondition, NativeKind, RuleMailbox};
+pub use condition::{
+    AddressField, AddressPart, Condition, HeaderField, MeField, SizeBound, TextOp, TextTest,
+};
+pub use plan::{
+    ForwardingRules, Kept, Loss, LossReason, PlanMode, RuleOutcome, RulePart, RulesPlan, plan_rules,
+};
+pub use receipt::RulesReceipt;
+pub use rule::{
+    MailRule, MailboxPath, Match, MatchMode, RawRule, RuleAddress, RuleBody, RuleName, RuleOrigin,
+    RuleSet, RuleSyntax, TypedRule,
+};
+pub use vocabulary::{RuleFeature, RuleVocabulary, Support};
+
+#[cfg(test)]
+mod plan_tests;
+#[cfg(test)]
+mod tests;

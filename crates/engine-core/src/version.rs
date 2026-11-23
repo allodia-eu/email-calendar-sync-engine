@@ -18,6 +18,8 @@
 //! - [`VacationVersion`] — the version of an account's out-of-office reply, a setting with one
 //!   value per account; on JMAP the `VacationResponse` type's `state`, the only revision a
 //!   singleton has.
+//! - [`RuleSetVersion`] — the version of an account's mail rules, a setting edited as a whole; on
+//!   JMAP the `SieveScript` type's `state`.
 //!
 //! JMAP objects carry **no** per-object token; their concurrency comes from the
 //! account-and-type `state` cursor instead, so a JMAP object has empty
@@ -80,6 +82,13 @@ string_token! {
     /// refused if the reply moved since. Opaque; on JMAP it is the `VacationResponse` type's
     /// `state` (RFC 8620 §5.1), which a `VacationResponse/set` sends as `ifInState`.
     VacationVersion
+}
+
+string_token! {
+    /// The version of an account's mail rules as they were read: what a write names to be
+    /// refused if the rules moved since. Opaque; on JMAP it is the `SieveScript` type's `state`
+    /// (RFC 8620 §5.1), which a `SieveScript/set` sends as `ifInState`.
+    RuleSetVersion
 }
 
 /// An IMAP CONDSTORE per-message mod-sequence (RFC 7162). A monotonic counter
