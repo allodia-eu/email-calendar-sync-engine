@@ -449,7 +449,12 @@ async fn a_snapshot_asks_for_a_deepened_mailbox_back_to_its_own_floor() {
             "operator": "OR",
             "conditions": [
                 { "after": "2026-04-01T00:00:00Z" },
-                { "inMailbox": "sent", "after": "2020-04-01T00:00:00Z" },
+                // Sent's older mail only: what is newer is the account's condition.
+                {
+                    "inMailbox": "sent",
+                    "after": "2020-04-01T00:00:00Z",
+                    "before": "2026-04-01T00:00:00Z",
+                },
             ],
         })
     );

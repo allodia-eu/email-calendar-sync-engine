@@ -98,6 +98,9 @@ pub(crate) struct Walk<'f, 'a> {
     /// Pages a step back is expected to re-read before the walk is past where it was.
     reread: usize,
     restarts: usize,
+    /// The ids a walk resumed after ([`Walk::resumed`]): what an earlier, interrupted walk had
+    /// read up to.
+    resumed: Vec<ProviderKey>,
 }
 
 impl<'f, 'a> Walk<'f, 'a> {
@@ -128,7 +131,28 @@ impl<'f, 'a> Walk<'f, 'a> {
             idle: 0,
             reread: 0,
             restarts: 0,
+            resumed: Vec::new(),
         }
+    }
+
+    /// Continues a walk an earlier pass was interrupted in, after `read`: the last ids it read,
+    /// in query order. The first page is anchored after the last of them, stepping back through
+    /// the others if it was destroyed since, and starting from the top when none is left.
+    ///
+    /// Only an [`Order::Fixed`] walk can resume this way: an id the query places at or before
+    /// them was read before the interruption, so the closing listing ([`Walk::settle`]) fetches
+    /// only what it places after them and this walk did not see.
+    pub(crate) fn resumed(mut self, read: Vec<ProviderKey>) -> Self {
+        self.seen.extend(read.iter().cloned());
+        self.trail.clone_from(&read);
+        self.resumed = read;
+        self
+    }
+
+    /// The last `n` ids the walk has read, in query order: where a later walk resumes
+    /// ([`Walk::resumed`]).
+    pub(crate) fn tail(&self, n: usize) -> Vec<ProviderKey> {
+        self.trail[self.trail.len().saturating_sub(n)..].to_vec()
     }
 
     /// Whether the walk has reached the end of the query.
@@ -242,7 +266,7 @@ impl<'f, 'a> Walk<'f, 'a> {
         &mut self,
         normalize: impl Fn(&Value) -> Result<T, JmapError> + Copy,
     ) -> Result<WalkPage<T>, JmapError> {
-        if self.pages <= 1 {
+        if self.pages <= 1 && self.resumed.is_empty() {
             return Ok(WalkPage {
                 changed: Vec::new(),
                 present: Vec::new(),
@@ -272,10 +296,19 @@ impl<'f, 'a> Walk<'f, 'a> {
             if self.order == Order::Server && !listing.steady {
                 continue;
             }
-            let missed: Vec<ProviderKey> = listing
-                .seen
+            // A resumed walk read everything up to where it resumed before it was interrupted:
+            // only what the listing places after that is still to be fetched.
+            let after = listing
+                .trail
+                .iter()
+                .rposition(|id| self.resumed.contains(id))
+                .map_or(0, |at| at + 1);
+            let missed: Vec<ProviderKey> = listing.trail[after..]
+                .iter()
+                .filter(|id| !self.seen.contains(*id))
+                .cloned()
+                .collect::<BTreeSet<_>>()
                 .into_iter()
-                .filter(|id| !self.seen.contains(id))
                 .collect();
             let mut changed = Vec::new();
             for chunk in missed.chunks(self.limit) {

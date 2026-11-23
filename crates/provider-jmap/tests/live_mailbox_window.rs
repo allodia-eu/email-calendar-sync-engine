@@ -3,8 +3,9 @@
 //!
 //! JMAP syncs the whole account's mail as one `Email` scope. A snapshot asks for the account's
 //! window and, beside it, the deeper mailbox's own (`email_window.rs`), and deepening a mailbox
-//! after a first pass starts that one scope over (`window_cursor`), so Sent's older mail arrives
-//! on the next pass with no cursor cleared. A **delta** takes no filter, so an older message
+//! after a first pass widens that one scope by a band of that mailbox's older mail
+//! (`window_cursor`, `email_band.rs`), so Sent's older mail arrives on the next pass with no
+//! cursor cleared. A **delta** takes no filter, so an older message
 //! arriving later is reported whatever its date, and the admission decides by the mailboxes it
 //! is filed in: kept in Sent, dropped from the Inbox.
 //!

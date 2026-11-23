@@ -52,6 +52,7 @@ mod contact_write;
 mod contact_write_fields;
 mod drafts;
 mod drafts_blobs;
+mod email_band;
 mod email_window;
 mod error;
 mod executor;
