@@ -47,3 +47,35 @@ Captured on 2026-11-23 with `curl -X 'SELECT INBOX'`; the tagged completion is n
 All three list every system flag in `PERMANENTFLAGS` and end it with `\*`. `src/permanent_tests.rs`
 reads them as a `SELECT` answer and asserts which keywords each server keeps. Stored LF; nothing
 in them is content.
+
+## `managesieve/`
+
+What the two harness servers' ManageSieve services (RFC 5804) answered, byte for byte, CRLF
+included (`.gitattributes` marks them `-text`, since a literal's length counts its line ends):
+`stalwart_*.txt` from the **Stalwart harness** (v1.0.2, `127.0.0.1:14190`, as
+`carol@test.local`) and `dovecot_*.txt` from the **Dovecot harness** (2.4.4 with Pigeonhole, the
+rev1 service, `127.0.0.1:14191`, as `alice@test.local`). Captured on 2026-11-23 by a script that
+sent each command over one session and wrote each response to its file:
+
+| File | Command |
+|---|---|
+| `*_greeting.txt` | none: the greeting on connect, before TLS |
+| `*_starttls.txt` | `STARTTLS` |
+| `*_greeting_tls.txt` | none: the capabilities the server sends once TLS is up (RFC 5804 §2.2) |
+| `*_authenticate.txt` | `AUTHENTICATE "PLAIN"` with the password, as an initial response |
+| `*_authenticate_refused.txt` | the same with a wrong password, on a connection of its own |
+| `*_capability_authenticated.txt` | `CAPABILITY` once signed in |
+| `*_listscripts.txt` | `LISTSCRIPTS` with one script, `zfixture`, active |
+| `*_getscript.txt` | `GETSCRIPT "zfixture"` (a one-rule script in Roundcube's dialect) |
+| `*_getscript_nonexistent.txt` | `GETSCRIPT` of a script that does not exist |
+| `*_checkscript_unknown_extension.txt` | `CHECKSCRIPT` of a script requiring `imapsieve` |
+| `*_checkscript_editheader.txt` | `CHECKSCRIPT` of a script requiring `editheader` |
+| `*_havespace_large.txt` | `HAVESPACE` for 999,999,999 bytes |
+| `*_deletescript_active.txt` | `DELETESCRIPT` of the active script |
+| `*_listscripts_empty.txt` | `LISTSCRIPTS` once the script was deactivated and deleted |
+| `*_logout.txt` | `LOGOUT` |
+
+What they show: mechanisms are offered only after `STARTTLS` (`SASL ""` before it); Dovecot lists
+`MAXREDIRECTS` only once signed in; Dovecot sends a refusal's prose as a literal, naming its
+temporary file; the response codes seen are `NONEXISTENT`, `ACTIVE` and `QUOTA/MAXSIZE`. Nothing
+in them is content: the script is the capture's own, and its words are reserved names.

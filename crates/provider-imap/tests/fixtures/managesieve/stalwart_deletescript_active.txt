@@ -1,0 +1,1 @@
+NO (ACTIVE) "You may not delete an active script"

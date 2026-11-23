@@ -1,0 +1,9 @@
+{111}
+require ["fileinto"];
+# rule:[Fixture]
+if header :contains "subject" "zfixture"
+{
+	fileinto "Archive";
+}
+
+OK

@@ -12,3 +12,6 @@ crates/provider-caldav/tests/fixtures/import/stalwart-card-uid-query.xml -text
 
 # Written by Roundcube's managesieve plugin, CRLF and all (the README there says how).
 crates/engine-sieve/tests/fixtures/roundcube/*.sieve -text
+
+# ManageSieve responses as the two harness servers sent them: literal lengths count the CRLFs.
+crates/provider-imap/tests/fixtures/managesieve/*.txt -text

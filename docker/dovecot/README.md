@@ -145,12 +145,18 @@ Each suite skips the servers whose address variable is unset, so the offline
 | IMAP rev1 (implicit TLS) | `127.0.0.1:11994` (Stalwart uses 11993) |
 | IMAP rev1 (STARTTLS) | `127.0.0.1:11144` (Stalwart uses 11143) |
 | IMAP rev2 (implicit TLS) | `127.0.0.1:11995` |
+| ManageSieve, rev1 service (STARTTLS) | `127.0.0.1:14191` (Stalwart's is 14190) |
 | Account (both) | `alice@test.local` |
 | Password (both) | `dovecot-alice-pw` (throwaway) |
 | Master user (both) | `master@test.local` / `dovecot-master-pw` (throwaway; `master-user.conf`) |
 
 STARTTLS is exposed on the rev1 service only: it is a transport concern with nothing
-dialect-specific about it, so a second listener would be surface no test uses.
+dialect-specific about it, so a second listener would be surface no test uses. The same goes for
+ManageSieve (RFC 5804), the image's own `managesieve-login` listener on container port 34190:
+Sieve has nothing to do with the IMAP revision, so it is published from the rev1 service alone.
+Its live suite reads `DOVECOT_MANAGESIEVE_ADDR`. The Sieve extensions it lists are fewer than
+Stalwart's (no `editheader`, `special-use`, `mailboxid` or `vacation-seconds`), and it lists
+`MAXREDIRECTS` only once signed in, which is why a vocabulary is read after authenticating.
 
 The image's stock passdb is `static`, so **any** username authenticates with that one
 password; the account name above is simply the one the seed and tests use. The credentials

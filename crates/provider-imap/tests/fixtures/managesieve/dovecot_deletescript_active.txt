@@ -1,0 +1,1 @@
+NO (ACTIVE) "Cannot delete the active Sieve script."

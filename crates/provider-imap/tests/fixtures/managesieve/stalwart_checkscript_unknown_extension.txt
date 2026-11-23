@@ -1,0 +1,1 @@
+NO "Capability 'imapsieve' is not supported at line 1, column 10."
