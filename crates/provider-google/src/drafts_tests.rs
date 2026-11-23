@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use engine_core::{
     error::FailureClass,
     ids::{AccountId, MailboxId, MessageId, MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Keyword, Message},
+    mail::{EmailAddress, Keyword, Message, MessageMetadata},
     membership::Memberships,
 };
 use engine_provider::{Draft, KeywordName, Provider};
@@ -49,7 +49,7 @@ async fn a_first_save_creates_a_draft_and_returns_its_draft_id() {
     let p = GmailProvider::new(fake_client_fallible(vec![("/drafts", Ok(json(CREATED)))]));
 
     let key = p
-        .put_draft(&account(), &draft(), None, &BTreeSet::new())
+        .put_draft(&account(), &draft(), None, &MessageMetadata::default())
         .await
         .unwrap()
         .key;
@@ -68,7 +68,12 @@ async fn saving_again_updates_that_same_draft_in_place() {
 
     let existing = ProviderKey::new("r-draft-1").unwrap();
     let key = p
-        .put_draft(&account(), &draft(), Some(&existing), &BTreeSet::new())
+        .put_draft(
+            &account(),
+            &draft(),
+            Some(&existing),
+            &MessageMetadata::default(),
+        )
         .await
         .unwrap()
         .key;
@@ -87,7 +92,7 @@ async fn a_store_that_returned_no_id_is_a_protocol_error() {
     )]));
 
     let err = p
-        .put_draft(&account(), &draft(), None, &BTreeSet::new())
+        .put_draft(&account(), &draft(), None, &MessageMetadata::default())
         .await
         .unwrap_err();
 
@@ -167,12 +172,17 @@ async fn a_save_labels_the_message_under_the_draft_and_reports_the_keyword_kept(
     let (p, log) = labelling(("/drafts", CREATED), Ok(json!({})));
 
     let receipt = p
-        .put_draft(&account(), &draft(), None, &tagged())
+        .put_draft(
+            &account(),
+            &draft(),
+            None,
+            &MessageMetadata::default().with_keywords(tagged()),
+        )
         .await
         .unwrap();
 
     assert_eq!(receipt.key.as_str(), "r-draft-1");
-    assert_eq!(receipt.keywords, tagged());
+    assert_eq!(receipt.kept.keywords, tagged());
     let labelled = labelled(&log);
     assert_eq!(labelled.len(), 1);
     assert!(
@@ -190,11 +200,16 @@ async fn every_save_labels_the_new_message_again() {
     let existing = ProviderKey::new("r-draft-1").unwrap();
 
     let receipt = p
-        .put_draft(&account(), &draft(), Some(&existing), &tagged())
+        .put_draft(
+            &account(),
+            &draft(),
+            Some(&existing),
+            &MessageMetadata::default().with_keywords(tagged()),
+        )
         .await
         .unwrap();
 
-    assert_eq!(receipt.keywords, tagged());
+    assert_eq!(receipt.kept.keywords, tagged());
     assert!(labelled(&log)[0].0.ends_with("/messages/message-21/modify"));
 }
 
@@ -203,11 +218,11 @@ async fn a_save_asking_for_no_keyword_costs_no_label_request() {
     let (p, log) = labelling(("/drafts", CREATED), Ok(json!({})));
 
     let receipt = p
-        .put_draft(&account(), &draft(), None, &BTreeSet::new())
+        .put_draft(&account(), &draft(), None, &MessageMetadata::default())
         .await
         .unwrap();
 
-    assert_eq!(receipt.keywords, BTreeSet::new());
+    assert_eq!(receipt.kept.keywords, BTreeSet::new());
     assert_eq!(
         log.lock().unwrap().len(),
         1,
@@ -220,12 +235,17 @@ async fn a_refused_label_leaves_the_draft_saved_without_the_keyword() {
     let (p, _log) = labelling(("/drafts", CREATED), Err((400, json!({}))));
 
     let receipt = p
-        .put_draft(&account(), &draft(), None, &tagged())
+        .put_draft(
+            &account(),
+            &draft(),
+            None,
+            &MessageMetadata::default().with_keywords(tagged()),
+        )
         .await
         .unwrap();
 
     assert_eq!(receipt.key.as_str(), "r-draft-1");
-    assert_eq!(receipt.keywords, BTreeSet::new());
+    assert_eq!(receipt.kept.keywords, BTreeSet::new());
 }
 
 #[tokio::test]
@@ -235,11 +255,16 @@ async fn a_keyword_without_a_name_is_not_kept_and_costs_no_label_request() {
     assert!(!p.connection_info().capabilities.draft_keywords());
 
     let receipt = p
-        .put_draft(&account(), &draft(), None, &tagged())
+        .put_draft(
+            &account(),
+            &draft(),
+            None,
+            &MessageMetadata::default().with_keywords(tagged()),
+        )
         .await
         .unwrap();
 
-    assert_eq!(receipt.keywords, BTreeSet::new());
+    assert_eq!(receipt.kept.keywords, BTreeSet::new());
     assert_eq!(log.lock().unwrap().len(), 1);
     assert!(named(p).connection_info().capabilities.draft_keywords());
 }

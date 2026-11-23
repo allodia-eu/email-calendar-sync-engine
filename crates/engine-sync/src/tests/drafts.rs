@@ -1,6 +1,8 @@
 //! Keeping a draft on the server through the outbox: the inline save, what a save with
 //! no network leaves behind, and what the drainer then does with it.
 
+use engine_core::mail::MessageMetadata;
+
 use super::*;
 use crate::outbox::{delete_draft_mail, put_draft_mail};
 
@@ -33,7 +35,7 @@ async fn a_save_returns_the_key_to_keep() {
         Duration::from_secs(30),
         &composing("compose-1@test.local", "v1"),
         None,
-        &BTreeSet::new(),
+        &MessageMetadata::default(),
     )
     .await
     .unwrap();
@@ -62,7 +64,7 @@ async fn a_save_with_no_network_is_kept_and_drained_later() {
         Duration::from_secs(30),
         &composing("compose-2@test.local", "v1"),
         None,
-        &BTreeSet::new(),
+        &MessageMetadata::default(),
     )
     .await;
     assert!(offline.is_err(), "the save had no network");
@@ -111,7 +113,7 @@ async fn saving_again_with_no_network_replaces_what_was_queued() {
             Duration::from_secs(30),
             &composing("compose-3@test.local", version),
             None,
-            &BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await;
     }
@@ -160,7 +162,7 @@ async fn saving_the_same_text_again_queues_nothing_new() {
         Duration::from_secs(30),
         &draft,
         None,
-        &BTreeSet::new(),
+        &MessageMetadata::default(),
     )
     .await;
     assert!(first.is_err(), "the save had no network");
@@ -173,7 +175,7 @@ async fn saving_the_same_text_again_queues_nothing_new() {
         Duration::from_secs(30),
         &draft,
         None,
-        &BTreeSet::new(),
+        &MessageMetadata::default(),
     )
     .await;
     assert!(second.is_err());
@@ -242,7 +244,7 @@ async fn a_re_save_names_the_copy_it_supersedes() {
                 Duration::from_secs(30),
                 &draft,
                 replacing.as_ref(),
-                &BTreeSet::new(),
+                &MessageMetadata::default(),
             )
             .await
             .unwrap()
@@ -309,7 +311,7 @@ async fn a_drain_that_is_still_offline_parks_the_draft_op_again() {
         Duration::from_secs(30),
         &composing("compose-offline@test.local", "v1"),
         None,
-        &BTreeSet::new(),
+        &MessageMetadata::default(),
     )
     .await
     .expect_err("the save had no network");

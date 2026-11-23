@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use engine_core::{
     error::FailureClass,
     ids::{MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Keyword},
+    mail::{EmailAddress, Keyword, MessageMetadata},
 };
 use engine_provider::Draft;
 
@@ -63,7 +63,7 @@ async fn saving_again_appends_the_new_copy_then_removes_the_old() {
         &own(),
         &draft(),
         Some(&old),
-        &BTreeSet::new(),
+        &MessageMetadata::default(),
     )
     .await
     .unwrap()
@@ -100,10 +100,16 @@ async fn a_first_save_appends_without_removing_anything() {
     ]))
     .await;
 
-    let key = put_draft(&mut connection, &own(), &draft(), None, &BTreeSet::new())
-        .await
-        .unwrap()
-        .key;
+    let key = put_draft(
+        &mut connection,
+        &own(),
+        &draft(),
+        None,
+        &MessageMetadata::default(),
+    )
+    .await
+    .unwrap()
+    .key;
 
     assert_eq!(key.as_str(), "imap:v70:u9@Drafts");
     assert!(!written(&recorded).contains("UID STORE"));
@@ -129,7 +135,7 @@ async fn a_new_copy_that_cannot_replace_the_old_is_still_saved() {
         &own(),
         &draft(),
         Some(&old),
-        &BTreeSet::new(),
+        &MessageMetadata::default(),
     )
     .await
     .unwrap()
@@ -227,12 +233,18 @@ async fn a_draft_s_keywords_ride_its_append_where_the_folder_keeps_them() {
     ]))
     .await;
 
-    let receipt = put_draft(&mut connection, &own(), &draft(), None, &project_x())
-        .await
-        .unwrap();
+    let receipt = put_draft(
+        &mut connection,
+        &own(),
+        &draft(),
+        None,
+        &MessageMetadata::default().with_keywords(project_x()),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(receipt.key.as_str(), "imap:v70:u9@Drafts");
-    assert_eq!(receipt.keywords, project_x());
+    assert_eq!(receipt.kept.keywords, project_x());
     let sent = written(&recorded);
     assert!(
         sent.contains("APPEND \"Drafts\" (\\Draft \\Seen project-x)"),
@@ -254,12 +266,18 @@ async fn a_folder_that_allows_no_new_keyword_gets_the_draft_without_them() {
     ]))
     .await;
 
-    let receipt = put_draft(&mut connection, &own(), &draft(), None, &project_x())
-        .await
-        .unwrap();
+    let receipt = put_draft(
+        &mut connection,
+        &own(),
+        &draft(),
+        None,
+        &MessageMetadata::default().with_keywords(project_x()),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(receipt.key.as_str(), "imap:v70:u9@Drafts");
-    assert_eq!(receipt.keywords, BTreeSet::new());
+    assert_eq!(receipt.kept.keywords, BTreeSet::new());
     assert!(
         written(&recorded).contains("APPEND \"Drafts\" (\\Draft \\Seen)"),
         "{}",

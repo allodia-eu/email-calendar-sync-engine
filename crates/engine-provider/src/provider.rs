@@ -1,11 +1,9 @@
 //! The [`Provider`] trait: the one seam every adapter implements.
 
-use std::collections::BTreeSet;
-
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ProviderKey},
-    mail::{Keyword, Mailbox, Message},
+    mail::{Mailbox, Message, MessageMetadata},
     raw::RawMime,
     sync::{JmapDataType, MailboxWindows, SyncScope, SyncState, SyncWindow},
 };
@@ -214,11 +212,11 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
         ))
     }
 
-    /// Stores `draft` in the account's Drafts folder, carrying `keywords`, and answers with
-    /// the key of the stored message and which of `keywords` it carries ([`DraftReceipt`]).
+    /// Stores `draft` in the account's Drafts folder, carrying `metadata`, and answers with
+    /// the key of the stored message and what of `metadata` it carries ([`DraftReceipt`]).
     /// `replacing` names the draft this one supersedes: the same composition, saved again.
-    /// `keywords` is the whole set the stored draft should carry, so a re-save without one
-    /// takes it off.
+    /// `metadata` is the whole of what the stored draft should carry, so a re-save without a
+    /// keyword takes it off.
     ///
     /// **The returned key is the one to keep, and it need not be `replacing`.** A
     /// transport whose stored messages are immutable writes a new one and removes the
@@ -247,9 +245,9 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
         account: &AccountId,
         draft: &Draft,
         replacing: Option<&ProviderKey>,
-        keywords: &BTreeSet<Keyword>,
+        metadata: &MessageMetadata,
     ) -> ProviderResult<DraftReceipt> {
-        let _ = (account, draft, replacing, keywords);
+        let _ = (account, draft, replacing, metadata);
         Err(unsupported("mail drafts"))
     }
 

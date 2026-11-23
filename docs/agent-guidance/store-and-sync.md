@@ -938,8 +938,8 @@ one event never race on either provider.
   delivered or may have been, is `SyncError::Unrecorded`, never `SyncError::Store`. The op is
   left to recovery.
   `ApiError::may_have_applied` is the host's one question over both (`engine-api.md`).
-- **A send can leave one follow-up.** On an adapter that keeps a draft's `sent_copy_keywords`
-  after the send (`Capabilities::sent_copy_keywords_deferred`: Graph, whose `sendMail` files the
+- **A send can leave one follow-up.** On an adapter that keeps the keywords of a draft's
+  `sent_copy_metadata` after the send (`Capabilities::sent_copy_keywords_deferred`: Graph, whose `sendMail` files the
   copy itself a moment later), a delivered send queues, without claiming, a `MailEdit::SetKeywords`
   on the copy's key, idempotent by `sent-copy-keywords:<Message-ID>`. The one attempt the inline
   `submit_mail` and the drainer share records it, so the send's answer never waits for the copy. The
@@ -1066,7 +1066,7 @@ one event never race on either provider.
 - **A draft save carries its keywords in its payload** (`DraftPut::keywords`, defaulted so an
   older payload still reads), so a save queued offline stores them when it drains, and the
   op's name hashes them with the text: a save that changes only a keyword is a write of its
-  own. Only the inline save reports what was kept (`PutDraftOutcome::keywords`); a drained one
+  own. Only the inline save reports what was kept (`PutDraftOutcome::kept`); a drained one
   is read from the next sync, as a Sent copy's keywords are.
 - **A queued draft save supersedes the one before it.** A draft is saved *repeatedly*, so
   five saves with no network must not become five rounds of store-and-remove against a

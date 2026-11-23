@@ -267,7 +267,7 @@ where
                     account,
                     &request.draft,
                     request.replacing.as_ref(),
-                    &request.keywords,
+                    &request.metadata,
                 )
                 .await
             {

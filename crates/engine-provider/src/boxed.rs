@@ -4,14 +4,12 @@
 //! through the `engine-sync`/`engine-api` functions that are generic over
 //! `P: Provider` / `P: ContactsProvider`.
 
-use std::collections::BTreeSet;
-
 use async_trait::async_trait;
 use engine_core::{
     calendar::Event,
     contact::{AddressBook, ContactCard, ContactDraft, ContactPatch, ContactResource},
     ids::{AccountId, CalendarId, ContactId, ProviderKey},
-    mail::{Keyword, Mailbox, Message},
+    mail::{Mailbox, Message, MessageMetadata},
     raw::RawMime,
     sync::{MailboxWindows, SyncScope, SyncState, SyncWindow},
     time::Horizon,
@@ -106,10 +104,10 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         account: &AccountId,
         draft: &Draft,
         replacing: Option<&ProviderKey>,
-        keywords: &BTreeSet<Keyword>,
+        metadata: &MessageMetadata,
     ) -> ProviderResult<DraftReceipt> {
         (**self)
-            .put_draft(account, draft, replacing, keywords)
+            .put_draft(account, draft, replacing, metadata)
             .await
     }
 

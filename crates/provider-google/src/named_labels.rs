@@ -168,7 +168,7 @@ impl Labels {
         sent: &ProviderKey,
         draft: &Draft,
     ) -> BTreeSet<Keyword> {
-        self.tag(client, sent.as_str(), &draft.sent_copy_keywords)
+        self.tag(client, sent.as_str(), &draft.sent_copy_metadata.keywords)
             .await
     }
 

@@ -17,11 +17,10 @@
 //! previous save; a key naming the attempt would never dedup at all.
 
 use core::time::Duration;
-use std::collections::BTreeSet;
 
 use engine_core::{
     ids::{AccountId, ProviderKey},
-    mail::Keyword,
+    mail::MessageMetadata,
     write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, PendingOutcome, ResourceKey},
 };
 use engine_provider::{Draft, Provider};
@@ -40,10 +39,11 @@ pub struct DraftPut {
     /// The stored copy this one supersedes, if the draft has been saved before.
     #[serde(default)]
     pub replacing: Option<ProviderKey>,
-    /// The keywords the stored draft carries. Defaulted so a payload serialized before this
-    /// field still deserializes.
-    #[serde(default)]
-    pub keywords: BTreeSet<Keyword>,
+    /// The metadata the stored draft carries. Defaulted so a payload serialized before this
+    /// field still deserializes, and read from `keywords`, the keyword list a payload carried
+    /// before [`MessageMetadata`].
+    #[serde(default, alias = "keywords")]
+    pub metadata: MessageMetadata,
 }
 
 /// The result of a successful draft save through the outbox.
@@ -58,16 +58,16 @@ pub struct PutDraftOutcome {
     /// the key moves (`providers.md`). A caller that assumes otherwise stores a second
     /// copy beside the first on the next save.
     pub key: ProviderKey,
-    /// Which of the keywords the save asked for the stored draft carries; see
-    /// [`DraftReceipt::keywords`](engine_provider::DraftReceipt::keywords).
+    /// Of the metadata the save asked for, what the stored draft carries; see
+    /// [`DraftReceipt::kept`](engine_provider::DraftReceipt::kept).
     ///
     /// Only this outcome carries it: a save the outbox drains later reports nothing, and the
     /// draft's keywords are then read from the next sync.
-    pub keywords: BTreeSet<Keyword>,
+    pub kept: MessageMetadata,
 }
 
 /// Stores `draft` on the server through the outbox, superseding `replacing` and carrying
-/// `keywords`, the whole set the stored draft should carry.
+/// `metadata`, the whole of what the stored draft should carry.
 ///
 /// # Errors
 ///
@@ -75,7 +75,7 @@ pub struct PutDraftOutcome {
 /// on a store failure, or [`SyncError::Outbox`] if the payload could not be encoded.
 #[allow(
     clippy::too_many_arguments,
-    reason = "outbox lease parameters plus the draft, the copy it replaces and its keywords"
+    reason = "outbox lease parameters plus the draft, the copy it replaces and its metadata"
 )]
 pub async fn put_draft_mail<P, S>(
     provider: &P,
@@ -85,7 +85,7 @@ pub async fn put_draft_mail<P, S>(
     ttl: Duration,
     draft: &Draft,
     replacing: Option<&ProviderKey>,
-    keywords: &BTreeSet<Keyword>,
+    metadata: &MessageMetadata,
 ) -> Result<PutDraftOutcome, SyncError>
 where
     P: Provider,
@@ -94,7 +94,7 @@ where
     let request = DraftPut {
         draft: draft.clone(),
         replacing: replacing.cloned(),
-        keywords: keywords.clone(),
+        metadata: metadata.clone(),
     };
     let payload = serde_json::to_value(&request)
         .map_err(|e| SyncError::Outbox(format!("encode draft put: {e}")))?;
@@ -121,7 +121,7 @@ where
             account,
             &request.draft,
             request.replacing.as_ref(),
-            &request.keywords,
+            &request.metadata,
         )
         .await
     {
@@ -137,7 +137,7 @@ where
             Ok(PutDraftOutcome {
                 op: leased.id,
                 key: receipt.key,
-                keywords: receipt.keywords,
+                kept: receipt.kept,
             })
         }
         Err(err) => {

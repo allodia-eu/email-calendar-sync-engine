@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 
 use engine_core::{
     ids::{AccountId, MessageIdHeader, ProviderKey},
-    mail::Keyword,
+    mail::{Keyword, MessageMetadata},
     write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, PendingOutcome, ResourceKey},
 };
 use engine_provider::{
@@ -44,8 +44,8 @@ pub struct SubmitOutcome {
     /// ignores it drops it for good: nothing later can rediscover a copy that was never
     /// written to the server.
     pub sent_copy: SentCopy,
-    /// Which of the draft's [`Draft::sent_copy_keywords`] the filed copy carries; see
-    /// [`SubmissionReceipt::sent_copy_keywords`](engine_provider::SubmissionReceipt::sent_copy_keywords).
+    /// Of the draft's [`Draft::sent_copy_metadata`], what the filed copy carries; see
+    /// [`SubmissionReceipt::sent_copy_kept`](engine_provider::SubmissionReceipt::sent_copy_kept).
     ///
     /// Like [`Self::sent_copy`], only this outcome carries it: a send the outbox drains
     /// later reports nothing, and the copy's keywords are then read from the next sync.
@@ -53,7 +53,7 @@ pub struct SubmitOutcome {
     /// Empty on an adapter that keeps them after the send
     /// ([`Capabilities::sent_copy_keywords_deferred`](engine_provider::Capabilities::sent_copy_keywords_deferred)):
     /// the outbox has queued an edit for them instead, and whether it landed is read from sync.
-    pub sent_copy_keywords: BTreeSet<Keyword>,
+    pub sent_copy_kept: MessageMetadata,
 }
 
 /// The outbox's record of a hand-over: [`Store::record_hand_over`] under the attempt's lease.
@@ -178,8 +178,9 @@ async fn record_deferred_keywords<P, S>(
         return;
     }
     let wanted: BTreeSet<Keyword> = draft
-        .sent_copy_keywords
-        .difference(&receipt.sent_copy_keywords)
+        .sent_copy_metadata
+        .keywords
+        .difference(&receipt.sent_copy_kept.keywords)
         .cloned()
         .collect();
     if wanted.is_empty() {
@@ -247,6 +248,6 @@ where
         email_key: receipt.email_key,
         message_id: receipt.message_id,
         sent_copy: receipt.sent_copy,
-        sent_copy_keywords: receipt.sent_copy_keywords,
+        sent_copy_kept: receipt.sent_copy_kept,
     })
 }

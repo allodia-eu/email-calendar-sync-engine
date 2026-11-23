@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use engine_core::{
     ids::{AccountId, MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Keyword, Message},
+    mail::{EmailAddress, Keyword, Message, MessageMetadata},
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, Provider};
@@ -79,11 +79,11 @@ async fn live_jmap_a_draft_keeps_its_keyword_and_a_re_save_without_it_drops_it()
             &account(),
             &draft(message_id, &harness.account),
             None,
-            &tagged,
+            &MessageMetadata::default().with_keywords(tagged.clone()),
         )
         .await
         .expect("first save");
-    assert_eq!(first.keywords, tagged, "the receipt says it was kept");
+    assert_eq!(first.kept.keywords, tagged, "the receipt says it was kept");
     let stored = synced(&provider, &first.key).await;
 
     let second = provider
@@ -91,7 +91,7 @@ async fn live_jmap_a_draft_keeps_its_keyword_and_a_re_save_without_it_drops_it()
             &account(),
             &draft(message_id, &harness.account),
             Some(&first.key),
-            &BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .expect("second save");
@@ -109,7 +109,7 @@ async fn live_jmap_a_draft_keeps_its_keyword_and_a_re_save_without_it_drops_it()
         "{:?}",
         stored.keywords
     );
-    assert_eq!(second.keywords, BTreeSet::new());
+    assert_eq!(second.kept.keywords, BTreeSet::new());
     assert!(
         !resaved.keywords.contains(&keyword()),
         "{:?}",

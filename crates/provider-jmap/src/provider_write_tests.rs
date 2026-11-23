@@ -303,7 +303,7 @@ async fn submit_email_sets_the_sent_copy_keywords_on_the_filed_copy() {
     .await
     .unwrap();
 
-    assert_eq!(receipt.sent_copy_keywords, [keyword].into());
+    assert_eq!(receipt.sent_copy_kept.keywords, [keyword].into());
     // A third request, after the send, addressed to the email the send created.
     let requests = exec.requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
@@ -342,6 +342,6 @@ async fn a_send_without_sent_copy_keywords_makes_no_third_request() {
     .await
     .unwrap();
 
-    assert!(receipt.sent_copy_keywords.is_empty());
+    assert!(receipt.sent_copy_kept.keywords.is_empty());
     assert_eq!(exec.requests.lock().unwrap().len(), 2);
 }

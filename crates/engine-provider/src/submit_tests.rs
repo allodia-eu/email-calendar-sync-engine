@@ -2,6 +2,10 @@
 //! round trip every field must survive (a `Draft` is stored as an outbox `PendingOp`
 //! before the send). A sibling file so `submit.rs` stays under the line limit.
 
+use std::collections::BTreeSet;
+
+use engine_core::mail::MessageMetadata;
+
 use super::*;
 
 fn mid(value: &str) -> MessageIdHeader {
@@ -181,8 +185,8 @@ fn keyword(value: &str) -> Keyword {
 }
 
 #[test]
-fn new_asks_for_no_keywords_on_the_sent_copy() {
-    assert!(draft().sent_copy_keywords.is_empty());
+fn new_asks_for_no_metadata_on_the_sent_copy() {
+    assert!(draft().sent_copy_metadata.is_empty());
 }
 
 #[test]
@@ -192,20 +196,29 @@ fn the_sent_copy_keyword_builder_collects_each_keyword_once() {
         .with_sent_copy_keyword(keyword("Project-X"))
         .with_sent_copy_keyword(keyword("review"));
     assert_eq!(
-        draft.sent_copy_keywords,
+        draft.sent_copy_metadata.keywords,
         BTreeSet::from([keyword("project-x"), keyword("review")])
     );
 }
 
 #[test]
-fn sent_copy_keywords_survive_the_durable_payload_round_trip() {
+fn the_sent_copy_metadata_builder_replaces_what_was_asked() {
+    let asked = MessageMetadata::default().with_keyword(keyword("review"));
+    let draft = draft()
+        .with_sent_copy_keyword(keyword("project-x"))
+        .with_sent_copy_metadata(asked.clone());
+    assert_eq!(draft.sent_copy_metadata, asked);
+}
+
+#[test]
+fn sent_copy_metadata_survives_the_durable_payload_round_trip() {
     let draft = draft().with_sent_copy_keyword(keyword("project-x"));
     let json = serde_json::to_string(&draft).unwrap();
     assert_eq!(serde_json::from_str::<Draft>(&json).unwrap(), draft);
 }
 
 #[test]
-fn a_payload_without_sent_copy_keywords_still_deserializes() {
+fn a_payload_without_sent_copy_metadata_still_deserializes() {
     let json = r#"{
         "message_id": "old@host",
         "from": {"email": "alice@test.local"},
@@ -214,24 +227,41 @@ fn a_payload_without_sent_copy_keywords_still_deserializes() {
         "text_body": "body"
     }"#;
     let restored: Draft = serde_json::from_str(json).unwrap();
-    assert!(restored.sent_copy_keywords.is_empty());
+    assert!(restored.sent_copy_metadata.is_empty());
+}
+
+#[test]
+fn a_payload_persisted_with_sent_copy_keywords_reads_them_as_metadata() {
+    // The shape an outbox persisted a draft in before `MessageMetadata`.
+    let json = r#"{
+        "message_id": "old@host",
+        "from": {"email": "alice@test.local"},
+        "to": [{"email": "bob@test.local"}],
+        "subject": "hi",
+        "text_body": "body",
+        "sent_copy_keywords": ["project-x", "review"]
+    }"#;
+    let restored: Draft = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        restored.sent_copy_metadata,
+        MessageMetadata::default()
+            .with_keywords(BTreeSet::from([keyword("project-x"), keyword("review")]))
+    );
 }
 
 #[tokio::test]
-async fn a_receipt_reports_no_kept_keywords_until_an_adapter_says_so() {
+async fn a_receipt_reports_nothing_kept_until_an_adapter_says_so() {
     let proof = crate::HandOver::new(&crate::Unrecorded)
         .commit()
         .await
         .unwrap();
     let filed = SubmissionReceipt::filed(ProviderKey::new("k").unwrap(), mid("a@host"), &proof);
-    assert!(filed.sent_copy_keywords.is_empty());
+    assert!(filed.sent_copy_kept.is_empty());
     let unfiled =
         SubmissionReceipt::unfiled(ProviderKey::new("k").unwrap(), mid("a@host"), "no", &proof);
-    assert!(unfiled.sent_copy_keywords.is_empty());
+    assert!(unfiled.sent_copy_kept.is_empty());
 
-    let kept = filed.with_sent_copy_keywords(BTreeSet::from([keyword("project-x")]));
-    assert_eq!(
-        kept.sent_copy_keywords,
-        BTreeSet::from([keyword("project-x")])
-    );
+    let metadata = MessageMetadata::default().with_keyword(keyword("project-x"));
+    let kept = filed.with_sent_copy_kept(metadata.clone());
+    assert_eq!(kept.sent_copy_kept, metadata);
 }

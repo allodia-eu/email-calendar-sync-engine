@@ -12,7 +12,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, ProviderKey},
-    mail::{Keyword, Mailbox, Message},
+    mail::{Mailbox, Message, MessageMetadata},
     raw::RawMime,
     sync::{MailboxWindows, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::CalendarDate,
@@ -152,7 +152,7 @@ impl GmailProvider {
     /// Keeps each of `names`' keywords as a Gmail label under one of its names.
     ///
     /// Gmail stores no free-form keyword, so a keyword a draft asks for on its filed copy
-    /// ([`Draft::sent_copy_keywords`]) is kept only when it has a name here. A label under any
+    /// ([`Draft::sent_copy_metadata`]) is kept only when it has a name here. A label under any
     /// of a keyword's names is then read as that keyword: it leaves the label list and every
     /// message's memberships, and the message carries the keyword instead. The same holds for
     /// a stored draft's keywords. With at least one name, the adapter advertises
@@ -333,16 +333,19 @@ impl Provider for GmailProvider {
         _account: &AccountId,
         draft: &engine_provider::Draft,
         replacing: Option<&ProviderKey>,
-        keywords: &BTreeSet<Keyword>,
+        metadata: &MessageMetadata,
     ) -> ProviderResult<DraftReceipt> {
         let (key, message) = crate::drafts::put_draft(&self.client, draft, replacing).await?;
         let kept = match message {
-            Some(message) if !keywords.is_empty() => {
-                self.labels.tag(&self.client, &message, keywords).await
+            Some(message) if !metadata.keywords.is_empty() => {
+                self.labels
+                    .tag(&self.client, &message, &metadata.keywords)
+                    .await
             }
             _ => BTreeSet::new(),
         };
-        Ok(DraftReceipt::stored(key).with_keywords(kept))
+        // Gmail stamps a draft's arrival time itself, so only the keywords are kept.
+        Ok(DraftReceipt::stored(key).with_kept(MessageMetadata::default().with_keywords(kept)))
     }
 
     /// Removes a stored draft (`drafts.delete`), reporting one that is already gone as

@@ -180,7 +180,7 @@ async fn submit_mail_reports_the_keywords_the_filed_copy_carries() {
     .unwrap();
 
     assert_eq!(
-        outcome.sent_copy_keywords,
+        outcome.sent_copy_kept.keywords,
         std::collections::BTreeSet::from([keyword])
     );
 }

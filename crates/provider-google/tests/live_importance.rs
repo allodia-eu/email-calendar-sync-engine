@@ -18,7 +18,7 @@
 
 use engine_core::{
     ids::{AccountId, MessageIdHeader},
-    mail::{EmailAddress, Importance, Message},
+    mail::{EmailAddress, Importance, Message, MessageMetadata},
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, Provider};
@@ -86,7 +86,7 @@ async fn live_gmail_a_drafts_importance_reads_back() {
         .with_importance(importance);
         keys.push(
             provider
-                .put_draft(&account(), &draft, None, &std::collections::BTreeSet::new())
+                .put_draft(&account(), &draft, None, &MessageMetadata::default())
                 .await
                 .map(|stored| stored.key)
                 .expect("save"),

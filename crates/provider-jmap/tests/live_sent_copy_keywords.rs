@@ -115,9 +115,9 @@ async fn the_filed_copy_carries_the_keywords_and_the_delivered_one_does_not() {
         .await
         .expect("submit");
     assert!(
-        receipt.sent_copy_keywords.contains(&keyword),
+        receipt.sent_copy_kept.keywords.contains(&keyword),
         "the receipt says the copy kept the keyword: {:?}",
-        receipt.sent_copy_keywords
+        receipt.sent_copy_kept.keywords
     );
 
     let filed = copy_in(&carol, MailboxRole::Sent, &message_id)

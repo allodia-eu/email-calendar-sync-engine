@@ -17,9 +17,9 @@
 //! outcome travelling up *is* the diagnostic. What it must never do is fail the send: the
 //! mail is already gone, and a caller that treated filing as delivery would re-send it.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 
-use engine_core::ids::ProviderKey;
+use engine_core::{ids::ProviderKey, mail::MessageMetadata};
 use engine_provider::{
     Draft, HandOver, HandedOver, ProviderError, ProviderResult, SubmissionReceipt,
 };
@@ -239,7 +239,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                 draft.message_id.clone(),
                 &handed_over,
             )
-            .with_sent_copy_keywords(placed.keywords)),
+            .with_sent_copy_kept(MessageMetadata::default().with_keywords(placed.keywords))),
             // Delivered, but the copy is not in Sent and no later sync can find it — there
             // is nothing on the server to reconcile against. Never an `Err`: the message
             // has reached its recipients, and a caller that saw a failure here would
@@ -280,7 +280,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
                         &store,
                         Filing::Sent,
                         filed,
-                        &draft.sent_copy_keywords,
+                        &draft.sent_copy_metadata.keywords,
                     )
                     .await
                 }
@@ -332,7 +332,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         draft: &Draft,
     ) -> ProviderResult<Placed> {
         let store = self.store_on(connection).await?;
-        let keywords = &draft.sent_copy_keywords;
+        let keywords = &draft.sent_copy_metadata.keywords;
         place_if_absent(
             connection,
             &store,
@@ -396,9 +396,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ImapProvider<S> 
         let mut connection = self.session().await?;
         let result = async {
             let store = self.store_on(&mut connection).await?;
-            let saved =
-                crate::drafts::put_draft(&mut connection, &store, draft, None, &BTreeSet::new())
-                    .await?;
+            let saved = crate::drafts::put_draft(
+                &mut connection,
+                &store,
+                draft,
+                None,
+                &MessageMetadata::default(),
+            )
+            .await?;
             Ok(saved.key)
         }
         .await;

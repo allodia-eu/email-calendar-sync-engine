@@ -14,7 +14,7 @@
 //! reconcile-by-`Message-ID` would not match anyway; the returned id is authoritative.
 //! The filed-assembly variant keeps the `Bcc` header on the stored Sent copy.
 
-use engine_core::ids::ProviderKey;
+use engine_core::{ids::ProviderKey, mail::MessageMetadata};
 use engine_provider::{Draft, HandOver, ProviderResult, SubmissionReceipt};
 use time::OffsetDateTime;
 
@@ -63,7 +63,7 @@ pub(crate) async fn send(
     };
     Ok(
         SubmissionReceipt::filed(key, draft.message_id.clone(), &handed_over)
-            .with_sent_copy_keywords(kept),
+            .with_sent_copy_kept(MessageMetadata::default().with_keywords(kept)),
     )
 }
 

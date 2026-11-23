@@ -197,13 +197,13 @@ Its hand-over is recorded before the last piece of that body, the point of no re
 
 Graph stores no free-form keyword. The nearest thing is `categories`, a list of names on each
 message that Outlook shows the person. So a keyword a draft asks for on its filed copy
-(`Draft::sent_copy_keywords`) is kept only when the host registered a name for it
+(`Draft::sent_copy_metadata`) is kept only when the host registered a name for it
 (`GraphProvider::with_keyword_names`, taking `KeywordName`s), and only then does the adapter
 advertise `sent_copy_keywords` (`crate::categories`).
 
 - **After the send, never inside it, and not while the send waits.** `sendMail` answers `202`
   and files the copy a moment later, with no id, so the adapter keeps nothing within the send:
-  the receipt's `sent_copy_keywords` is empty and the adapter advertises
+  the receipt's `sent_copy_kept` is empty and the adapter advertises
   `sent_copy_keywords_deferred`. The outbox then records a `MailEdit::SetKeywords` on the copy's
   `sent:<Message-ID>` placeholder key (`engine-sync`'s `record_deferred_keywords`), and the drainer
   applies it. The adapter resolves a placeholder by looking the copy up in Sent Items by the
@@ -247,7 +247,7 @@ assumed (`tests/live_drafts.rs`). Graph advertises `mail_drafts`.
   anything. The save's own answer (the create's, or the rewrite's `PATCH`) says which categories
   the draft holds; one that does not is read again. A rewrite in place keeps the message and its
   categories (live), which is why a keyword the save no longer asks for has to be taken off. A
-  refused `PATCH` leaves the draft saved and the keyword out of `DraftReceipt::keywords`.
+  refused `PATCH` leaves the draft saved and the keyword out of `DraftReceipt::kept`.
 
 - **Importance is the message's `importance` property**, in `MESSAGE_SELECT`. Exchange reads it
   from a message's MIME by the rule `Importance::from_headers` copies, observed for thirty header

@@ -48,7 +48,7 @@ use std::sync::{Arc, Mutex};
 
 use engine_core::{
     ids::{AccountId, MessageIdHeader},
-    mail::EmailAddress,
+    mail::{EmailAddress, MessageMetadata},
 };
 use engine_http::{RetryConfig, ThrottleEvent};
 use engine_provider::{Draft, DraftAttachment, Provider};
@@ -148,7 +148,7 @@ async fn live_a_jmap_concurrency_refusal_is_waited_out_rather_than_returned() {
                     let draft = draft(rounds * 1_000 + client * PER_CLIENT + n);
                     async move {
                         provider
-                            .put_draft(&account(), &draft, None, &std::collections::BTreeSet::new())
+                            .put_draft(&account(), &draft, None, &MessageMetadata::default())
                             .await
                             .map(|stored| stored.key)
                     }

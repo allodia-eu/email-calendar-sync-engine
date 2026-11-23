@@ -108,10 +108,19 @@ The organiser identity has a different authority on each transport:
   object a scheduling message (RFC 6047 §2.4). The three that assemble RFC 5322 bytes themselves
   can; JMAP, which hands the server a body structure, cannot — see
   [`jmap.md`](agent-guidance/jmap.md).
+- **One vocabulary for what a stored message carries.** `engine_core::mail::MessageMetadata`
+  (keywords and arrival time today) is what every write that stores a message asks for: a draft's
+  `put_draft` metadata, the Sent copy's `Draft::sent_copy_metadata`, an import's. Every receipt
+  answers in the same type with what the target kept (`DraftReceipt::kept`,
+  `SubmissionReceipt::sent_copy_kept`), so a field added to it reaches every write path at once.
+  `Message::metadata` is the one mapping from a message read at a source to what a write asks
+  for. A target stamps a draft's and a Sent copy's arrival time itself, so an asked `received_at`
+  is never kept there. It serializes as a map, and reads a bare keyword list too: the form an
+  outbox persisted draft and Sent-copy keywords in before it existed.
 - **Keywords on the Sent copy** (`sent_copy_keywords`) is a request, answered per send. A draft
-  names keywords for the sender's filed copy (`Draft::sent_copy_keywords`), and the receipt says
-  which the copy carries (`SubmissionReceipt::sent_copy_keywords`, surfaced as
-  `SubmitOutcome::sent_copy_keywords`). IMAP puts them on the `APPEND`, but only where the Sent
+  names keywords for the sender's filed copy (`Draft::sent_copy_metadata`), and the receipt says
+  which the copy carries (`SubmissionReceipt::sent_copy_kept`, surfaced as
+  `SubmitOutcome::sent_copy_kept`). IMAP puts them on the `APPEND`, but only where the Sent
   folder's `PERMANENTFLAGS` carries `\*`: elsewhere the server would answer `OK` and keep nothing,
   so the copy is filed without them. JMAP sets them with an `Email/set` after the send. Graph keeps
   no free-form keyword, only named categories the person sees, so it keeps a keyword only when the
@@ -126,8 +135,8 @@ The organiser identity has a different authority on each transport:
   (`GmailProvider::with_keyword_names`, [`google.md`](agent-guidance/google.md)). A keyword never
   fails a send.
 - **Keywords on a stored draft** (`draft_keywords`) is the same request, answered per save.
-  `put_draft` takes the whole set the draft should carry and `DraftReceipt::keywords` (surfaced as
-  `PutDraftOutcome::keywords`) says which it carries. IMAP puts them on the draft's `APPEND` where
+  `put_draft` takes the whole of the metadata the draft should carry and `DraftReceipt::kept` (surfaced as
+  `PutDraftOutcome::kept`) says which it carries. IMAP puts them on the draft's `APPEND` where
   Drafts allows new keywords, JMAP in the `Email/set` create; Graph and Gmail keep only those with
   a `KeywordName`, as a category set after the save and as a label put on the message under the
   draft after each save. A synced draft reads them back on every transport. A keyword never fails
@@ -445,7 +454,7 @@ The `engine_provider::Capabilities` bitset tells the engine what a connected acc
 | `message_source` | The account can fetch a message's raw RFC 5322 source on demand. |
 | `submission` | The account can submit/send new mail. |
 | `scheduling_submission` | Submission can carry an iTIP object as an iMIP scheduling part (RFC 6047), rather than as a plain calendar attachment. |
-| `sent_copy_keywords` | The adapter sets a draft's `sent_copy_keywords` on the filed Sent copy; the server may still decline, so the receipt says which were kept. |
+| `sent_copy_keywords` | The adapter sets the keywords of a draft's `sent_copy_metadata` on the filed Sent copy; the server may still decline, so the receipt says which were kept. |
 | `draft_keywords` | The adapter keeps `put_draft`'s keywords on the stored draft; the server may still decline, so the receipt says which were kept. |
 | `sent_copy_keywords_deferred` | The adapter keeps them after the send rather than within it: the receipt reports none, and the outbox records a `MailEdit::SetKeywords` for the drainer to apply. |
 | `idle` | The provider can watch for push notifications and emit `WatchEvent`s. |

@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Keyword},
+    mail::{EmailAddress, Keyword, MessageMetadata},
 };
 use engine_provider::{Draft, KeywordName, Provider};
 use serde_json::{Value, json};
@@ -83,12 +83,17 @@ async fn a_new_draft_takes_the_category_and_reports_the_keyword_kept() {
     ]);
 
     let receipt = p
-        .put_draft(&account(), &draft(), None, &tagged())
+        .put_draft(
+            &account(),
+            &draft(),
+            None,
+            &MessageMetadata::default().with_keywords(tagged()),
+        )
         .await
         .unwrap();
 
     assert_eq!(receipt.key.as_str(), "AAMkAGnew");
-    assert_eq!(receipt.keywords, tagged());
+    assert_eq!(receipt.kept.keywords, tagged());
     assert_eq!(categories_patched(&requests), [json!(["Project X"])]);
 }
 
@@ -102,12 +107,17 @@ async fn a_re_save_in_place_takes_off_a_keyword_it_no_longer_asks_for() {
     )]);
 
     let receipt = p
-        .put_draft(&account(), &draft(), Some(&stored()), &BTreeSet::new())
+        .put_draft(
+            &account(),
+            &draft(),
+            Some(&stored()),
+            &MessageMetadata::default(),
+        )
         .await
         .unwrap();
 
     assert_eq!(receipt.key, stored());
-    assert_eq!(receipt.keywords, BTreeSet::new());
+    assert_eq!(receipt.kept.keywords, BTreeSet::new());
     assert_eq!(categories_patched(&requests), [json!(["Blue"])]);
 }
 
@@ -121,11 +131,16 @@ async fn a_re_save_that_already_carries_the_category_patches_nothing_more() {
     )]);
 
     let receipt = p
-        .put_draft(&account(), &draft(), Some(&stored()), &tagged())
+        .put_draft(
+            &account(),
+            &draft(),
+            Some(&stored()),
+            &MessageMetadata::default().with_keywords(tagged()),
+        )
         .await
         .unwrap();
 
-    assert_eq!(receipt.keywords, tagged());
+    assert_eq!(receipt.kept.keywords, tagged());
     assert_eq!(categories_patched(&requests), [] as [Value; 0]);
 }
 
@@ -140,11 +155,16 @@ async fn an_answer_that_does_not_say_is_read_again() {
     ]);
 
     let receipt = p
-        .put_draft(&account(), &draft(), Some(&stored()), &tagged())
+        .put_draft(
+            &account(),
+            &draft(),
+            Some(&stored()),
+            &MessageMetadata::default().with_keywords(tagged()),
+        )
         .await
         .unwrap();
 
-    assert_eq!(receipt.keywords, tagged());
+    assert_eq!(receipt.kept.keywords, tagged());
     assert!(
         requests
             .lock()
@@ -168,12 +188,17 @@ async fn a_refused_category_change_leaves_the_draft_saved_and_says_so() {
     ]);
 
     let receipt = p
-        .put_draft(&account(), &draft(), None, &tagged())
+        .put_draft(
+            &account(),
+            &draft(),
+            None,
+            &MessageMetadata::default().with_keywords(tagged()),
+        )
         .await
         .unwrap();
 
     assert_eq!(receipt.key.as_str(), "AAMkAGnew");
-    assert_eq!(receipt.keywords, BTreeSet::new());
+    assert_eq!(receipt.kept.keywords, BTreeSet::new());
 }
 
 #[tokio::test]
@@ -186,11 +211,16 @@ async fn without_a_registered_name_nothing_is_kept_or_asked() {
     assert!(!p.connection_info().capabilities.draft_keywords());
 
     let receipt = p
-        .put_draft(&account(), &draft(), None, &tagged())
+        .put_draft(
+            &account(),
+            &draft(),
+            None,
+            &MessageMetadata::default().with_keywords(tagged()),
+        )
         .await
         .unwrap();
 
-    assert_eq!(receipt.keywords, BTreeSet::new());
+    assert_eq!(receipt.kept.keywords, BTreeSet::new());
     assert_eq!(
         requests.lock().unwrap().len(),
         1,

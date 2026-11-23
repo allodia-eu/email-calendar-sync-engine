@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 
-use super::{EmailBodyPart, Envelope, Keyword, SystemKeyword, ThreadRef};
+use super::{EmailBodyPart, Envelope, Keyword, MessageMetadata, SystemKeyword, ThreadRef};
 use crate::{
     attachment::Attachment,
     extended::ExtendedProperties,
@@ -158,6 +158,18 @@ impl Message {
     pub fn is_unread(&self) -> bool {
         !self.has_system_keyword(SystemKeyword::Seen) && !self.is_draft()
     }
+
+    /// What this message carries beside its bytes and placement, as a write asks for it: the
+    /// one mapping from a message read at a source to the metadata stored with it at a target
+    /// ([`MessageMetadata`]).
+    #[must_use]
+    pub fn metadata(&self) -> MessageMetadata {
+        let metadata = MessageMetadata::default().with_keywords(self.keywords.clone());
+        match self.received_at {
+            Some(at) => metadata.with_received_at(at),
+            None => metadata,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -169,6 +181,23 @@ mod tests {
             MessageId::try_from(id).unwrap(),
             Memberships::of_one(MailboxId::try_from(mailbox).unwrap()),
         )
+    }
+
+    #[test]
+    fn a_message_hands_over_its_keywords_and_arrival_time_as_metadata() {
+        let mut read = message("m1", "inbox");
+        assert!(read.metadata().is_empty());
+
+        read.keywords
+            .insert(Keyword::system(SystemKeyword::Flagged));
+        read.received_at = Some("2019-02-03T04:05:06Z".parse().unwrap());
+
+        assert_eq!(
+            read.metadata(),
+            MessageMetadata::default()
+                .with_keyword(Keyword::system(SystemKeyword::Flagged))
+                .with_received_at("2019-02-03T04:05:06Z".parse().unwrap())
+        );
     }
 
     #[test]

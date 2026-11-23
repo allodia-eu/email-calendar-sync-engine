@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 
 use engine_api::{ApiError, DrainOutcome, Engine, PendingOpKind, PendingOpState};
+use engine_core::mail::MessageMetadata;
 
 use super::*;
 
@@ -21,7 +22,13 @@ async fn a_save_returns_the_key_to_hold_and_the_re_save_moves_it() {
     let draft = draft("compose-1@test.local", "Quarterly report");
 
     let first = engine
-        .put_draft(&provider, &account(), &draft, None, &BTreeSet::new())
+        .put_draft(
+            &provider,
+            &account(),
+            &draft,
+            None,
+            &MessageMetadata::default(),
+        )
         .await
         .unwrap();
     assert_eq!(first.key, ProviderKey::new("draft-1").unwrap());
@@ -37,7 +44,7 @@ async fn a_save_returns_the_key_to_hold_and_the_re_save_moves_it() {
             &account(),
             &draft,
             Some(&first.key),
-            &BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .unwrap();
@@ -79,7 +86,7 @@ async fn a_save_with_no_network_is_kept_and_the_drain_reports_its_key() {
             &account(),
             &draft("compose-offline@test.local", "Quarterly report"),
             None,
-            &BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .unwrap_err();
@@ -164,10 +171,10 @@ async fn a_save_carries_its_keywords_and_reports_them_kept() {
             &account(),
             &draft("compose-kw@test.local", "Quarterly report"),
             None,
-            &keywords,
+            &MessageMetadata::default().with_keywords(keywords.clone()),
         )
         .await
         .unwrap();
 
-    assert_eq!(saved.keywords, keywords);
+    assert_eq!(saved.kept.keywords, keywords);
 }

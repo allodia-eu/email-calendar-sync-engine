@@ -97,9 +97,9 @@ async fn the_filed_copy_carries_the_keywords_the_send_asked_for() {
         .expect("submit");
     assert!(receipt.sent_copy.is_filed());
     assert!(
-        receipt.sent_copy_keywords.contains(&keyword),
+        receipt.sent_copy_kept.keywords.contains(&keyword),
         "the receipt says the copy kept the keyword: {:?}",
-        receipt.sent_copy_keywords
+        receipt.sent_copy_kept.keywords
     );
 
     let SyncUpdate::Snapshot { objects, .. } = sent

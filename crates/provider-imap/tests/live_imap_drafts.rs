@@ -12,7 +12,7 @@ use std::time::Duration as StdDuration;
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader},
-    mail::{EmailAddress, MailboxRole},
+    mail::{EmailAddress, MailboxRole, MessageMetadata},
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, Provider};
@@ -125,7 +125,7 @@ async fn live_imap_replacing_a_draft_leaves_exactly_one() {
             &account,
             &draft(message_id, "First version", &harness.account),
             None,
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -142,7 +142,7 @@ async fn live_imap_replacing_a_draft_leaves_exactly_one() {
             &account,
             &draft(message_id, "Second version", &harness.account),
             Some(&first),
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)

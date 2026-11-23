@@ -587,7 +587,7 @@ credential.
   the retry reads it from the `SELECT` its probe already makes, and gives a copy it finds
   already placed the keywords with an idempotent `+FLAGS`. A `SELECT` or `STORE` that
   fails leaves them out rather than failing the placement. The receipt's
-  `sent_copy_keywords` names the ones the copy carries; a `PERMANENTFLAGS` that lists a
+  `sent_copy_kept` names the ones the copy carries; a `PERMANENTFLAGS` that lists a
   keyword by name without `\*` counts as not allowing it, since only `\*` is parsed. The
   repair (`refile`) sets them the same way and returns only the key, so what it kept is
   read from the next sync (`place.rs`, `tests/live_imap_sent_keywords.rs`).
@@ -742,7 +742,7 @@ credential.
   `\Draft \Seen`, so keeping a draft works against any IMAP server even where SMTP
   submission cannot. The keywords `put_draft` is given ride the same `APPEND`, by the rule a
   Sent copy's follow (`place.rs`): asked for only where a `SELECT` of Drafts shows `\*` in
-  `PERMANENTFLAGS`, reported in `DraftReceipt::keywords` either way. Unlike Sent placement an `APPEND` failure surfaces: saving the
+  `PERMANENTFLAGS`, reported in `DraftReceipt::kept` either way. Unlike Sent placement an `APPEND` failure surfaces: saving the
   draft is the whole op. `ImapProvider::save_draft` remains as the first-save
   convenience the example and the live suite use, and is the same code path.
 - **A re-save is `APPEND` then `UID STORE +FLAGS (\Deleted)` + `UID EXPUNGE`, in that

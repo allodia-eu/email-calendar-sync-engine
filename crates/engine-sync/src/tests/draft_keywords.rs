@@ -2,6 +2,8 @@
 //! kept, a save queued with no network takes its keywords to the drainer, and a change of
 //! keywords alone is a save of its own.
 
+use engine_core::mail::MessageMetadata;
+
 use super::*;
 use crate::outbox::{DraftPut, put_draft_mail};
 
@@ -38,7 +40,7 @@ async fn save(
         Duration::from_secs(30),
         draft,
         None,
-        keywords,
+        &MessageMetadata::default().with_keywords(keywords.clone()),
     )
     .await
 }
@@ -53,7 +55,7 @@ async fn a_save_hands_its_keywords_over_and_reports_what_was_kept() {
         .await
         .unwrap();
 
-    assert_eq!(saved.keywords, wanted);
+    assert_eq!(saved.kept.keywords, wanted);
     assert_eq!(provider.draft_puts.lock().unwrap()[0].1, wanted);
 }
 
@@ -71,7 +73,7 @@ async fn an_adapter_that_keeps_none_says_so_and_the_save_still_succeeds() {
     .await
     .unwrap();
 
-    assert_eq!(saved.keywords, BTreeSet::new());
+    assert_eq!(saved.kept.keywords, BTreeSet::new());
     assert_eq!(
         store.pending_op_state(saved.op).await.unwrap(),
         Some(PendingOpState::Succeeded)
@@ -121,7 +123,7 @@ async fn changing_only_the_keywords_is_a_save_of_its_own() {
 
     assert_ne!(plain.op, tagged.op);
     assert_eq!(provider.draft_puts.lock().unwrap().len(), 2);
-    assert_eq!(tagged.keywords, BTreeSet::from([keyword()]));
+    assert_eq!(tagged.kept.keywords, BTreeSet::from([keyword()]));
 }
 
 #[test]
@@ -129,5 +131,17 @@ fn a_queued_save_from_before_keywords_still_reads() {
     let draft = composing("kw-5@test.local");
     let old = serde_json::json!({ "draft": draft, "replacing": null });
     let read: DraftPut = serde_json::from_value(old).unwrap();
-    assert_eq!(read.keywords, BTreeSet::new());
+    assert!(read.metadata.is_empty());
+}
+
+#[test]
+fn a_queued_save_from_before_metadata_reads_its_keywords() {
+    // The shape a save was queued in before `MessageMetadata`: a bare keyword list.
+    let draft = composing("kw-6@test.local");
+    let old = serde_json::json!({ "draft": draft, "replacing": null, "keywords": ["project-x"] });
+    let read: DraftPut = serde_json::from_value(old).unwrap();
+    assert_eq!(
+        read.metadata,
+        MessageMetadata::default().with_keyword(Keyword::new("project-x").unwrap())
+    );
 }

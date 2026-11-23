@@ -19,7 +19,7 @@
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader},
-    mail::{EmailAddress, MailboxRole, SystemKeyword},
+    mail::{EmailAddress, MailboxRole, MessageMetadata, SystemKeyword},
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, Provider};
@@ -145,7 +145,7 @@ async fn live_graph_replacing_a_draft_leaves_exactly_one() {
             &account(),
             &draft(message_id, "First version"),
             None,
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -161,7 +161,7 @@ async fn live_graph_replacing_a_draft_leaves_exactly_one() {
             &account(),
             &draft(message_id, "Second version"),
             Some(&first),
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -218,7 +218,7 @@ async fn live_graph_a_saved_draft_is_filed_as_a_draft() {
             &account(),
             &draft(message_id, "Filed as a draft"),
             None,
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -281,7 +281,7 @@ async fn live_graph_a_rewritten_draft_keeps_its_message_id() {
             &account(),
             &draft(message_id, "Header v1"),
             None,
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -291,7 +291,7 @@ async fn live_graph_a_rewritten_draft_keeps_its_message_id() {
             &account(),
             &draft(message_id, "Header v2"),
             Some(&first),
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -348,7 +348,7 @@ async fn live_graph_an_attachment_change_keeps_the_draft() {
             &account(),
             &draft(message_id, "Attach v1"),
             None,
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -366,7 +366,7 @@ async fn live_graph_an_attachment_change_keeps_the_draft() {
             &account(),
             &with_file,
             Some(&first),
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -386,7 +386,7 @@ async fn live_graph_an_attachment_change_keeps_the_draft() {
             &account(),
             &draft(message_id, "Attach v3"),
             Some(&second),
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -435,7 +435,7 @@ async fn live_graph_an_html_draft_is_stored_as_html_by_both_paths() {
             &account(),
             &rich("HTML v1", "<p><strong>one</strong></p>"),
             None,
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -452,7 +452,7 @@ async fn live_graph_an_html_draft_is_stored_as_html_by_both_paths() {
             &account(),
             &rich("HTML v2", "<p><em>two</em></p>"),
             Some(&created),
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)

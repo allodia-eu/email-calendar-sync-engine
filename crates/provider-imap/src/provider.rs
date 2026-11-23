@@ -18,7 +18,7 @@ use std::{
 use async_trait::async_trait;
 use engine_core::{
     ids::{AccountId, MailboxId, ProviderKey, SharedAccountId},
-    mail::{Keyword, Mailbox, Message},
+    mail::{Mailbox, Message, MessageMetadata},
     sync::{MailboxWindows, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::CalendarDate,
 };
@@ -316,12 +316,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
         _account: &AccountId,
         draft: &Draft,
         replacing: Option<&ProviderKey>,
-        keywords: &BTreeSet<Keyword>,
+        metadata: &MessageMetadata,
     ) -> ProviderResult<DraftReceipt> {
         let mut connection = self.session().await?;
         let result = match self.store_on(&mut connection).await {
             Ok(store) => {
-                crate::drafts::put_draft(&mut connection, &store, draft, replacing, keywords).await
+                crate::drafts::put_draft(&mut connection, &store, draft, replacing, metadata).await
             }
             Err(err) => Err(err),
         };
