@@ -6,10 +6,10 @@
 //! message. Two commands rather than JMAP's one, because IMAP keeps the flag and the
 //! folder in different verbs.
 //!
-//! **The keyword is stored only if the server allows new keywords**, and that is not a
-//! given. RFC 9051 §7.1 makes `\*` in the `SELECT` response's `PERMANENTFLAGS` the
-//! server's statement that a client may create them; without it a server answers
-//! `UID STORE +FLAGS ($Junk)` with a plain `OK` and keeps nothing. The report would
+//! **The keyword is stored only if the mailbox keeps it**, and that is not a given: a server
+//! that cannot keep it answers `UID STORE +FLAGS ($Junk)` with a plain `OK` and keeps nothing.
+//! Whether it does is the one rule every keyword write follows ([`crate::permanent`]: named in
+//! `PERMANENTFLAGS`, or `\*` there). The report would
 //! read as delivered and be absent on the next `FETCH` — a silent success, and the
 //! reason this path checks the response code before it writes rather than trusting the
 //! `OK`. Stalwart advertises `\*` (verified live), so the refusal branch is the one
@@ -18,7 +18,7 @@
 //! Both keywords in the contradicting pair are handled: the verdict's is added and its
 //! opposite removed, so a message is never left asserting it is both junk and not.
 
-use engine_core::ids::ProviderKey;
+use engine_core::{ids::ProviderKey, mail::Keyword};
 use engine_provider::{MessageReport, ProviderError, ProviderResult, ReportReceipt, ReportVerdict};
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -48,7 +48,7 @@ const fn keywords_for(verdict: ReportVerdict) -> (&'static str, &'static [&'stat
 /// # Errors
 ///
 /// - [`ProviderError::invalid_state`] if the target key is unparseable, a mailbox name carries a
-///   control character, or the target mailbox does not permit new keywords (no `\*` in
+///   control character, or the target mailbox does not keep the verdict keyword (by
 ///   `PERMANENTFLAGS`) — the report is refused rather than written into a flag the server will
 ///   discard.
 /// - [`ProviderError::conflict`] if the target mailbox's `UIDVALIDITY` has moved (the key is stale;
@@ -64,14 +64,15 @@ where
     let key = &report.target;
     let (mailbox, uid, selected) = select_target(connection, key).await?;
 
-    if !selected.permanent_flags_allow_new {
+    let (set, clear) = keywords_for(report.verdict);
+    let verdict = Keyword::new(set).expect("a report verdict keyword is a valid keyword");
+    if !selected.permanent.keeps(&verdict) {
         return Err(ProviderError::invalid_state(format!(
-            "{mailbox} does not permit new keywords (no \\* in PERMANENTFLAGS), so a report \
-             keyword would be accepted and discarded"
+            "{mailbox} does not keep the {set} keyword (PERMANENTFLAGS), so a report would be \
+             accepted and discarded"
         )));
     }
 
-    let (set, clear) = keywords_for(report.verdict);
     let uid_set = uid.to_string();
     connection
         .uid_store(&uid_set, &format!("+FLAGS.SILENT ({set})"))

@@ -177,6 +177,30 @@ async fn a_server_that_forbids_new_keywords_is_refused_not_silently_dropped() {
     assert!(!sent.contains("UID MOVE"), "{sent}");
 }
 
+/// A folder that names the verdict keyword keeps it without `\*`: the same rule every write
+/// that sets a keyword follows (`crate::permanent`).
+#[tokio::test]
+async fn a_server_that_names_the_verdict_keyword_takes_the_report_without_a_star() {
+    let names_junk = "* 8 EXISTS\r\n\
+         * OK [PERMANENTFLAGS (\\Seen $Junk $NotJunk)] Limited\r\n\
+         * OK [UIDVALIDITY 7] UIDs valid\r\n\
+         a2 OK [READ-WRITE] SELECT completed\r\n";
+    let server = script(&[
+        GREETING,
+        LOGIN_OK,
+        names_junk,
+        "a3 OK STORE done\r\n",
+        "a4 OK STORE done\r\n",
+    ]);
+    let (mut conn, recorded) = logged_in(server).await;
+
+    report_message(&mut conn, &report(ReportVerdict::Junk, "INBOX"))
+        .await
+        .unwrap();
+
+    assert!(written(&recorded).contains("+FLAGS.SILENT ($Junk)"));
+}
+
 #[tokio::test]
 async fn a_stale_uidvalidity_is_a_conflict() {
     let stale = "* 8 EXISTS\r\n\

@@ -120,9 +120,9 @@ The organiser identity has a different authority on each transport:
 - **Keywords on the Sent copy** (`sent_copy_keywords`) is a request, answered per send. A draft
   names keywords for the sender's filed copy (`Draft::sent_copy_metadata`), and the receipt says
   which the copy carries (`SubmissionReceipt::sent_copy_kept`, surfaced as
-  `SubmitOutcome::sent_copy_kept`). IMAP puts them on the `APPEND`, but only where the Sent
-  folder's `PERMANENTFLAGS` carries `\*`: elsewhere the server would answer `OK` and keep nothing,
-  so the copy is filed without them. JMAP sets them with an `Email/set` after the send. Graph keeps
+  `SubmitOutcome::sent_copy_kept`). IMAP puts them on the `APPEND`, those the Sent
+  folder's `PERMANENTFLAGS` keeps (named there, or any under `\*`): a server answers `OK` to a flag
+  it cannot keep and drops it, so the copy is filed without those. JMAP sets them with an `Email/set` after the send. Graph keeps
   no free-form keyword, only named categories the person sees, so it keeps a keyword only when the
   host registered a `KeywordName` for it (`GraphProvider::with_keyword_names`): the name to create
   it under and every name it may already exist under, which sync also reads back as the keyword
@@ -136,8 +136,8 @@ The organiser identity has a different authority on each transport:
   fails a send.
 - **Keywords on a stored draft** (`draft_keywords`) is the same request, answered per save.
   `put_draft` takes the whole of the metadata the draft should carry and `DraftReceipt::kept` (surfaced as
-  `PutDraftOutcome::kept`) says which it carries. IMAP puts them on the draft's `APPEND` where
-  Drafts allows new keywords, JMAP in the `Email/set` create; Graph and Gmail keep only those with
+  `PutDraftOutcome::kept`) says which it carries. IMAP puts them on the draft's `APPEND`, those
+  Drafts keeps, JMAP in the `Email/set` create; Graph and Gmail keep only those with
   a `KeywordName`, as a category set after the save and as a label put on the message under the
   draft after each save. A synced draft reads them back on every transport. A keyword never fails
   a save.

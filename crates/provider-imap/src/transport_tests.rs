@@ -192,7 +192,7 @@ async fn append_without_a_continuation_is_a_protocol_error() {
     let (stream, _) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("a", "b").await.unwrap();
-    assert!(conn.append("Sent", "\\Seen", b"x\r\n").await.is_err());
+    assert!(conn.append("Sent", "\\Seen", None, b"x\r\n").await.is_err());
 }
 
 #[tokio::test]
@@ -218,7 +218,7 @@ async fn append_sends_a_literal_and_parses_appenduid() {
     conn.login("a", "b").await.unwrap();
 
     let message = b"Subject: x\r\n\r\nhi\r\n"; // 18 bytes
-    let uid = conn.append("Sent", "\\Seen", message).await.unwrap();
+    let uid = conn.append("Sent", "\\Seen", None, message).await.unwrap();
     assert_eq!(uid, Some((99, 7)));
 
     let sent = written(&recorded);
@@ -369,7 +369,7 @@ async fn append_tolerates_an_untagged_response_before_the_continuation() {
     conn.login("a", "b").await.unwrap();
 
     let uid = conn
-        .append("Sent", "\\Seen", b"Subject: x\r\n\r\nhi\r\n")
+        .append("Sent", "\\Seen", None, b"Subject: x\r\n\r\nhi\r\n")
         .await
         .unwrap();
     assert_eq!(uid, Some((99, 7)));

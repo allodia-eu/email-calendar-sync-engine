@@ -37,3 +37,13 @@ returned in order), and `X-MSMail-Priority: Low` alone, `APPEND`ed to a scratch 
 deleted afterwards. The capture's client dropped each row's closing parenthesis, which is put
 back. Stored LF like every text file here: `src/mail_importance_tests.rs` restores the CRLF the
 literals' lengths count, and strips the untagged `* ` as the transport does.
+
+## `select_inbox_*.txt`
+
+The untagged responses each harness server answered `SELECT INBOX` with, as `alice@test.local`:
+`select_inbox_stalwart.txt` from the **Stalwart harness** (v1.0.2), `select_inbox_dovecot_rev1.txt`
+and `select_inbox_dovecot_rev2.txt` from the **Dovecot harness** speaking IMAP4rev1 and IMAP4rev2.
+Captured on 2026-11-23 with `curl -X 'SELECT INBOX'`; the tagged completion is not part of them.
+All three list every system flag in `PERMANENTFLAGS` and end it with `\*`. `src/permanent_tests.rs`
+reads them as a `SELECT` answer and asserts which keywords each server keeps. Stored LF; nothing
+in them is content.

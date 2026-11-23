@@ -4,7 +4,10 @@
 
 use std::collections::BTreeSet;
 
-use engine_core::{ids::MessageIdHeader, mail::Keyword};
+use engine_core::{
+    ids::MessageIdHeader,
+    mail::{Keyword, MessageMetadata},
+};
 
 use super::{Filing, append_to_role_folder, place_if_absent};
 use crate::{
@@ -33,6 +36,10 @@ fn keywords() -> BTreeSet<Keyword> {
     BTreeSet::from([Keyword::new("project-x").unwrap()])
 }
 
+fn asked() -> MessageMetadata {
+    MessageMetadata::default().with_keywords(keywords())
+}
+
 fn own() -> crate::store::MailStore {
     crate::store::MailStore::own(&crate::store::Namespaces::default())
 }
@@ -51,11 +58,11 @@ async fn keywords_ride_the_append_where_the_folder_allows_new_ones() {
     ])
     .await;
 
-    let placed = append_to_role_folder(&mut conn, &own(), Filing::Sent, b"raw", &keywords())
+    let placed = append_to_role_folder(&mut conn, &own(), Filing::Sent, b"raw", &asked())
         .await
         .unwrap();
 
-    assert_eq!(placed.keywords, keywords());
+    assert_eq!(placed.kept.keywords, keywords());
     assert_eq!(placed.append_uid, Some((4242, 9)));
     let sent = written(&recorded);
     assert!(
@@ -76,11 +83,11 @@ async fn a_folder_that_allows_no_new_keywords_gets_the_copy_without_them() {
     ])
     .await;
 
-    let placed = append_to_role_folder(&mut conn, &own(), Filing::Sent, b"raw", &keywords())
+    let placed = append_to_role_folder(&mut conn, &own(), Filing::Sent, b"raw", &asked())
         .await
         .unwrap();
 
-    assert!(placed.keywords.is_empty());
+    assert!(placed.kept.keywords.is_empty());
     let sent = written(&recorded);
     assert!(sent.contains("APPEND \"Sent\" (\\Seen) {3}"), "{sent}");
 }
@@ -95,12 +102,72 @@ async fn a_placement_without_keywords_selects_nothing() {
     ])
     .await;
 
-    let placed = append_to_role_folder(&mut conn, &own(), Filing::Sent, b"raw", &BTreeSet::new())
+    let placed = append_to_role_folder(
+        &mut conn,
+        &own(),
+        Filing::Sent,
+        b"raw",
+        &MessageMetadata::default(),
+    )
+    .await
+    .unwrap();
+
+    assert!(placed.kept.keywords.is_empty());
+    assert!(!written(&recorded).contains("SELECT"));
+}
+
+/// A role filing is a copy stored now: the server stamps its arrival, so an arrival time
+/// asked for is neither sent nor reported kept, and the filing's own flags are not reported
+/// as kept either.
+#[tokio::test]
+async fn a_placement_sends_no_arrival_time_and_reports_only_what_was_asked() {
+    let (mut conn, recorded) = connection(&[
+        SENT_LIST,
+        SELECT_ALLOWS_NEW,
+        "+ OK literal\r\n",
+        "a4 OK [APPENDUID 4242 9] APPEND completed\r\n",
+    ])
+    .await;
+    let asked = asked().with_received_at("2019-02-03T04:05:06Z".parse().unwrap());
+
+    let placed = append_to_role_folder(&mut conn, &own(), Filing::Sent, b"raw", &asked)
         .await
         .unwrap();
 
-    assert!(placed.keywords.is_empty());
-    assert!(!written(&recorded).contains("SELECT"));
+    let sent = written(&recorded);
+    assert!(
+        sent.contains("APPEND \"Sent\" (\\Seen project-x) {3}"),
+        "{sent}"
+    );
+    assert_eq!(
+        placed.kept,
+        MessageMetadata::default().with_keywords(keywords())
+    );
+}
+
+/// A folder that names a keyword keeps it without `\*`; before the one rule, a placement
+/// read every such folder as keeping none.
+#[tokio::test]
+async fn a_folder_that_names_the_keyword_keeps_it_without_a_star() {
+    let (mut conn, recorded) = connection(&[
+        SENT_LIST,
+        "* 8 EXISTS\r\n* OK [UIDVALIDITY 4242] valid\r\n\
+         * OK [PERMANENTFLAGS (\\Seen project-x)] ok\r\na3 OK [READ-WRITE] SELECT done\r\n",
+        "+ OK literal\r\n",
+        "a4 OK [APPENDUID 4242 9] APPEND completed\r\n",
+    ])
+    .await;
+
+    let placed = append_to_role_folder(&mut conn, &own(), Filing::Sent, b"raw", &asked())
+        .await
+        .unwrap();
+
+    assert_eq!(placed.kept.keywords, keywords());
+    assert!(
+        written(&recorded).contains("APPEND \"Sent\" (\\Seen project-x) {3}"),
+        "{}",
+        written(&recorded)
+    );
 }
 
 /// A retry that finds the copy an earlier attempt placed cannot know whether that attempt
@@ -121,13 +188,13 @@ async fn a_copy_already_placed_is_given_the_keywords() {
         Filing::Sent,
         &message_id(),
         b"raw",
-        &keywords(),
+        &asked(),
     )
     .await
     .unwrap();
 
     assert_eq!(placed.append_uid, Some((4242, 17)));
-    assert_eq!(placed.keywords, keywords());
+    assert_eq!(placed.kept.keywords, keywords());
     let sent = written(&recorded);
     assert!(
         sent.contains("UID STORE 17 +FLAGS.SILENT (project-x)"),
@@ -153,11 +220,11 @@ async fn a_retry_appends_with_the_keywords_when_no_copy_is_there() {
         Filing::Sent,
         &message_id(),
         b"raw",
-        &keywords(),
+        &asked(),
     )
     .await
     .unwrap();
 
-    assert_eq!(placed.keywords, keywords());
+    assert_eq!(placed.kept.keywords, keywords());
     assert!(written(&recorded).contains("APPEND \"Sent\" (\\Seen project-x) {3}"));
 }

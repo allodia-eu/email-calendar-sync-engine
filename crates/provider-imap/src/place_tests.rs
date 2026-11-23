@@ -63,7 +63,7 @@ async fn a_role_folder_resolves_to_its_decoded_name_and_appends_to_the_wire_name
         &own(),
         Filing::Sent,
         b"raw",
-        &std::collections::BTreeSet::new(),
+        &engine_core::mail::MessageMetadata::default(),
     )
     .await
     .unwrap();
