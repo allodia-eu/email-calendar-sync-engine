@@ -1,12 +1,15 @@
 # Filters and out-of-office: design note
 
-Status: **design settled; slice 1 (the reply over JMAP) implemented, rules not yet.** Written
+Status: **design settled; slice 1 (the reply over JMAP) implemented; slice 2 (rules over JMAP
+Sieve) under way: `engine-sieve`, the rules model and `plan_rules` implemented.** Written
 2026-11-23, when the owner moved message rules and automatic replies into scope; every question it
 raised was decided the same day (section 7). `north-star.md` records the scope and the accessor
 pattern (#378). Slice 1 landed `engine_core::vacation`, the `Vacation` trait and
 `Provider::vacation`, and `provider-jmap`'s `VacationResponse` get and set, and answered the
-questions it was to settle live ("Settled by live tests"). Where the code differs from a sketch
-below, the sketch has been brought up to date and says why.
+questions it was to settle live ("Settled by live tests"). Slice 2 has landed `engine-sieve` (the
+segmenter, and the dialect reader, writer and vocabulary) and `engine_core::rules` with
+`plan_rules`. Where the code differs from a sketch below, the sketch has been brought up to date
+and says why.
 
 Marks used below: **live** = observed against a harness server on 2026-11-23; **docs** = read from
 the RFC or vendor reference cited; **unverified** = believed, not yet checked, and must be proven
@@ -152,7 +155,25 @@ server that runs the reply as a script of its own, the active script may be the 
 `SieveScript/set` may not change and which activating `rules` would switch off; slice 1 found this
 live, and slice 2 settles how the two coexist ("Settled by live tests").
 
-### Types (sketch, `engine-core::rules`)
+### Types (`engine-core::rules`, implemented in slice 2)
+
+Implemented as sketched, with these differences, each for a reason the code met:
+
+- `RuleMailbox` also has `Path(MailboxPath)`: a Sieve `fileinto` names a folder by path, and a
+  rule read from a script must keep that name until something resolves it. `RuleMailbox::Role
+  (Inbox)` needs no role extension anywhere: every transport has the inbox by name.
+- Marking an importance is a typed `Action::MarkImportance(Importance)`, not `Native`: it crosses
+  kinds (Graph's `markImportance`, Sieve's `addheader "Importance"`, ≈), which `Native` never does.
+- A condition's header is `HeaderField::Subject` or `Named(String)`; addresses are
+  `RuleAddress`, names `RuleName`, folder paths `MailboxPath`, each with a `Debug` that shows only
+  a length. `RuleOrigin::ScriptSegment(index)` is the Sieve span.
+- `RulePart` adds `Rule` (an opaque rule as a whole) and `Mode` (how conditions combine), and
+  `RuleVocabulary` is a map from a `RuleFeature` (the grain where transports differ) to `Support`
+  (`Exact` or `Approximated`), plus the redirect limit and the kinds of opaque and native parts it
+  stores back.
+- The receipt is `RulesReceipt { version, outcomes }`.
+
+The sketch as written before the code:
 
 ```rust
 /// The account's rules, in evaluation order, as read.
@@ -506,12 +527,12 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 | From is / contains | ✓ `address :is` / `:contains "from"` | ✓ `fromAddresses` / `senderContains` | ≈ `from` (search semantics) |
 | From domain | ✓ `address :domain` | ≈ `senderContains "@example.com"` | ≈ `from:(@example.com)` |
 | To / Cc / to-or-cc | ✓ `address ["to","cc"]` | ✓ `recipientContains`, `sentToAddresses` | ≈ `to` (also matches Bcc) |
-| Sent to me (to, cc, only, not) | ≈ address tests over the account's addresses | ✓ `sentToMe`, `sentCcMe`, `sentOnlyToMe`, `notSentToMe`, `sentToOrCcMe` | ≈ `to:me` in `query` (only `to`) |
+| Sent to me (to, cc, only, not) | ✗ for now (≈ address tests over the account's addresses, which the writer does not have) | ✓ `sentToMe`, `sentCcMe`, `sentOnlyToMe`, `notSentToMe`, `sentToOrCcMe` | ≈ `to:me` in `query` (only `to`) |
 | Body contains | ✓ `body :text :contains` (ext `body`) | ✓ `bodyContains` | ≈ `query` |
 | Subject or body | ✓ `anyof(header…, body…)` | ✓ `bodyOrSubjectContains` | ≈ `query` |
 | Size over / under | ✓ `size :over` / `:under` | ≈ `withinSizeRange` (KB, a range) | ✓ `size` + `sizeComparison` |
-| Has attachment | ≈ `exists :mime :anychild` heuristics (ext `mime`) | ✓ `hasAttachments` | ✓ `hasAttachment` |
-| Importance | ≈ header tests over `Importance::HEADERS` | ✓ `importance` | ✗ (Gmail's `important` is its own classifier) |
+| Has attachment | ≈ `header :mime :anychild :contains "Content-Disposition" "attachment"` (ext `mime`) | ✓ `hasAttachments` | ✓ `hasAttachment` |
+| Importance | ✗ for now (≈ header tests over `Importance::HEADERS`, not yet written) | ✓ `importance` | ✗ (Gmail's `important` is its own classifier) |
 | `Native`: Exchange class (`isMeetingRequest`, `isAutomaticReply`, `sensitivity`, `categories`, `messageActionFlag`, …) | ✗ (a few ≈ through headers, not attempted) | ✓ | ✗ |
 | `Native`: unparsed Gmail `query` | ✗ | ✗ | ✓ |
 
@@ -527,11 +548,11 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 | `Forward` (as the account) | ≈ `redirect :copy` (From differs) | ✓ `forwardTo` | ≈ `forward` |
 | `AddKeywords` `$seen` / `$flagged` | ✓ `addflag "\\Seen"` / `"\\Flagged"` (ext `imap4flags`, RFC 5232) | ✓ `markAsRead` / ✗ (no flag action) | ✓ remove `UNREAD` / add `STARRED` |
 | `AddKeywords` named | ✓ `addflag "name"` | ≈ `assignCategories` | ≈ hidden named label (counts as the one user label) |
-| `Native`: mark importance | ≈ `addheader` (ext `editheader`) | ✓ `markImportance` | ≈ `IMPORTANT` |
+| Mark importance (`Action::MarkImportance`) | ≈ `addheader "Importance"` (ext `editheader`) | ✓ `markImportance` | ≈ `IMPORTANT` |
 | `Native`: forward as attachment | ✗ | ✓ `forwardAsAttachmentTo` | ✗ |
 | `stop` | ✓ `stop` | ✓ `stopProcessingRules` | ✗ (every filter applies) |
-| `enabled: false` | ≈ dialect: `if allof(false, …)` | ✓ `isEnabled` | ✗ |
-| `name` | ≈ dialect comment | ✓ `displayName` | ✗ |
+| `enabled: false` | ✓ in the dialect, `if false # <test>` (a client that does not know it sees a rule that never runs) | ✓ `isEnabled` | ✗ |
+| `name` | ✓ in the dialect, `# rule:[name]` (a comment to any other client) | ✓ `displayName` | ✗ |
 | Order | ✓ script order | ✓ `sequence` | ✗ |
 
 ### Out-of-office

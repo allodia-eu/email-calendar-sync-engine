@@ -16,7 +16,11 @@
 
 use std::fmt::Write as _;
 
-use engine_sieve::{Segment, SegmentKind, segment};
+use engine_sieve::{
+    Segment, SegmentKind,
+    dialect::{read_rules, write_rules},
+    segment,
+};
 
 /// Each command segment, split on its own, is exactly one command segment with the same text:
 /// a splitter that cut a command in two, or ran two together, fails here.
@@ -174,6 +178,19 @@ fn every_generated_script_splits_into_its_commands_and_joins_back() {
             .collect();
         assert_eq!(commands, names, "round {round}: {script:?}");
         each_segment_is_one_command(&segments);
+        // Written over with its own rules, a script whose requires come first is unchanged.
+        let requires_first = segments
+            .iter()
+            .skip_while(|segment| segment.kind() == SegmentKind::Require)
+            .all(|segment| segment.kind() != SegmentKind::Require);
+        if requires_first {
+            let rules = read_rules(&script);
+            assert_eq!(
+                write_rules(&script, &rules).unwrap(),
+                script,
+                "round {round}"
+            );
+        }
     }
 }
 

@@ -14,15 +14,20 @@
 //!   it did not mean to.
 //! - [`require`] — the extensions the `require` commands name, and one `require` naming more.
 //! - [`string`] — a string token's value, and a value written as a string.
+//! - [`dialect`] — the rule dialect the engine reads and writes (Roundcube's): a script read as the
+//!   neutral rule list of `engine_core::rules`, the list written back over it, and what an
+//!   account's extensions let the writer write.
 //!
-//! What a command *means* is not here: the crate does not evaluate tests, check that an
-//! extension is supported, or know any command but `require` and the `if`/`elsif`/`else` chain.
+//! Below [`dialect`], what a command *means* is not here: the segmenter does not evaluate tests,
+//! check that an extension is supported, or know any command but `require` and the
+//! `if`/`elsif`/`else` chain. The dialect reads only the commands it writes.
 //! Sieve scripts are hostile input (RFC 9661 §5): every entry point answers an error rather than
 //! panicking, and none of its errors or `Debug` output carries the script's text.
 //!
 //! Stalwart's `sieve-rs` would parse far more, and is `AGPL-3.0-only OR LicenseRef-SEL`, which
-//! this MPL-2.0 crate cannot take; it has no dependencies at all.
+//! this MPL-2.0 crate cannot take; its one dependency is the engine's model.
 
+pub mod dialect;
 mod error;
 pub mod lex;
 pub mod require;
