@@ -6,11 +6,16 @@
 
 /// `PROPFIND` (Depth 0) for the principal, its calendar home (RFC 6764 §6) and the addresses
 /// it schedules as (RFC 6638 §2.4.1).
+///
+/// It also asks for the principal's scheduling inbox and outbox (RFC 6638 §2.2): a principal
+/// with neither, on a server that advertises no scheduling, has nothing to send an iTIP
+/// message with, which is what lets an import into it be called silent.
 pub(crate) const PRINCIPAL_PROPFIND: &str = concat!(
     r#"<?xml version="1.0" encoding="utf-8"?>"#,
     r#"<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
     r#"<d:prop><d:current-user-principal/><c:calendar-home-set/>"#,
-    r#"<c:calendar-user-address-set/></d:prop></d:propfind>"#,
+    r#"<c:calendar-user-address-set/><c:schedule-inbox-URL/><c:schedule-outbox-URL/>"#,
+    r#"</d:prop></d:propfind>"#,
 );
 
 /// `PROPFIND` (Depth 0) of the user's own principal for the two routes to other principals'

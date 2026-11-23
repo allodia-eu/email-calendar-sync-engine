@@ -274,7 +274,8 @@ it. An adapter that can import implements the trait; there is no capability flag
   `calendar_import_limits` and `import_cursor` are per calendar, because CalDAV states both per
   collection. Reached through `Provider::calendar_importer`, which an adapter answers only where
   it can keep the import silent. CalDAV implements it, offered where the server advertises
-  `calendar-auto-schedule` (`caldav.md` → "Import"). The item is UTF-8 text, as `RawIcal` is.
+  `calendar-auto-schedule` or has nothing to schedule with (no scheduling inbox or outbox;
+  `caldav.md` → "Import"). The item is UTF-8 text, as `RawIcal` is.
 - **Creating a container is not import.** `CalendarCollections::create_calendar` (outside the
   `import` feature, reached through `Provider::calendar_collections`) makes a new calendar from a
   name, a description and a colour, and answers it as the target holds it, which is the receipt of

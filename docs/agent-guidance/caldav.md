@@ -615,10 +615,12 @@ survey; `providers.md` → "Import" the contract).
   calendar's `max-resource-size` checked on the rewritten text, the `UID` looked up with a
   `calendar-query` (keeping only exact matches, since `text-match` matches substrings), then one
   `PUT` with `If-None-Match: *` to `event_href`.
-- **Offered only where silence is promised**: `calendar_importer()` is `Some` only when the home
+- **Offered only where silence is promised**: `calendar_importer()` is `Some` when the home
   advertises `calendar-auto-schedule` (RFC 6638 §7.1 binds such a server to honour the
-  parameter); the SabreDAV fixture advertises none, and its live run drives the importer through
-  the trait (`docs/design/calendar-and-contact-import.md`, "Where silence is promised").
+  parameter), or when it advertises none and the principal lists no `schedule-inbox-URL` or
+  `schedule-outbox-URL`, read by the discovery `PROPFIND` (nothing can be sent: the SabreDAV
+  fixture). Scheduling collections without the advertisement, or a principal discovery never
+  asked, answer `None` (`docs/design/calendar-and-contact-import.md`, "Where silence is promised").
 - **Already there** is three answers from the server, and the lookup: a held `UID` found by the
   lookup; a bare `412` on our own name whose object, read back, has our `UID` (an earlier attempt
   of this import; another `UID` there is a `Conflict`); and `no-uid-conflict` in a `403`

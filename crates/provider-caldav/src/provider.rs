@@ -83,6 +83,13 @@ pub struct CalDavProvider {
     user: Option<String>,
     /// Each foreign owner principal's address, once read (`crate::owners`).
     owners: crate::owners::Owners,
+    /// Whether an import can be promised silent here (`calendar_importer`): the server
+    /// advertises scheduling, or the principal has nothing to schedule with.
+    #[cfg_attr(
+        not(feature = "import"),
+        expect(dead_code, reason = "read by the import accessor alone")
+    )]
+    silent_import: bool,
     multigets: Multigets,
 }
 
@@ -194,6 +201,10 @@ impl CalDavProvider {
             user: home.user,
             owners: crate::owners::Owners::default(),
             multigets: Multigets::default(),
+            // RFC 6638 §7.1 binds a server that schedules (and so advertises it) to honour
+            // `SCHEDULE-AGENT=CLIENT`; a principal with no scheduling inbox or outbox on a server
+            // that advertises nothing has nothing to send with. Anything else is unknown.
+            silent_import: scheduling || home.scheduling_collections == Some(false),
         })
     }
 
@@ -279,14 +290,15 @@ impl Provider for CalDavProvider {
     }
 
     /// CalDAV imports events with a `PUT` that tells nobody (`crate::calendar_import`), offered
-    /// only where the server advertises `calendar-auto-schedule`: RFC 6638 §7.1 then binds it to
-    /// leave a `SCHEDULE-AGENT=CLIENT` party to the client, and that is proven live on Stalwart
-    /// (and, in the transfer host's spike, on SabreDAV and Nextcloud with scheduling). A server
-    /// that advertises nothing may schedule nothing, or schedule without saying so; nothing tells
-    /// the two apart, so silence is not promised there (`docs/spec-deviations.md`).
+    /// where that is known: the server advertises `calendar-auto-schedule`, which RFC 6638 §7.1
+    /// binds to leave a `SCHEDULE-AGENT=CLIENT` party to the client (proven live on Stalwart, and
+    /// in the transfer host's spike on SabreDAV and Nextcloud with scheduling), or it advertises
+    /// no scheduling and the principal has no scheduling inbox or outbox, so nothing can be sent.
+    /// A principal with those collections on a server that does not advertise scheduling may
+    /// schedule without saying so, and gets `None` (`docs/spec-deviations.md`).
     #[cfg(feature = "import")]
     fn calendar_importer(&self) -> Option<&dyn engine_provider::import::CalendarImporter> {
-        self.capabilities.calendar_scheduling().then_some(self)
+        self.silent_import.then_some(self)
     }
 
     /// CalDAV creates calendars with `MKCALENDAR` (`crate::calendar_create`).

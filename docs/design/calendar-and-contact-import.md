@@ -213,20 +213,24 @@ Two findings changed the shared create path too:
 
 ### Where silence is promised
 
-`Provider::calendar_importer` answers the CalDAV importer only where the calendar home
-advertises `calendar-auto-schedule`. RFC 6638 §2 has a server that schedules say so, and §7.1
-then binds it to leave a `SCHEDULE-AGENT=CLIENT` party to the client: proven live on Stalwart
-with a control that does deliver, and in the transfer host's spike on SabreDAV and Nextcloud with
-scheduling turned on. A server that advertises nothing either does no scheduling or schedules
-without saying so (a departure from §2), and nothing a client can read tells the two apart, so
-silence is not promised there and the accessor answers `None`. The importer is the same code on
-such a server; the live suite drives it through the trait on the SabreDAV fixture, which
-advertises no scheduling, to prove the `UID` lookup on the one server that needs it.
+`Provider::calendar_importer` answers the CalDAV importer where silence is known, and only there:
 
-Google's CalDAV endpoint is not surveyed here: no credential for the test account was available
-in this environment. Whether it advertises `calendar-auto-schedule`, and whether it then honours
-the parameter, is to be measured before a host imports into it over CalDAV; until then the rule
-above decides, on what the server says.
+| What the server says | Importer | Why |
+|---|---|---|
+| The calendar home advertises `calendar-auto-schedule` | `Some` | RFC 6638 §2 has a scheduling server say so, and §7.1 binds it to leave a `SCHEDULE-AGENT=CLIENT` party to the client. Proven live on Stalwart with a control that does deliver, and in the transfer host's spike on SabreDAV and Nextcloud with scheduling turned on. |
+| No `calendar-auto-schedule`, and the principal has no `schedule-inbox-URL` or `schedule-outbox-URL` (RFC 6638 §2.2) | `Some` | Nothing can be sent: the server does no scheduling. The SabreDAV fixture (observed: its principal answers both properties `404`). |
+| No `calendar-auto-schedule`, but a scheduling inbox or outbox | `None` | The server can schedule and does not say whether it will; it may schedule without advertising it (a departure from §2). |
+| No `calendar-auto-schedule`, and the home was found without asking the principal (a lenient well-known) | `None` | Unknown. |
+
+The inbox and outbox are read off the principal by the discovery `PROPFIND` that already asks it
+for the calendar home, so the rule costs no request. The importer is the same code everywhere.
+
+Google's CalDAV endpoint is recorded as unsurveyed (`docs/spec-deviations.md`, GOOGLE-2): no
+credential for the test account was available in this environment, so whether it advertises
+scheduling, lists scheduling collections, and honours the parameter is not known. The engine does
+not tell a Google account apart (`provider-caldav` copes with servers by what they answer, never
+by host name), so the rule above decides for it on what its principal says: `None` if it lists a
+scheduling inbox or outbox without advertising scheduling.
 
 Errors on these paths carry a class and an HTTP status, never the server's text
 (`CalDavError::content_free`): an error body can echo an event's summary.
@@ -281,6 +285,5 @@ default. Behaviour that changes on existing paths:
 - **A short `UID` costs more to look up.** `text-match` matches substrings (RFC 4791 §9.7.5),
   so a short `UID` such as `1` returns every object whose `UID` contains it, each one read to
   compare; importing a calendar of such `UID`s grows with the square of its size.
-- **Silence on servers that advertise no scheduling** is not promised (above), which leaves the
-  SabreDAV fixture and any plain RFC 4791 server without an importer. Google's CalDAV is
-  unsurveyed.
+- **Google's CalDAV is unsurveyed** (GOOGLE-2): a live check with the Google test account is
+  needed before a host imports into it.

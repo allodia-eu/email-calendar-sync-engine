@@ -50,6 +50,9 @@ pub(crate) struct CalendarHome {
     /// own home; for a shared one ([`discover_shared_home`]) it is still the user's, which is
     /// what shared-store discovery starts from whichever store is bound.
     pub(crate) user: Option<String>,
+    /// Whether the principal has a scheduling inbox or outbox (RFC 6638 §2.2), when discovery
+    /// read the principal itself; `None` when the home was found without asking it.
+    pub(crate) scheduling_collections: Option<bool>,
 }
 
 /// Resolves the calendar home, starting at `start_href`.
@@ -86,6 +89,7 @@ pub(crate) async fn discover_home(
             user: principal.clone(),
             principal,
             addresses: address_set(&bootstrap),
+            scheduling_collections: None,
         });
     }
     // RFC 6764 §6: the calendar-home-set is a property of the principal resource,
@@ -106,6 +110,7 @@ pub(crate) async fn discover_home(
         user: Some(principal.clone()),
         principal: Some(principal),
         addresses: Some(address_set(&from_principal).unwrap_or(CalendarUserAddresses::NotEnabled)),
+        scheduling_collections: Some(scheduling_collections(&from_principal)),
     })
 }
 
@@ -140,6 +145,7 @@ pub(crate) async fn discover_shared_home(
         user: current_user_principal(&answer).and_then(|user| follow(exec, &at, &user).ok()),
         principal: Some(at),
         addresses: Some(address_set(&answer).unwrap_or(CalendarUserAddresses::NotEnabled)),
+        scheduling_collections: Some(scheduling_collections(&answer)),
     })
 }
 
@@ -379,6 +385,20 @@ fn address_set(multistatus: &MultiStatus) -> Option<CalendarUserAddresses> {
         Some(CalendarUserAddresses::from_uris(
             hrefs.iter().map(String::as_str),
         ))
+    })
+}
+
+/// Whether a principal's answer names a scheduling inbox or outbox (RFC 6638 §2.2.1, §2.2.2).
+fn scheduling_collections(multistatus: &MultiStatus) -> bool {
+    multistatus.responses.iter().any(|response| {
+        ["schedule-inbox-url", "schedule-outbox-url"]
+            .into_iter()
+            .any(|name| {
+                response
+                    .props
+                    .hrefs(name)
+                    .is_some_and(|hrefs| !hrefs.is_empty())
+            })
     })
 }
 

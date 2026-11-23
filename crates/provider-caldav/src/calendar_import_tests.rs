@@ -11,7 +11,7 @@ use engine_core::{
     sync::SyncState,
 };
 use engine_provider::{
-    IgnoreConnectSteps, ProviderResult,
+    IgnoreConnectSteps, Provider, ProviderResult,
     import::{CalendarImporter, EventImport, ImportedEvent},
 };
 
@@ -422,18 +422,47 @@ async fn the_limits_are_the_calendars_largest_object() {
 }
 
 #[tokio::test]
-async fn the_importer_is_offered_where_the_server_promises_to_honour_the_suppression() {
+async fn the_importer_is_offered_where_nothing_can_be_sent_or_the_server_promises_not_to() {
+    // RFC 6638 §2: a server that schedules advertises it, and §7.1 then binds it to leave a
+    // `SCHEDULE-AGENT=CLIENT` party to the client.
     let (scheduling, _) = target(Vec::new()).await;
     let held: Box<dyn engine_provider::Provider> = Box::new(scheduling);
     assert!(held.calendar_importer().is_some());
     assert!(held.calendar_collections().is_some());
 
-    // RFC 6638 §2: a server that schedules advertises it, and only such a server is bound by
-    // §7.1 to leave a `SCHEDULE-AGENT=CLIENT` party to the client.
+    // A principal with neither a scheduling inbox nor an outbox, on a server advertising no
+    // scheduling: there is nothing to send with. The SabreDAV fixture's shape.
+    assert!(two_step(None).await.calendar_importer().is_some());
+    // Scheduling collections without the advertisement: a server that may schedule without
+    // saying so, whose silence is unknown.
+    let inbox = "<C:schedule-inbox-URL><D:href>/p/alice/inbox/</D:href></C:schedule-inbox-URL>";
+    assert!(two_step(Some(inbox)).await.calendar_importer().is_none());
+    // A home found without asking the principal (a lenient server's well-known): unknown.
     let (plain, _) = target_advertising("1, 3, calendar-access", Vec::new()).await;
-    let held: Box<dyn engine_provider::Provider> = Box::new(plain);
-    assert!(held.calendar_importer().is_none());
-    assert!(held.calendar_collections().is_some());
+    assert!(plain.calendar_importer().is_none());
+}
+
+/// A provider found in RFC 6764's two steps, whose principal reports `extra`, on a server that
+/// advertises no scheduling.
+async fn two_step(extra: Option<&str>) -> CalDavProvider {
+    let bootstrap = "<D:multistatus xmlns:D=\"DAV:\"><D:response><D:href>/</D:href><D:propstat>\
+        <D:prop><D:current-user-principal><D:href>/p/alice/</D:href></D:current-user-principal>\
+        </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>";
+    let principal = format!(
+        "<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:response>\
+         <D:href>/p/alice/</D:href><D:propstat><D:prop><C:calendar-home-set><D:href>/c/alice/\
+         </D:href></C:calendar-home-set>{}</D:prop><D:status>HTTP/1.1 200 OK</D:status>\
+         </D:propstat></D:response></D:multistatus>",
+        extra.unwrap_or_default()
+    );
+    let replay = Arc::new(Replay::new(vec![
+        ok(bootstrap),
+        ok(&principal),
+        options(Some("1, 3, calendar-access")),
+    ]));
+    CalDavProvider::with_executor(Box::new(replay), "/.well-known/caldav", &IgnoreConnectSteps)
+        .await
+        .expect("discovery")
 }
 
 #[test]
