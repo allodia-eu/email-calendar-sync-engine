@@ -30,14 +30,14 @@ use engine_core::{
 };
 use engine_provider::{
     ProviderError, ProviderResult,
-    import::{ContactImport, ContactImportLimits, ContactImporter, ImportedContact},
+    import::{ContactImport, ContactImportLimits, ContactImporter, ImportedContact, not_sent},
 };
 use quick_xml::{Reader, events::Event};
 
 use crate::{
     CardDavProvider,
     dav::MultiStatus,
-    dav_import::{PutAnswer, cursor_of, holder, max_size, name_held_by, read_put},
+    dav_import::{PutAnswer, cursor_of, ending, holder, max_size, name_held_by, read_put},
     error::CalDavError,
     href::{collection_href, hashed_name, resource_name},
     request::{CONTACT_IMPORT_PROPFIND, card_uid_query},
@@ -95,6 +95,12 @@ impl ContactImporter for CardDavProvider {
                 Ok(()) => self.import_card(card).await,
                 Err(refused) => Err(refused),
             };
+            // A throttle or a refused credential reaches every card after it.
+            if let Some(ended) = ending(&answer).map(not_sent) {
+                answers.push(answer);
+                answers.resize_with(batch.len(), || Err(not_sent(&ended)));
+                break;
+            }
             answers.push(answer);
         }
         answers

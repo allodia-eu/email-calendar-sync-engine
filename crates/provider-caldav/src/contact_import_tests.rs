@@ -451,3 +451,26 @@ async fn a_card_without_a_uid_meets_its_own_earlier_write() {
     .await;
     assert_eq!(answer.unwrap_err().class(), FailureClass::Conflict);
 }
+
+/// A throttle or a refused credential ends a card batch as it ends an event batch.
+#[tokio::test]
+async fn a_throttle_or_a_refused_credential_ends_the_batch() {
+    let throttled = include_str!("../tests/fixtures/concurrency-limit-stalwart.json");
+    for (ending, class) in [
+        (status(400, throttled), FailureClass::RateLimited),
+        (status(401, ""), FailureClass::Authentication),
+    ] {
+        let (provider, replay) = target(vec![ok(PROPS), ok(NONE_HELD), ending]).await;
+        let second = CARD.replace("capture-1@", "capture-2@");
+
+        let answers = provider
+            .import_contacts(&account(), &[card(CARD), card(&second)])
+            .await;
+
+        assert_eq!(answers.len(), 2);
+        for answer in &answers {
+            assert_eq!(answer.as_ref().unwrap_err().class(), class);
+        }
+        assert!(replay.writes().len() == 1, "one PUT, then nothing");
+    }
+}

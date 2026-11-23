@@ -17,9 +17,9 @@
 //! `I: MailImporter` takes either.
 
 mod calendar;
-mod contact;
 #[cfg(feature = "import-conformance")]
 pub mod conformance;
+mod contact;
 mod message;
 
 use std::sync::Arc;
