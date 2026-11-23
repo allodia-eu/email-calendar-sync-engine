@@ -18,6 +18,8 @@
 //!   ([`CalDavProvider::event_href`]) and created under `If-None-Match: *`, so a second attempt is
 //!   refused `412`; the name is then read, and answered as already there only when the object there
 //!   has this `UID`.
+//! - **A throttle or a refused credential ends the batch**: the events after it are answered
+//!   `not_sent` without a request, as every importer does (`providers.md` → "Import").
 //! - **A refusal says whose it is**, by the one write classifier (`CalDavError::write_refusal`):
 //!   the object's is `item_unavailable`, the calendar's (full, missing, read-only) is
 //!   `ProviderError::refused_by_target`, and a throttle is a throttle.
@@ -41,13 +43,13 @@ use engine_core::{
 use engine_ical::{import_object, object_uid};
 use engine_provider::{
     ProviderError, ProviderResult,
-    import::{CalendarImportLimits, CalendarImporter, EventImport, ImportedEvent},
+    import::{CalendarImportLimits, CalendarImporter, EventImport, ImportedEvent, not_sent},
 };
 
 use crate::{
     CalDavProvider,
     dav::MultiStatus,
-    dav_import::{PutAnswer, cursor_of, holder, max_size, name_held_by, read_put},
+    dav_import::{PutAnswer, cursor_of, ending, holder, max_size, name_held_by, read_put},
     error::CalDavError,
     href::collection_href,
     request::{CALENDAR_IMPORT_PROPFIND, uid_query},
@@ -101,7 +103,13 @@ impl CalendarImporter for CalDavProvider {
                     .map_or_else(|_| CalendarImportLimits::new(), |props| limits_of(&props));
                 limits.insert(&event.calendar, stated);
             }
-            answers.push(self.import_one(event, &limits[&event.calendar]).await);
+            let answer = self.import_one(event, &limits[&event.calendar]).await;
+            if let Some(ended) = ending(&answer).map(not_sent) {
+                answers.push(answer);
+                answers.resize_with(batch.len(), || Err(not_sent(&ended)));
+                break;
+            }
+            answers.push(answer);
         }
         answers
     }

@@ -154,3 +154,38 @@ async fn the_put_a_sync_create_reads_shares_the_rule() {
         FailureClass::Conflict
     );
 }
+
+/// A throttle or a refused credential reaches every event after it, so it ends the batch: the
+/// rest are answered `not_sent` without a request (`providers.md` → "Import").
+#[tokio::test]
+async fn a_throttle_or_a_refused_credential_ends_the_batch() {
+    for (ending, class) in [
+        (status(400, THROTTLED), FailureClass::RateLimited),
+        (status(401, ""), FailureClass::Authentication),
+    ] {
+        let (provider, replay) = target(vec![ok(PROPS), ok(NONE_HELD), ending]).await;
+        let second = EVENT.replace("capture-1@", "capture-2@");
+        let third = EVENT.replace("capture-1@", "capture-3@");
+
+        let answers = provider
+            .import_events(&account(), &[event(EVENT), event(&second), event(&third)])
+            .await;
+
+        assert_eq!(answers.len(), 3);
+        for answer in &answers {
+            assert_eq!(answer.as_ref().unwrap_err().class(), class);
+        }
+        assert!(
+            answers[1]
+                .as_ref()
+                .unwrap_err()
+                .detail()
+                .starts_with("not sent")
+        );
+        assert_eq!(
+            replay.seen().len(),
+            5,
+            "discovery, OPTIONS, limits, lookup, one PUT"
+        );
+    }
+}
