@@ -323,13 +323,27 @@ Step 6 lands in small, tested slices. Order and status:
    `engine_http::RequestGate`, one per account (`http-throttling.md`).
 
    Each folder commits **chunk by chunk** under its own lease, reporting a `SyncCommit
-   { scope, fetched, total, upserted, removed }` after each committed chunk — so a UI
-   shows recent mail before the sync finishes **and** splices its list from the exact
-   rows without re-querying. An additive pass checkpoints the cursor per chunk, so a
+   { scope, fetched, total, upserted, removed, tombstoned, widening }` after each committed
+   chunk — so a UI shows recent mail before the sync finishes **and** splices its list from
+   the exact rows without re-querying. An additive pass checkpoints the cursor per chunk, so a
    mid-stream crash resumes where it stopped; a reconcile re-snapshot holds the cursor
    until its tombstoning final chunk (`store-and-sync.md`). `StreamTuning` sets the
    per-sync depth `window` and decouples the fetch batch (round trips) from the chunk
    size (commit granularity).
+
+   **Widening is the window, not a verb.** `sync_mail` with a wider `StreamTuning::within(..)`
+   widens: each scope whose recorded depth falls short runs its delta, then fetches only what
+   the wider window adds (a band, where the adapter can; a reopen over the new window where it
+   cannot), and a widening killed mid-way, band or reopen, is continued by the next sync. A host does **not** call
+   `clear_mail_cursors` to widen or to deepen a mailbox, and builds the window with
+   `SyncWindow::months_back(n, today)` rather than date arithmetic of its own. A commit of a
+   band carries `widening: true`, its `fetched`/`total` counting the band alone, and
+   `FolderSync::reached_window` says whether each folder's mail now reaches the window asked;
+   the depth is complete when every folder's is (`docs/design/windows-and-widening.md`, §7.1).
+   `clear_mail_cursors` stays for a forced re-snapshot, and for narrowing until the prune
+   lowers the recorded depth itself. **Rolling back** past this version needs no clear: the
+   widening record is written so an older engine reads the same covered depth and hands its
+   provider the same cursor (`StampedCursor`, `docs/design/windows-and-widening.md` §12).
 
    The observer also receives the pass's **lifecycle** — `account_sync_started(folders)`
    once the denominator is known, `folder_sync_finished` per folder, and

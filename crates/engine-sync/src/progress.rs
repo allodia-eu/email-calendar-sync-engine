@@ -151,6 +151,7 @@ mod tests {
             upserted: &[],
             removed: &[],
             tombstoned: 0,
+            widening: false,
         });
     }
 

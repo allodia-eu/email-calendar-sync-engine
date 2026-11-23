@@ -274,7 +274,47 @@ pub fn split_page(
 }
 
 /// A boxed pull stream of one email pass's chunks — what
-/// [`Provider::stream_email`](crate::Provider::stream_email) returns.
+/// [`Provider::stream_email`](crate::Provider::stream_email) and
+/// [`Provider::widen_email`](crate::Provider::widen_email) return.
+///
+/// # The window
+///
+/// `stream_email`'s window is the account's sync window with any mailbox held further back
+/// ([`MailboxWindows`](engine_core::sync::MailboxWindows)). A snapshot or backfill fetches what
+/// the window of any mailbox a message is filed in admits, and no more: a folder-bound adapter
+/// (IMAP, Graph) fetches under its own folder's `window_for`, and one whose scope is the whole
+/// account (JMAP, Gmail) fetches the account's window and, beside it, each `deepened` mailbox's
+/// own, never the account's older mail as a whole. A delta takes no date filter on any protocol;
+/// the caller judges its arrivals with `MailboxWindows::admits`. A mailbox the server does not
+/// have is not fetched further back.
+///
+/// # The two knobs (`store-and-sync.md`)
+///
+/// - `fetch_batch` bounds each **network round trip** (an IMAP `UID FETCH` window, a JMAP
+///   `Email/get` page, a Graph `$top`); `0` means the adapter's protocol maximum.
+/// - `chunk_size` bounds how many messages accumulate before a chunk is **yielded** — the streaming
+///   granularity a host commits and renders; `0` means one chunk per batch.
+///
+/// A large `fetch_batch` with a small `chunk_size` gives *both* few round trips *and*
+/// row-as-it-arrives commits. Each chunk carries a [`PassMode`] and an optional
+/// [`advance_to`](EmailChunk::advance_to) checkpoint telling the caller how to apply it and how
+/// far to advance the cursor, so a killed cold sync resumes.
+///
+/// # Widening
+///
+/// An adapter that can list a date range without giving up its delta cursor answers
+/// `widen_email` with only the widening's `bands` (or, bound to one folder, its `band_for`), as
+/// [`PassMode::Additive`] chunks that carry no `present` set and tombstone nothing, each
+/// checkpointing the cursor it was handed with its position in the band. The last chunk advances
+/// to that cursor with no band position left in it, so a band leaves the delta where it found it
+/// and every change to a band message after it was read is replayed by the next delta. A position
+/// rides through the deltas a caller runs before the band.
+///
+/// **Whether to continue a recorded position is the caller's to say** (`Widening::resumes`),
+/// never the adapter's: only the caller knows whether a pass under a narrower window ran on the
+/// scope since, which may have dropped mail the band had not reached. When it does not resume,
+/// the adapter ignores any position and starts the band afresh. A caller applies band chunks and
+/// a reopen's alike ([`EmailChunk::into_update`] under `Widening::to`) and never asks which it got.
 ///
 /// Pull-based, so the adapter's fetch advances only when the orchestrator polls for
 /// the next chunk (after committing the previous one): natural backpressure, no

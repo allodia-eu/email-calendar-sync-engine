@@ -5,7 +5,7 @@ use engine_core::{
     ids::{AccountId, ProviderKey},
     mail::{Mailbox, Message, MessageMetadata},
     raw::RawMime,
-    sync::{JmapDataType, MailboxWindows, SyncScope, SyncState, SyncWindow},
+    sync::{JmapDataType, MailboxWindows, SyncScope, SyncState, SyncWindow, Widening},
 };
 
 use crate::{
@@ -87,31 +87,11 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
         SyncWindow::full()
     }
 
-    /// Streams one email sync pass since `cursor`, bounded by `window`, as
-    /// incremental [`EmailChunk`]s — the paged primitive every mail adapter
-    /// implements.
-    ///
-    /// `window` is the account's sync window with any mailbox held further back
-    /// ([`MailboxWindows`]). A snapshot or backfill fetches what the window of any mailbox a
-    /// message is filed in admits, and no more: a folder-bound adapter (IMAP, Graph) fetches
-    /// under its own folder's [`window_for`](MailboxWindows::window_for), and one whose scope is
-    /// the whole account (JMAP, Gmail) fetches the account's window and, beside it, each
-    /// [`deepened`](MailboxWindows::deepened) mailbox's own, never the account's older mail as
-    /// a whole. A delta takes no date filter on any protocol; the orchestrator judges its
-    /// arrivals with [`MailboxWindows::admits`]. A mailbox the server does not have is not
-    /// fetched further back.
-    ///
-    /// The two knobs it separates (`store-and-sync.md`):
-    /// - `fetch_batch` bounds each **network round trip** (an IMAP `UID FETCH` window, a JMAP
-    ///   `Email/get` page, a Graph `$top`); `0` means the adapter's protocol maximum.
-    /// - `chunk_size` bounds how many messages accumulate before a chunk is **yielded** — the
-    ///   streaming granularity a host commits and renders; `0` means one chunk per batch.
-    ///
-    /// A large `fetch_batch` with a small `chunk_size` gives *both* few round trips
-    /// *and* row-as-it-arrives commits. The returned [`EmailStream`] is pulled (backpressure).
-    /// Each chunk carries a [`PassMode`] and an optional [`advance_to`](EmailChunk::advance_to)
-    /// checkpoint telling the orchestrator how to apply and how far to advance the cursor, so a
-    /// killed cold sync resumes (`store-and-sync.md`).
+    /// Streams one email sync pass since `cursor`, bounded by `window` (the account's window
+    /// with any mailbox held further back), as incremental [`EmailChunk`]s — the paged
+    /// primitive every mail adapter implements. [`EmailStream`] states the contract: what the
+    /// window bounds, the `fetch_batch` and `chunk_size` knobs, and how each chunk's
+    /// [`PassMode`] and [`advance_to`](EmailChunk::advance_to) are applied.
     ///
     /// Mail providers ([`Capabilities::mail`]) override this; the default yields a
     /// single classified `Err`, so a capability-checking caller never relies on it.
@@ -127,6 +107,33 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
         Box::pin(futures_util::stream::once(async {
             Err(unsupported("mail sync"))
         }))
+    }
+
+    /// Streams what `widening` newly admits for this scope, keeping `cursor`: called after a
+    /// delta when the depth the cursor covers ([`Widening::from`]) falls short of the depth asked
+    /// ([`Widening::to`]). [`EmailStream`] states the contract ("Widening").
+    ///
+    /// The default **reopens**: a fresh pass over [`Widening::to`], `stream_email` with no cursor,
+    /// or from `cursor` when the widening [`resumes`](Widening::resumes), the cursor then being
+    /// that fresh pass's own. It is correct for every adapter; one that fetches only the
+    /// [`bands`](Widening::bands) says so with
+    /// [`Capabilities::with_band_widening`](crate::Capabilities::with_band_widening).
+    fn widen_email<'a>(
+        &'a self,
+        account: &'a AccountId,
+        cursor: &'a SyncState,
+        widening: &'a Widening,
+        fetch_batch: usize,
+        chunk_size: usize,
+    ) -> EmailStream<'a> {
+        let from = widening.resumes().then_some(cursor);
+        self.stream_email(
+            account,
+            from,
+            widening.to().clone(),
+            fetch_batch,
+            chunk_size,
+        )
     }
 
     /// Fetches the account's mail objects since `cursor` as a single combined

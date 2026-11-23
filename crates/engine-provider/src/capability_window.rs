@@ -1,5 +1,6 @@
 //! The fetch-window half of [`Capabilities`]: whether a transport fetches a calendar's events
-//! whole, or only those inside a date window its cursor was opened over.
+//! whole, or only those inside a date window its cursor was opened over, and whether it widens a
+//! mail window by fetching only what the wider window adds.
 
 use crate::Capabilities;
 
@@ -26,5 +27,25 @@ impl Capabilities {
     #[must_use]
     pub const fn windowed_events(self) -> bool {
         self.windowed_events
+    }
+
+    /// Marks the adapter's [`Provider::widen_email`](crate::Provider::widen_email) as fetching
+    /// **only the bands** a widening adds
+    /// ([`Widening::bands`](engine_core::sync::Widening::bands)), keeping its delta cursor, rather
+    /// than the default's reopen over the whole wider window.
+    ///
+    /// A fact for estimating what a widening will cost, never something a caller branches on to
+    /// stay correct: each chunk's [`PassMode`](crate::PassMode) already says how to apply it.
+    #[must_use]
+    pub const fn with_band_widening(mut self) -> Self {
+        self.band_widening = true;
+        self
+    }
+
+    /// Whether a mail widening fetches only what the wider window adds
+    /// ([`with_band_widening`](Self::with_band_widening)), or reopens over the whole wider window.
+    #[must_use]
+    pub const fn widens_mail_by_band(self) -> bool {
+        self.band_widening
     }
 }

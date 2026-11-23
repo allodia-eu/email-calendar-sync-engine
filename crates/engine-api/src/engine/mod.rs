@@ -27,6 +27,7 @@ mod contact_reads;
 mod contacts;
 mod forget;
 mod identities;
+mod mail_depth;
 mod mailbox_reads;
 mod mailbox_writes;
 mod reads;

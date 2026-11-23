@@ -48,6 +48,33 @@ impl SyncWindow {
         Self { since: Some(since) }
     }
 
+    /// Mail on or after the day `months` whole calendar months before `today`
+    /// ([`CalendarDate::checked_months_before`]: the day clamped to the month it lands in). A
+    /// floor below the representable range is the full history; `months == 0` is a floor of
+    /// `today` itself.
+    ///
+    /// The engine reads no clock here: `today` is the host's day, so a window built from it means
+    /// the same thing wherever it is built, and a test names its day. "All mail" is
+    /// [`full`](Self::full), never a sentinel month count.
+    #[must_use]
+    pub fn months_back(months: u32, today: CalendarDate) -> Self {
+        today
+            .checked_months_before(months)
+            .map_or_else(Self::full, Self::since)
+    }
+
+    /// Whether everything `other` admits, `self` admits too: `self` reaches at least as far back.
+    ///
+    /// The full history covers every window, and is covered by none but itself.
+    #[must_use]
+    pub fn covers(self, other: Self) -> bool {
+        match (self.since, other.since) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(ours), Some(theirs)) => ours <= theirs,
+        }
+    }
+
     /// The date floor, if any.
     #[must_use]
     pub fn floor(&self) -> Option<CalendarDate> {
@@ -155,6 +182,20 @@ impl MailboxWindows {
             let window = self.account.wider(*own);
             (window != self.account).then_some((mailbox, window))
         })
+    }
+
+    /// Whether everything `other` admits, `self` admits too, for a message filed in any mailboxes
+    /// at all: the account's window covers `other`'s, and so does the window of every mailbox
+    /// `other` holds further back.
+    ///
+    /// This is the question a stored cursor's depth answers before a pass resumes from it, and
+    /// the one [`Widening::new`](super::Widening::new) asks before there is anything to widen.
+    #[must_use]
+    pub fn covers(&self, other: &Self) -> bool {
+        self.account.covers(other.account)
+            && other
+                .deepened()
+                .all(|(mailbox, window)| self.window_for(mailbox).covers(window))
     }
 
     /// Whether a message filed in `mailboxes` and dated `date` belongs inside: the window of any
@@ -279,6 +320,56 @@ mod tests {
         let account = SyncWindow::since(date(2026, 4, 1));
         assert_eq!(MailboxWindows::from(account), MailboxWindows::new(account));
         assert_eq!(MailboxWindows::default().account(), SyncWindow::full());
+    }
+
+    #[test]
+    fn months_back_counts_whole_months_from_today_and_saturates_to_the_full_history() {
+        let today = date(2026, 3, 31);
+        assert_eq!(
+            SyncWindow::months_back(1, today),
+            SyncWindow::since(date(2026, 2, 28))
+        );
+        assert_eq!(
+            SyncWindow::months_back(24, today),
+            SyncWindow::since(date(2024, 3, 31))
+        );
+        assert_eq!(SyncWindow::months_back(0, today), SyncWindow::since(today));
+        assert_eq!(SyncWindow::months_back(u32::MAX, today), SyncWindow::full());
+    }
+
+    #[test]
+    fn a_window_covers_the_windows_it_reaches_at_least_as_far_back_as() {
+        let april = SyncWindow::since(date(2026, 4, 1));
+        let march = SyncWindow::since(date(2026, 3, 1));
+        assert!(march.covers(april));
+        assert!(april.covers(april));
+        assert!(!april.covers(march));
+        assert!(SyncWindow::full().covers(march));
+        assert!(SyncWindow::full().covers(SyncWindow::full()));
+        assert!(!march.covers(SyncWindow::full()));
+    }
+
+    #[test]
+    fn mailbox_windows_cover_by_the_account_and_by_every_mailbox_held_further_back() {
+        let account = MailboxWindows::new(SyncWindow::since(date(2026, 4, 1)));
+        let sent = account
+            .clone()
+            .deepen(mailbox("sent"), SyncWindow::since(date(2024, 4, 1)));
+        assert!(sent.covers(&account));
+        assert!(!account.covers(&sent), "Sent's older mail is not held");
+        assert!(sent.covers(&sent));
+        let later = MailboxWindows::new(SyncWindow::since(date(2026, 5, 1)))
+            .deepen(mailbox("sent"), SyncWindow::since(date(2025, 1, 1)));
+        assert!(sent.covers(&later));
+        assert!(!later.covers(&sent));
+        let wider_account = MailboxWindows::new(SyncWindow::since(date(2026, 3, 1)));
+        assert!(!sent.covers(&wider_account), "the account reaches past it");
+        assert!(MailboxWindows::default().covers(&sent));
+        // An override reaching no further than the account's window asks for nothing more.
+        let shallow = account
+            .clone()
+            .deepen(mailbox("inbox"), SyncWindow::since(date(2026, 6, 1)));
+        assert!(account.covers(&shallow));
     }
 
     #[test]

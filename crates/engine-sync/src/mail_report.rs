@@ -47,12 +47,21 @@ impl SyncTiming {
 }
 
 /// One folder's outcome within an account pass.
+///
+/// `#[non_exhaustive]`: the engine builds these, and a field added to say more about a folder's
+/// pass is not a breaking change for a host that reads them.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct FolderSync {
     /// The folder's mail scope.
     pub scope: SyncScope,
     /// What it applied, or why it did not.
     pub result: Result<SyncApplied, SyncError>,
+    /// Whether the folder's stored mail now reaches as far back as the window this pass asked
+    /// for. `true` once a pass has ended under it: a delta, a fresh pass, or a widening whose
+    /// bands all ended in this pass. `false` when the pass ended first, with an error, or fenced
+    /// off by another pass with a widening still to finish: a later pass continues it.
+    pub reached_window: bool,
     /// Wall time for this folder alone. Folders overlap, so these do **not** sum to the pass.
     pub elapsed: Duration,
     /// Where that time went — network, projection, store.
@@ -65,6 +74,7 @@ pub struct FolderSync {
 /// folder busy, one refused, the rest fine — and collapsing that into a single `Err` throws away
 /// exactly what a caller needs to tell an outage from an expired sign-in from a concurrent pass.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct MailSyncReport {
     /// The account-level **store** steps: the thread-index repair, the recipient backfill and the
     /// coverage record.
@@ -169,6 +179,7 @@ mod tests {
 
     fn folder(mailbox: &str, result: Result<SyncApplied, SyncError>) -> FolderSync {
         FolderSync {
+            reached_window: result.is_ok(),
             scope: scope(mailbox),
             result,
             elapsed: Duration::ZERO,

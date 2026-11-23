@@ -53,6 +53,31 @@ impl CalendarDate {
     pub fn day(self) -> u8 {
         self.0.day()
     }
+
+    /// The date `months` whole calendar months before this one, the day clamped to the length of
+    /// the month it lands in: 31 March less one month is 28 February, or the 29th in a leap year.
+    ///
+    /// This is the one rule for "N months back" that every host shares, so a mail window built
+    /// from it means the same day wherever it is built. `None` when the result falls below the
+    /// representable range.
+    #[must_use]
+    pub fn checked_months_before(self, months: u32) -> Option<Self> {
+        let index = i64::from(self.year()) * 12 + i64::from(self.month()) - 1 - i64::from(months);
+        let year = i32::try_from(index.div_euclid(12)).ok()?;
+        let month = Month::try_from(u8::try_from(index.rem_euclid(12) + 1).ok()?).ok()?;
+        let day = self.day().min(month.length(year));
+        Date::from_calendar_date(year, month, day).ok().map(Self)
+    }
+
+    /// The date `days` days later, or earlier for a negative `days`. `None` outside the
+    /// representable range.
+    #[must_use]
+    pub fn checked_add_days(self, days: i64) -> Option<Self> {
+        let day = i64::from(self.0.to_julian_day()).checked_add(days)?;
+        Date::from_julian_day(i32::try_from(day).ok()?)
+            .ok()
+            .map(Self)
+    }
 }
 
 impl fmt::Display for CalendarDate {
@@ -102,6 +127,60 @@ mod tests {
         let json = serde_json::to_string(&date).unwrap();
         assert_eq!(json, "\"2021-07-04\"");
         assert_eq!(serde_json::from_str::<CalendarDate>(&json).unwrap(), date);
+    }
+
+    fn date(raw: &str) -> CalendarDate {
+        raw.parse().unwrap()
+    }
+
+    #[test]
+    fn months_back_clamp_the_day_to_the_month_they_land_in() {
+        for (from, months, expected) in [
+            ("2026-03-31", 1, "2026-02-28"),
+            ("2024-03-31", 1, "2024-02-29"),
+            ("2024-02-29", 12, "2023-02-28"),
+            ("2024-02-29", 48, "2020-02-29"),
+            ("2026-05-31", 1, "2026-04-30"),
+            ("2026-01-31", 1, "2025-12-31"),
+            ("2026-01-15", 13, "2024-12-15"),
+            ("2026-05-31", 3, "2026-02-28"),
+            ("2026-08-31", 24, "2024-08-31"),
+            ("2026-08-15", 1200, "1926-08-15"),
+            ("2026-08-15", 0, "2026-08-15"),
+        ] {
+            assert_eq!(
+                date(from).checked_months_before(months),
+                Some(date(expected)),
+                "{from} less {months} months"
+            );
+        }
+    }
+
+    #[test]
+    fn months_back_below_the_representable_range_are_none() {
+        let earliest = CalendarDate(Date::MIN);
+        assert_eq!(earliest.checked_months_before(0), Some(earliest));
+        assert_eq!(earliest.checked_months_before(1), None);
+        assert_eq!(date("2026-08-15").checked_months_before(u32::MAX), None);
+    }
+
+    #[test]
+    fn days_move_either_way_and_stop_at_the_range_edge() {
+        assert_eq!(
+            date("2026-02-27").checked_add_days(2),
+            Some(date("2026-03-01"))
+        );
+        assert_eq!(
+            date("2024-03-01").checked_add_days(-1),
+            Some(date("2024-02-29"))
+        );
+        assert_eq!(
+            date("2026-01-01").checked_add_days(-120),
+            Some(date("2025-09-03"))
+        );
+        assert_eq!(CalendarDate(Date::MAX).checked_add_days(1), None);
+        assert_eq!(CalendarDate(Date::MIN).checked_add_days(-1), None);
+        assert_eq!(date("2026-01-01").checked_add_days(i64::MAX), None);
     }
 
     #[test]

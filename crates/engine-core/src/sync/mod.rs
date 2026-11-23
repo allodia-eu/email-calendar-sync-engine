@@ -8,11 +8,15 @@
 //! [`SyncState`] cursor, and the [`SyncUpdate`] delta/snapshot batch.
 
 mod scope;
+mod stamp;
 mod state;
 mod update;
+mod widening;
 mod window;
 
 pub use scope::{JmapDataType, ObjectKind, SearchDomain, SyncScope};
+pub use stamp::StampedCursor;
 pub use state::SyncState;
 pub use update::{Keyed, NoPatch, SyncObject, SyncUpdate};
+pub use widening::{Band, Widening};
 pub use window::{MailboxWindows, SyncWindow};
