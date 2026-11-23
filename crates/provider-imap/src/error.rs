@@ -11,7 +11,7 @@
 //! `cannotCalculateChanges` — see [`crate::sync`].
 
 use engine_core::error::FailureClass;
-use engine_provider::ProviderError;
+use engine_provider::{ProviderError, TargetRefusal};
 
 /// An IMAP (or SMTP) protocol or transport failure.
 #[derive(Debug, thiserror::Error)]
@@ -135,9 +135,34 @@ impl ImapError {
 
 impl From<ImapError> for ProviderError {
     fn from(err: ImapError) -> Self {
+        if let Some(reason) = err.target_refusal() {
+            return ProviderError::refused_by_target(reason).with_source(err);
+        }
         let class = err.failure_class();
         let detail = err.to_string();
         ProviderError::new(class, detail).with_source(err)
+    }
+}
+
+impl ImapError {
+    /// The neutral reason a `NO` names by its response code, where the target's own state
+    /// refused (`providers.md`, "Import"): `OVERQUOTA` (RFC 9208), a folder that does not exist
+    /// (`TRYCREATE`, RFC 3501; `NONEXISTENT`, RFC 5530), and a folder this credential may not
+    /// write (`NOPERM`, RFC 5530). Each is already `InvalidState`; this names which.
+    fn target_refusal(&self) -> Option<TargetRefusal> {
+        let Self::No(detail) = self else {
+            return None;
+        };
+        let named = |code: &str| opens_with_code(detail, code);
+        if named("OVERQUOTA") {
+            Some(TargetRefusal::StorageFull)
+        } else if named("TRYCREATE") || named("NONEXISTENT") {
+            Some(TargetRefusal::NoSuchContainer)
+        } else if named("NOPERM") {
+            Some(TargetRefusal::ReadOnlyContainer)
+        } else {
+            None
+        }
     }
 }
 
@@ -226,5 +251,50 @@ mod tests {
         let err: ImapError = io.into();
         assert!(matches!(err, ImapError::Io(_)));
         assert_eq!(err.failure_class(), FailureClass::Retryable);
+    }
+
+    /// The response codes that say the target's state refused (RFC 5530 `OVERQUOTA` and
+    /// `NOPERM`, RFC 3501 `TRYCREATE`, RFC 5530 `NONEXISTENT`) become the neutral reason, under
+    /// the engine's own words rather than the server's text.
+    #[test]
+    fn a_refusal_by_the_target_s_state_is_named() {
+        for (text, reason) in [
+            (
+                "[OVERQUOTA] Mailbox of Secret Person is full",
+                TargetRefusal::StorageFull,
+            ),
+            (
+                "[TRYCREATE] No folder Secret",
+                TargetRefusal::NoSuchContainer,
+            ),
+            (
+                "[NONEXISTENT] No folder Secret",
+                TargetRefusal::NoSuchContainer,
+            ),
+            (
+                "[NOPERM] Secret is read-only",
+                TargetRefusal::ReadOnlyContainer,
+            ),
+            (
+                "[noperm] Secret is read-only",
+                TargetRefusal::ReadOnlyContainer,
+            ),
+        ] {
+            let refused = ProviderError::from(ImapError::no(text));
+            assert_eq!(refused.target_refusal(), Some(reason), "{text}");
+            assert_eq!(refused.class(), FailureClass::InvalidState, "{text}");
+            assert!(!refused.detail().contains("Secret"), "{refused}");
+        }
+        for other in ["SELECT failed", "[INUSE] busy", "Secret [OVERQUOTA] later"] {
+            assert_eq!(
+                ProviderError::from(ImapError::no(other)).target_refusal(),
+                None
+            );
+        }
+        assert_eq!(
+            ProviderError::from(ImapError::bad("[NOPERM] x")).target_refusal(),
+            None,
+            "a BAD is the request's fault, whatever it says"
+        );
     }
 }

@@ -92,7 +92,7 @@ pub use contact::{
 };
 pub use deadline::Deadlines;
 pub use draft_receipt::DraftReceipt;
-pub use error::{ProviderError, ProviderResult};
+pub use error::{ProviderError, ProviderResult, TargetRefusal};
 pub use hand_over::{HandOver, HandOverLog, HandedOver, Unrecorded};
 pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};
 pub use keyword_name::{KeywordName, keyword_named};

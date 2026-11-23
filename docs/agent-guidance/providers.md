@@ -254,6 +254,25 @@ it. An adapter that can import implements the trait; there is no capability flag
 - **Who implements it:** IMAP (`APPEND`, `imap-smtp.md` → "Import"). JMAP `Email/import` is
   next; Graph and Gmail are sources only. Calendar and contact import (CalDAV and CardDAV `PUT`
   without scheduling) come with their first adapter.
+- **When the target's own state refuses, the reason is named, once for every adapter and every
+  kind of object.** `ProviderError::refused_by_target(TargetRefusal)` (`engine-provider`,
+  `error.rs`) is `FailureClass::InvalidState`: not retryable as it stands, and with no wait,
+  because waiting changes nothing; the host changes the state, then sends again.
+  `ProviderError::target_refusal()` reads the reason back, and the detail is the engine's own
+  words, never the server's. A rate limit is never one of these: an upload quota that clears
+  by the hour is `RateLimited`, with its wait.
+
+  | Reason | Meaning | What clears it |
+  |---|---|---|
+  | `StorageFull` | The account's storage is full. | Freeing space, or a larger quota. |
+  | `NoSuchContainer` | The container the object names (mailbox, calendar, address book) does not exist. | Creating it, or naming one that does. |
+  | `ReadOnlyContainer` | The credential may not write into the container (read-only or shared). | Granting the right, or another container. |
+
+  Each adapter's mapping, one line per adapter:
+
+  | Adapter | `StorageFull` | `NoSuchContainer` | `ReadOnlyContainer` |
+  |---|---|---|---|
+  | IMAP (any `NO`, `error.rs`) | `NO [OVERQUOTA]` (RFC 9208) | `NO [TRYCREATE]` (RFC 3501), `NO [NONEXISTENT]` (RFC 5530) | `NO [NOPERM]` (RFC 5530) |
 
 ## Stalwart Test Spine
 

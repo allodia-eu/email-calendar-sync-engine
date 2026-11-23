@@ -766,6 +766,11 @@ credential.
   stored after it (`live_imap_import.rs`, Stalwart and both Dovecot revisions). A server may add
   keywords of its own: Stalwart files every stored message `$hasattachment` or
   `$hasnoattachment`.
+- **A `NO` naming the target's state carries the neutral reason** (`ImapError`'s conversion,
+  `providers.md` → "Import"): `OVERQUOTA` is `TargetRefusal::StorageFull`, `TRYCREATE` and
+  `NONEXISTENT` are `NoSuchContainer`, `NOPERM` is `ReadOnlyContainer`. Each was
+  `InvalidState` already; the reason says which, under the engine's own words. A `BAD` never
+  is one: it is the request's fault.
 - **`put_draft` / `delete_draft` (no SMTP).** A draft is `APPEND`ed into the account's
   Drafts folder (resolved by `\Drafts` SPECIAL-USE, else creating `Drafts`) flagged
   `\Draft \Seen`, so keeping a draft works against any IMAP server even where SMTP
