@@ -71,7 +71,11 @@ async fn send_authenticates_with_auth_plain_over_the_stream() {
 
     assert_eq!(result.disposition, Disposition::Delivered);
     let sent = written(&recorded);
-    assert!(sent.contains("AUTH PLAIN "), "{sent}");
+    // RFC 4616 with no authorization identity: base64 of `\0alice@test.local\0s3cret`.
+    assert!(
+        sent.contains("AUTH PLAIN AGFsaWNlQHRlc3QubG9jYWwAczNjcmV0\r\n"),
+        "{sent}"
+    );
     // The password is base64 in the SASL token, never in the clear.
     assert!(
         !sent.contains("s3cret"),
