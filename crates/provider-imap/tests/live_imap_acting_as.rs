@@ -8,11 +8,13 @@
 //!   the administrator, decides the mailbox. An account that is not a master user naming another
 //!   account, and a wrong master password, are both refused as authentication failures. Dovecot
 //!   bans nobody, so the refusals cost nothing.
-//! - **Stalwart** (`STALWART_IMAP_ADDR`), which ignores the authorization identity: the
-//!   administrator acting as alice signs in to the administrator's own mailbox, without an error,
-//!   while Stalwart's own impersonation syntax (`alice%admin` as the username) does reach alice's.
-//!   Both directions are pinned, so the observation cannot come from a request that never asked
-//!   (`docs/spec-deviations.md`). No sign-in here fails, so the Stalwart ban budget is untouched.
+//! - **Stalwart** (`STALWART_IMAP_ADDR`), which ignores the authorization identity. Alice naming
+//!   bob signs in to alice's own mailbox; the recovery administrator (`STALWART_RECOVERY_ADMIN`,
+//!   outside the directory) naming alice signs in to its own, both with `OK`. Stalwart's own
+//!   impersonation syntax (`alice%admin` as the username) does take the recovery administrator to
+//!   alice's mailbox, so it may act as alice: the request that asks is answered, and only the
+//!   authorization identity is ignored (`docs/spec-deviations.md`). No sign-in here fails, so the
+//!   Stalwart ban budget is untouched.
 //!
 //! Which mailbox opened is read from the seed: `01-plain.eml` (`<baseline-0001@test.local>`) is
 //! in alice's INBOX on every harness, and in neither bob's nor the administrator's.
@@ -137,10 +139,13 @@ async fn naming_an_account_without_the_right_to_act_as_it_is_refused() {
     }
 }
 
-/// Stalwart's harness administrator (`docker/stalwart/docker-compose.yml`), which holds the
-/// `impersonate` permission through its role.
+/// Stalwart's recovery administrator (`STALWART_RECOVERY_ADMIN` in
+/// `docker/stalwart/docker-compose.yml`): configured outside the directory, and the account
+/// every harness management call signs in as.
 const STALWART_ADMIN: &str = "admin";
 const STALWART_ADMIN_PW: &str = "harness-admin-pw";
+/// Alice's harness password on Stalwart (`docker/stalwart/docker-compose.yml`).
+const STALWART_ALICE_PW: &str = "harness-alice-pw";
 
 #[tokio::test]
 async fn stalwart_ignores_the_authorization_identity() {
@@ -156,8 +161,15 @@ async fn stalwart_ignores_the_authorization_identity() {
         opens_alices_inbox("stalwart", &addr, composite).await,
         "Stalwart's own impersonation must reach alice's INBOX"
     );
-    // The same administrator naming alice as the authorization identity is signed in, without
-    // an error, to its own mailbox.
+    // Alice naming bob, which she may not act as, is signed in to her own mailbox rather than
+    // refused.
+    let alice_as_bob = Credential::acting_as(ALICE, STALWART_ALICE_PW, BOB);
+    assert!(
+        opens_alices_inbox("stalwart", &addr, alice_as_bob).await,
+        "Stalwart no longer signs alice in to her own mailbox when she names bob"
+    );
+    // The recovery administrator naming alice, which it may act as, is signed in, without an
+    // error, to its own mailbox.
     let acting_as = Credential::acting_as(STALWART_ADMIN, STALWART_ADMIN_PW, ALICE);
     assert!(
         !opens_alices_inbox("stalwart", &addr, acting_as).await,

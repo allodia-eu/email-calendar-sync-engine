@@ -510,20 +510,27 @@ boundaries.
 - **The engine cannot check that the server honoured it.** IMAP has no "whose session is
   this?": `NAMESPACE`, `ID` and `MYRIGHTS` name no account. Stalwart's `GETACL INBOX` names the
   owner, but only where the ACL extension is offered, in an identifier format of the server's
-  own (`admin` beside `alice@test.local`); a server without the extension has nothing to ask. Stalwart (v1.0.2)
-  ignores the authorization identity and signs the administrator in to its **own** mailbox with
-  `OK` (`spec-deviations.md`, STALWART-NEW-1); its impersonation takes `target%admin` as the
-  username instead, a plain `Password` to the engine. So a host uses `ActingAs` only against a
-  server it has verified honours it. Proof: `transport_acting_as_tests.rs` (Dovecot's observed
-  lines), and live in `live_imap_acting_as.rs`: on both Dovecot services the administrator acting
-  as alice reads alice's seeded INBOX and acting as bob reads bob's; a non-master naming alice and
-  a wrong master password are refused; on Stalwart both directions of the deviation are pinned.
+  own (`admin` beside `alice@test.local`); a server without the extension has nothing to ask.
+  Stalwart (v1.0.2) ignores the authorization identity and signs the authentication identity in
+  to its **own** mailbox with `OK`: alice naming bob gets alice's, its recovery administrator
+  naming alice gets the administrator's (`spec-deviations.md`, STALWART-NEW-1). Its
+  impersonation takes `target%admin` as the username instead, a plain `Password` to the engine.
+  So a host uses `ActingAs` only against a server it has verified honours it. Proof:
+  `transport_acting_as_tests.rs` (Dovecot's observed lines), and live in
+  `live_imap_acting_as.rs`: on both Dovecot services the administrator acting as alice reads
+  alice's seeded INBOX and acting as bob reads bob's; a non-master naming alice and a wrong
+  master password are refused; on Stalwart the deviation is pinned with its control.
 - **An account's connections all sign in as one account.** The first dial that signs in fixes
   it (`credentials::PresentedIdentity`, shared by `ImapAccount::connect` and its pool's dial):
-  the username, or for `ActingAs` the account acted as. A later credential naming another fails
-  its dial as `ImapError::Credential`, `InvalidState`, before anything is opened, so a source
-  answering for the wrong subject cannot put another mailbox's session in the pool. A refused
-  credential fixes nothing; compared exactly. Proof: `dial_identity_tests.rs`.
+  the account whose mailbox opens, `Credential::authorization_identity` (the username, or for
+  `ActingAs` the account acted as). A later credential naming another fails its dial as
+  `ImapError::Credential`, `InvalidState`, before anything is opened, so a source answering for
+  the wrong subject cannot put another mailbox's session in the pool. Within one dial, a
+  replacement must name the account the refused credential named, so a refusal cannot switch
+  accounts even on the first dial; a dial whose credentials were all refused fixes nothing. A
+  second identity reaching `remember` (two first dials racing) fails that dial too. The
+  comparison is exact, byte for byte: `Alice@example.com` and `alice@example.com` are two
+  accounts to it, even on a server that folds case. Proof: `dial_identity_tests.rs`.
 
 **The mechanism is negotiated, never configured.** Two SASL mechanisms carry a bearer
 token, and providers disagree about which:

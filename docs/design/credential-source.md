@@ -1,9 +1,10 @@
 # Design note: one provider-neutral `CredentialSource`
 
-Status: accepted; steps 1 and 2 of "Phasing" have landed (`engine_provider::credential`, IMAP/SMTP
-on it, and the IMAP authorization identity). The direction is principle 7 of `north-star.md`: **credentials are asked for, not
-held.** The owner settled every open question on 2026-11-23 ("Decisions", at the end), and
-the body below states each decision where it applies. One `CredentialSource` is a "Next" step in
+Status: accepted; steps 1 and 2 of "Phasing" have landed (`engine_provider::credential`,
+IMAP/SMTP on it, and the IMAP authorization identity). The direction is principle 7 of
+`north-star.md`: **credentials are asked for, not held.** The owner settled every open
+question on 2026-11-23 ("Decisions", at the end), and the body below states each decision where
+it applies. One `CredentialSource` is a "Next" step in
 `north-star.md` ("Direction"); the capability-trait split comes after it and the query seam
 (`north-star.md`, "Key Decisions").
 
@@ -397,12 +398,14 @@ These live in `mail-calendar/crates/mailcal-account`, read-only here:
    as for `LOGIN`, and a plain password keeps `LOGIN`. SMTP refuses the variant before dialling
    (`Permanent`): submitting as another account is a different grant, and no server has been
    seen to take it. The pool check from "Direct host" landed with it, per account: the first dial
-   that signs in fixes the account its connections belong to (for this variant, the one acted
-   as), and a later credential naming another fails its dial as `InvalidState` before anything
-   is opened. Proven live on both Dovecot services with a master user
+   that signs in fixes the account its connections belong to
+   (`Credential::authorization_identity`: for this variant, the one acted as), and a later
+   credential naming another fails its dial as `InvalidState` before anything is opened. A
+   replacement must name the account the credential it replaces named, and the comparison is
+   exact. Proven live on both Dovecot services with a master user
    (`provider-imap/tests/live_imap_acting_as.rs`); Stalwart was found to ignore the authorization
    identity (its impersonation takes `target%admin` as the username, which is a `Password`), and
-   that is pinned in both directions. See "Types" for the hazard this leaves to the host.
+   that is pinned with its control. See "Types" for the hazard this leaves to the host.
 3. **JMAP**, together with `engine-http::send_authenticated` and the plaintext rule. This is the
    first per-request HTTP ask, and it deletes `RefreshingJmapProvider`.
 4. **CalDAV/CardDAV**: `permits` absorbs `CredentialHosts`, and the scope is keyed by subject.
