@@ -138,6 +138,33 @@ async fn an_auth_asking_for_a_password_transition_stays_an_authentication_error(
     );
 }
 
+#[tokio::test]
+async fn only_535_is_the_server_refusing_the_credential() {
+    // `535` judged the credential, so a source may replace it. The rest judged none (an
+    // unsupported or too weak mechanism, encryption required, a transition only the user can
+    // make): the same class, but a fresh credential would meet the same answer.
+    let err = auth_refused_with("535 5.7.8 Authentication credentials invalid\r\n").await;
+    assert!(matches!(err, ImapError::Auth(_)), "{err:?}");
+    for unjudged in [
+        "504 5.5.4 Unrecognized authentication type\r\n",
+        "534 5.7.9 Authentication mechanism is too weak\r\n",
+        "538 5.7.11 Encryption required for requested authentication mechanism\r\n",
+        "530 5.7.0 Authentication required\r\n",
+        "432 4.7.12 A password transition is needed\r\n",
+    ] {
+        let err = auth_refused_with(unjudged).await;
+        assert!(
+            matches!(err, ImapError::AuthUnsupported(_)),
+            "{unjudged}: {err:?}"
+        );
+        assert_eq!(
+            err.failure_class(),
+            engine_core::error::FailureClass::Authentication,
+            "{unjudged}"
+        );
+    }
+}
+
 async fn auth_refused_with(reply: &str) -> ImapError {
     let server = script(&["220 mail\r\n", "250 AUTH PLAIN\r\n", reply]);
     let (stream, _) = MockStream::new(server);

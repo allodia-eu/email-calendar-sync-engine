@@ -200,3 +200,7 @@ mod tests;
 #[cfg(test)]
 #[path = "dial_renewal_tests.rs"]
 mod renewal_tests;
+
+#[cfg(test)]
+#[path = "dial_credential_tests.rs"]
+mod credential_tests;

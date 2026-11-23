@@ -17,7 +17,10 @@
 
 use zeroize::Zeroizing;
 
-use crate::error::{ImapError, ImapResult};
+use crate::{
+    error::{ImapError, ImapResult},
+    secret_line::{Part, secret_line},
+};
 
 /// A SASL mechanism that presents an OAuth 2.0 bearer token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,19 +95,35 @@ impl Mechanism {
         let username = clean("username", username)?;
         let access_token = clean("access token", access_token)?;
         let host = clean("host", host)?;
-        let blob = Zeroizing::new(match self {
+        // Built at its final length, so no grown buffer leaves a copy of the token behind
+        // (`crate::secret_line`).
+        let blob = match self {
             Self::OAuthBearer => {
-                // `port` is a `u16`, so its rendering needs no screening.
+                // `port` is a `u16`, so its rendering needs no screening, and it is no secret.
                 let port = port
                     .map(|port| format!("port={port}\x01"))
                     .unwrap_or_default();
-                format!(
-                    "n,a={username},\x01host={host}\x01{port}\
-                     auth=Bearer {access_token}\x01\x01"
-                )
+                secret_line(&[
+                    Part::Text("n,a="),
+                    Part::Text(username),
+                    Part::Text(",\x01host="),
+                    Part::Text(host),
+                    Part::Text("\x01"),
+                    Part::Text(&port),
+                    Part::Text("auth=Bearer "),
+                    Part::Text(access_token),
+                    Part::Text("\x01\x01"),
+                ])
             }
-            Self::XOAuth2 => format!("user={username}\x01auth=Bearer {access_token}\x01\x01"),
-        });
+            Self::XOAuth2 => secret_line(&[
+                Part::Text("user="),
+                Part::Text(username),
+                Part::Text("\x01auth=Bearer "),
+                Part::Text(access_token),
+                Part::Text("\x01\x01"),
+            ]),
+        };
+        // `encode` allocates its output at its final length too.
         Ok(Zeroizing::new(crate::base64::encode(blob.as_bytes())))
     }
 

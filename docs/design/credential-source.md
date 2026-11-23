@@ -98,7 +98,10 @@ pub enum Credential {
 /// Who a source signs in as: stable, not secret, unique within the process. Supplied by
 /// the host (sync: its account id; transfer: the mailbox-pair side; direct: tenant + OIDC `sub`).
 /// Its own type, not `AccountId`: a store-less host may reuse account ids across tenants.
-pub struct CredentialSubject(Box<str>);
+/// `Debug` says named or minted, never the name, which is often personal.
+pub struct CredentialSubject(Subject);
+enum Subject { Named(Box<str>), Unique(u64) } // private: `new(name)`, or minted by
+                                              // `FixedCredential::unique`, never equal to a name
 
 /// Where a credential is about to go: scheme, lowercase host, effective port. For IMAP and SMTP
 /// the host is the TLS server name, not the dial address (a loopback fixture maps them).
@@ -198,9 +201,12 @@ endpoint or broker cannot hang a sync, a transfer or a user's request.
 ask, attempt, and on a refusal ask `replace` once and attempt again. A second refusal is returned
 as it came. What counts as a refusal is decided by each adapter, and the rule is narrow:
 
-- IMAP: `ImapError::Auth` from `LOGIN`/`AUTHENTICATE` (not `[LIMIT]`, not temporary codes). The
-  retry uses a **new connection**, as today.
-- SMTP: `535` at `AUTH`, before `MAIL FROM`, so a send is never repeated.
+- IMAP: `ImapError::Auth` from `LOGIN`/`AUTHENTICATE` (not `[LIMIT]`, not temporary codes, not a
+  server offering no mechanism the credential can use). The retry uses a **new connection**, as
+  today.
+- SMTP: `535` at `AUTH`, before `MAIL FROM`, so a send is never repeated. Other `AUTH` failures
+  (`504`, `530`, `534`, `538`, `432`) keep the `Authentication` class as
+  `ImapError::AuthUnsupported`, and ask for no replacement.
 - HTTP: a `401` to a request **that carried the credential**, where the challenge offers the
   credential's scheme or no challenge was sent at all (YAHOO-1 in `spec-deviations.md`). JMAP first
   runs its scheme re-framing, which does not change the credential, and asks for a replacement only
@@ -303,7 +309,7 @@ how a provider is built, not how a capability is reached.
 |---|---|---|
 | `engine-provider` | New `credential.rs` (types, trait, `FixedCredential`, replacement helper); adds the `zeroize` dependency (already in the tree through rustls; MIT/Apache-2.0) | Additive |
 | `engine-http` | `send_authenticated`, which also enforces the plaintext rule ("Host binding") | Additive API. **Behaviour change:** a credential is no longer sent to an `http://` origin other than loopback |
-| `provider-imap` | `ImapConfig` holds `Arc<dyn engine_provider::CredentialSource>`; `with_renewal` becomes the shared helper; `dial`/`filing`/`smtp_auth` match on `Credential` | **Breaking** for implementers of `provider_imap::CredentialSource` (`credentials`→`credential`, `renew`→`replace`, new `subject`) and for matches on `Credentials::OAuth2`. Callers keep compiling: a deprecated `Credentials` alias with its `password`/`oauth2` constructors, and `ImapConfig::new` taking a fixed credential |
+| `provider-imap` | `ImapConfig` holds `Arc<dyn engine_provider::CredentialSource>`; `with_renewal` becomes the shared helper; `dial`/`filing`/`smtp_auth` match on `Credential` | **Breaking**: (1) implementers of `provider_imap::CredentialSource` (`credentials`→`credential(request)`, `renew`→`replace(refused, request)`, new `subject`), and callers of `source.credentials()`/`renew()` too; (2) matches on `Credentials::OAuth2` (now `Credential::Bearer`); (3) `Credentials::username()` returns `Option<&str>`; (4) `Password.password` is a `Secret`, which breaks struct literals and reads of the field as a `String`; (5) a bare `Credentials` is no longer a source (`Arc::new(credentials)`); (6) `Debug` of `ImapConfig` and the credential no longer prints the username; (7) the shims are `#[deprecated]`, so a caller building with `-D warnings` fails until it moves to the new names. Callers otherwise keep compiling: a deprecated `Credentials` alias with its `password`/`oauth2` constructors, and `ImapConfig::new` taking a fixed credential. Not breaking (`ImapError` is `#[non_exhaustive]`): the new `ImapError::AuthUnsupported`, which some failures that were `Auth` now are, with the same class |
 | `provider-jmap` | `Transport` asks per request through `send_authenticated`; re-framing reads `Credential`; `JmapConfig::from_credential_source`; later `JmapEndpoint` | `JmapConfig::new(base, provider_jmap::Credentials, ua)` kept and converted into a `FixedCredential` with a unique subject. **Behaviour change:** a `401` can now cause one replayed request when the source replaces |
 | `provider-caldav` / CardDAV | `DavClient` asks per request; `CredentialScope` works on `Credential`; `permits` merged with `CredentialHosts` | **Breaking:** `CalDavConfig.credentials` and `CardDavConfig.credentials` are `pub` fields of `provider_caldav::Credentials`. Replacing them with a source breaks struct-literal construction. Constructors stay. `CredentialHosts` and `with_credential_hosts` are deprecated, not removed |
 | `provider-graph` | `HttpTransport` asks per request; `GraphClient::connect_with_source`; `GraphProvider` shares the client (`Arc`) | `connect(token, …)`, `for_mailbox` and `with_base` kept, wrapping a fixed bearer. `GraphProvider::new(GraphClient, …)` can keep its signature if `GraphClient` becomes a cheap clone |

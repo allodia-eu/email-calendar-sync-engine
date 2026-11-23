@@ -16,7 +16,8 @@ use crate::{
     deadline::{self, BOUNDS},
     error::{ImapError, ImapResult},
     parse::{self, FetchRow, ListRow},
-    transport_command::{ListReturn, list_command, quote},
+    secret_line::{Part, secret_line},
+    transport_command::{ListReturn, list_command},
 };
 
 /// A connected IMAP session over a generic async byte stream.
@@ -174,9 +175,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 
     /// `LOGIN user password`. A `NO` here is classed as a sign-in refusal
     /// ([`ImapError::refused_sign_in`]), not as a generic invalid-state error.
+    ///
+    /// Not sent through [`command`](Self::command), whose `format!` would copy the password:
+    /// the line is built once, at its final length, and zeroed when dropped
+    /// ([`crate::secret_line`]).
     pub(crate) async fn login(&mut self, user: &str, password: &str) -> ImapResult<()> {
-        let command = format!("LOGIN {} {}", quote(user), quote(password));
-        match self.command(&command).await {
+        self.drain_pending().await?;
+        let tag = self.next_tag();
+        let line = secret_line(&[
+            Part::Text(&tag),
+            Part::Text(" LOGIN "),
+            Part::Quoted(user),
+            Part::Text(" "),
+            Part::Quoted(password),
+            Part::Text("\r\n"),
+        ]);
+        self.send_raw(line.as_bytes()).await?;
+        drop(line);
+        match self.read_response(&tag).await {
             Ok(_) => Ok(()),
             Err(ImapError::No(detail)) => Err(ImapError::refused_sign_in(detail)),
             Err(other) => Err(other),
@@ -272,7 +288,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// `UID SEARCH <criteria>` in the selected mailbox — the matched UIDs (empty if none
     /// match), tolerating both the classic `* SEARCH` and the extended `* ESEARCH` reply.
     /// `criteria` is already-formed search syntax; a caller composing in a non-literal value
-    /// quotes it ([`quote`]) first.
+    /// quotes it ([`quote`](crate::transport_command::quote)) first.
     pub(crate) async fn uid_search(&mut self, criteria: &str) -> ImapResult<Vec<u32>> {
         let response = self.command(&format!("UID SEARCH {criteria}")).await?;
         Ok(parse::parse_search(&response.untagged))

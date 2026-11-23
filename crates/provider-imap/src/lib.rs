@@ -113,6 +113,7 @@ mod qresync;
 mod report;
 mod resync;
 mod sasl;
+mod secret_line;
 mod smtp;
 mod smtp_auth;
 mod smtp_sender;

@@ -209,6 +209,8 @@ async fn a_server_offering_no_oauth_mechanism_says_what_it_does_offer() {
     .await;
 
     let err = outcome.expect_err("nothing to present");
+    // Not a refusal: no other token would be taken either, so none is asked for.
+    assert!(matches!(err, ImapError::AuthUnsupported(_)), "{err:?}");
     assert_eq!(err.failure_class(), FailureClass::Authentication);
     let detail = err.to_string();
     assert!(

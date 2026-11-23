@@ -32,16 +32,16 @@ use crate::{
     transport::Connection,
 };
 
-const USER: &str = "alice@example.com";
-const HOST: &str = "imap.example.com";
-const GREETING: &str = "* OK ready\r\n";
-const SASL_CAPABILITY: &str =
+pub(super) const USER: &str = "alice@example.com";
+pub(super) const HOST: &str = "imap.example.com";
+pub(super) const GREETING: &str = "* OK ready\r\n";
+pub(super) const SASL_CAPABILITY: &str =
     "* CAPABILITY IMAP4rev1 SASL-IR AUTH=OAUTHBEARER\r\na1 OK CAPABILITY done\r\n";
 /// A rest threshold no test outlives, so a parked connection is never checked.
 const NEVER_CHECK: Duration = Duration::from_hours(1);
 
 /// A server that accepts whatever token it is given.
-fn accepting() -> Vec<u8> {
+pub(super) fn accepting() -> Vec<u8> {
     script(&[
         GREETING,
         SASL_CAPABILITY,
@@ -51,7 +51,7 @@ fn accepting() -> Vec<u8> {
 }
 
 /// A server that refuses the token, as one does when it has expired.
-fn refusing() -> Vec<u8> {
+pub(super) fn refusing() -> Vec<u8> {
     script(&[
         GREETING,
         SASL_CAPABILITY,
@@ -72,16 +72,16 @@ fn presented(token: &str) -> String {
 /// A host's token source: hands out whatever token is current, and on `replace` switches to
 /// the refreshed one it was given, if any. Records what each ask was told.
 #[derive(Debug)]
-struct TokenSource {
+pub(super) struct TokenSource {
     subject: CredentialSubject,
     current: Mutex<String>,
     refreshed: Mutex<Option<String>>,
-    renewals: AtomicUsize,
-    asked: Mutex<Vec<(CredentialProtocol, Origin)>>,
+    pub(super) renewals: AtomicUsize,
+    pub(super) asked: Mutex<Vec<(CredentialProtocol, Origin)>>,
 }
 
 impl TokenSource {
-    fn new(current: &str, refreshed: Option<&str>) -> Arc<Self> {
+    pub(super) fn new(current: &str, refreshed: Option<&str>) -> Arc<Self> {
         Arc::new(Self {
             subject: CredentialSubject::new("alice"),
             current: Mutex::new(current.to_owned()),
@@ -152,18 +152,18 @@ impl CredentialSource for RevokedSource {
     }
 }
 
-type Opened = Result<(Connection<MockStream>, Option<TlsVersion>), ImapError>;
+pub(super) type Opened = Result<(Connection<MockStream>, Option<TlsVersion>), ImapError>;
 
 /// Scripted servers, handed out one per connection the dial opens, and what the client wrote
 /// on each.
 #[derive(Clone, Default)]
-struct Servers {
+pub(super) struct Servers {
     scripts: Arc<Mutex<VecDeque<Vec<u8>>>>,
     sessions: Arc<Mutex<Vec<Recorded>>>,
 }
 
 impl Servers {
-    fn new(scripts: Vec<Vec<u8>>) -> Self {
+    pub(super) fn new(scripts: Vec<Vec<u8>>) -> Self {
         Self {
             scripts: Arc::new(Mutex::new(scripts.into())),
             sessions: Arc::default(),
@@ -171,7 +171,7 @@ impl Servers {
     }
 
     /// Opens the next scripted connection, as `open_secured` would a real one.
-    fn open(&self) -> impl Future<Output = Opened> + use<> {
+    pub(super) fn open(&self) -> impl Future<Output = Opened> + use<> {
         let server = self
             .scripts
             .lock()
@@ -187,7 +187,7 @@ impl Servers {
         written(&self.sessions.lock().unwrap()[session])
     }
 
-    fn opened(&self) -> usize {
+    pub(super) fn opened(&self) -> usize {
         self.sessions.lock().unwrap().len()
     }
 
@@ -211,7 +211,7 @@ impl Servers {
     }
 }
 
-fn token_config(source: Arc<dyn CredentialSource>) -> ImapConfig {
+pub(super) fn token_config(source: Arc<dyn CredentialSource>) -> ImapConfig {
     ImapConfig::from_credential_source(format!("{HOST}:993"), HOST, source)
 }
 
@@ -330,120 +330,4 @@ async fn a_source_with_no_credential_fails_with_its_own_class_and_dials_nothing(
         0,
         "nothing is dialled without a credential"
     );
-}
-
-#[tokio::test]
-async fn every_ask_names_imap_and_the_servers_tls_name() {
-    let source = TokenSource::new("expired-token", Some("refreshed-token"));
-    let servers = Servers::new(vec![refusing(), accepting()]);
-    // A loopback address mapped to a real name: the source is told the name.
-    let config = ImapConfig::from_credential_source("127.0.0.1:993", HOST, source.clone());
-
-    dial_with(&config, || servers.open())
-        .await
-        .expect("the replacement authenticates");
-
-    let origin = Origin::new("imaps", HOST, 993);
-    assert_eq!(
-        *source.asked.lock().unwrap(),
-        [
-            (CredentialProtocol::Imap, origin.clone()),
-            (CredentialProtocol::Imap, origin),
-        ]
-    );
-}
-
-/// A source that is never heard from again: a hung token endpoint or broker.
-#[derive(Debug)]
-struct HungSource(CredentialSubject);
-
-#[async_trait]
-impl CredentialSource for HungSource {
-    fn subject(&self) -> &CredentialSubject {
-        &self.0
-    }
-
-    async fn credential(
-        &self,
-        _request: &CredentialRequest<'_>,
-    ) -> Result<Credential, ProviderError> {
-        std::future::pending().await
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_source_that_never_answers_fails_the_dial_as_retryable_at_the_dial_deadline() {
-    let servers = Servers::new(vec![accepting()]);
-    let config = token_config(Arc::new(HungSource(CredentialSubject::new("alice"))));
-    let started = tokio::time::Instant::now();
-
-    // Bounded twice over, so an unbounded ask fails here rather than hanging the suite.
-    let err = tokio::time::timeout(
-        2 * crate::deadline::BOUNDS.dial(),
-        dial_with(&config, || servers.open()),
-    )
-    .await
-    .expect("the ask must give up by itself")
-    .expect_err("no credential, no session");
-
-    assert!(matches!(err, ImapError::Credential(_)), "{err:?}");
-    assert_eq!(err.failure_class(), FailureClass::Retryable);
-    assert_eq!(started.elapsed(), crate::deadline::BOUNDS.dial());
-    assert_eq!(
-        servers.opened(),
-        0,
-        "nothing is dialled without a credential"
-    );
-}
-
-/// A source whose host does not let its credential reach this server.
-#[derive(Debug)]
-struct ElsewhereSource(CredentialSubject);
-
-#[async_trait]
-impl CredentialSource for ElsewhereSource {
-    fn subject(&self) -> &CredentialSubject {
-        &self.0
-    }
-
-    fn permits(&self, origin: &Origin) -> bool {
-        origin.host() != HOST
-    }
-
-    async fn credential(
-        &self,
-        _request: &CredentialRequest<'_>,
-    ) -> Result<Credential, ProviderError> {
-        Ok(Credential::bearer_for(USER, "a-token"))
-    }
-}
-
-#[tokio::test]
-async fn a_server_the_source_does_not_permit_is_never_dialled() {
-    let servers = Servers::new(vec![accepting()]);
-    let config = token_config(Arc::new(ElsewhereSource(CredentialSubject::new("alice"))));
-
-    let err = dial_with(&config, || servers.open())
-        .await
-        .expect_err("not permitted");
-
-    assert_eq!(err.failure_class(), FailureClass::Permanent);
-    assert_eq!(
-        servers.opened(),
-        0,
-        "nothing reaches a server not permitted"
-    );
-}
-
-#[tokio::test]
-async fn a_token_without_the_accounts_username_is_never_dialled() {
-    let servers = Servers::new(vec![accepting()]);
-    let config = ImapConfig::new(format!("{HOST}:993"), HOST, Credential::bearer("a-token"));
-
-    let err = dial_with(&config, || servers.open())
-        .await
-        .expect_err("SASL needs the username");
-
-    assert_eq!(err.failure_class(), FailureClass::Permanent);
-    assert_eq!(servers.opened(), 0);
 }

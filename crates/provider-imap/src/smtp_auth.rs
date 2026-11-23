@@ -20,6 +20,7 @@ use crate::{
     credentials::{SignIn, sign_in},
     error::{ImapError, ImapResult},
     sasl::{self, Mechanism},
+    secret_line::{Part, secret_line},
     smtp_stream::SmtpStream,
 };
 
@@ -37,11 +38,12 @@ pub(crate) struct SmtpAuth<'a> {
 ///
 /// # Errors
 ///
-/// [`ImapError::Auth`] if the server rejects the credential, or (for a token) if it
-/// advertises no OAuth mechanism; [`ImapError::Bad`] for a credential SMTP cannot present;
-/// [`ImapError::RateLimited`] if it defers the attempt with a 4xx other than `432` — the message
-/// names what it did offer, because the usual cause is a token pointed at an account that only
-/// takes a password.
+/// [`ImapError::Auth`] if the server refuses the credential (`535`);
+/// [`ImapError::AuthUnsupported`] for any other failure that judged no credential, including a
+/// token offered to a server that advertises no OAuth mechanism (the message names what it did
+/// offer, because the usual cause is a token pointed at an account that only takes a password);
+/// [`ImapError::Bad`] for a credential SMTP cannot present; [`ImapError::RateLimited`] if it
+/// defers the attempt with a 4xx other than `432`.
 pub(crate) async fn authenticate<S>(
     smtp: &mut SmtpStream<S>,
     auth: &SmtpAuth<'_>,
@@ -55,8 +57,12 @@ where
             // `AUTH PLAIN` is sent whether or not the server listed it, which is how
             // this path has always behaved; the reply is the answer either way.
             let token = plain_token(username, password);
-            let line = Zeroizing::new(format!("AUTH PLAIN {}", token.as_str()));
-            smtp.write_line(&line).await?;
+            let line = secret_line(&[
+                Part::Text("AUTH PLAIN "),
+                Part::Text(&token),
+                Part::Text("\r\n"),
+            ]);
+            smtp.write_raw(line.as_bytes()).await?;
             let (code, text) = smtp.read_reply().await?;
             if code != 235 {
                 return Err(refusal(code, &text));
@@ -66,7 +72,7 @@ where
         SignIn::Token { username, token } => {
             let offered = advertised_mechanisms(extensions);
             let mechanism = sasl::select(offered.iter().copied()).ok_or_else(|| {
-                ImapError::auth(format!(
+                ImapError::auth_unsupported(format!(
                     "SMTP server advertises no OAuth SASL mechanism (it offers: {})",
                     if offered.is_empty() {
                         "none".to_owned()
@@ -76,8 +82,14 @@ where
                 ))
             })?;
             let initial = mechanism.initial_response(username, token, auth.host, auth.port)?;
-            let line = Zeroizing::new(format!("AUTH {} {}", mechanism.atom(), initial.as_str()));
-            smtp.write_line(&line).await?;
+            let line = secret_line(&[
+                Part::Text("AUTH "),
+                Part::Text(mechanism.atom()),
+                Part::Text(" "),
+                Part::Text(&initial),
+                Part::Text("\r\n"),
+            ]);
+            smtp.write_raw(line.as_bytes()).await?;
             finish(smtp, mechanism).await
         }
     }
@@ -117,12 +129,17 @@ where
 /// here as everywhere else ([`crate::smtp`]'s reply classification), so the credential was
 /// never judged; the exception is RFC 4954's `432` (a password transition is needed), which
 /// only the user can resolve.
+///
+/// Only `535` says the server judged the credential and refused it (RFC 4954 §6), so only it is
+/// an [`ImapError::Auth`], for which the source is asked for a replacement. Any other failure
+/// (`504` mechanism unsupported, `534` too weak, `538` encryption required, `530`, `432`) is the
+/// same class but [`ImapError::AuthUnsupported`]: a fresh credential would meet the same answer.
 fn refusal(code: u16, text: &str) -> ImapError {
     let detail = format!("SMTP AUTH rejected: {code} {text}");
-    if (400..500).contains(&code) && code != 432 {
-        ImapError::rate_limited(detail)
-    } else {
-        ImapError::auth(detail)
+    match code {
+        535 => ImapError::auth(detail),
+        400..500 if code != 432 => ImapError::rate_limited(detail),
+        _ => ImapError::auth_unsupported(detail),
     }
 }
 
@@ -156,9 +173,10 @@ pub(crate) fn advertised_mechanisms(extensions: &[String]) -> Vec<&str> {
 }
 
 /// The `AUTH PLAIN` SASL token: base64 of `\0user\0password` (RFC 4616). Both copies of the
-/// password it makes are zeroed when dropped.
+/// password it makes are allocated at their final length and zeroed when dropped.
 fn plain_token(username: &str, password: &str) -> Zeroizing<String> {
-    let mut credentials = Zeroizing::new(vec![0u8]);
+    let mut credentials = Zeroizing::new(Vec::with_capacity(username.len() + password.len() + 2));
+    credentials.push(0);
     credentials.extend_from_slice(username.as_bytes());
     credentials.push(0);
     credentials.extend_from_slice(password.as_bytes());

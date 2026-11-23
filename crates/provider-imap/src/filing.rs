@@ -441,6 +441,10 @@ mod tests;
 #[path = "filing_smtp_server_tests.rs"]
 pub(crate) mod smtp_server_tests;
 
+#[cfg(test)]
+#[path = "filing_credential_tests.rs"]
+mod credential_tests;
+
 // The Sent-copy retry needs a real dial (a mock stream cannot express "this session is dead,
 // open another"), so its in-process IMAP + SMTP servers live in their own file.
 #[cfg(test)]

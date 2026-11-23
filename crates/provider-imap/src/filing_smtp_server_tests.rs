@@ -185,7 +185,7 @@ async fn starttls_server() -> (engine_tls::CertificateDer<'static>, u16) {
     (cert, port)
 }
 
-fn draft() -> Draft {
+pub(super) fn draft() -> Draft {
     Draft::new(
         MessageIdHeader::new("submit-server@host").unwrap(),
         EmailAddress::new("alice@test.local"),
@@ -259,7 +259,7 @@ async fn submit_over_starttls_negotiates_upgrades_and_delivers() {
 /// An implicit-TLS server that takes one connection per entry of `auth_replies`, advertises
 /// `OAUTHBEARER`, answers that connection's `AUTH` with its entry, and records every `AUTH`
 /// line it is sent.
-async fn oauth_server(
+pub(super) async fn oauth_server(
     auth_replies: Vec<&'static str>,
 ) -> (
     engine_tls::CertificateDer<'static>,
@@ -289,15 +289,15 @@ async fn oauth_server(
 /// Hands out the scripted tokens in turn, one per `credential` call, and the refreshed one
 /// on `replace`. Records what each ask was told.
 #[derive(Debug)]
-struct Tokens {
+pub(super) struct Tokens {
     subject: CredentialSubject,
     issued: Mutex<VecDeque<&'static str>>,
     refreshed: Option<&'static str>,
-    asked: Arc<Mutex<Vec<(CredentialProtocol, Origin)>>>,
+    pub(super) asked: Arc<Mutex<Vec<(CredentialProtocol, Origin)>>>,
 }
 
 impl Tokens {
-    fn new(issued: &[&'static str], refreshed: Option<&'static str>) -> Self {
+    pub(super) fn new(issued: &[&'static str], refreshed: Option<&'static str>) -> Self {
         Self {
             subject: CredentialSubject::new("alice"),
             issued: Mutex::new(issued.iter().copied().collect()),
@@ -345,7 +345,7 @@ impl CredentialSource for Tokens {
 }
 
 /// A provider submitting over implicit TLS to `port`, with its credential from `source`.
-fn token_provider(
+pub(super) fn token_provider(
     cert: engine_tls::CertificateDer<'static>,
     port: u16,
     source: Tokens,
@@ -427,33 +427,6 @@ async fn a_refused_token_is_renewed_once_before_anything_is_sent() {
         vec![
             auth_line("expired-token", port),
             auth_line("refreshed-token", port)
-        ]
-    );
-}
-
-#[tokio::test]
-async fn every_ask_names_smtp_and_the_submission_servers_tls_name() {
-    let (cert, port, _auths) =
-        oauth_server(vec!["535 5.7.8 token expired\r\n", "235 2.7.0 ok\r\n"]).await;
-    let source = Tokens::new(&["expired-token"], Some("refreshed-token"));
-    let asked = Arc::clone(&source.asked);
-    let provider = token_provider(cert, port, source);
-
-    provider
-        .submit(
-            &draft(),
-            &engine_provider::HandOver::new(&engine_provider::Unrecorded),
-        )
-        .await
-        .expect("the replacement sends");
-
-    // The submission server, not the IMAP one the account reads from.
-    let origin = Origin::new("submissions", "127.0.0.1", port);
-    assert_eq!(
-        *asked.lock().unwrap(),
-        [
-            (CredentialProtocol::Smtp, origin.clone()),
-            (CredentialProtocol::Smtp, origin),
         ]
     );
 }

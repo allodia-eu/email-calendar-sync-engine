@@ -159,7 +159,12 @@ async fn a_server_offering_no_oauth_mechanism_says_what_it_does_offer() {
     .await;
 
     let err = outcome.expect_err("no mechanism to present");
-    assert!(matches!(err, ImapError::Auth(_)), "{err:?}");
+    // An authentication failure, but not a refusal: no other token would be taken either.
+    assert!(matches!(err, ImapError::AuthUnsupported(_)), "{err:?}");
+    assert_eq!(
+        err.failure_class(),
+        engine_core::error::FailureClass::Authentication
+    );
     let detail = err.to_string();
     assert!(
         detail.contains("PLAIN") && detail.contains("LOGIN"),

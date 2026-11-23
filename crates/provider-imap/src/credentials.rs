@@ -69,9 +69,12 @@ pub(crate) fn sign_in(credential: &Credential) -> ImapResult<SignIn<'_>> {
 /// ([`engine_provider::with_credential`]).
 ///
 /// The ask is part of the dial, so it is bounded by the dial deadline, and a source that does
-/// not answer in time fails the dial as retryable. A refusal is [`ImapError::Auth`] from
-/// `LOGIN`, `AUTHENTICATE` or SMTP `AUTH`: never `[LIMIT]` or a temporary code, which judge no
-/// credential, and never anything after `AUTH`, so a replacement repeats no send. `attempt`
+/// not answer in time fails the dial as retryable. A refusal is [`ImapError::Auth`]: a `NO` to
+/// `LOGIN` or `AUTHENTICATE`, or `535` to SMTP `AUTH`. Never `[LIMIT]`, a temporary code, an
+/// SMTP `4xx` or `5xx` other than `535`, or a server offering no mechanism the credential can
+/// use ([`ImapError::AuthUnsupported`]): none of those judged the credential, so a fresh one
+/// would meet the same answer. Never anything after `AUTH` either, so a replacement repeats no
+/// send. `attempt`
 /// opens a new connection each time, because a server may close one after a failed sign-in and
 /// counts the attempt either way.
 pub(crate) async fn with_credential<T, F, Fut>(
