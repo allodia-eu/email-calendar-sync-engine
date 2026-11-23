@@ -136,10 +136,17 @@ parser would buy semantics the model does not use. The segmenter is fuzzed besid
 MIME and iCalendar targets.
 
 The recognised dialect is the one the engine writes, and the engine writes Roundcube's: its
-managesieve plugin marks each rule with `# rule:[name]` and a disabled one with `if false # …`
-(the byte detail is **unverified**; slice 2 pins it, section 7). Roundcube is the most widely used
-webmail on Sieve servers, so a user who also uses it reads and edits the same named rules there,
-and rules it wrote read back typed here. When the account has no active script, the engine creates
+managesieve plugin marks each rule with `# rule:[name]` and a disabled one with `if false # …`.
+The bytes are pinned from scripts the plugin's own writer produced, run offline, which its own
+parser read back identically (not **live**: no server was involved; `engine-sieve`'s
+`tests/fixtures/roundcube/README.md` says how they were made and what they show). What they
+show: one `require ["a","b"];` first, names sorted; per rule a `# rule:[name]` line (none for an
+unnamed rule), `if <test>`, then `{`, one tab-indented action per line, and `}`, every line ending
+in CRLF; several tests as `allof (a, b)` or `anyof (a, b)`; a rule for every message as `if true`;
+a disabled rule as `if false # <its tests as they would be written>`. The segmenter splits each
+into one segment per rule, the name comment travelling with its `if`. Roundcube is the most
+widely used webmail on Sieve servers, so a user who also uses it reads and edits the same named
+rules there, and rules it wrote read back typed here. When the account has no active script, the engine creates
 one named `rules` and activates it; otherwise it edits the active script in place. On a JMAP
 server that runs the reply as a script of its own, the active script may be the reply's, which
 `SieveScript/set` may not change and which activating `rules` would switch off; slice 1 found this
@@ -686,8 +693,6 @@ turns the reply on over the user's script learns it from the receipt.
 
 **Still to settle:**
 
-- **The byte layout of Roundcube's dialect** (slice 2), including `if false # …` for a disabled
-  rule, pinned from scripts the plugin wrote, scrubbed as fixtures.
 - **The Graph and Gmail items marked unverified** (slices 4 and 5): `@odata.etag` with `If-Match`
   on `messageRule`, the Exchange rules quota, OR within one predicate, rules on a shared mailbox,
   and Gmail's verified-forwarding-address requirement.

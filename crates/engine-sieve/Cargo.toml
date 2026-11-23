@@ -1,0 +1,15 @@
+[package]
+name = "engine-sieve"
+description = "Sieve (RFC 5228) scripts for the PIM sync engine: a lexer and a segmenter that splits a script at its top-level commands, byte for byte, and understands nothing else. Pure: no I/O, no async, no dependencies; hostile input yields an error, never a panic."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# No dependencies, deliberately. A full Sieve parser would buy semantics the rule model does not
+# use, and the one widely used Rust implementation (`sieve-rs`) is `AGPL-3.0-only OR
+# LicenseRef-SEL`, which an MPL-2.0 engine cannot take (`docs/design/filters-and-out-of-office.md`).
+
+[lints]
+workspace = true

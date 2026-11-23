@@ -1,15 +1,16 @@
 # cargo-fuzz targets for the provider parsers (security requirement: JMAP JSON and
-# iCalendar parsing are fuzz-tested — `north-star.md`). This is its **own**
+# iCalendar parsing are fuzz-tested — `north-star.md`) and the Sieve segmenter. This is its **own**
 # workspace (the empty `[workspace]` below) so the root `cargo build/test
 # --workspace` ignores it; it builds only on nightly via cargo-fuzz:
 #
 #   cargo install cargo-fuzz
 #   cargo +nightly fuzz run jmap_parse
 #   cargo +nightly fuzz run caldav_parse
+#   cargo +nightly fuzz run sieve_segment
 #
 # The in-gate counterparts (running on stable under `cargo test`) are
 # `provider-jmap`'s `parsers_never_panic_on_hostile_json` and `provider-caldav`'s
-# `adversarial_input_does_not_panic` tests.
+# `adversarial_input_does_not_panic` tests, and `engine-sieve`'s `round_trip` tests.
 [package]
 name = "provider-fuzz"
 version = "0.0.0"
@@ -30,6 +31,9 @@ features = ["fuzzing"]
 path = "../crates/provider-caldav"
 features = ["fuzzing"]
 
+[dependencies.engine-sieve]
+path = "../crates/engine-sieve"
+
 [[bin]]
 name = "jmap_parse"
 path = "fuzz_targets/jmap_parse.rs"
@@ -40,6 +44,13 @@ bench = false
 [[bin]]
 name = "caldav_parse"
 path = "fuzz_targets/caldav_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sieve_segment"
+path = "fuzz_targets/sieve_segment.rs"
 test = false
 doc = false
 bench = false

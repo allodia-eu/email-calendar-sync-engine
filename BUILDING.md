@@ -98,6 +98,7 @@ cargo llvm-cov report --fail-under-lines "$threshold" \
 │   ├── engine-recurrence/        # Recurrence expansion
 │   ├── engine-mime/              # MIME / RFC 5322 body extraction
 │   ├── engine-html/              # Mail HTML sanitiser and reading document
+│   ├── engine-sieve/             # Sieve scripts split at their top-level commands
 │   ├── engine-tls/               # Shared TLS trust policy
 │   ├── provider-jmap/            # JMAP adapter
 │   ├── provider-imap/            # IMAP + SMTP adapter
