@@ -1,22 +1,71 @@
 # PIM Sync Engine North Star
 
-This repository builds a standalone Rust engine for personal information management: mail, calendars, contacts, local search, indexing, and durable writes. It is meant to be embedded by native apps, command-line tools, local daemons, and server-side adapters without changing the core model.
+This repository builds a standalone Rust engine for personal information management: mail, calendars, contacts, local search, indexing, and durable writes. It is embedded by three kinds of host (below) — native apps, command-line tools, local daemons, and server-side services among them — without changing the core model.
 
 ## Product Goal
 
-The engine should provide a local-first, provider-agnostic foundation for:
+The engine should provide a provider-agnostic foundation for:
 - Offline mail, calendar, contact, and unified-people access.
 - Deterministic sync across modern and legacy protocols.
 - Fast structured and full-text search.
 - Safe queued writes that survive crashes and network loss.
+- Moving mail, calendars, and contacts between providers as the source had them.
+- Per-request access to a backend, for a host that keeps no local copy.
 - Provider-native data preservation for lossless re-derivation.
 - Cross-platform bindings for mobile, desktop, CLI, and service hosts.
 
-The Rust core is the product kernel. Apps own UI, account onboarding, OS permissions, notifications, rendering, and platform scheduling. The engine owns sync, normalized domain types, provider adapters, local storage, search/indexing, recurrence, threading, and the outbox.
+The Rust core is the product kernel. Hosts own UI, account onboarding, OS permissions, notifications, rendering, and platform scheduling. The engine owns sync, normalized domain types, provider adapters, local storage, search/indexing, recurrence, threading, the outbox, and import.
+
+## Hosts
+
+The engine serves three kinds of host. They are shapes of use, not products; the engine names
+none.
+
+- **Sync host.** Syncs a window of mail, calendars, and contacts into the engine's local store
+  and writes through the outbox, via `engine-api`. A window starts small (months) and widens in
+  steps, up to everything.
+- **Transfer host.** Moves mailboxes, calendars, and contacts between providers: migration,
+  mirroring, later backup. It reads a source through the provider traits and writes the target
+  as the source had it through the import seam (`import` feature). It usually moves everything;
+  sometimes an administrator sets a window ("the last 2 years"). It keeps its own ledger, not the
+  engine store.
+- **Direct host.** No sync and no cache. It asks the backend per request (JMAP first), with paged,
+  sorted queries the server answers. One process serves thousands of users, and each request
+  carries its own credentials. It reaches the engine through `engine-direct`, a planned
+  store-less facade.
+
+## Principles
+
+These say where the engine is going. Where today's code differs, "Direction" says when it
+changes.
+
+1. **Each protocol is known once.** Request building, the session, keyword mapping, `APPEND`,
+   blob transfer: each lives in its adapter, public where a host needs it. No host re-implements
+   a protocol.
+2. **One question, one answer.** Two code paths that decide the same thing become one.
+3. **A capability is a type.** What an adapter can do is a trait it implements, reachable through
+   any handle (`Box`, `Arc`, `dyn`), not a flag beside a fat trait whose methods default to
+   "unsupported".
+4. **Shared vocabulary lives in `engine-core`.** Message metadata, receipts that say what a target
+   kept, windows, queries, and outcomes are defined there once. A new field is added once, and
+   every path gains it.
+5. **Facades compose; they never speak a protocol.** `engine-api` composes the store, sync, the
+   outbox, and local search. `engine-direct` composes query, read, write, and upload, with no
+   store. A transfer host uses the provider layer directly, and any host may, for instance to
+   wrap an adapter.
+6. **Every write ends in one of four answers.** Stored, with a receipt of what was kept; may be
+   stored, so find it before retrying; never (`item_unavailable`); or try again. Each adapter
+   states its point of no return: the step after which a failure means "may be stored".
+7. **Credentials are asked for, not held.** One neutral `CredentialSource` is asked on each dial
+   or request.
+8. **Windows are neutral and widen without a re-read.** A window is one type for every provider
+   and host. Widening one fetches only what the wider window adds.
+9. **The three-host test.** Every engine pull request says how it serves a sync host, a transfer
+   host, and a direct host, or why one does not apply.
 
 ## Non-Goals
 
-The engine models mail, calendar, and contact objects, sync, search/indexing, and writes. Contacts use JSContact as their provider-neutral spine; provider records remain account-scoped and a derived people index supplies cross-account presentation. It deliberately does not model provider account settings — message rules and filters, vacation/auto-reply, mailbox and working-hours settings — nor free/busy lookup and meeting-time suggestions, cloud-file (Drive/OneDrive) integration, or enterprise data-classification labels. Hosts own these; later phases may add seams if a real need appears.
+The engine models mail, calendar, and contact objects, sync, search/indexing, writes, and import. Contacts use JSContact as their provider-neutral spine; provider records remain account-scoped and a derived people index supplies cross-account presentation. Filters (message rules) and out-of-office replies are in scope ("Key Decisions"). The engine deliberately does not model other provider account settings — mailbox and working-hours settings — nor free/busy lookup and meeting-time suggestions, cloud-file (Drive/OneDrive) integration, or enterprise data-classification labels. Hosts own these; later phases may add seams if a real need appears.
 
 ## Key Decisions
 
@@ -34,38 +83,59 @@ The engine models mail, calendar, and contact objects, sync, search/indexing, an
   (`providers.md` → "Import").
 - **Raw provider payloads are preserved.** MIME, iCalendar, JSCalendar, JSContact, vCard, and
   provider JSON stay available for re-parsing and protocol-specific writes.
+- **Filters and out-of-office replies are in scope.** Message rules and automatic replies get one
+  provider-neutral model over Sieve (RFC 5228, with the vacation extension, RFC 5230), JMAP
+  `SieveScript` (RFC 9661) and `VacationResponse` (RFC 8621), Graph message rules and automatic
+  replies, and Gmail filters and vacation settings. All three host kinds need them: a sync host
+  and a direct host show and edit them, and a transfer host moves them between providers. This
+  replaces the earlier non-goal that left them to hosts, which would have had each host speak
+  four protocols for one setting (principle 1).
+- **`engine-direct` is the store-less facade.** A crate in this repository, named for what it is:
+  query, read, write, and upload per request, over the provider layer, with no store and no
+  cache. It is built once the query seam exists (sort and paging on `MailQuery`, answered by the
+  store and by the server alike), because a direct host's mailbox list is that query.
+- **The capability-trait split comes after the query seam and the credential source.** Today
+  `Provider` is one trait whose data-domain methods default to unsupported and are gated by
+  capability flags (`providers.md`, `jmap.md`). Splitting it into a trait per capability, behind
+  an adapter handle, breaks every host, so it lands once, as one planned migration with a guide
+  per host kind, not piecemeal.
+- **New capabilities are reached through accessors on `Provider`.** Each is its own trait, reached through a `Provider` method that defaults to `None`, so a host holding `Box<dyn Provider>` reaches it without knowing the adapter. This is the first step of the capability-trait split and supersedes the rule against sub-traits.
+- **Hosts may use the provider layer directly.** A transfer host always does; a sync host may, to
+  wrap an adapter. `engine-api` and `engine-direct` are conveniences, not gates.
 
 ## Workspace Shape
 
 ```text
-pim-sync-engine/
+email-calendar-sync-engine/
 ├── crates/
-│   ├── engine-core/             # Domain model, ids, errors, pure logic.
-│   ├── engine-sync/             # Sync state machine and orchestration.
-│   ├── engine-provider/         # Provider and transport traits.
-│   ├── provider-jmap/           # JMAP mail/calendar/contact support.
-│   ├── provider-imap/           # IMAP read/sync support.
-│   ├── provider-smtp/           # SMTP submission support.
-│   ├── provider-caldav/         # CalDAV/CardDAV support.
-│   ├── provider-google/         # Google Gmail + Calendar + People adapter.
-│   ├── provider-graph/          # Microsoft Graph mail + contact adapter.
-│   ├── engine-store/            # Store trait and contract tests.
-│   ├── store-sqlite/            # SQLite, at-rest seam (plain or SQLCipher), FTS5, vectors.
-│   ├── engine-search/           # Query AST, ranking, filters, RRF.
-│   ├── engine-recurrence/       # Deterministic recurrence -> occurrence expansion (bundled tzdb).
-│   ├── engine-mime/             # MIME/RFC 5322 body extraction (mail-parser) -> MessageBody (implemented).
-│   ├── engine-html/             # Mail HTML sanitiser, strict-CSP reading document, link-scheme policy (implemented).
-│   ├── engine-index/            # Text extraction, chunks, embedding seam.
-│   ├── engine-cli/              # Headless ingestion/search/maintenance harness (CLI host).
-│   ├── crypto-keystore/         # Platform credential/key abstraction.
-│   ├── engine-api/              # Stable facade consumed by hosts.
-│   └── bindings/
-│       ├── bindings-uniffi/     # Kotlin/Swift bindings.
-│       └── bindings-ffi-c/      # C ABI for desktop/daemon hosts.
-└── xtask/                       # Build, fixtures, codegen, CI helpers.
+│   ├── engine-core/          # Domain model, ids, shared vocabulary. No I/O, no async.
+│   ├── engine-provider/      # Provider traits, errors, deadlines.
+│   ├── provider-jmap/        # JMAP mail, calendars, contacts.
+│   ├── provider-imap/        # IMAP read/sync and SMTP submission.
+│   ├── provider-caldav/      # CalDAV and CardDAV.
+│   ├── provider-google/      # Gmail, Google Calendar, Google People.
+│   ├── provider-graph/       # Microsoft Graph mail, calendar, contacts.
+│   ├── engine-http/          # One HTTP send funnel: throttling and deadlines.
+│   ├── engine-tls/           # One TLS trust policy for every provider.
+│   ├── engine-mime/          # MIME body extraction.
+│   ├── engine-rfc5322/       # Outbound message assembly.
+│   ├── engine-ical/          # iCalendar parse, serialize, patch.
+│   ├── engine-html/          # Mail HTML made safe to render.
+│   ├── engine-recurrence/    # Recurrence expansion (bundled tzdb).
+│   ├── engine-search/        # Query AST and DSL, rank fusion, coverage.
+│   ├── engine-store/         # Store trait and contract tests.
+│   ├── store-sqlite/         # SQLite store, FTS5, content-addressed blobs.
+│   ├── engine-sync/          # Sync orchestration.
+│   ├── engine-api/           # Sync host facade: store, sync, outbox, local search.
+│   ├── engine-direct/        # Planned. Direct host facade: query, read, write, upload.
+│   ├── engine-cli/           # CLI host: fixtures, search, debugging.
+│   └── dav-cli/, mailbox-fixture/, stalwart-harness/   # Dev and test tools.
+├── docker/                   # Stalwart, Dovecot, SabreDAV, Nextcloud fixtures.
+├── fuzz/                     # Parser fuzz targets.
+└── tools/                    # OAuth and capture tools, outside the workspace.
 ```
 
-`engine-core` must stay I/O-free and async-free. Shared pure contract types such as `SyncUpdate`, `SyncScope`, `SyncState`, `PendingOp`, and `ProviderKey` live in `engine-core` unless a dedicated async-free `engine-contracts` crate becomes clearer. They must not live in `engine-sync`, because both stores and sync orchestration consume them. Provider crates may depend on network/runtime libraries. Host-facing APIs live behind `engine-api`.
+`engine-core` must stay I/O-free and async-free. Shared pure contract types such as `SyncUpdate`, `SyncScope`, `SyncState`, `PendingOp`, and `ProviderKey` live in `engine-core` unless a dedicated async-free `engine-contracts` crate becomes clearer. They must not live in `engine-sync`, because both stores and sync orchestration consume them. Provider crates may depend on network/runtime libraries. A host reaches the engine through a facade — `engine-api` for a sync host, `engine-direct` (planned) for a direct host — or through the provider layer directly, as a transfer host does.
 
 ## Domain Model Invariants
 
@@ -125,7 +195,11 @@ Recurring events are indexed through a bounded `event_occurrence` table generate
 
 ## Write Contract
 
-Every write is a durable pending operation before any provider side effect:
+Every write, whichever host makes it, ends in one of the four answers of principle 6, and each
+adapter states its point of no return. A transfer host's import and a direct host's write get the
+answer straight from the adapter.
+
+A sync host's write is also a durable pending operation before any provider side effect:
 - Pending operations may depend on earlier operations. Offline create-then-edit flows use local ids and dependency ordering until provider ids are known.
 - SMTP sends generate a stable MIME message and Message-ID before submission.
 - SMTP recipient handling records pre-DATA partial acceptance/rejection before any DATA phase.
@@ -157,13 +231,16 @@ Mail and calendar data are hostile input and sensitive data:
 - **Android/iOS:** UniFFI Kotlin/Swift bindings; large content crosses FFI through handles, streams, or content-addressed blob APIs, not copied byte arrays.
 - **macOS/Windows/Linux:** C ABI or UniFFI where practical; local daemon hosts are acceptable.
 - **CLI:** headless harness for fixtures, sync debugging, migrations, search, and outbox replay.
-- **Server adapters:** host-owned store, credential, scheduling, and embedding integrations.
+- **Servers:** transfer hosts, direct hosts, and server-side sync hosts. Each owns its scheduling, its embedding integration, and any state of its own, such as a transfer host's ledger, and supplies credentials when the engine asks for them.
 
 The engine exposes a push/wake seam. Providers can emit state-change hints from JMAP push/EventSource, IMAP IDLE, or host notifications; the engine responds by running scoped pull sync. Hosts own OS notification display and background scheduling.
 
 The engine also exposes an injectable clock/time source for recurrence expansion, retry backoff, leases, and confirmation timeouts.
 
 ## Build Order
+
+These are the steps the engine was built in so far, with a sync host in mind. "Direction" says what
+comes next.
 
 1. **Repository discipline and RFC-backed model.** Add workspace skeleton, strict lint/test policy, model fixtures, and `engine-core` tests first.
 2. **SQLite store and search without network.** Implement schema, structured query AST, FTS, recurrence fixtures, and ingestion CLI.
@@ -181,6 +258,22 @@ The engine also exposes an injectable clock/time source for recurrence expansion
 7. **External provider smoke tests.** Add optional live-provider tests only after deterministic protocol tests pass.
 
 Contacts now form the third provider-neutral domain. They reuse provider-object identity, non-empty membership, atomic scoped sync, the durable outbox, raw document preservation, and capability-driven adapters. `docs/agent-guidance/contacts.md` is authoritative for JSContact normalization, unified people, recipient observations, provider source classes, and the deliberately deferred group/photo mutations.
+
+## Direction
+
+What comes next, in order. Each step passes the three-host test (principle 9).
+
+1. **Now.** One shared message metadata type (keywords and arrival time, categories next), so
+   drafts, Sent copies, and import ask for it alike and every receipt reports what was kept in
+   it. One IMAP routine that stores a message with its flags and keywords, used by every path
+   that stores one. The mail import seam (`import` feature) and IMAP import.
+2. **Next.** JMAP import (`Email/import`). CalDAV and CardDAV import. The JMAP client's
+   primitives (session, request building, blob transfer) made public, so no host rebuilds them.
+   One `CredentialSource`. The window vocabulary, with widening that does not re-read what is
+   already held. The filters and out-of-office model.
+3. **Then.** Sort and paging on `MailQuery`, answered by the local store and by the server alike.
+   `engine-direct` over it. The capability-trait split, as one migration with a guide per host
+   kind.
 
 ## Testing Strategy
 
