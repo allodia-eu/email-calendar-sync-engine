@@ -1,6 +1,6 @@
 [package]
 name = "engine-provider"
-description = "Provider/transport trait surface for the PIM sync engine: a minimal, provider-neutral contract that adapters (JMAP now; IMAP/SMTP/CalDAV later) implement to return normalized SyncUpdate batches plus opaque cursors, expose capabilities, and classify failures. No network or async-runtime dependencies; those live in the provider crates."
+description = "Provider/transport trait surface for the PIM sync engine: a minimal, provider-neutral contract that adapters (JMAP now; IMAP/SMTP/CalDAV later) implement to return normalized SyncUpdate batches plus opaque cursors, expose capabilities, and classify failures. No network dependencies and no async runtime: only tokio's timer, which bounds an ask to a credential source on the host's own runtime; connections live in the provider crates."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -28,6 +28,15 @@ url = { workspace = true, optional = true }
 # Only for the conformance kit's clock (`import-conformance`): the undated control must carry
 # the server's time now, which needs the time now.
 time = { workspace = true, optional = true }
+# The one buffer a credential's secret lives in is zeroed when its last clone drops
+# (`credential::Secret`).
+zeroize = { workspace = true }
+# Only the timer: an ask to a host's `CredentialSource` runs under the deadline of the step it
+# belongs to, so a hung token endpoint or broker cannot hang a dial or a request
+# (`credential::with_credential`). Not the workspace entry, whose `macros`, `rt` and
+# `rt-multi-thread` would pull a runtime into every crate that depends on this one: the timer
+# runs on whatever runtime the host already drives.
+tokio = { version = "1.52.3", default-features = false, features = ["time"] }
 
 [features]
 # The import seam (`engine_provider::import`): storing an object that already exists, as it was.
@@ -44,7 +53,8 @@ import-conformance = ["import", "dep:time"]
 http = ["dep:http", "dep:url"]
 
 [dev-dependencies]
-tokio = { workspace = true }
+# `test-util` for the paused clock the credential-ask deadline is tested on.
+tokio = { workspace = true, features = ["time", "test-util"] }
 serde_json = { workspace = true }
 futures-util = { workspace = true }
 

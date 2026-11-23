@@ -556,6 +556,7 @@ dependencies = [
  "time",
  "tokio",
  "url",
+ "zeroize",
 ]
 
 [[package]]

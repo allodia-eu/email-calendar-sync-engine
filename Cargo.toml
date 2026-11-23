@@ -126,6 +126,10 @@ http-body = "1.0.1"
 # not send the account's `Authorization` header to a host named by remote content.
 # Same major as the copy reqwest resolves, for one `Url` type across the tree.
 url = "2.5.7"
+# Zeroes the one buffer a credential's secret lives in when its last clone drops
+# (`engine_provider::Secret`), and the copies an adapter derives from it (a SASL response, an
+# `AUTH PLAIN` token). Already in the tree through rustls; MIT/Apache-2.0.
+zeroize = "1.8.2"
 # Pure-Rust TLS for the hand-rolled IMAP transport (implicit-TLS on 993). `ring`
 # (not rustls' default `aws-lc-rs`) keeps the hand-rolled transport's crypto
 # provider explicit. The transport is generic over any async stream; this only
