@@ -899,6 +899,41 @@ credential.
   caller re-syncs instead. A UID the folder simply no longer holds is a `UID STORE`
   no-op, so a repeated delete settles rather than parking the op that drives it.
 
+## Rules and the reply over ManageSieve
+
+An IMAP account's mail rules and out-of-office reply live on a ManageSieve service (RFC 5804) beside
+the mailbox, as one Sieve script. `src/managesieve/` is that client, a module of this crate because
+it serves the same account: the account's TLS connector, credential source, SASL mechanisms and
+connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "As built in slice
+3" there).
+
+- **Configured, not discovered.** `ImapConfig::with_managesieve(addr, server_name)`; no SRV lookup.
+  `STARTTLS` is the protocol's one transport and is required.
+- **Probed at connect, optional to the account.** `ImapAccount::connect` reads the greeting and the
+  capabilities over TLS (no credential). Success: `ConnectStep::Negotiated("ManageSieve", …)` and
+  every provider of the account (not a shared store's) answers `mail_rules()`, and `vacation()`
+  where `vacation` is listed. Failure: `ConnectStep::Unavailable { service: ManageSieve, class }`,
+  both answer `None`, and mail works.
+- **A session per call, in the budget.** `ImapPool::reserve_other` takes a permit (closing the
+  longest-parked IMAP socket when the shelf and the slots in use would pass the ceiling); the
+  session dials, signs in (`AUTHENTICATE "PLAIN"` with `sasl::plain_response`, or
+  `OAUTHBEARER`/`XOAUTH2`), works and logs out. The credential is asked as
+  `CredentialProtocol::ManageSieve` for `sieve://<server name>:<port>`.
+- **The wire.** No tags: one command at a time, its response ends at `OK`, `NO` or `BYE`. Strings
+  are quoted where they can be, else sent as `{n+}` literals (a script always is). A refusal keeps
+  its response code (`NONEXISTENT`, `ACTIVE`, `QUOTA/…`, `TRYLATER`) and never the prose, which
+  quotes the script. A `NO` to `AUTHENTICATE` is a refused credential (one replacement asked),
+  except `TRYLATER` (retryable) and `TRANSITION-NEEDED`/`AUTH-TOO-WEAK`/`ENCRYPT-NEEDED`
+  (authentication, no replacement).
+- **Rules and reply.** `managesieve::state` picks the script (as JMAP does) and hashes the list and
+  the script into the version; `rules` and `vacation` implement the traits over
+  `engine_sieve::dialect`, the reply as Roundcube's reply rule (`dialect::reply`). The guard is
+  `Absent`; a stale base is refused in the write's own session.
+- **Proven live** on both harness servers (`managesieve/live_tests.rs`,
+  `live_provider_tests.rs`); offline over the captured responses in
+  `tests/fixtures/managesieve/`. Stalwart's `HAVESPACE` says yes to any size (STALWART-NEW-1), so
+  nothing asks it before storing.
+
 ## Mail mutations
 
 - **`edit_mail`** applies a provider-neutral `MailEdit` to the bound mailbox over the

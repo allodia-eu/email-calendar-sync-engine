@@ -96,6 +96,7 @@ mod import;
 mod listing;
 mod mail;
 mod mailbox_write;
+mod managesieve;
 mod metadata_fetch;
 mod mutate;
 mod parse;

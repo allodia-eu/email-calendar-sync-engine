@@ -32,6 +32,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     filing::SmtpSender,
+    managesieve::Sieve,
     pool::{ImapPool, PooledConnection},
     store::Namespaces,
 };
@@ -66,6 +67,9 @@ pub struct ImapProvider<S> {
     /// (`crate::folders`) — never at connect, which most providers would pay for nothing —
     /// and shared by every provider of the account, so the login asks once.
     pub(crate) namespaces: Arc<OnceLock<Namespaces>>,
+    /// The account's rules and out-of-office reply over ManageSieve, where the host configured it
+    /// and it answered when the account connected (`crate::managesieve`).
+    sieve: Option<Arc<dyn Sieve>>,
 }
 
 impl<S> core::fmt::Debug for ImapProvider<S> {
@@ -99,7 +103,14 @@ impl<S> ImapProvider<S> {
             connection_info,
             shared_account,
             namespaces,
+            sieve: None,
         }
+    }
+
+    /// Offers the account's rules and reply through `sieve` (builder-style).
+    pub(crate) fn with_sieve(mut self, sieve: Option<Arc<dyn Sieve>>) -> Self {
+        self.sieve = sieve;
+        self
     }
 
     /// Wraps an already-open, logged-in connection bound to `mailbox` (mail only), in an
@@ -150,6 +161,26 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
     #[cfg(feature = "import")]
     fn mail_importer(&self) -> Option<&dyn engine_provider::import::MailImporter> {
         Some(self)
+    }
+
+    /// Over ManageSieve, where the host configured it ([`ImapConfig::with_managesieve`]) and it
+    /// answered when the account connected; never for a shared mail store, whose rules are its
+    /// owner's.
+    ///
+    /// [`ImapConfig::with_managesieve`]: crate::ImapConfig::with_managesieve
+    fn mail_rules(&self) -> Option<&dyn engine_provider::MailRules> {
+        self.sieve
+            .as_deref()
+            .map(|sieve| sieve as &dyn engine_provider::MailRules)
+    }
+
+    /// As [`mail_rules`](Self::mail_rules), where the server also listed `vacation`: the reply is a
+    /// rule of the same script, sharing its version.
+    fn vacation(&self) -> Option<&dyn engine_provider::Vacation> {
+        self.sieve
+            .as_deref()
+            .filter(|sieve| sieve.replies())
+            .map(|sieve| sieve as &dyn engine_provider::Vacation)
     }
 
     /// The negotiated facts, and as many overlapping body fetches as the account has worker

@@ -17,6 +17,9 @@ engine-mime = { workspace = true }
 # The RFC 5322 / MIME message assembler for SMTP submission (shared with the Graph
 # adapter's MIME send), producing the bytes fed to the SMTP `DATA` command.
 engine-rfc5322 = { workspace = true }
+# Mail rules and the out-of-office reply over ManageSieve: the Sieve dialect the engine reads and
+# writes, shared with provider-jmap's JMAP Sieve (`managesieve::rules`, `managesieve::vacation`).
+engine-sieve = { workspace = true }
 # `io-util` for the line-protocol reader/writer over any async stream; `net` for
 # the live TCP connect; `time` for the IDLE watcher's keep-alive timeout (the
 # RFC 2177 re-issue clock). The protocol is generic over `AsyncRead + AsyncWrite`,
@@ -33,6 +36,9 @@ async-trait = { workspace = true }
 # that carry them (`secret_line.rs`).
 zeroize = { workspace = true }
 thiserror = { workspace = true }
+# The version a ManageSieve rule set is guarded by: a hash of the script list and the script, since
+# ManageSieve keeps none of its own (`managesieve::state`).
+sha2 = { workspace = true }
 # Parsing IMAP `INTERNALDATE` (`dd-Mon-yyyy hh:mm:ss +zzzz`) into a UTC instant
 # needs offset normalization with calendar rollover; `time` (the same crate
 # engine-core wraps) does it correctly.

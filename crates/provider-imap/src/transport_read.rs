@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite};
 
 use crate::{
     deadline::{self, BOUNDS},
@@ -40,33 +40,48 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         &mut self,
         stall: Option<Duration>,
     ) -> ImapResult<Vec<u8>> {
-        let mut line = Vec::new();
-        loop {
-            let before = line.len();
-            let read = within(stall, self.inner.read_until(b'\n', &mut line)).await?;
-            if read == 0 {
-                return Err(closed_mid_response());
-            }
-            if let Some(len) = trailing_literal_len(&line[before..]) {
-                if len > MAX_LITERAL {
-                    return Err(ImapError::protocol(format!(
-                        "server announced a {len}-byte literal exceeding the {MAX_LITERAL}-byte cap"
-                    )));
-                }
-                let start = line.len();
-                line.resize(start + len, 0);
-                let mut filled = start;
-                while filled < line.len() {
-                    let read = within(stall, self.inner.read(&mut line[filled..])).await?;
-                    if read == 0 {
-                        return Err(closed_mid_response());
-                    }
-                    filled += read;
-                }
-                continue;
-            }
-            return Ok(line);
+        read_framed_line(&mut self.inner, stall, MAX_LITERAL).await
+    }
+}
+
+/// Reads one logical line off `reader`: bytes through the next `\n`, with every `{n}` or `{n+}`
+/// literal the line announces inlined (the n bytes, then the rest of the line). IMAP and
+/// ManageSieve (RFC 5804 §4) frame literals the same way, so both sessions read through this.
+///
+/// Each wait is bounded by `stall` when there is one, and a literal is read in pieces so that the
+/// bound is on each wait, never on the whole literal. A literal over `max_literal` bytes is
+/// refused before anything is allocated for it.
+pub(crate) async fn read_framed_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    stall: Option<Duration>,
+    max_literal: usize,
+) -> ImapResult<Vec<u8>> {
+    let mut line = Vec::new();
+    loop {
+        let before = line.len();
+        let read = within(stall, reader.read_until(b'\n', &mut line)).await?;
+        if read == 0 {
+            return Err(closed_mid_response());
         }
+        if let Some(len) = trailing_literal_len(&line[before..]) {
+            if len > max_literal {
+                return Err(ImapError::protocol(format!(
+                    "server announced a {len}-byte literal exceeding the {max_literal}-byte cap"
+                )));
+            }
+            let start = line.len();
+            line.resize(start + len, 0);
+            let mut filled = start;
+            while filled < line.len() {
+                let read = within(stall, reader.read(&mut line[filled..])).await?;
+                if read == 0 {
+                    return Err(closed_mid_response());
+                }
+                filled += read;
+            }
+            continue;
+        }
+        return Ok(line);
     }
 }
 

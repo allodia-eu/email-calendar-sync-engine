@@ -36,7 +36,8 @@ use crate::{
     error::ImapError,
     filing::{SmtpSender, resolve_smtp},
     gmail::GmailMail,
-    pool::{DEFAULT_MAX_CONNECTIONS, Dial, ImapPool, VALIDATE_AFTER_REST},
+    managesieve::Sieve,
+    pool::{DEFAULT_MAX_CONNECTIONS, Dial, ImapPool, VALIDATE_AFTER_REST, other::Budget},
     provider::ImapProvider,
     store::Namespaces,
     transport::Connection,
@@ -67,6 +68,9 @@ pub struct ImapAccount<S> {
     namespaces: Arc<OnceLock<Namespaces>>,
     /// Whether the session advertised Gmail's `X-GM-EXT-1` (`crate::gmail`).
     gmail: bool,
+    /// The account's rules and reply over ManageSieve, where configured and answering
+    /// (`crate::managesieve::reach`).
+    sieve: Option<Arc<dyn Sieve>>,
 }
 
 impl<S> core::fmt::Debug for ImapAccount<S> {
@@ -106,14 +110,11 @@ impl ImapAccount<TlsStream<TcpStream>> {
         // One identity for every connection the account opens, the first included.
         let presented = Arc::new(PresentedIdentity::default());
         let (connection, tls_version) = connect_session(config, &presented, &connector).await?;
-        let dial = dial_tls(config.clone(), presented, connector);
-        Ok(Self::build(
-            connection,
-            dial,
-            smtp,
-            config.since,
-            tls_version,
-        ))
+        let dial = dial_tls(config.clone(), presented, connector.clone());
+        let mut account = Self::build(connection, dial, smtp, config.since, tls_version);
+        let budget = Arc::clone(&account.pool) as Arc<dyn Budget>;
+        account.sieve = crate::managesieve::reach(config, &connector, budget).await;
+        Ok(account)
     }
 }
 
@@ -166,6 +167,7 @@ impl<S> ImapAccount<S> {
             shared_account: None,
             namespaces: Arc::new(OnceLock::new()),
             gmail,
+            sieve: None,
         }
     }
 
@@ -212,6 +214,7 @@ impl<S> ImapAccount<S> {
             shared_account: Some(handle),
             namespaces: Arc::clone(&self.namespaces),
             gmail: self.gmail,
+            sieve: self.sieve.clone(),
         }
     }
 
@@ -237,6 +240,8 @@ impl<S> ImapAccount<S> {
             self.shared_account.clone(),
             Arc::clone(&self.namespaces),
         )
+        // A shared mail store's rules are its owner's, not this login's.
+        .with_sieve(self.sieve.clone().filter(|_| self.shared_account.is_none()))
     }
 
     /// How many more folders this account can watch before a watch would take the last

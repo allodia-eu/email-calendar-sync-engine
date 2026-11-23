@@ -110,7 +110,7 @@ pub struct Origin { /* scheme, host, port */ }
 
 /// The protocol a credential is about to be presented over.
 #[non_exhaustive]
-pub enum CredentialProtocol { Imap, Smtp, Http }
+pub enum CredentialProtocol { Imap, Smtp, ManageSieve, Http }
 
 #[non_exhaustive]
 pub struct CredentialRequest<'a> {

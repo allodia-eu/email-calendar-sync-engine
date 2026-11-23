@@ -10,6 +10,8 @@ use std::sync::Arc;
 
 use engine_provider::{ConnectObserver, Credential, CredentialSource, FixedCredential, Origin};
 
+use crate::managesieve::dial::SieveEndpoint;
+
 /// How the IMAP session is secured: TLS from the first byte (port 993), or a
 /// cleartext connection upgraded in place with `STARTTLS` (port 143). Both present
 /// the config's TLS server name for the handshake; the difference is only *when* the
@@ -68,6 +70,7 @@ pub struct ImapConfig {
     pub(crate) credentials: Arc<dyn CredentialSource>,
     pub(crate) security: ImapSecurity,
     pub(crate) smtp: Option<SmtpSettings>,
+    pub(crate) managesieve: Option<SieveEndpoint>,
     pub(crate) since: Option<time::Date>,
     pub(crate) connect_observer: Option<Arc<dyn ConnectObserver>>,
 }
@@ -108,6 +111,7 @@ impl ImapConfig {
             credentials: source,
             security: ImapSecurity::ImplicitTls,
             smtp: None,
+            managesieve: None,
             since: None,
             connect_observer: None,
         }
@@ -190,6 +194,31 @@ impl ImapConfig {
         self
     }
 
+    /// Reaches the account's mail rules and out-of-office reply over **ManageSieve** (RFC 5804)
+    /// at `addr` (`host:port`, typically `:4190`), presenting `server_name` for TLS and for an
+    /// `OAUTHBEARER` sign-in. The session is upgraded with `STARTTLS`, the protocol's one
+    /// transport, before anything is signed in; a server that does not offer it is not used.
+    ///
+    /// Connecting the account reads the service's greeting. Where it answers, every provider of
+    /// the account offers [`mail_rules`](engine_provider::Provider::mail_rules) and
+    /// [`vacation`](engine_provider::Provider::vacation); where it does not, the account's mail
+    /// works without them, and the connect observer sees
+    /// [`ConnectStep::Unavailable`](engine_provider::ConnectStep::Unavailable) with the class of
+    /// the failure. The credential is asked of the same source, over
+    /// [`CredentialProtocol::ManageSieve`](engine_provider::CredentialProtocol::ManageSieve).
+    #[must_use]
+    pub fn with_managesieve(
+        mut self,
+        addr: impl Into<String>,
+        server_name: impl Into<String>,
+    ) -> Self {
+        self.managesieve = Some(SieveEndpoint {
+            addr: addr.into(),
+            server_name: server_name.into(),
+        });
+        self
+    }
+
     /// Observes the connect phase: [`ConnectStep::TlsEstablished`] once the handshake
     /// agrees a version, then [`ConnectStep::Authenticated`] once `LOGIN` succeeds.
     ///
@@ -250,6 +279,7 @@ impl core::fmt::Debug for ImapConfig {
             .field("server_name", &self.server_name)
             .field("credentials", &self.credentials)
             .field("security", &self.security)
+            .field("managesieve", &self.managesieve)
             .field("since", &self.since)
             .finish_non_exhaustive()
     }
