@@ -18,7 +18,7 @@
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Importance},
+    mail::{EmailAddress, Importance, MessageMetadata},
     sync::{SyncState, SyncUpdate},
 };
 use engine_provider::{Draft, Provider};
@@ -129,7 +129,7 @@ async fn live_graph_a_drafts_importance_follows_every_save() {
             &account(),
             &draft(Importance::High),
             None,
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -146,7 +146,7 @@ async fn live_graph_a_drafts_importance_follows_every_save() {
                 &account(),
                 &draft(importance),
                 Some(&current),
-                &std::collections::BTreeSet::new(),
+                &MessageMetadata::default(),
             )
             .await
             .map(|stored| stored.key)

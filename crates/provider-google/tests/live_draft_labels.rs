@@ -12,7 +12,7 @@ use std::{collections::BTreeSet, time::Duration};
 
 use engine_core::{
     ids::{AccountId, MessageIdHeader},
-    mail::{EmailAddress, Keyword, Message},
+    mail::{EmailAddress, Keyword, Message, MessageMetadata},
     sync::{SyncUpdate, SyncWindow},
     time::CalendarDate,
 };
@@ -127,14 +127,24 @@ async fn live_a_draft_keeps_its_keyword_as_a_label_on_every_save_that_asks_for_i
     let tagged = BTreeSet::from([keyword()]);
 
     let first = saving
-        .put_draft(&account(), &draft(unique, "v1"), None, &tagged)
+        .put_draft(
+            &account(),
+            &draft(unique, "v1"),
+            None,
+            &MessageMetadata::default().with_keywords(tagged.clone()),
+        )
         .await
         .expect("first save");
     let stored = streamed(&saving, unique).await;
 
     // `drafts.update` replaces the message under the draft; the save labels the new one.
     let second = saving
-        .put_draft(&account(), &draft(unique, "v2"), Some(&first.key), &tagged)
+        .put_draft(
+            &account(),
+            &draft(unique, "v2"),
+            Some(&first.key),
+            &MessageMetadata::default().with_keywords(tagged.clone()),
+        )
         .await
         .expect("re-save asking for it");
     let resaved = streamed(&saving, unique).await;
@@ -146,7 +156,7 @@ async fn live_a_draft_keeps_its_keyword_as_a_label_on_every_save_that_asks_for_i
             &account(),
             &draft(unique, "v3"),
             Some(&second.key),
-            &BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .expect("re-save asking for none");
@@ -166,7 +176,7 @@ async fn live_a_draft_keeps_its_keyword_as_a_label_on_every_save_that_asks_for_i
             .await;
     }
 
-    assert_eq!(first.keywords, tagged, "the receipt says it was kept");
+    assert_eq!(first.kept.keywords, tagged, "the receipt says it was kept");
     assert!(
         stored.keywords.contains(&keyword()),
         "{:?}",
@@ -179,7 +189,7 @@ async fn live_a_draft_keeps_its_keyword_as_a_label_on_every_save_that_asks_for_i
     );
     assert_eq!(second.key, first.key, "the draft keeps its id");
     assert_ne!(resaved.id, stored.id, "the message under it is a new one");
-    assert_eq!(second.keywords, tagged);
+    assert_eq!(second.kept.keywords, tagged);
     assert!(
         resaved.keywords.contains(&keyword()),
         "{:?}",
@@ -192,7 +202,7 @@ async fn live_a_draft_keeps_its_keyword_as_a_label_on_every_save_that_asks_for_i
         over_imap_read.mailboxes
     );
     // Both directions: a save that does not ask for it leaves a draft without it.
-    assert_eq!(third.keywords, BTreeSet::new());
+    assert_eq!(third.kept.keywords, BTreeSet::new());
     assert!(
         !unlabelled.keywords.contains(&keyword()),
         "{:?}",

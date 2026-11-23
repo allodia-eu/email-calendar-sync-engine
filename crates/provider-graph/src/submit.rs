@@ -25,7 +25,7 @@ use crate::transport::GraphClient;
 /// Sends `draft`: assembles the RFC 5322 message, base64-encodes it, and `POST`s it to
 /// `sendMail` in MIME format, committing `hand_over` before the end of that request's body
 /// (the one request that can deliver). The receipt keeps none of the draft's
-/// [`sent_copy_keywords`](Draft::sent_copy_keywords): `sendMail` files the copy a moment later,
+/// [`sent_copy_metadata`](Draft::sent_copy_metadata): `sendMail` files the copy a moment later,
 /// so they are kept by an edit the outbox records after the send (`crate::categories`).
 ///
 /// # Errors
@@ -183,7 +183,7 @@ mod tests {
             draft().with_sent_copy_keyword(engine_core::mail::Keyword::new("project-x").unwrap());
         let receipt = send_unrecorded(&client, &draft).await.unwrap();
         assert!(receipt.sent_copy.is_filed());
-        assert!(receipt.sent_copy_keywords.is_empty());
+        assert!(receipt.sent_copy_kept.keywords.is_empty());
         assert_eq!(
             receipt.email_key.as_str(),
             "sent:graph-send-0001@test.local"

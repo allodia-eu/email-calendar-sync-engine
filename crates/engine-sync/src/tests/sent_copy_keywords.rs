@@ -47,7 +47,7 @@ async fn a_send_records_the_edit_that_keeps_its_keywords_and_reports_none_kept()
     let outcome = send(&provider, &store, "tag-1@test.local").await;
 
     assert!(
-        outcome.sent_copy_keywords.is_empty(),
+        outcome.sent_copy_kept.keywords.is_empty(),
         "nothing reads as kept before the edit lands"
     );
     let queued = follow_ups(&store).await;

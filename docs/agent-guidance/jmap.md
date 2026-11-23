@@ -331,8 +331,8 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   explicitly, `rcptTo` = To + Cc + Bcc deduplicated case-insensitively as SMTP's
   `RCPT TO` is: a Bcc recipient is reached through the envelope alone. Both halves are
   pinned live (`tests/live_submit_recipients.rs`), because the server accepts a create
-  naming only `to` without complaint and delivers to nobody else. A draft's
-  `sent_copy_keywords` are set by an `Email/set` **update of its own, in a second
+  naming only `to` without complaint and delivers to nobody else. The keywords of a draft's
+  `sent_copy_metadata` are set by an `Email/set` **update of its own, in a second
   request** addressed to the id the send created, and only when it asks for any: the
   create also serves saved drafts, which must not carry them; a keyword refused inside
   `onSuccessUpdateEmail` would fail the whole patch and leave the copy in Drafts; and

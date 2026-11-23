@@ -6,7 +6,11 @@
 
 use std::collections::BTreeSet;
 
-use engine_core::{error::FailureClass, ids::ProviderKey, mail::Keyword};
+use engine_core::{
+    error::FailureClass,
+    ids::ProviderKey,
+    mail::{Keyword, MessageMetadata},
+};
 use engine_provider::Provider;
 use serde_json::{Value, json};
 
@@ -42,7 +46,12 @@ async fn saving_again_creates_the_new_message_and_destroys_the_old() {
 
     let old = ProviderKey::new("eaaaaaold").unwrap();
     let key = p
-        .put_draft(&account(), &draft(), Some(&old), &BTreeSet::new())
+        .put_draft(
+            &account(),
+            &draft(),
+            Some(&old),
+            &MessageMetadata::default(),
+        )
         .await
         .unwrap()
         .key;
@@ -75,7 +84,7 @@ async fn a_first_save_destroys_nothing() {
         }),
     ]);
 
-    p.put_draft(&account(), &draft(), None, &BTreeSet::new())
+    p.put_draft(&account(), &draft(), None, &MessageMetadata::default())
         .await
         .unwrap();
 
@@ -95,7 +104,7 @@ async fn a_save_refused_for_quota_is_worth_retrying() {
     ]);
 
     let err = p
-        .put_draft(&account(), &draft(), None, &BTreeSet::new())
+        .put_draft(&account(), &draft(), None, &MessageMetadata::default())
         .await
         .unwrap_err();
 
@@ -111,7 +120,7 @@ async fn an_account_with_no_drafts_mailbox_says_so() {
     })]);
 
     let err = p
-        .put_draft(&account(), &draft(), None, &BTreeSet::new())
+        .put_draft(&account(), &draft(), None, &MessageMetadata::default())
         .await
         .unwrap_err();
 
@@ -176,11 +185,16 @@ async fn a_draft_s_keywords_are_part_of_its_create_and_reported_kept() {
     let keywords = BTreeSet::from([Keyword::new("project-x").unwrap()]);
 
     let receipt = p
-        .put_draft(&account(), &draft(), None, &keywords)
+        .put_draft(
+            &account(),
+            &draft(),
+            None,
+            &MessageMetadata::default().with_keywords(keywords.clone()),
+        )
         .await
         .unwrap();
 
-    assert_eq!(receipt.keywords, keywords);
+    assert_eq!(receipt.kept.keywords, keywords);
     let requests = executor.requests.lock().unwrap();
     assert_eq!(
         set_arguments(&requests[1], 0)["create"]["draft"]["keywords"],

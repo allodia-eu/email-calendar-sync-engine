@@ -16,7 +16,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Keyword, Mailbox, MailboxRole},
+    mail::{EmailAddress, Keyword, Mailbox, MailboxRole, MessageMetadata},
 };
 use engine_provider::{Draft, HandOver, HandedOver, ProviderResult, SubmissionReceipt};
 use serde_json::{Map, Value, json};
@@ -93,7 +93,7 @@ pub(crate) async fn send(
     )
     .map_err(JmapError::into_answer_error)?;
     let kept = tag_sent_copy(executor, mail_account, receipt.email_key.as_str(), draft).await;
-    Ok(receipt.with_sent_copy_keywords(kept))
+    Ok(receipt.with_sent_copy_kept(MessageMetadata::default().with_keywords(kept)))
 }
 
 /// Uploads every draft attachment's bytes, returning the `blobId`s in attachment
@@ -283,8 +283,8 @@ fn envelope_recipients(draft: &Draft) -> Vec<Value> {
         .collect()
 }
 
-/// Sets `draft.sent_copy_keywords` on the filed copy `email_id`, returning the ones it
-/// carries. Asks nothing, and costs no request, when the draft wants none.
+/// Sets the keywords of `draft.sent_copy_metadata` on the filed copy `email_id`, returning the ones
+/// it carries. Asks nothing, and costs no request, when the draft wants none.
 ///
 /// A request of its own after the send, rather than part of the create or of
 /// `onSuccessUpdateEmail`: the create is also a saved draft's, which must not carry them, and
@@ -309,14 +309,15 @@ async fn tag_sent_copy(
     }
 }
 
-/// The `Email/set` that puts `draft.sent_copy_keywords` on `email_id`, or `None` when the
-/// draft asks for none.
+/// The `Email/set` that puts the keywords of `draft.sent_copy_metadata` on `email_id`, or `None`
+/// when the draft asks for none.
 fn keyword_update(mail_account: &str, email_id: &str, draft: &Draft) -> Option<Value> {
-    if draft.sent_copy_keywords.is_empty() {
+    if draft.sent_copy_metadata.keywords.is_empty() {
         return None;
     }
     let patch: Map<String, Value> = draft
-        .sent_copy_keywords
+        .sent_copy_metadata
+        .keywords
         .iter()
         .map(|keyword| (keyword_pointer(keyword.as_str()), Value::Bool(true)))
         .collect();
@@ -339,7 +340,7 @@ fn kept_keywords(result: Result<&Value, JmapError>, draft: &Draft) -> BTreeSet<K
                 .is_none_or(Map::is_empty)
     });
     if applied {
-        draft.sent_copy_keywords.clone()
+        draft.sent_copy_metadata.keywords.clone()
     } else {
         BTreeSet::new()
     }

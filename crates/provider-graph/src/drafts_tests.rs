@@ -4,12 +4,10 @@
 //! assert the routing and the outcome; that the bytes are valid base64 MIME is the
 //! mock-server transport test's job and the live test's.
 
-use std::collections::BTreeSet;
-
 use engine_core::{
     error::FailureClass,
     ids::{AccountId, MailboxId, MessageIdHeader},
-    mail::EmailAddress,
+    mail::{EmailAddress, MessageMetadata},
 };
 use engine_provider::{Draft, Provider};
 use serde_json::json;
@@ -53,7 +51,7 @@ async fn a_first_save_creates_the_message_and_returns_its_id() {
     )]));
 
     let key = p
-        .put_draft(&account(), &draft(), None, &BTreeSet::new())
+        .put_draft(&account(), &draft(), None, &MessageMetadata::default())
         .await
         .unwrap()
         .key;
@@ -83,7 +81,12 @@ async fn a_replacement_that_cannot_purge_the_old_copy_is_still_saved() {
 
     let old = engine_core::ids::ProviderKey::new("AAMkAGold").unwrap();
     let key = p
-        .put_draft(&account(), &invitation, Some(&old), &BTreeSet::new())
+        .put_draft(
+            &account(),
+            &invitation,
+            Some(&old),
+            &MessageMetadata::default(),
+        )
         .await
         .unwrap()
         .key;
@@ -99,7 +102,7 @@ async fn a_create_that_returned_no_id_is_a_protocol_error() {
     )]));
 
     let err = p
-        .put_draft(&account(), &draft(), None, &BTreeSet::new())
+        .put_draft(&account(), &draft(), None, &MessageMetadata::default())
         .await
         .unwrap_err();
 

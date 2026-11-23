@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Keyword},
+    mail::{EmailAddress, Keyword, MessageMetadata},
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, KeywordName, MailEdit, Provider};
@@ -95,7 +95,12 @@ async fn live_a_draft_keeps_its_keyword_as_a_category_across_a_re_save_and_drops
     let tagged = BTreeSet::from([keyword()]);
 
     let first = saving
-        .put_draft(&account(), &draft(&message_id, "v1"), None, &tagged)
+        .put_draft(
+            &account(),
+            &draft(&message_id, "v1"),
+            None,
+            &MessageMetadata::default().with_keywords(tagged.clone()),
+        )
         .await
         .expect("first save");
     let stored = keywords(&reader, &first.key).await;
@@ -117,7 +122,7 @@ async fn live_a_draft_keeps_its_keyword_as_a_category_across_a_re_save_and_drops
             &account(),
             &draft(&message_id, "v2"),
             Some(&first.key),
-            &tagged,
+            &MessageMetadata::default().with_keywords(tagged.clone()),
         )
         .await
         .expect("re-save asking for it");
@@ -127,7 +132,7 @@ async fn live_a_draft_keeps_its_keyword_as_a_category_across_a_re_save_and_drops
             &account(),
             &draft(&message_id, "v3"),
             Some(&second.key),
-            &BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .expect("re-save asking for none");
@@ -138,18 +143,18 @@ async fn live_a_draft_keeps_its_keyword_as_a_category_across_a_re_save_and_drops
         .await
         .expect("discard");
 
-    assert_eq!(first.keywords, tagged, "the receipt says it was kept");
+    assert_eq!(first.kept.keywords, tagged, "the receipt says it was kept");
     assert!(stored.contains(&keyword()), "{stored:?}");
     assert_eq!(
         second.key, first.key,
         "a text edit rewrites the draft in place"
     );
-    assert_eq!(second.keywords, tagged);
+    assert_eq!(second.kept.keywords, tagged);
     assert!(after_second.contains(&keyword()), "{after_second:?}");
     assert!(after_second.contains(&own()), "{after_second:?}");
     // Both directions: the keyword is gone once a save stops asking for it, and the category
     // the saving device has no name for is left alone.
-    assert_eq!(third.keywords, BTreeSet::new());
+    assert_eq!(third.kept.keywords, BTreeSet::new());
     assert!(!after_third.contains(&keyword()), "{after_third:?}");
     assert!(after_third.contains(&own()), "{after_third:?}");
 }

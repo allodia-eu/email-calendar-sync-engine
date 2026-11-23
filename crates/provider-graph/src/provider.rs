@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use engine_core::{
     error::FailureClass,
     ids::{AccountId, MailboxId, ProviderKey},
-    mail::{Keyword, Mailbox, Message},
+    mail::{Mailbox, Message, MessageMetadata},
     raw::RawMime,
     sync::{MailboxWindows, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::CalendarDate,
@@ -123,7 +123,7 @@ impl GraphProvider {
     /// Keeps each of `names`' keywords as an Outlook category under one of its names.
     ///
     /// Graph stores no free-form keyword, so a keyword a draft asks for on its filed copy
-    /// ([`Draft::sent_copy_keywords`]) is kept only when it has a name here, and sync reports
+    /// ([`Draft::sent_copy_metadata`]) is kept only when it has a name here, and sync reports
     /// a message carrying any of a keyword's names as carrying the keyword. With at least one
     /// name, the adapter advertises
     /// [`sent_copy_keywords`](Capabilities::sent_copy_keywords), kept after the send rather
@@ -361,13 +361,14 @@ impl Provider for GraphProvider {
         _account: &AccountId,
         draft: &Draft,
         replacing: Option<&ProviderKey>,
-        keywords: &BTreeSet<Keyword>,
+        metadata: &MessageMetadata,
     ) -> ProviderResult<DraftReceipt> {
         let (key, held) = crate::drafts::put_draft(&self.client, draft, replacing).await?;
         let kept = (self.categories)
-            .keep_on_draft(&self.client, &key, held, keywords)
+            .keep_on_draft(&self.client, &key, held, &metadata.keywords)
             .await;
-        Ok(DraftReceipt::stored(key).with_keywords(kept))
+        // Graph stamps a draft's arrival time itself, so only the keywords are kept.
+        Ok(DraftReceipt::stored(key).with_kept(MessageMetadata::default().with_keywords(kept)))
     }
 
     /// Removes a stored draft (`DELETE /me/messages/{id}`), reporting one that is already

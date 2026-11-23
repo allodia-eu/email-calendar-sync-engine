@@ -4,6 +4,8 @@
 //! cannot be split, so the file holding both it and the fixtures splits here, along the
 //! line between what the fake *is* and what it *answers*.
 
+use engine_core::mail::MessageMetadata;
+
 use super::*;
 
 #[async_trait::async_trait]
@@ -99,8 +101,9 @@ impl Provider for FakeMail {
         _account: &AccountId,
         draft: &Draft,
         replacing: Option<&ProviderKey>,
-        keywords: &BTreeSet<Keyword>,
+        metadata: &MessageMetadata,
     ) -> ProviderResult<DraftReceipt> {
+        let keywords = &metadata.keywords;
         {
             let mut left = self.failing_drafts.lock().unwrap();
             if *left > 0 {
@@ -120,7 +123,7 @@ impl Provider for FakeMail {
         } else {
             BTreeSet::new()
         };
-        Ok(DraftReceipt::stored(key).with_keywords(kept))
+        Ok(DraftReceipt::stored(key).with_kept(MessageMetadata::default().with_keywords(kept)))
     }
 
     async fn delete_draft(&self, _account: &AccountId, draft: &ProviderKey) -> ProviderResult<()> {
@@ -165,12 +168,14 @@ impl Provider for FakeMail {
                 draft.message_id.clone(),
                 &handed_over,
             )
-            .with_sent_copy_keywords(if self.caps.sent_copy_keywords_deferred() {
-                // Kept after the send, by the edit the outbox records.
-                BTreeSet::new()
-            } else {
-                draft.sent_copy_keywords.clone()
-            }))
+            .with_sent_copy_kept(MessageMetadata::default().with_keywords(
+                if self.caps.sent_copy_keywords_deferred() {
+                    // Kept after the send, by the edit the outbox records.
+                    BTreeSet::new()
+                } else {
+                    draft.sent_copy_metadata.keywords.clone()
+                },
+            )))
         }
     }
 

@@ -121,7 +121,7 @@ async fn live_the_sent_copy_carries_the_keyword_as_a_hidden_label_and_a_second_n
         .await
         .expect("send");
     assert!(
-        first.sent_copy_keywords.contains(&keyword()),
+        first.sent_copy_kept.keywords.contains(&keyword()),
         "the receipt keeps it"
     );
     let second = second_device
@@ -132,7 +132,7 @@ async fn live_the_sent_copy_carries_the_keyword_as_a_hidden_label_and_a_second_n
         )
         .await
         .expect("send");
-    assert!(second.sent_copy_keywords.contains(&keyword()));
+    assert!(second.sent_copy_kept.keywords.contains(&keyword()));
 
     // One label for both devices, under the first device's name.
     let ours: Vec<Mailbox> = mailboxes(&unnamed)

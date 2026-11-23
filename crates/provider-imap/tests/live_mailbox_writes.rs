@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use engine_core::{
     error::FailureClass,
     ids::{AccountId, MailboxId, MessageIdHeader},
-    mail::{EmailAddress, Mailbox, MailboxRole},
+    mail::{EmailAddress, Mailbox, MailboxRole, MessageMetadata},
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, MailEdit, MailboxEdit, MailboxEditReceipt, MailboxWrites, Provider};
@@ -286,7 +286,7 @@ async fn a_trashed_folder_lands_in_trash_with_its_mail_and_a_delete_removes_it_f
             "Body",
         );
         let key = provider
-            .put_draft(&account(), &draft, None, &std::collections::BTreeSet::new())
+            .put_draft(&account(), &draft, None, &MessageMetadata::default())
             .await
             .unwrap_or_else(|err| panic!("store a draft on {label}: {err}"))
             .key;

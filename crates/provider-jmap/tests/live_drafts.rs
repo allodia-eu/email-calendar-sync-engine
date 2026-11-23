@@ -11,7 +11,7 @@
 
 use engine_core::{
     ids::{AccountId, MessageIdHeader},
-    mail::{EmailAddress, MailboxRole},
+    mail::{EmailAddress, MailboxRole, MessageMetadata},
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, Provider};
@@ -109,7 +109,7 @@ async fn live_jmap_replacing_a_draft_leaves_exactly_one() {
             &account(),
             &draft(message_id, "First version", &harness.account),
             None,
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -124,7 +124,7 @@ async fn live_jmap_replacing_a_draft_leaves_exactly_one() {
             &account(),
             &draft(message_id, "Second version", &harness.account),
             Some(&first),
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -176,7 +176,7 @@ async fn live_jmap_a_saved_draft_lands_in_the_drafts_mailbox() {
             &account(),
             &draft(message_id, "Filed by role", &harness.account),
             None,
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -245,7 +245,7 @@ async fn live_jmap_a_resaved_attachment_is_not_sent_again() {
             &account(),
             &attached("Blob v1"),
             None,
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -260,7 +260,7 @@ async fn live_jmap_a_resaved_attachment_is_not_sent_again() {
             &account(),
             &attached("Blob v2"),
             Some(&first),
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -317,7 +317,7 @@ async fn live_jmap_a_draft_saved_through_the_outbox_settles_and_is_on_the_server
         core::time::Duration::from_secs(30),
         &draft(message_id, "Through the outbox", &harness.account),
         None,
-        &std::collections::BTreeSet::new(),
+        &MessageMetadata::default(),
     )
     .await
     .expect("save through the outbox");

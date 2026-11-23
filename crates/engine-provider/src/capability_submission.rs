@@ -4,14 +4,14 @@
 use crate::Capabilities;
 
 impl Capabilities {
-    /// Marks setting a draft's [`sent_copy_keywords`](crate::Draft::sent_copy_keywords) on
+    /// Marks setting a draft's [`sent_copy_metadata`](crate::Draft::sent_copy_metadata) on
     /// the filed copy as supported.
     ///
     /// The adapter asks the server for them; the server may still decline (an IMAP folder
     /// that does not allow new keywords), and a provider that keeps a keyword only as a named
     /// label or category keeps only those it has a [`KeywordName`](crate::KeywordName) for,
     /// so what was kept is per send, in
-    /// [`SubmissionReceipt::sent_copy_keywords`](crate::SubmissionReceipt::sent_copy_keywords).
+    /// [`SubmissionReceipt::sent_copy_kept`](crate::SubmissionReceipt::sent_copy_kept).
     /// Without this flag the copy is filed without them and the receipt says so.
     #[must_use]
     pub const fn with_sent_copy_keywords(mut self) -> Self {
@@ -53,7 +53,7 @@ impl Capabilities {
     /// As for [`with_sent_copy_keywords`](Self::with_sent_copy_keywords), the server may still
     /// decline, and a provider that keeps a keyword only as a named label or category keeps
     /// only those it has a [`KeywordName`](crate::KeywordName) for, so what was kept is per
-    /// save, in [`DraftReceipt::keywords`](crate::DraftReceipt::keywords). Without this flag
+    /// save, in [`DraftReceipt::kept`](crate::DraftReceipt::kept). Without this flag
     /// the draft is stored without them and the receipt says so.
     #[must_use]
     pub const fn with_draft_keywords(mut self) -> Self {

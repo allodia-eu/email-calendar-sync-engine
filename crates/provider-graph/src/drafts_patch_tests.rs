@@ -4,11 +4,9 @@
 //! **which endpoint a given save reaches** — the whole point of this module is that a
 //! text edit reaches `PATCH` and an attachment change does not.
 
-use std::collections::BTreeSet;
-
 use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
-    mail::{EmailAddress, Importance},
+    mail::{EmailAddress, Importance, MessageMetadata},
 };
 use engine_provider::{Draft, DraftAttachment, Provider};
 use serde_json::json;
@@ -55,7 +53,12 @@ async fn a_text_edit_rewrites_the_stored_draft_and_keeps_its_key() {
     )]));
 
     let key = p
-        .put_draft(&account(), &draft(), Some(&existing()), &BTreeSet::new())
+        .put_draft(
+            &account(),
+            &draft(),
+            Some(&existing()),
+            &MessageMetadata::default(),
+        )
         .await
         .unwrap()
         .key;
@@ -83,7 +86,12 @@ async fn adding_an_attachment_keeps_the_draft_and_uploads_only_the_file() {
     )];
 
     let key = p
-        .put_draft(&account(), &with_file, Some(&existing()), &BTreeSet::new())
+        .put_draft(
+            &account(),
+            &with_file,
+            Some(&existing()),
+            &MessageMetadata::default(),
+        )
         .await
         .unwrap()
         .key;
@@ -115,7 +123,12 @@ async fn removing_an_attachment_deletes_it_without_touching_the_draft() {
     ]));
 
     let key = p
-        .put_draft(&account(), &draft(), Some(&existing()), &BTreeSet::new())
+        .put_draft(
+            &account(),
+            &draft(),
+            Some(&existing()),
+            &MessageMetadata::default(),
+        )
         .await
         .unwrap()
         .key;
@@ -140,7 +153,12 @@ async fn a_draft_carrying_an_itip_part_is_replaced() {
     ));
 
     let key = p
-        .put_draft(&account(), &invitation, Some(&existing()), &BTreeSet::new())
+        .put_draft(
+            &account(),
+            &invitation,
+            Some(&existing()),
+            &MessageMetadata::default(),
+        )
         .await
         .unwrap()
         .key;
@@ -165,7 +183,12 @@ async fn a_draft_deleted_elsewhere_is_stored_fresh() {
     ]));
 
     let key = p
-        .put_draft(&account(), &draft(), Some(&existing()), &BTreeSet::new())
+        .put_draft(
+            &account(),
+            &draft(),
+            Some(&existing()),
+            &MessageMetadata::default(),
+        )
         .await
         .unwrap()
         .key;
@@ -183,7 +206,12 @@ async fn a_rewrite_refused_for_rate_limiting_does_not_become_a_second_draft() {
     ]));
 
     let err = p
-        .put_draft(&account(), &draft(), Some(&existing()), &BTreeSet::new())
+        .put_draft(
+            &account(),
+            &draft(),
+            Some(&existing()),
+            &MessageMetadata::default(),
+        )
         .await
         .unwrap_err();
 

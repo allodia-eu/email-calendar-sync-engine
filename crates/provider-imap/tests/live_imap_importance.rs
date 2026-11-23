@@ -13,7 +13,7 @@ use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader},
-    mail::{EmailAddress, Importance, MailboxRole, Message},
+    mail::{EmailAddress, Importance, MailboxRole, Message, MessageMetadata},
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, Provider};
@@ -113,7 +113,7 @@ async fn live_imap_a_drafts_importance_reads_back() {
         )
         .with_importance(importance);
         let key = provider
-            .put_draft(&account(), &draft, None, &std::collections::BTreeSet::new())
+            .put_draft(&account(), &draft, None, &MessageMetadata::default())
             .await
             .map(|stored| stored.key)
             .expect("save");

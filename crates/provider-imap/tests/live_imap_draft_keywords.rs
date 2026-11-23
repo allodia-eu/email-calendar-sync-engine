@@ -11,7 +11,7 @@ use std::{collections::BTreeSet, time::Duration as StdDuration};
 
 use engine_core::{
     ids::{AccountId, MailboxId, MessageIdHeader},
-    mail::{EmailAddress, Keyword, MailboxRole, Message},
+    mail::{EmailAddress, Keyword, MailboxRole, Message, MessageMetadata},
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, Provider};
@@ -126,7 +126,7 @@ async fn live_imap_a_draft_keeps_its_keyword_and_a_re_save_without_it_drops_it()
             &account(),
             &draft(message_id, &harness.account),
             None,
-            &tagged,
+            &MessageMetadata::default().with_keywords(tagged.clone()),
         )
         .await
         .expect("first save");
@@ -137,7 +137,7 @@ async fn live_imap_a_draft_keeps_its_keyword_and_a_re_save_without_it_drops_it()
             &account(),
             &draft(message_id, &harness.account),
             Some(&first.key),
-            &BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .expect("second save");
@@ -151,13 +151,13 @@ async fn live_imap_a_draft_keeps_its_keyword_and_a_re_save_without_it_drops_it()
     // Stalwart's Drafts allows new keywords, so the receipt says the keyword was kept, and
     // the draft read back carries it. Both directions: the re-save without it reads back
     // without it, so the keyword is not something every draft carries.
-    assert_eq!(first.keywords, tagged);
+    assert_eq!(first.kept.keywords, tagged);
     assert!(
         stored.keywords.contains(&keyword()),
         "{:?}",
         stored.keywords
     );
-    assert_eq!(second.keywords, BTreeSet::new());
+    assert_eq!(second.kept.keywords, BTreeSet::new());
     assert!(
         !resaved.keywords.contains(&keyword()),
         "{:?}",

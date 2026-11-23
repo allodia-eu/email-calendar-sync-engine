@@ -21,7 +21,7 @@
 
 use engine_core::{
     ids::{AccountId, MessageIdHeader},
-    mail::{EmailAddress, MailboxRole, Message, SystemKeyword},
+    mail::{EmailAddress, MailboxRole, Message, MessageMetadata, SystemKeyword},
     sync::SyncUpdate,
 };
 use engine_provider::{Draft, Provider};
@@ -119,7 +119,7 @@ async fn live_gmail_replacing_a_draft_keeps_its_draft_id() {
             &account(),
             &draft(message_id, first_subject),
             None,
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -147,7 +147,7 @@ async fn live_gmail_replacing_a_draft_keeps_its_draft_id() {
             &account(),
             &draft(message_id, second_subject),
             Some(&first),
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)
@@ -198,12 +198,7 @@ async fn live_gmail_a_draft_with_no_recipients_is_stored() {
     );
 
     let key = p
-        .put_draft(
-            &account(),
-            &unaddressed,
-            None,
-            &std::collections::BTreeSet::new(),
-        )
+        .put_draft(&account(), &unaddressed, None, &MessageMetadata::default())
         .await
         .map(|stored| stored.key)
         .expect("a draft with no recipients is stored");
@@ -226,7 +221,7 @@ async fn live_gmail_a_saved_draft_is_labelled_a_draft() {
             &account(),
             &draft(message_id, subject),
             None,
-            &std::collections::BTreeSet::new(),
+            &MessageMetadata::default(),
         )
         .await
         .map(|stored| stored.key)

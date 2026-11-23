@@ -96,7 +96,7 @@ async fn send_and_tag(provider: &GraphProvider, message_id: &MessageIdHeader) {
         .await
         .expect("send");
     assert!(
-        receipt.sent_copy_keywords.is_empty(),
+        receipt.sent_copy_kept.keywords.is_empty(),
         "the send keeps nothing itself, so nothing reads as kept before the edit lands"
     );
     let edit = MailEdit::SetKeywords {

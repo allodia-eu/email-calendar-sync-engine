@@ -1,8 +1,7 @@
 //! A provider whose submissions succeed or fail as a test asks, for the outbox-mediated
 //! submission facade.
 
-use std::collections::BTreeSet;
-
+use engine_core::mail::MessageMetadata;
 use engine_provider::{DraftReceipt, MailEditReceipt, ReportReceipt};
 
 use super::*;
@@ -80,7 +79,7 @@ impl Provider for SubmittingProvider {
         _account: &AccountId,
         _draft: &Draft,
         replacing: Option<&ProviderKey>,
-        keywords: &BTreeSet<Keyword>,
+        metadata: &MessageMetadata,
     ) -> ProviderResult<DraftReceipt> {
         if self.fail {
             return Err(ProviderError::retryable("no route to host"));
@@ -90,7 +89,8 @@ impl Provider for SubmittingProvider {
         } else {
             "draft-1"
         };
-        Ok(DraftReceipt::stored(ProviderKey::new(key).unwrap()).with_keywords(keywords.clone()))
+        Ok(DraftReceipt::stored(ProviderKey::new(key).unwrap())
+            .with_kept(MessageMetadata::default().with_keywords(metadata.keywords.clone())))
     }
 
     async fn delete_draft(&self, _account: &AccountId, _draft: &ProviderKey) -> ProviderResult<()> {

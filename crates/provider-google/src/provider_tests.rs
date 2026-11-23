@@ -266,7 +266,7 @@ async fn edit_mail_and_submit_email_route_through_the_provider() {
         .unwrap();
     assert_eq!(sent.email_key.as_str(), "19f7sent0000abcd");
     // Gmail keeps no custom keyword, so the send goes out and says none were kept.
-    assert!(sent.sent_copy_keywords.is_empty());
+    assert!(sent.sent_copy_kept.keywords.is_empty());
 }
 
 #[tokio::test]

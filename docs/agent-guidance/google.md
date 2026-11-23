@@ -307,12 +307,12 @@ per user per minute, about 270 messages a minute, and IMAP bills nothing per mes
   (`providers.md`), and a `2xx` whose `id` cannot be read falls back to the placeholder key
   rather than failing a send Gmail has accepted.
   With that id in hand, a keyword the draft asks for on its filed copy
-  (`Draft::sent_copy_keywords`) is kept as the label standing for it: an existing label under
+  (`Draft::sent_copy_metadata`) is kept as the label standing for it: an existing label under
   any of the keyword's names, else one created under `KeywordName::create_as` with
   `labelListVisibility: labelHide` and `messageListVisibility: show`, then one
   `messages.modify` adding it. A `409` on the create (another device won by a moment) reads
   the list again. Nothing in it fails the send; what was kept is in
-  `SubmissionReceipt::sent_copy_keywords`.
+  `SubmissionReceipt::sent_copy_kept`.
 
 - **`put_draft` / `delete_draft`** → the `users.drafts` collection. Gmail is the **one
   transport in this workspace with a draft object of its own**, so this is the only
@@ -333,7 +333,7 @@ per user per minute, about 270 messages a minute, and IMAP bills nothing per mes
   draft's message takes no label; live, the label is put on and the draft carries it, and the
   next `drafts.update` replaces the message and the label with it, so **every save labels the new
   message again**. A save asking for none costs no request, and a refused modify leaves the draft
-  saved and the keyword out of `DraftReceipt::keywords`.
+  saved and the keyword out of `DraftReceipt::kept`.
 - ⚠️ **Gmail rewrites the `Message-ID` on `drafts.create`, not only on send.** A draft
   written with `<local@test.local>` comes back as `<CALRU+…@mail.gmail.com>`
   (live-verified). This is the same behaviour as the send finding above, and it has a

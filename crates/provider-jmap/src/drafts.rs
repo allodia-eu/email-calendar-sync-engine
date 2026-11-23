@@ -14,11 +14,9 @@
 //! **A draft's keywords are part of its create**, beside `$draft` and `$seen`. Every save
 //! creates a new message, so each one carries exactly the keywords that save asked for.
 
-use std::collections::BTreeSet;
-
 use engine_core::{
     ids::ProviderKey,
-    mail::{Keyword, MailboxRole},
+    mail::{MailboxRole, MessageMetadata},
 };
 use engine_provider::{Draft, DraftReceipt};
 use serde_json::{Map, Value, json};
@@ -32,9 +30,9 @@ use crate::{
     sync_ops::objects,
 };
 
-/// Stores `draft` in the account's Drafts mailbox carrying `keywords`, destroying the message
-/// named by `replacing`, and returns the new message's id and the keywords it carries: all of
-/// them, since a create the server accepted holds every keyword it was given.
+/// Stores `draft` in the account's Drafts mailbox carrying the keywords of `metadata`, destroying
+/// the message named by `replacing`, and returns the new message's id and the keywords it carries:
+/// all of them, since a create the server accepted holds every keyword it was given.
 ///
 /// # Errors
 ///
@@ -47,7 +45,7 @@ pub(crate) async fn put_draft(
     mail_account: &str,
     draft: &Draft,
     replacing: Option<&ProviderKey>,
-    keywords: &BTreeSet<Keyword>,
+    metadata: &MessageMetadata,
 ) -> Result<DraftReceipt, JmapError> {
     let drafts = drafts_mailbox(executor, mail_account).await?;
     // Attachment bytes first: the draft references each by the server-assigned `blobId`,
@@ -59,7 +57,7 @@ pub(crate) async fn put_draft(
     let mut req = Request::new([capability::CORE, capability::MAIL]);
     let mut create = Map::new();
     let mut stored = build_draft(&drafts, draft, &blob_ids);
-    for keyword in keywords {
+    for keyword in &metadata.keywords {
         stored["keywords"][keyword.as_str()] = Value::Bool(true);
     }
     create.insert("draft".to_owned(), stored);
@@ -74,7 +72,9 @@ pub(crate) async fn put_draft(
     let id = created_id(result, "draft").ok_or_else(|| set_error(result, "draft", "Email/set"))?;
     let key = ProviderKey::new(id)
         .map_err(|e| JmapError::protocol(format!("bad created email id: {e}")))?;
-    Ok(DraftReceipt::stored(key).with_keywords(keywords.clone()))
+    // The server stamps a draft's arrival time itself, so only the keywords are kept.
+    Ok(DraftReceipt::stored(key)
+        .with_kept(MessageMetadata::default().with_keywords(metadata.keywords.clone())))
 }
 
 /// Destroys a stored draft, reporting one that is already gone as done.

@@ -17,11 +17,9 @@
 //! folder's `PERMANENTFLAGS` carries `\*` (`crate::place`). Every save appends a new message,
 //! so each one carries exactly the keywords that save asked for.
 
-use std::collections::BTreeSet;
-
 use engine_core::{
     ids::{MessageIdHeader, ProviderKey},
-    mail::Keyword,
+    mail::MessageMetadata,
 };
 use engine_provider::{Draft, DraftReceipt, ProviderResult};
 use engine_rfc5322::assemble_draft_message;
@@ -53,14 +51,20 @@ pub(crate) async fn put_draft<S>(
     store: &MailStore,
     draft: &Draft,
     replacing: Option<&ProviderKey>,
-    keywords: &BTreeSet<Keyword>,
+    metadata: &MessageMetadata,
 ) -> ProviderResult<DraftReceipt>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let message = assemble_draft_message(draft, OffsetDateTime::now_utc())?;
-    let placed =
-        append_to_role_folder(connection, store, Filing::Drafts, &message, keywords).await?;
+    let placed = append_to_role_folder(
+        connection,
+        store,
+        Filing::Drafts,
+        &message,
+        &metadata.keywords,
+    )
+    .await?;
 
     if let Some(superseded) = replacing {
         // Best effort by design: the new copy is stored, and reporting this as a failure
@@ -73,7 +77,9 @@ where
         placed.append_uid,
         &draft.message_id,
     );
-    Ok(DraftReceipt::stored(key).with_keywords(placed.keywords))
+    // `APPEND` stamps a draft's arrival time itself, so only the keywords are kept.
+    Ok(DraftReceipt::stored(key)
+        .with_kept(MessageMetadata::default().with_keywords(placed.keywords)))
 }
 
 /// Removes a stored draft, reporting an absent one as done.

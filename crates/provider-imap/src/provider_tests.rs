@@ -415,7 +415,7 @@ async fn submit_email_reports_the_keywords_the_filed_copy_carries() {
         )
         .await
         .unwrap();
-    assert_eq!(receipt.sent_copy_keywords, [keyword].into());
+    assert_eq!(receipt.sent_copy_kept.keywords, [keyword].into());
 }
 
 #[tokio::test]
