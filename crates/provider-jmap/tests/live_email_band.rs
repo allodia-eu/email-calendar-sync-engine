@@ -110,7 +110,16 @@ fn marked<'a>(commit: &'a SyncCommit<'_>, marker: &'a str) -> impl Iterator<Item
         .upserted
         .iter()
         .filter_map(|message| message.envelope.subject.clone())
-        .filter(move |subject| subject.starts_with(marker))
+        .filter(move |subject| is_marked(subject, marker))
+}
+
+/// Whether `subject` is one this test planted: its marker, then a space. The two tests run at
+/// once on one account, so neither marker may be a prefix (or, for the residue search, a
+/// substring) of the other.
+fn is_marked(subject: &str, marker: &str) -> bool {
+    subject
+        .strip_prefix(marker)
+        .is_some_and(|rest| rest.starts_with(' '))
 }
 
 async fn pass(
@@ -154,9 +163,7 @@ async fn held(
         .into_iter()
         .filter_map(|row| {
             let subject = row.mail.subject?;
-            subject
-                .starts_with(marker)
-                .then_some((subject, row.mail.key, row.keywords))
+            is_marked(&subject, marker).then_some((subject, row.mail.key, row.keywords))
         })
         .collect();
     rows.sort();
@@ -176,7 +183,7 @@ fn sorted(mut subjects: Vec<String>) -> Vec<String> {
 
 #[tokio::test]
 async fn a_widening_walks_only_the_band_cut_on_the_floors_instant_and_keeps_the_state() {
-    const MARKER: &str = "jmapband";
+    const MARKER: &str = "jmapbandcut";
     let Some(harness) = harness(MARKER) else {
         eprintln!("skipping a_widening_walks_only_the_band_…: STALWART_HTTP_ADDR unset");
         return;
