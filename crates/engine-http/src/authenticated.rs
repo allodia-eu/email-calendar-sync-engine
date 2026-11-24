@@ -6,11 +6,15 @@
 //! presented and no adapter has to be rebuilt for it. On the way it applies the rules that no
 //! source can loosen and no adapter can forget, because there is no other way to send:
 //!
-//! - **No credential over plaintext HTTP, except to loopback.** An `http://` origin other than the
-//!   name `localhost` or a loopback address (`127.0.0.0/8`, `::1`) receives nothing, and the
-//!   request fails as `Permanent`. It is an engine rule, not a default of
-//!   [`permits`](CredentialSource::permits): every live harness serves on `127.0.0.1`, and a host
-//!   can still refuse loopback plaintext through its source.
+//! - **No credential over plaintext HTTP, except to loopback from an account that lives there.** An
+//!   `http://` origin receives nothing, and the request fails as `Permanent`, unless it is the name
+//!   `localhost` or a loopback address (`127.0.0.0/8`, `::1`) **and** the account's configured origin
+//!   is itself plaintext loopback (a test harness, a server on the same machine). An account configured
+//!   over `https` never sends its credential over `http://`, loopback included: a session or a redirect
+//!   naming `http://127.0.0.1:…` would otherwise hand it, in cleartext, to whatever listens on the
+//!   worker's own loopback, which a multi-tenant host shares. It is an engine rule, not a default
+//!   of [`permits`](CredentialSource::permits), and a host can still refuse loopback plaintext
+//!   through its source.
 //! - **The source must [permit](CredentialSource::permits) the origin**, before the first byte goes
 //!   to it.
 //! - **An ask has the request's deadline**, [`Deadlines::reply`]: nothing has been sent yet, so a
@@ -56,10 +60,12 @@ pub enum Unauthorized {
 }
 
 /// Sends `request` with a credential from `source`, presented by `present`, and once more with
-/// a replacement if the server refuses it.
+/// a replacement if the server refuses it. `configured` is the account's configured origin (the
+/// URL the host gave the adapter), which decides whether plaintext loopback may carry it.
 ///
-/// 1. The request's origin must be `https`, or `http` to loopback, and the source must permit it.
-///    Otherwise nothing is sent, and the result is a `Permanent` [`CredentialFailure`].
+/// 1. The request's origin must be `https`, or `http` to loopback from an account whose
+///    `configured` origin is plaintext loopback too, and the source must permit it. Otherwise
+///    nothing is sent, and the result is a `Permanent` [`CredentialFailure`].
 /// 2. The source is asked for a credential under [`Deadlines::reply`]; a source that does not
 ///    answer in time fails as `Retryable`.
 /// 3. `present` adds the credential to the request, and it goes through [`send_retrying`], so a
@@ -72,7 +78,17 @@ pub enum Unauthorized {
 ///    [replace](CredentialSource::replace) it, under the same deadline, and the request goes once
 ///    more with the replacement. A second refusal, a source with no replacement, and a request
 ///    whose body cannot be cloned all hand the `401` back, which the adapter reads as the
-///    authentication failure it is.
+///    authentication failure it is. The refused reply's body is read before `replace` is asked, so
+///    its connection is free while the source refreshes. A source that fails or does not answer
+///    when asked to replace ends the request with its own failure, in place of the `401`: a request
+///    was sent then, and refused.
+///
+/// # The client must not follow redirects
+///
+/// The origin is checked once, on the request's own URL, before anything is sent. A client
+/// that followed a redirect would carry the credential to wherever the server pointed, past
+/// both the plaintext rule and `permits`. Build it with `redirect::Policy::none()` and follow
+/// a redirect, where the protocol has one, as a new request through this funnel.
 ///
 /// No other reply is judged and nothing else is replayed: a `403` is the server's answer
 /// about the request, and a failed exchange may have been received.
@@ -80,14 +96,15 @@ pub enum Unauthorized {
 /// # Errors
 ///
 /// `E` from a [`SendError`] (the exchange failed, or the request could not be built), from a
-/// [`CredentialFailure`] (the origin was refused, or the source failed, with its class), or
-/// from `present`.
+/// [`CredentialFailure`] (the origin was refused, or the source failed, with its class, whether
+/// asked before the first request or for a replacement after a `401`), or from `present`.
 ///
 /// # Panics
 ///
 /// Outside a tokio runtime with the timer enabled, as [`send_retrying`] does.
 pub async fn send_authenticated<E>(
     source: &dyn CredentialSource,
+    configured: &Url,
     request: RequestBuilder,
     retry: &RetryConfig,
     exchange: Exchange<'_>,
@@ -99,7 +116,7 @@ where
 {
     let (client, built) = request.build_split();
     let request = built.map_err(SendError::from)?;
-    let origin = credential_origin(request.url())?;
+    let origin = credential_origin(request.url(), configured)?;
     let ask = CredentialRequest::new(CredentialProtocol::Http, &origin);
     let presentation = Presentation {
         client: &client,
@@ -136,19 +153,25 @@ where
 ///
 /// reqwest builds a request only for an `http` or `https` URL, and those always name a host
 /// and have a known default port, so the fallbacks below never apply.
-fn credential_origin(url: &Url) -> Result<Origin, CredentialFailure> {
-    let host = url.host_str().unwrap_or_default();
+fn credential_origin(url: &Url, configured: &Url) -> Result<Origin, CredentialFailure> {
     match url.scheme() {
         "https" => {}
-        "http" if is_loopback(host) => {}
+        "http" if plaintext_loopback(url) && plaintext_loopback(configured) => {}
         _ => {
             return Err(CredentialFailure::refused_origin(
-                "a credential goes over plaintext HTTP only to a loopback origin",
+                "a credential goes over plaintext HTTP only to loopback, from an account \
+                 configured there",
             ));
         }
     }
+    let host = url.host_str().unwrap_or_default();
     let port = url.port_or_known_default().unwrap_or_default();
     Ok(Origin::new(url.scheme(), host, port))
+}
+
+/// Whether `url` is plaintext HTTP to a loopback host.
+pub(crate) fn plaintext_loopback(url: &Url) -> bool {
+    url.scheme() == "http" && is_loopback(url.host_str().unwrap_or_default())
 }
 
 /// Whether `host`, as a URL serialises it, is the name `localhost` or a loopback address:
@@ -221,6 +244,15 @@ impl<P, J> Presentation<'_, P, J> {
             match (self.judge)(&sent, &credential) {
                 Unauthorized::Reframe if replayable && !reframed => reframed = true,
                 Unauthorized::Refused => {
+                    // Read now, so the connection is free while the source refreshes; the
+                    // reply comes back as it came if there is no replacement.
+                    let sent = if replayable {
+                        sent.into_read()
+                            .await
+                            .map_err(|err| Attempt::Failed(err.into()))?
+                    } else {
+                        sent
+                    };
                     let sent = Box::new(sent);
                     return Err(Attempt::Refused { sent, replayable });
                 }
@@ -250,3 +282,7 @@ impl<P, J> Presentation<'_, P, J> {
 #[cfg(test)]
 #[path = "authenticated_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "authenticated_reply_tests.rs"]
+mod reply_tests;

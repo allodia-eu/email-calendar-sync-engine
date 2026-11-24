@@ -365,6 +365,25 @@ impl Sent {
         decode(&response, body).await
     }
 
+    /// This reply with its body read, if it was not already, so its connection is free while
+    /// the reply is kept.
+    pub(crate) async fn into_read(self) -> Result<Self, SendError> {
+        if self.body.is_some() {
+            return Ok(self);
+        }
+        let Self {
+            mut response,
+            stated,
+            ..
+        } = self;
+        let body = drain(&mut response).await?;
+        Ok(Self {
+            response,
+            body: Some(body),
+            stated,
+        })
+    }
+
     /// The reply itself, for a caller that wants to stream the body rather than hold it.
     ///
     /// The JMAP EventSource push stream is the one caller: its body never ends, so it must

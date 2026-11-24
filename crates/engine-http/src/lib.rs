@@ -45,7 +45,9 @@
 //!
 //! [`send_authenticated`] is the funnel for those: it asks the account's
 //! [`CredentialSource`](engine_provider::CredentialSource) for the credential on every request,
-//! sends nothing over plaintext HTTP except to loopback and nothing to an origin the source does
+//! sends nothing over plaintext HTTP except to loopback from an account configured on loopback
+//! ([`client_for`] builds that account a client no proxy sees), and nothing to an origin the
+//! source does
 //! not permit, and on a `401` the adapter reads as a refusal asks for one replacement and sends
 //! the request once more (`docs/design/credential-source.md`). See `authenticated.rs`.
 
@@ -66,7 +68,7 @@ mod user_agent;
 
 pub use authenticated::{Unauthorized, send_authenticated};
 pub use classify::{StatusAlone, Throttle, ThrottleClassifier};
-pub use deadline::{Exchange, chunk_within, client};
+pub use deadline::{Exchange, chunk_within, client, client_for};
 pub use error::{SendError, gateway_without_answer};
 pub use gate::{GatePermit, RequestGate};
 pub use observed::ObservedConnection;

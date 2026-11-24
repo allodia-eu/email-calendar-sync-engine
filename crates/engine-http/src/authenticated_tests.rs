@@ -15,14 +15,14 @@ use engine_provider::{
     Credential, CredentialFailure, CredentialProtocol, CredentialRequest, CredentialSource,
     CredentialSubject, ProviderError,
 };
-use reqwest::RequestBuilder;
+use reqwest::{RequestBuilder, Url};
 
 use super::{Unauthorized, is_loopback, send_authenticated};
 use crate::{Exchange, RetryConfig, SendError, Sent};
 
 /// What a test request fails with.
 #[derive(Debug)]
-enum Failure {
+pub(super) enum Failure {
     Send(SendError),
     Source(ProviderError),
     Present,
@@ -42,26 +42,32 @@ impl From<CredentialFailure> for Failure {
 
 /// A token source that answers from a script and counts what it was asked.
 #[derive(Debug)]
-struct Tokens {
+pub(super) struct Tokens {
     subject: CredentialSubject,
     permits: bool,
     never: bool,
     first: &'static str,
+    /// `replace` fails as retryable, as a token endpoint that is down does.
+    pub(super) replace_fails: bool,
     replacements: Mutex<VecDeque<&'static str>>,
     asks: Mutex<Vec<CredentialProtocol>>,
     replaced: Mutex<Vec<String>>,
+    /// Every origin `permits` was asked about.
+    checked: Mutex<Vec<engine_provider::Origin>>,
 }
 
 impl Tokens {
-    fn new(first: &'static str, replacements: &[&'static str]) -> Self {
+    pub(super) fn new(first: &'static str, replacements: &[&'static str]) -> Self {
         Self {
             subject: CredentialSubject::new("acct-1"),
             permits: true,
             never: false,
             first,
+            replace_fails: false,
             replacements: Mutex::new(replacements.iter().copied().collect()),
             asks: Mutex::new(Vec::new()),
             replaced: Mutex::new(Vec::new()),
+            checked: Mutex::new(Vec::new()),
         }
     }
 
@@ -80,7 +86,8 @@ impl CredentialSource for Tokens {
         &self.subject
     }
 
-    fn permits(&self, _origin: &engine_provider::Origin) -> bool {
+    fn permits(&self, origin: &engine_provider::Origin) -> bool {
+        self.checked.lock().unwrap().push(origin.clone());
         self.permits
     }
 
@@ -101,6 +108,9 @@ impl CredentialSource for Tokens {
         _request: &CredentialRequest<'_>,
     ) -> Result<Option<Credential>, ProviderError> {
         self.replaced.lock().unwrap().push(token(refused));
+        if self.replace_fails {
+            return Err(ProviderError::retryable("the token endpoint is down"));
+        }
         Ok(self
             .replacements
             .lock()
@@ -119,7 +129,7 @@ fn token(credential: &Credential) -> String {
 
 /// Serves `replies` in order, one per connection, and records each request's `Authorization`.
 /// A reply of `""` closes the connection unanswered.
-fn server(replies: Vec<&'static str>) -> (String, Arc<Mutex<Vec<String>>>) {
+pub(super) fn server(replies: Vec<&'static str>) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -156,9 +166,9 @@ fn server(replies: Vec<&'static str>) -> (String, Arc<Mutex<Vec<String>>>) {
 /// Nothing recorded.
 const NONE: [String; 0] = [];
 
-const OK: &str = "200 OK";
+pub(super) const OK: &str = "200 OK";
 /// A refusal of the credential, by this suite's judge.
-const REFUSED: &str = "401 Unauthorized\r\nWWW-Authenticate: Refused";
+pub(super) const REFUSED: &str = "401 Unauthorized\r\nWWW-Authenticate: Refused";
 /// A refusal of the framing.
 const REFRAME: &str = "401 Unauthorized\r\nWWW-Authenticate: Reframe";
 /// A refusal nothing can answer.
@@ -186,13 +196,16 @@ fn client() -> reqwest::Client {
     .expect("client")
 }
 
-async fn get(source: &Tokens, url: &str) -> Result<u16, Failure> {
-    send(source, client().get(url)).await
+/// A GET to `url`, from an account configured at `url` itself.
+pub(super) async fn get(source: &Tokens, url: &str) -> Result<u16, Failure> {
+    send(source, url, client().get(url)).await
 }
 
-async fn send(source: &Tokens, request: RequestBuilder) -> Result<u16, Failure> {
+async fn send(source: &Tokens, configured: &str, request: RequestBuilder) -> Result<u16, Failure> {
+    let configured = Url::parse(configured).expect("a URL");
     let sent = send_authenticated(
         source,
+        &configured,
         request,
         &RetryConfig::default(),
         Exchange::Ordinary,
@@ -263,7 +276,7 @@ async fn a_body_that_cannot_be_cloned_is_not_replayed_and_no_replacement_is_aske
     let (url, seen) = server(vec![REFUSED, OK]);
     let source = Tokens::new("A", &["B"]);
     let streamed = reqwest::Body::wrap(Streamed(Some(bytes::Bytes::from_static(b"not cloneable"))));
-    let status = send(&source, client().post(&url).body(streamed))
+    let status = send(&source, &url, client().post(&url).body(streamed))
         .await
         .expect("sent");
     assert_eq!(status, 401, "the refusal comes back as it came");
@@ -333,7 +346,9 @@ async fn plaintext_to_a_remote_origin_carries_no_credential_and_fails_permanent(
         "http://192.0.2.1:8080/",
         "http://[2001:db8::1]/",
     ] {
-        let failure = get(&source, url).await.expect_err("refused before sending");
+        let failure = send(&source, "http://127.0.0.1:9/", client().get(url))
+            .await
+            .expect_err("refused before sending");
         assert!(
             matches!(&failure, Failure::Source(err) if err.class() == FailureClass::Permanent),
             "{url}: {failure:?}"
@@ -373,6 +388,7 @@ async fn an_error_presenting_the_credential_sends_nothing() {
     let source = Tokens::new("A", &[]);
     let failed = send_authenticated(
         &source,
+        &Url::parse(&url).unwrap(),
         client().get(&url),
         &RetryConfig::default(),
         Exchange::Ordinary,
@@ -422,4 +438,33 @@ impl http_body::Body for Streamed {
                 .map(|data| Ok(http_body::Frame::data(data))),
         )
     }
+}
+
+#[tokio::test]
+async fn an_account_configured_over_https_sends_nothing_over_plaintext_loopback() {
+    // A session or a redirect may name `http://127.0.0.1:…`; the credential would go in
+    // cleartext to whatever listens on this machine's loopback.
+    let (url, seen) = server(vec![OK]);
+    let source = Tokens::new("A", &[]);
+    let failure = send(&source, "https://jmap.example.com/", client().get(&url))
+        .await
+        .expect_err("refused before sending");
+    assert!(
+        matches!(&failure, Failure::Source(err) if err.class() == FailureClass::Permanent),
+        "{failure:?}"
+    );
+    assert_eq!(*seen.lock().unwrap(), NONE, "nothing reached loopback");
+    assert_eq!(source.asks(), 0);
+}
+
+#[tokio::test]
+async fn an_ipv6_host_reaches_the_source_without_brackets() {
+    let mut source = Tokens::new("A", &[]);
+    source.permits = false;
+    let _ = get(&source, "http://[::1]:9/").await;
+    assert_eq!(
+        *source.checked.lock().unwrap(),
+        [engine_provider::Origin::new("http", "::1", 9)]
+    );
+    assert_eq!(source.checked.lock().unwrap()[0].host(), "::1");
 }
