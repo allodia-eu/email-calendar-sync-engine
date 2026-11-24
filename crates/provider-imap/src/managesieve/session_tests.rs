@@ -45,7 +45,8 @@ async fn the_script_list_and_a_script_read_as_the_server_sent_them() {
             session.list_scripts().await.unwrap(),
             [ListedScript {
                 name: name("zfixture"),
-                active: true
+                active: true,
+                usable: true,
             }]
         );
         let text = session.get_script(&name("zfixture")).await.unwrap();
@@ -131,16 +132,10 @@ async fn a_bye_ends_the_session_as_a_retryable_failure() {
 
 #[tokio::test]
 async fn an_answer_of_the_wrong_shape_is_refused() {
-    for (answer, what) in [
-        (
-            b"\"a\" \"b\"\r\nOK\r\n".as_slice(),
-            "a listing with two names",
-        ),
-        (
-            b"\"a\tb\" ACTIVE\r\nOK\r\n",
-            "an active script whose name holds a control character",
-        ),
-    ] {
+    for (answer, what) in [(
+        b"\"a\" \"b\"\r\nOK\r\n".as_slice(),
+        "a listing with two names",
+    )] {
         let (mut session, _) = greeted(&[answer]).await;
         let err = session.list_scripts().await.unwrap_err();
         assert!(
@@ -206,16 +201,13 @@ async fn capabilities_asked_again_are_kept() {
 }
 
 #[tokio::test]
-async fn an_inactive_script_with_a_name_rfc_5804_forbids_is_left_out_not_fatal() {
+async fn a_script_with_a_name_rfc_5804_forbids_is_listed_as_unusable_not_fatal() {
     let (mut session, _) =
         greeted(&["\"a\u{2028}b\"\r\n\"rules\" ACTIVE\r\nOK\r\n".as_bytes()]).await;
-    assert_eq!(
-        session.list_scripts().await.unwrap(),
-        [ListedScript {
-            name: name("rules"),
-            active: true
-        }]
-    );
+    let listed = session.list_scripts().await.unwrap();
+    assert_eq!(listed.len(), 2, "it still counts");
+    assert!(!listed[0].usable && listed[1].usable);
+    assert_eq!(listed[1].name, name("rules"));
 }
 
 #[tokio::test]

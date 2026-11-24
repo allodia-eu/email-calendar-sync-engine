@@ -8,6 +8,7 @@ fn listed(scripts: &[(&str, bool)]) -> Vec<ListedScript> {
         .map(|(name, active)| ListedScript {
             name: ScriptName::new(name).unwrap(),
             active: *active,
+            usable: true,
         })
         .collect()
 }

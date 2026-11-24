@@ -70,11 +70,17 @@ impl From<SieveError> for ProviderError {
     /// this command (`InvalidState`). A `QUOTA/MAXSIZE` on a script being stored is the
     /// script's size, which the rules write classes itself before this.
     fn from(error: SieveError) -> Self {
-        let code = match error {
+        let (command, code) = match error {
             SieveError::Imap(error) => return error.into(),
-            SieveError::Refused { code, .. } => code,
+            SieveError::Refused { command, code } => (command, code),
         };
         match code {
+            // The script was listed a moment ago and is gone: another client removed it in
+            // between. Read again, as after any stale read.
+            Some(ResponseCode::Nonexistent) if command == "GETSCRIPT" => {
+                ProviderError::conflict("a Sieve script was removed while it was read; read again")
+                    .with_source(error)
+            }
             Some(ResponseCode::Quota(Quota::Unspecified | Quota::MaxScripts)) => {
                 ProviderError::refused_by_target(TargetRefusal::StorageFull).with_source(error)
             }

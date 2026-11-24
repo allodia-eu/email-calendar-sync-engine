@@ -30,7 +30,6 @@ async fn read_set(answers: &[&[u8]]) -> RuleSet {
 async fn the_running_script_is_read_as_the_rules_with_a_version() {
     let (sieve, sessions) = scripted(&[
         &listing(&[("other", false), ("zfixture", true)]),
-        &script("keep;\r\n"),
         &script(RULE),
         LOGOUT,
     ]);
@@ -44,7 +43,8 @@ async fn the_running_script_is_read_as_the_rules_with_a_version() {
     );
     assert_eq!(
         sent(&sessions),
-        "LISTSCRIPTS\r\nGETSCRIPT \"other\"\r\nGETSCRIPT \"zfixture\"\r\nLOGOUT\r\n"
+        "LISTSCRIPTS\r\nGETSCRIPT \"zfixture\"\r\nLOGOUT\r\n",
+        "only the script the choice needs is read"
     );
     assert_eq!(sieve.rules_write_guard(), WriteGuard::Absent);
 

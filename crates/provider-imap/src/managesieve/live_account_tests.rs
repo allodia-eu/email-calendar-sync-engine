@@ -215,7 +215,7 @@ async fn beside_a_jmap_server_s_reply_rules_go_in_a_script_that_includes_it() {
             .map(|(name, active, _)| engine_sieve::dialect::scripts::Listed {
                 name,
                 active: *active,
-                server_reply: name == "vacation",
+                server_reply: Some(name == "vacation"),
             })
             .collect::<Vec<_>>(),
     );

@@ -31,6 +31,12 @@ impl ScriptName {
         Ok(Self(name.to_owned()))
     }
 
+    /// A name a server listed that RFC 5804 §1.6 does not allow: kept to count and hash the
+    /// script, never sent back.
+    pub(crate) fn forbidden(name: &str) -> Self {
+        Self(name.to_owned())
+    }
+
     /// The name, as the protocol carries it.
     pub(crate) fn as_str(&self) -> &str {
         &self.0

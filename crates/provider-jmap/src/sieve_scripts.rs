@@ -110,7 +110,7 @@ impl Scripts {
             .map(|script| Listed {
                 name: &script.name,
                 active: script.active,
-                server_reply: script.name == REPLY_SCRIPT,
+                server_reply: Some(script.name == REPLY_SCRIPT),
             })
             .collect();
         match rules_script(&listed) {

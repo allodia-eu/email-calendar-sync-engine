@@ -21,8 +21,7 @@ pub(crate) use engine_sieve::dialect::scripts::RULES_SCRIPT;
 use engine_sieve::dialect::{
     include::{included_scripts, includes_script, without_include},
     read_rules,
-    reply::unnamed_vacation,
-    scripts::{Choice, Listed, rules_script},
+    scripts::{Choice, Listed, choose_rules_script, plainly_server_reply},
 };
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -32,6 +31,7 @@ use super::{
     name::ScriptName,
     session::{ListedScript, Session},
 };
+use crate::error::ImapError;
 
 /// The account's scripts as listed, the one that holds the rules, and its text.
 pub(crate) struct State {
@@ -45,47 +45,93 @@ pub(crate) struct State {
 }
 
 impl State {
-    /// Lists the scripts, reads each, and chooses the one that holds the rules.
+    /// Lists the scripts and chooses the one that holds the rules, reading only the scripts the
+    /// choice needs (`choose_rules_script`): the active one, `rules`, the one left, and a script
+    /// the chosen one includes. A script that cannot be read fails the read where it is needed;
+    /// one not needed is never read.
+    ///
+    /// # Errors
+    ///
+    /// The session's failure; `NONEXISTENT` to a script listed a moment ago (removed in between,
+    /// classed a `Conflict`); a chosen script whose name RFC 5804 §1.6 forbids.
     pub(crate) async fn read<S: AsyncRead + AsyncWrite + Unpin + Send>(
         session: &mut Session<S>,
     ) -> SieveResult<Self> {
         let listed = session.list_scripts().await?;
-        let mut texts = Vec::with_capacity(listed.len());
-        for script in &listed {
-            texts.push(session.get_script(&script.name).await?);
-        }
-        let servers: Vec<bool> = texts.iter().map(|text| unnamed_vacation(text)).collect();
-        let choice = rules_script(
-            &listed
-                .iter()
-                .zip(&servers)
-                .map(|(script, &server_reply)| Listed {
-                    name: script.name.as_str(),
-                    active: script.active,
-                    server_reply,
-                })
-                .collect::<Vec<_>>(),
-        );
-        let (script, text) = match choice {
-            Choice::Script(at) => (Some(listed[at].clone()), texts.swap_remove(at)),
-            _ => (None, String::new()),
-        };
-        let included = included_scripts(&text);
-        let server_reply = listed
+        let mut texts: Vec<Option<String>> = vec![None; listed.len()];
+        let kinds: Vec<Listed<'_>> = listed
             .iter()
-            .zip(&servers)
-            .filter(|(_, server)| **server)
-            .map(|(script, _)| script)
-            .find(|script| {
-                script.active || included.iter().any(|name| name == script.name.as_str())
+            .map(|script| Listed {
+                name: script.name.as_str(),
+                active: script.active,
+                // A script that cannot be addressed cannot be read: no server's reply.
+                server_reply: (!script.usable).then_some(false),
             })
-            .cloned();
-        Ok(Self {
-            listed,
-            script,
-            text,
-            server_reply,
-        })
+            .collect();
+        // `choose_rules_script` is synchronous; the scripts it asks about are read here first,
+        // in the order it asks, so it never asks about one not read.
+        let mut asked = Vec::new();
+        loop {
+            let mut wanted = None;
+            let choice = choose_rules_script(&kinds, |at| {
+                if let Some(text) = &texts[at] {
+                    Ok(plainly_server_reply(text))
+                } else {
+                    wanted = Some(at);
+                    Err(())
+                }
+            });
+            match (choice, wanted) {
+                (Ok(choice), _) => {
+                    let (script, text) = match choice {
+                        Choice::Script(at) => {
+                            if !listed[at].usable {
+                                return Err(ImapError::protocol(
+                                    "the script holding the rules has a name RFC 5804 forbids",
+                                )
+                                .into());
+                            }
+                            let text = texts[at].take().unwrap_or_default();
+                            (Some(listed[at].clone()), text)
+                        }
+                        _ => (None, String::new()),
+                    };
+                    let mut server_reply = asked
+                        .iter()
+                        .copied()
+                        .filter(|&at: &usize| listed[at].active)
+                        .find(|&at| texts[at].as_deref().is_some_and(plainly_server_reply))
+                        .map(|at| listed[at].clone());
+                    if server_reply.is_none() {
+                        // A script the rules' script includes, read now: the reply runs from it.
+                        for name in included_scripts(&text) {
+                            let Some(at) = listed
+                                .iter()
+                                .position(|s| s.usable && s.name.as_str() == name)
+                            else {
+                                continue;
+                            };
+                            let included = read_listed(session, &listed[at]).await?;
+                            if plainly_server_reply(&included) {
+                                server_reply = Some(listed[at].clone());
+                                break;
+                            }
+                        }
+                    }
+                    return Ok(Self {
+                        listed,
+                        script,
+                        text,
+                        server_reply,
+                    });
+                }
+                (Err(()), Some(at)) => {
+                    texts[at] = Some(read_listed(session, &listed[at]).await?);
+                    asked.push(at);
+                }
+                (Err(()), None) => unreachable!("the choice fails only on a script not read"),
+            }
+        }
     }
 
     /// The user's rules: every rule of the script but the include of a server's reply script,
@@ -143,3 +189,15 @@ impl State {
 #[cfg(test)]
 #[path = "state_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "choice_tests.rs"]
+mod choice_tests;
+
+/// The text of `script`, listed a moment ago: `NONEXISTENT` now means it was removed in between.
+async fn read_listed<S: AsyncRead + AsyncWrite + Unpin + Send>(
+    session: &mut Session<S>,
+    script: &ListedScript,
+) -> SieveResult<String> {
+    session.get_script(&script.name).await
+}

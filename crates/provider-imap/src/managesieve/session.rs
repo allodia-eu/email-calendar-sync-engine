@@ -41,6 +41,9 @@ const MAX_RESPONSE: usize = 8 * 1024 * 1024;
 pub(crate) struct ListedScript {
     pub(crate) name: ScriptName,
     pub(crate) active: bool,
+    /// Whether its name is one RFC 5804 §1.6 allows: a script that is not is counted, never
+    /// addressed.
+    pub(crate) usable: bool,
 }
 
 /// A command's data lines, read up to an `OK`.
@@ -141,13 +144,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
     /// Every script of the account, and which is active.
     ///
     /// A script whose name RFC 5804 §1.6 does not allow (a control character, U+2028, U+2029) is
-    /// left out, so one such name does not hide the rest; where it is the active one, the listing
-    /// is refused instead, because the rules that run would be missing from it.
+    /// listed as not usable, so one such name does not hide the rest and still counts: two scripts
+    /// never read as one. Where it would be read or written, the caller refuses.
     ///
     /// # Errors
     ///
-    /// The command's failure; [`ImapError::Protocol`] for a line that is not a script name, or an
-    /// active script whose name is not allowed.
+    /// The command's failure; [`ImapError::Protocol`] for a line that is not a script name.
     pub(crate) async fn list_scripts(&mut self) -> SieveResult<Vec<ListedScript>> {
         let lines = self.command(b"LISTSCRIPTS", "LISTSCRIPTS").await?;
         let listed = lines
@@ -167,18 +169,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
                         .into());
                     }
                 };
-                Ok((ScriptName::new(name), active))
+                Ok(((ScriptName::new(name), name.clone()), active))
             })
             .collect::<SieveResult<Vec<_>>>()?;
-        let mut scripts = Vec::with_capacity(listed.len());
-        for (name, active) in listed {
-            match name {
-                Ok(name) => scripts.push(ListedScript { name, active }),
-                Err(err) if active => return Err(err.into()),
-                Err(_) => {}
-            }
-        }
-        Ok(scripts)
+        Ok(listed
+            .into_iter()
+            .map(|((name, raw), active)| match name {
+                Ok(name) => ListedScript {
+                    name,
+                    active,
+                    usable: true,
+                },
+                Err(_) => ListedScript {
+                    name: ScriptName::forbidden(&raw),
+                    active,
+                    usable: false,
+                },
+            })
+            .collect())
     }
 
     /// The text of the script `name`.
