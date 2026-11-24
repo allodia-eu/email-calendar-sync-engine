@@ -47,15 +47,13 @@ fn counting() -> (String, Arc<AtomicUsize>) {
 /// Runs `proxied_child` with `HTTP_PROXY` set to `proxy` and no other proxy variable.
 fn in_child(target: &str, configured: &str, proxy: &str) {
     let mut child = Command::new(std::env::current_exe().expect("this test binary"));
-    child
-        .args([
-            "--exact",
-            "deadline::client_proxy_tests::proxied_child",
-            "--test-threads=1",
-        ])
-        .env(TARGET, target)
-        .env(CONFIGURED, configured)
-        .env("HTTP_PROXY", proxy);
+    child.args([
+        "--exact",
+        "deadline::client_proxy_tests::proxied_child",
+        "--test-threads=1",
+    ]);
+    // Clear first, then set: on Windows variable names are case-insensitive, so removing
+    // `http_proxy` after setting `HTTP_PROXY` would remove the proxy itself.
     for unset in [
         "http_proxy",
         "ALL_PROXY",
@@ -68,6 +66,10 @@ fn in_child(target: &str, configured: &str, proxy: &str) {
     ] {
         child.env_remove(unset);
     }
+    child
+        .env(TARGET, target)
+        .env(CONFIGURED, configured)
+        .env("HTTP_PROXY", proxy);
     let status = child.status().expect("the child runs");
     assert!(status.success(), "the child's request failed: {status}");
 }
