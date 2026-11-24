@@ -17,19 +17,20 @@
 //! `gmail.settings.basic`; writing needs `gmail.settings.basic`, and a token without it is
 //! refused (`403`, `Permanent`) on the first write.
 
+use std::collections::BTreeSet;
+
 use async_trait::async_trait;
 use engine_core::{
     ids::AccountId,
+    mail::Keyword,
     raw::RawRules,
     rules::{
         MailRule, NativeKind, RuleFeature, RuleLimit, RuleSet, RuleVocabulary, RulesReceipt,
         Support, TextOp,
     },
-    version::RuleSetVersion,
 };
-use engine_provider::{MailRules, ProviderResult, WriteGuard};
+use engine_provider::{MailRules, ProviderResult, RuleListing, WriteGuard};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::{
     error::GoogleError, json::opt_str, named_labels::NamedLabels, provider::GmailProvider,
@@ -40,34 +41,51 @@ use crate::{
 pub(crate) const FILTERS: &str = "/gmail/v1/users/me/settings/filters";
 
 /// What a Gmail filter holds (`filters-and-out-of-office.md`, §5, the Gmail column), with
-/// `keywords` where the host registered a label name for a keyword (`crate::named_labels`).
+/// `keywords` the keywords the host registered a label name for (`crate::named_labels`).
 ///
-/// Approximated, because Gmail matches criteria as a search, by words and phrases, `from:` over
-/// the sender's name too and `to:` over every recipient: a subject, sender or the recipients
-/// together that contain or are a value, any-of conditions and exceptions (search `OR`); a
-/// redirect that keeps the message and a forward (Gmail's `forward`, which keeps the sender); a
-/// discard (to Trash, which is recoverable); an importance (Gmail's own `IMPORTANT` marker); a
-/// named keyword (a label).
+/// Exact: what Gmail's criteria say read as the model says it, a subject and the sender with its
+/// name matched by words ([`TextOp::Words`]), any-of conditions and the exceptions (search `OR`),
+/// an attachment, a size in bytes; filing into the user's labels, Trash, Junk and the archive;
+/// read and flagged.
 ///
-/// Not held: a subject that is a value (Gmail's subject search would match it within a longer
-/// one, which widens the rule), a named header, a body (a search word matches the subject and the
-/// senders too, which would widen the rule), a domain or local part alone, the account's own
-/// address, an importance tested, a folder by path, a redirect that keeps no copy, a stop, a rule
-/// stored off, a name and an order. One forward address per rule
-/// ([`RuleVocabulary::with_max_redirects`]), the recipients only together, no system keyword but
-/// `$seen` and `$flagged`, and filing only into real folders ([`RuleLimit`]).
+/// Approximated: a subject that contains a value, written as a word search, which matches less
+/// (so held as a condition only: [`RuleLimit::ExactExceptions`]); a redirect that keeps the
+/// message and a forward (Gmail's `forward`, which keeps the sender); a discard (to Trash, which
+/// is recoverable); an importance (Gmail's own `IMPORTANT` marker); a named keyword (a label);
+/// the order. Gmail applies every filter that matches, and has no stop, so the label changes and
+/// the forwards are the same in any order: what the order did is kept, apart from a stop, which is
+/// lost on its own.
+///
+/// Not held: an address alone (a word search over the sender matches its name too), the
+/// recipients (Gmail's `to:` matches `Bcc` too), a subject that is a value, a named header, a body
+/// (a search word matches the subject and the senders too), a domain or local part, the account's
+/// own address, an importance tested, a folder by path, a redirect that keeps no copy, a stop, a
+/// rule stored off, a name. Its limits ([`RuleLimit`]), each a refusal Gmail answers or a
+/// widening the writer must not make: one forward per filter, a native forward included; one of
+/// the user's labels per filter; a filter tests something; no system keyword but `$seen` and
+/// `$flagged`; filing only into real folders, and into roles only Trash, Junk and the archive by
+/// a move; an importance high or low; a native condition only among all-of conditions; every value
+/// a phrase.
 #[must_use]
-pub(crate) fn vocabulary(keywords: bool) -> RuleVocabulary {
+pub(crate) fn vocabulary(keywords: &BTreeSet<Keyword>) -> RuleVocabulary {
     let approximated = [
-        RuleFeature::MatchAny,
-        RuleFeature::Except,
         RuleFeature::SubjectText(TextOp::Contains),
-        RuleFeature::AddressText(TextOp::Contains),
-        RuleFeature::AddressText(TextOp::Is),
         RuleFeature::Discard,
         RuleFeature::RedirectCopy,
         RuleFeature::Forward,
         RuleFeature::MarkImportance,
+        RuleFeature::Order,
+    ];
+    let limits = [
+        RuleLimit::NoOtherSystemKeyword,
+        RuleLimit::RealFoldersOnly,
+        RuleLimit::OneFolderPerRule,
+        RuleLimit::SomeTest,
+        RuleLimit::ExactExceptions,
+        RuleLimit::ImportanceHighOrLow,
+        RuleLimit::NativeConditionsAllOf,
+        RuleLimit::PhraseValues,
+        RuleLimit::TrashJunkArchiveOnly,
     ];
     let vocabulary = approximated
         .into_iter()
@@ -75,6 +93,11 @@ pub(crate) fn vocabulary(keywords: bool) -> RuleVocabulary {
             vocabulary.with(feature, Support::Approximated)
         })
         .with_exact([
+            RuleFeature::MatchAny,
+            RuleFeature::Except,
+            RuleFeature::SubjectText(TextOp::Words),
+            RuleFeature::AddressText(TextOp::Words),
+            RuleFeature::AddressWithName,
             RuleFeature::HasAttachment,
             RuleFeature::SizeOver,
             RuleFeature::SizeUnder,
@@ -86,27 +109,26 @@ pub(crate) fn vocabulary(keywords: bool) -> RuleVocabulary {
         ])
         .with_max_redirects(1)
         .with_native(NativeKind::Gmail)
-        .with_limit(RuleLimit::RecipientsTogether)
-        .with_limit(RuleLimit::NoOtherSystemKeyword)
-        .with_limit(RuleLimit::RealFoldersOnly)
-        .with_limit(RuleLimit::OneFolderPerRule)
-        .with_limit(RuleLimit::SomeTest);
-    if keywords {
-        vocabulary.with(RuleFeature::NamedKeyword, Support::Approximated)
-    } else {
+        .with_keywords(keywords.iter().cloned());
+    let vocabulary = limits
+        .into_iter()
+        .fold(vocabulary, RuleVocabulary::with_limit);
+    if keywords.is_empty() {
         vocabulary
+    } else {
+        vocabulary.with(RuleFeature::NamedKeyword, Support::Approximated)
     }
 }
 
 /// The account's filters as Gmail listed them, sorted by id, and the text they are kept as.
 pub(crate) struct Listing {
     pub(crate) filters: Vec<Value>,
-    text: String,
+    pub(crate) listing: RuleListing,
 }
 
 impl Listing {
     /// Reads the filters. Gmail answers them in one response, with no `filter` key at all where
-    /// there are none.
+    /// there are none, and `204` with no body (`null`) where the account has none (observed).
     pub(crate) async fn read(client: &GoogleClient) -> Result<Self, GoogleError> {
         let page = client.get(&client.url(FILTERS)).await?;
         let filters = match page.get("filter") {
@@ -121,8 +143,8 @@ impl Listing {
         // The order Gmail lists them in must not move the version, or a write would see a
         // conflict nothing caused.
         filters.sort_by(|a, b| opt_str(a, "id").cmp(&opt_str(b, "id")));
-        let text = Value::Array(filters.clone()).to_string();
-        Self { filters, text }
+        let listing = RuleListing::new(Value::Array(filters.clone()).to_string());
+        Self { filters, listing }
     }
 
     /// The listing kept in `raw`, as a read stored it.
@@ -133,24 +155,11 @@ impl Listing {
         }
     }
 
-    /// The version a write names: the SHA-256 of the listing, in hex.
-    pub(crate) fn version(&self) -> String {
-        hex(&Sha256::digest(self.text.as_bytes()))
-    }
-
-    /// The fingerprint a rule's origin carries.
-    pub(crate) fn set(&self) -> u64 {
-        let digest = Sha256::digest(self.text.as_bytes());
-        let mut first = [0; 8];
-        first.copy_from_slice(&digest[..8]);
-        u64::from_be_bytes(first)
-    }
-
     /// The filter at `index`, as the model reads it.
     pub(crate) fn rule(&self, index: usize, named: &NamedLabels) -> Option<MailRule> {
         self.filters
             .get(index)
-            .map(|value| rules_read::rule(value, self.set(), index, named))
+            .map(|value| rules_read::rule(value, self.listing.fingerprint(), index, named))
     }
 
     pub(crate) fn rule_set(&self, named: &NamedLabels) -> RuleSet {
@@ -158,27 +167,15 @@ impl Listing {
             .filter_map(|index| self.rule(index, named))
             .collect();
         RuleSet::new(rules)
-            .with_version(RuleSetVersion::new(self.version()))
-            .with_raw(RawRules::new(self.text.clone()))
+            .with_version(self.listing.version())
+            .with_raw(self.listing.raw())
     }
-}
-
-/// Bytes as lowercase hex.
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    use core::fmt::Write as _;
-
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
 }
 
 #[async_trait]
 impl MailRules for GmailProvider {
     async fn rule_vocabulary(&self, _account: &AccountId) -> ProviderResult<RuleVocabulary> {
-        Ok(vocabulary(self.labels().any()))
+        Ok(vocabulary(&self.labels().keywords()))
     }
 
     /// [`WriteGuard::Absent`]: a filter has no ETag. A write still refuses a base whose listing

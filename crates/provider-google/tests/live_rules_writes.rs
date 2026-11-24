@@ -16,10 +16,12 @@
 //!   deleted, and the labels it made are deleted too.
 //! - **Nothing of the account is printed**: counts, statuses and reason codes only.
 //!
-//! It proves a create, an edit (a new filter first, then the old one deleted), a stale base
-//! refused, a forward to an unverified address held back by the engine and refused by Gmail when
-//! sent anyway, and asks Gmail three questions by hand: whether a filter may add two of the user's
-//! labels, whether one with no criteria is stored, and whether a second identical one is.
+//! It proves a create, a rule built again as a filter Gmail holds (kept, nothing sent), an edit (a
+//! new filter first, then the old one deleted), a stale base refused, a forward to an unverified
+//! address held back by the engine and refused by Gmail when sent anyway, and asserts by hand
+//! (`gmail_settings_support::filter_probes`) that Gmail refuses two user labels, no criteria and
+//! a second identical filter, and stores a filter with only a `negatedQuery`, and a bracketed
+//! query, as sent.
 
 mod gmail_settings_support;
 
@@ -70,7 +72,7 @@ fn theirs(filters: &[Value], marker: &str) -> Vec<Value> {
 }
 
 fn text(values: &[String]) -> TextTest {
-    TextTest::new(TextOp::Contains, values.to_vec()).unwrap()
+    TextTest::new(TextOp::Words, values.to_vec()).unwrap()
 }
 
 fn subject(values: &[String]) -> Condition {
@@ -83,7 +85,7 @@ fn subject(values: &[String]) -> Condition {
 fn from(value: &str) -> Condition {
     Condition::Address {
         field: AddressField::From,
-        part: AddressPart::All,
+        part: AddressPart::WithName,
         test: text(&[value.to_owned()]),
     }
 }
@@ -158,7 +160,11 @@ async fn live_filters_are_written_and_every_filter_the_test_did_not_create_stays
         "unexpected state: an existing filter does not plan unchanged; nothing was written"
     );
     let run = tokio::spawn(cycle(token.clone(), marker.clone())).await;
-    let labels = tokio::spawn(by_hand(token.clone(), marker.clone())).await;
+    let labels = tokio::spawn({
+        let (token, marker) = (token.clone(), marker.clone());
+        async move { gmail_settings_support::filter_probes::ask(&token, &marker).await }
+    })
+    .await;
     clean_up(&token, &marker).await;
     let after = listing(&token).await;
     let identical =
@@ -214,6 +220,27 @@ async fn cycle(token: String, marker: String) {
         rules(&marker),
         "read back typed"
     );
+
+    // A rule built again, as the filter Gmail holds: the held one is kept, nothing is sent
+    // (Gmail refuses a duplicate), and nothing fails.
+    let mut again = read.rules.clone();
+    again.push(rules(&marker).remove(0));
+    let receipt = mail_rules
+        .replace_rules(&account(), &read, &again)
+        .await
+        .unwrap_or_else(|err| failed("a duplicate", &err));
+    assert_eq!(receipt.failures, Vec::new(), "a duplicate");
+    let count = listing(&token)
+        .await
+        .iter()
+        .filter(|f| ours(f, &marker))
+        .count();
+    assert_eq!(count, 2, "no second copy");
+    let read = mail_rules
+        .read_rules(&account())
+        .await
+        .unwrap_or_else(|err| failed("read again", &err));
+    let raw: Vec<Value> = serde_json::from_str(read.raw.as_ref().unwrap().as_str()).unwrap();
 
     // An edit: a new filter first, then the old one deleted.
     let mut edited = read.rules.clone();
@@ -305,63 +332,6 @@ async fn forward_unverified(token: &str, marker: &str, mail_rules: &dyn MailRule
         (400..500).contains(&status),
         "Gmail stored a forward to an unverified address"
     );
-}
-
-/// Questions asked of Gmail by hand, each with a filter or label of this run's only.
-async fn by_hand(token: String, marker: String) {
-    let mut labels = Vec::new();
-    for n in 1..=2 {
-        let body = json!({"name": format!("{marker}-L{n}"), "labelListVisibility": "labelHide", "messageListVisibility": "hide"});
-        let (status, label) = send(&token, Method::POST, "/labels", Some(&body)).await;
-        assert_eq!(status, 200, "label create");
-        labels.push(label["id"].as_str().unwrap().to_owned());
-    }
-    let two = json!({"criteria": {"subject": format!("{marker}-two")}, "action": {"addLabelIds": labels}});
-    let (status, answer) = send(&token, Method::POST, "/settings/filters", Some(&two)).await;
-    eprintln!(
-        "a filter adding two user labels: {status} {}",
-        reason(&answer)
-    );
-    if let Some(id) = answer["id"]
-        .as_str()
-        .filter(|_| (200..300).contains(&status))
-    {
-        send(
-            &token,
-            Method::DELETE,
-            &format!("/settings/filters/{id}"),
-            None,
-        )
-        .await;
-    }
-    let empty = json!({"criteria": {}, "action": {"addLabelIds": ["STARRED"]}});
-    let (status, answer) = send(&token, Method::POST, "/settings/filters", Some(&empty)).await;
-    eprintln!("a filter with no criteria: {status} {}", reason(&answer));
-    if let Some(id) = answer["id"]
-        .as_str()
-        .filter(|_| (200..300).contains(&status))
-    {
-        send(
-            &token,
-            Method::DELETE,
-            &format!("/settings/filters/{id}"),
-            None,
-        )
-        .await;
-    }
-    let same = json!({"criteria": {"subject": format!("{marker}-same")}, "action": {"addLabelIds": ["STARRED"]}});
-    let first = send(&token, Method::POST, "/settings/filters", Some(&same))
-        .await
-        .0;
-    let (status, answer) = send(&token, Method::POST, "/settings/filters", Some(&same)).await;
-    eprintln!(
-        "a second identical filter: {first} then {status} {}",
-        reason(&answer)
-    );
-    for id in labels {
-        let (status, _) = send(&token, Method::DELETE, &format!("/labels/{id}"), None).await;
-        assert!((200..300).contains(&status), "label delete");
-    }
 }
 
 /// Deletes every filter holding the marker, and reads until none is listed.

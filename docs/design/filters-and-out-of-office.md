@@ -270,8 +270,19 @@ Implemented as sketched, with these differences, each for a reason the code met:
   per rule, a named keyword counting as one (`OneFolderPerRule`, a second is a lost action), and a
   rule that tests something (`SomeTest`: one with neither conditions nor exceptions is not kept).
   A vocabulary without limits plans as before.
-- `RuleOutcome::not_written` and `written_short` are what a rule-by-rule writer records on a
-  planned outcome when the server did not do as asked, one answer for Graph and Gmail.
+- `RuleOutcome::not_written`, `written_short` and `left_beside` are what a rule-by-rule writer
+  records on a planned outcome when the server did not do as asked, one answer for Graph and
+  Gmail; `RulesReceipt::left_as_read` names the rules whose edit did not apply (section 4).
+- `TextOp::Words` is a search's match (whole words and phrases, ignoring case: Gmail's), and
+  `AddressPart::WithName` the address with the display name beside it (`RuleFeature::
+  AddressWithName`): what Gmail's `subject:` and `from:` say, read exactly. Neither is wider or
+  narrower than another test in every case, so no other stands in for it, and no Sieve or Graph
+  vocabulary holds it: a Gmail rule with one is not kept there. Gmail's limits are `RuleLimit`s too
+  (slice 5): `ExactExceptions` (an approximated exception is lost: narrowing an exception widens
+  the rule), `ImportanceHighOrLow`, `NativeConditionsAllOf`, `PhraseValues` (`rules::is_phrase`:
+  no quote, no control character, not blank, not `me`), `TrashJunkArchiveOnly`; a vocabulary may
+  hold only some named keywords (`RuleVocabulary::with_keywords`); and a provider's own action that
+  sends mail counts as one address against the redirect limit.
 - `LossReason::NotWritten`: a rule-by-rule write asked for a part and did not get it, and the
   receipt's `failures` say why; on the whole rule it is not kept, on its order it is reduced, so no
   outcome reads whole for a rule listed as failed.
@@ -348,11 +359,19 @@ category is a named keyword, as `KeywordName` already treats it. `Native` holds 
 JSON fragment and its kind, so a host can show "a condition this app cannot display" and the
 engine can carry it to the same kind of provider; it never crosses kinds.
 
-A Gmail filter's `query` and `negatedQuery` are parsed when every term is one of a small subset:
-`from:`, `to:`, `subject:`, `has:attachment` and `larger:`, read as `Address`, `Header`,
-`HasAttachment` and `Size(Over)` conditions (a `negatedQuery` lands in `except`). A query with any
-other term or operator stays whole, as one `Native` condition: it carries to Gmail unchanged, and on
-a non-Gmail target the rule is `NotKept`, because a lost condition drops the rule (section 4).
+A Gmail filter's `from` and `subject` criteria, and its `query` and `negatedQuery`, are parsed when
+every term is one of a small subset: `from:`, `subject:`, `has:attachment`, `larger:` and
+`smaller:` (a plain number of bytes), values a word, a quoted phrase or an any-of (`a OR b`,
+`(a OR b)`, `{a b}`). They read as `Address { From, WithName, Words }`, `Header { Subject, Words }`,
+`HasAttachment` and `Size` conditions: exactly what Gmail matches, a search's word match over the
+sender's name and address and over the subject. A `query` of terms joined by spaces adds them to the
+conditions; one of terms joined by ` OR ` beside no other criterion is an any-of rule. A
+`negatedQuery` of terms joined by ` OR ` is the exceptions; one whose terms must all hold says "not
+both", which no list of exceptions says, and stays whole. `to:` matches every recipient, `Bcc`
+too, as no typed condition says, so it stays whole too, as does `me`, bare or quoted. A query with
+any other term or operator stays whole, as one `Native` condition: it carries to Gmail unchanged,
+and on a non-Gmail target the rule is `NotKept`, because a lost condition drops the rule (section
+4); so does a word match, which no other target holds.
 
 No rule-level `Reject` (RFC 5429) in the first slices: no non-Sieve provider has it, so it reads as
 an opaque rule until a host asks.
@@ -560,9 +579,9 @@ every change and clamped to its end; a `PATCH` clears nothing it is sent as `nul
 guards are `Absent`, with a SHA-256 of what was read as the version, read again before writing and
 refused as `Conflict` where it moved, which narrows the race and does not close it, and neither
 receipt carries a version. A write plans (the vocabulary's `RuleLimit`s carrying Graph's grain),
-removes the rules left out first (so a replacement a host built, with no origin, deletes the old
-rule before its new copy is `POST`ed, and a failed `POST` leaves neither; editing the rule read
-instead writes it anew, new first), then walks the planned rules keeping the server's list as it
+removes the rules no rule handed in names first (so a replacement a host built, with no origin,
+deletes the old rule before its new copy is `POST`ed, and a failed `POST` leaves neither; editing
+the rule read instead writes it anew, new first), then walks the planned rules keeping the server's list as it
 goes: a
 new rule `POST`ed at its position, one out of place given its position by a `sequence`-only
 `PATCH`, one in place not sent; a changed rule `PATCH`ed whole where it drops nothing, and written
@@ -572,6 +591,27 @@ old one and says so on the outcome. A read-only rule is never sent, nor a rule w
 (unproven live). A rule the writer still cannot place keeps the server's
 rule as it was and is a failure; every failure is on the rule's outcome too
 (`LossReason::NotWritten`).
+
+**An edit that is not kept does not apply** (decided 2026-11-24, for every transport that stores
+rules one by one). A rule the plan does not keep, or whose write failed, that names a rule the
+write read, leaves that rule where it is, as it was, and the receipt says so:
+`RulesReceipt::left_as_read` lists it, by its index in the rules handed in. Nothing is removed for
+it. Graph and Gmail do this (Graph's proven offline with its fake, no live Graph write run for it;
+Gmail's live); the question "is the rule as read still there" has one answer,
+`engine_provider::RuleListing::left_as_read`, which both call. A rule written anew whose old copy
+could not be removed is `LossReason::LeftBeside`, not `NotWritten`: both run until it goes, so the
+rule is `Reduced` and the account does more than asked meanwhile. The Sieve targets store the set
+as one script and still leave a not-kept rule out of it; giving them the same treatment is a
+follow-up.
+
+As built for Gmail (`provider-google`, `google.md` → "Filters and the vacation reply"): filters
+have no update and no ETag, so the guard is `Absent` with the listing's SHA-256 read again before
+writing (the same `RuleListing` as Graph's). A changed rule is created first and the filter it was
+read as deleted after; a rule Gmail already holds as a filter (the one it was read as, one no rule
+claims, one this write created) is not sent, since Gmail refuses a duplicate; a forward to an
+address not verified for forwarding, typed or Gmail's own, is lost as `ForwardNotAllowed` before
+sending; a label made for a keyword of a filter then not stored is deleted again. Gmail showed
+every write on the next read (no lag observed).
 
 ### The pure core: plan, then render
 
@@ -832,14 +872,15 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 
 | Neutral | Sieve | Graph | Gmail |
 |---|---|---|---|
-| `Match` All / Any | ✓ `allof` / `anyof` | All ✓ (predicates ANDed; values in one predicate ORed, **unverified**; a second test of one kind ✗, `RuleLimit::OneTestPerKind`, since Graph would read the two as either); Any ✗ | All ✓; Any ≈ (`query` with `OR`) |
-| `except` | ✓ `not e`, or `allof (c1, …, not e1, …)`; with any-of conditions `allof (anyof (c1, …), not e1, …)`; an `anyof` holding a `not`, or nested lists, read as carried whole | ✓ `exceptions` (same predicates only) | ≈ `negatedQuery` |
-| Subject contains | ✓ `header :contains "subject"` | ✓ `subjectContains` | ≈ `subject` (word and phrase match, not substring) |
+| `Match` All / Any | ✓ `allof` / `anyof` | All ✓ (predicates ANDed; values in one predicate ORed, **unverified**; a second test of one kind ✗, `RuleLimit::OneTestPerKind`, since Graph would read the two as either); Any ✗ | All ✓; Any ✓ (`query` of terms joined by `OR`, alone); a native condition only among all-of ones (`NativeConditionsAllOf`) |
+| `except` | ✓ `not e`, or `allof (c1, …, not e1, …)`; with any-of conditions `allof (anyof (c1, …), not e1, …)`; an `anyof` holding a `not`, or nested lists, read as carried whole | ✓ `exceptions` (same predicates only) | ✓ `negatedQuery` of terms joined by `OR`; an approximated exception is lost (`ExactExceptions`), a native one is not held |
+| Subject contains | ✓ `header :contains "subject"` | ✓ `subjectContains` | ≈ `subject` as a word search, which matches less: as a condition only, lost as an exception (`ExactExceptions`) |
+| Subject, sender with name: words (`TextOp::Words`) | ✗ (no word match) | ✗ | ✓ `subject`, `from` (Gmail's own; read so) |
 | Subject is / glob / regex | ✓ `:is` / `:matches` / `:regex` (ext `regex`) | ✗ | ✗ |
 | Named header contains | ✓ `header :contains "X-…"` | ✗ (`headerContains` searches every header, which would widen the rule; read as `Native`) | ✗ |
-| From is / contains | ✓ `address :is` / `:contains "from"` | ✓ `fromAddresses` / `senderContains` | ≈ `from` (search semantics) |
+| From is / contains | ✓ `address :is` / `:contains "from"` | ✓ `fromAddresses` / `senderContains` | ✗: `from:` is a word search over the name too, which would widen it (changed from ≈, 2026-11-24) |
 | From domain | ✓ `address :domain` | ✗: `senderContains "@example.com"` also matches `example.com.evil.test` and `example.community`, which widens the condition (changed from ≈ in review, 2026-11-24) | ✗: `from:(@example.com)` is a word search, which matches `example.com.evil.test` too (changed from ≈ for the same reason as Graph, 2026-11-24) |
-| To / Cc / to-or-cc | ✓ `address ["to","cc"]` | to-or-cc ✓ `recipientContains`, `sentToAddresses`; `To` or `Cc` alone ✗ (`RuleLimit::RecipientsTogether`) | ≈ `to` (also matches Bcc) |
+| To / Cc / to-or-cc | ✓ `address ["to","cc"]` | to-or-cc ✓ `recipientContains`, `sentToAddresses`; `To` or `Cc` alone ✗ (`RuleLimit::RecipientsTogether`) | ✗: `to:` matches `Bcc` too, so it is read native and nothing typed is written as it (changed from ≈, 2026-11-24) |
 | Sent to me (to, cc, only, not) | ✗ for now (≈ address tests over the account's addresses, which the writer does not have) | ✓ `sentToMe`, `sentCcMe`, `sentOnlyToMe`, `notSentToMe`, `sentToOrCcMe` | ✗ for now: `to:me` matches every recipient field, so it is read as a native condition and not written |
 | Body contains | ✓ `body :text :contains` (ext `body`) | ✓ `bodyContains` | ✗: a search word in `query` also matches the subject and the senders, which widens the rule (changed from ≈, 2026-11-24) |
 | Subject or body | ✓ `anyof(header…, body…)` | ≈ `bodyOrSubjectContains`, read as `Native` (the model has no subject-or-body condition yet) and written back as it came | ✗ for now: a bare search word is read as a native condition |
@@ -855,18 +896,18 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 |---|---|---|---|
 | `FileInto` (move) | ✓ `fileinto`; by name, or `:mailboxid` (RFC 9042, survives a rename) where listed | ✓ `moveToFolder`, by id only: a Sieve rule names its folder by path, so a migration from Sieve to Graph maps each path to a folder id first, as it maps ids between accounts, or the rule's move is ✗; one move per rule (`RuleLimit::OneActionPerKind`) | ✓ add label + remove `INBOX` (one user label per filter) |
 | `FileInto { copy }` | ✓ `fileinto :copy` (ext `copy`, RFC 3894) | ✓ `copyToFolder` | ✓ add label, keep `INBOX` |
-| `FileInto { Role(Trash / Junk) }` | ✓ `:specialuse "\\Trash" "Trash"` (RFC 8579), the attribute's name as the fallback folder, for every role but the inbox (`"INBOX"`); ✗ where `special-use` is not listed (no fallback to a name alone) | ✓ `delete` for Trash; the well-known folder's id for Junk, Archive, Sent, Drafts | ✓ `TRASH` / `SPAM`; Archive is `INBOX` removed; Sent and Drafts ✗ (the writer refuses them, which the plan cannot yet see) |
+| `FileInto { Role(Trash / Junk) }` | ✓ `:specialuse "\\Trash" "Trash"` (RFC 8579), the attribute's name as the fallback folder, for every role but the inbox (`"INBOX"`); ✗ where `special-use` is not listed (no fallback to a name alone) | ✓ `delete` for Trash; the well-known folder's id for Junk, Archive, Sent, Drafts | ✓ `TRASH` / `SPAM`; Archive is `INBOX` removed; Sent, Drafts and a copy into a role ✗ (`TrashJunkArchiveOnly`) |
 | `Discard` | ✓ `discard` | ✓ `permanentDelete` | ≈ `TRASH` (recoverable) |
 | `Redirect` | ✓ `redirect` (`:copy` keeps it), one per address; a rule's addresses together bounded by `maxNumberRedirects` (two rules that each fit can exceed it for one message; the server enforces that on delivery) | ✓ `redirectTo`, which keeps a copy (`RedirectCopy`); without the copy ✗ | ≈ `forward`: one verified address, original sender kept |
 | `Forward` (as the account) | ≈ `redirect :copy` (From differs) | ✓ `forwardTo` | ≈ `forward` |
 | `AddKeywords` `$seen` / `$flagged` | ✓ `addflag "\\Seen"` / `"\\Flagged"` (ext `imap4flags`, RFC 5232) | ✓ `markAsRead` / ✗ (no flag action) | ✓ remove `UNREAD` / add `STARRED` |
-| `AddKeywords` named | ✓ `addflag "name"` | ≈ `assignCategories`; a category reads typed only where it is a keyword as written (lowercase, no space), else `Native` | ≈ hidden named label, where the host named one for the keyword (`KeywordName`); else ✗ |
-| Mark importance (`Action::MarkImportance`) | ≈ `addheader "Importance"` (ext `editheader`) | ✓ `markImportance` | ≈ high: add `IMPORTANT`; low: remove it ("never mark as important"); normal ✗ |
+| `AddKeywords` named | ✓ `addflag "name"` | ≈ `assignCategories`; a category reads typed only where it is a keyword as written (lowercase, no space), else `Native` | ≈ hidden named label, per keyword where the host named one for it (`KeywordName`, `RuleVocabulary::with_keywords`); else ✗; one user label per filter, a folder included (`OneFolderPerRule`) |
+| Mark importance (`Action::MarkImportance`) | ≈ `addheader "Importance"` (ext `editheader`) | ✓ `markImportance` | ≈ high: add `IMPORTANT`; low: remove it ("never mark as important"); normal ✗ (`ImportanceHighOrLow`) |
 | `Native`: forward as attachment | ✗ | ✓ `forwardAsAttachmentTo` | ✗ |
 | `stop` | ✓ `stop` | ✓ `stopProcessingRules` | ✗ (every filter applies) |
 | `enabled: false` | ✓ in the dialect, `if false # <test>` (a client that does not know it sees a rule that never runs); ✗ where a value of the test spans lines (`RuleFeature::DisabledMultiLine`): no comment holds it, and Roundcube reads `allof (false, …)` as a rule that runs (observed, the fixture README) | ✓ `isEnabled` | ✗ |
 | `name` | ✓ in the dialect, `# rule:[name]` (a comment to any other client) | ✓ `displayName` | ✗ |
-| Order | ✓ script order | ✓ `sequence` | ✗ |
+| Order | ✓ script order | ✓ `sequence` | ≈ every matching filter applies, and Gmail has no stop, so the label changes and forwards come out the same in any order (a stop is lost on its own) |
 
 ### Out-of-office
 
@@ -953,7 +994,10 @@ The owner approved each of these; the body of the note is written to match.
    active one, is named `rules` (section 3).
 4. **A Gmail filter's `query` is parsed for a small subset** (`from:`, `to:`, `subject:`,
    `has:attachment`, `larger:`) into typed conditions. Anything else stays `Native` and is
-   reported as not kept on a non-Gmail target (section 3).
+   reported as not kept on a non-Gmail target (section 3). As built (2026-11-24, with the owner):
+   `smaller:` too; `to:` stays native (it matches `Bcc`); `from:` and `subject:` read as a word
+   match of their own (`TextOp::Words`, the sender with its name), which no other target holds,
+   so such a rule is not kept elsewhere rather than carried wider or narrower.
 5. **A new crate, `engine-sieve`, holds a small hand-written segmenter** that splits a script at
    its top-level commands and understands nothing else. Stalwart's `sieve-rs` is AGPL, which the
    MPL engine cannot take. It is fuzzed beside the existing parsers (section 3, slice 2).
@@ -1165,8 +1209,8 @@ Captured, scrubbed, as `provider-graph/tests/fixtures/rules/`.
 **Settled for Gmail**, live against a throwaway personal Google account (2026-11-24): reads by
 `provider-google/tests/live_rules.rs`; writes by `live_rules_writes.rs` on filters of the test's own
 and `live_reply_writes.rs` on a reply put back byte for byte, every other filter left as it was.
-Captured as `provider-google/tests/fixtures/mail/settings_filters.json` and
-`settings_vacation_off.json`.
+Each claim below is asserted by those suites, not only printed. Captured as
+`provider-google/tests/fixtures/mail/settings_filters.json` and `settings_vacation_off.json`.
 
 - **No write lag.** A filter created or deleted, and a reply written, showed on the very next read,
   with no read flapping back, in every run. Neither receipt carries a version all the same: the
@@ -1174,34 +1218,37 @@ Captured as `provider-google/tests/fixtures/mail/settings_filters.json` and
 - **An empty list is `204` with no body.** `filters.list` and `forwardingAddresses.list` on an
   account with none answer `204 No Content`, not `{}`; the transport reads it as `null`.
 - **Gmail keeps a filter as sent**: criteria and actions read back exactly as created (any-of values
-  as `a OR b`, the exceptions as one `negatedQuery`, the size a number).
-- **What Gmail refuses**, each sent by hand once the engine's plan or writer had held it back: a
-  forward to an address not verified for forwarding (`400 failedPrecondition`), a filter adding two
-  of the user's labels (`400 invalidArgument`), a filter with no criteria (`400 invalidArgument`),
-  and a second filter identical to one it holds (`400 failedPrecondition`). The first is the
-  writer's check (`ForwardNotAllowed`); the second and third are `RuleLimit::OneFolderPerRule`
-  and `RuleLimit::SomeTest`, so the plan sees them; the fourth is why a change the filter does not
-  show (an `is` read back as `contains`) sends nothing.
-- **One body for the reply.** A reply written with both `responseBodyPlainText` and
-  `responseBodyHtml` reads back with the HTML alone: Gmail's vocabulary is `ReplyBodies::One`,
-  and a reply with both is refused before sending. A part left out of the `PUT` is cleared. The
-  window is kept to the millisecond, as written (start rounded up, end down). A reply never set
-  reads as `enableAutoReply: false`, an empty subject, and nothing else.
-- **A write never deletes a filter it does not replace.** A rule not written (not kept by the plan,
-  not placeable, refused) leaves the filter it was read as; Graph's writer, by contrast, removes the
-  rule a not-kept edit was read as (`RulesPlan`'s set is the set written), which is a follow-up to
-  reconcile.
+  as `a OR b`, the exceptions as one `negatedQuery`, the size a number), and a query and
+  `negatedQuery` bracketed as the writer brackets a native one, `(…) term` and `(…) OR term`, are
+  stored as sent. That the brackets group as a search does is Gmail's search documentation.
+- **What Gmail refuses**, each sent by hand once the engine had held it back: a forward to an
+  address not verified for forwarding (`400 failedPrecondition`; the writer's check,
+  `ForwardNotAllowed`), a filter adding two of the user's labels (`400 invalidArgument`;
+  `RuleLimit::OneFolderPerRule`), a filter with no criteria (`400 invalidArgument`;
+  `RuleLimit::SomeTest`), and a second filter identical to one it holds (`400 failedPrecondition`;
+  the writer keeps the one held and sends nothing, proven through the engine too). A filter whose
+  only criterion is a `negatedQuery` is stored: a rule with exceptions alone tests something.
+- **A plain size is bytes.** `larger:` and `smaller:` with a message's own size halved and doubled
+  find it above the one and below the other, through the same search a filter's query is.
+- **One body for the reply.** A reply sent by hand with both `responseBodyPlainText` and
+  `responseBodyHtml` reads back with the HTML alone: Gmail's vocabulary is `ReplyBodies::One`, and
+  a reply with both is refused before sending. A part left out of the `PUT` is cleared. The window
+  is kept to the millisecond, as written (start rounded up, end down). A reply never set reads as
+  `enableAutoReply: false`, an empty subject, and nothing else.
+- **An edit that is not kept leaves the filter as read**, and the receipt names it (section 4).
 
 **Follow-ups for Gmail.**
 
-- **Filing into Sent or Drafts, or a copy into a role**, is refused by the writer, which the plan
-  cannot yet see (no `RuleLimit` says it).
-- **Sent to me** (`to:me`) and a typed subject-or-body condition stay native for now; `larger:`
-  with a unit (`10M`) stays native until its bytes are pinned.
+- **Sent to me** (`to:me`), the recipients (`to:`), and a typed subject-or-body condition stay
+  native for now; `larger:` with a unit (`10M`) stays native until its bytes are pinned.
+- **A quoted `me`** is refused both ways (read native, never written) until a live search shows it
+  is a word rather than the account.
 - **`restrictToDomain` on a personal account** was not sent: the vocabulary keeps it to Workspace
-  accounts, read from `userinfo`, which a token without `userinfo.email` cannot ask.
-- **Whether `to:` matches Cc and Bcc** in a filter, and the word-match semantics generally, are
-  from Gmail's search documentation, not from delivered mail.
+  accounts, read from `userinfo`; a token that may not ask (`401`, `403`) gets the personal one.
+- **The word-match semantics** of a filter (what `from:` and `subject:` match, that brackets group)
+  are from Gmail's search documentation and the stored form, not from delivered mail.
+- **Two native parts with one key** (a host joining Gmail fragments by hand) are refused by the
+  writer, which the plan cannot see; a set read from Gmail never holds them.
 
 **Follow-ups for Graph.**
 

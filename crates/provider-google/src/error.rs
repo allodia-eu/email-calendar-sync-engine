@@ -157,10 +157,17 @@ impl GoogleError {
     pub(crate) fn optional_answer(
         result: Result<Option<Value>, Self>,
     ) -> Result<Option<Value>, ProviderError> {
+        Self::readable(result).map_err(Self::into_write_error)
+    }
+
+    /// A write's answer with a success whose body does not read taken as done, with no body: the
+    /// status already says the write was done. Failures stay as they are, for a caller that
+    /// classifies them itself.
+    pub(crate) fn readable(result: Result<Option<Value>, Self>) -> Result<Option<Value>, Self> {
         match result {
             // The transport makes this only from a success's body.
             Err(Self::Json(_)) => Ok(None),
-            other => other.map_err(Self::into_write_error),
+            other => other,
         }
     }
 

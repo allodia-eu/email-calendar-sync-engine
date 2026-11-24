@@ -1,25 +1,31 @@
 use engine_core::{
+    error::FailureClass,
     mail::{Keyword, MailboxRole},
-    rules::{Condition, Kept, Loss, LossReason, Match, RuleAddress, RuleMailbox, TextOp, TextTest},
+    rules::{
+        Action, Condition, FailedRule, Kept, Loss, LossReason, MailRule, Match, NativeAction,
+        NativeKind, RuleAddress, RuleBody, RuleMailbox, RulePart, RuleSet, RuleWriteFailure,
+        TextOp, TextTest,
+    },
 };
 use engine_provider::KeywordName;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::*;
 use crate::{
+    named_labels::NamedLabels,
     rules_fake::{Filters, client},
     rules_read::tests::{from, subject},
 };
 
-fn filter(id: &str, from: &str) -> Value {
-    json!({"id": id, "criteria": {"from": from}, "action": {"addLabelIds": ["TRASH"]}})
+fn filter(id: &str, subject: &str) -> Value {
+    json!({"id": id, "criteria": {"subject": subject}, "action": {"addLabelIds": ["TRASH"]}})
 }
 
 fn three() -> Filters {
     Filters::holding(vec![
-        filter("a", "one@example.com"),
-        filter("b", "two@example.com"),
-        filter("c", "three@example.com"),
+        filter("a", "one"),
+        filter("b", "two"),
+        filter("c", "three"),
     ])
 }
 
@@ -34,6 +40,26 @@ async fn read(client: &GoogleClient) -> RuleSet {
         .rule_set(&NamedLabels::default())
 }
 
+/// What the filter of `subject` that trashes reads as.
+fn trash(subject_value: &str) -> RuleBody {
+    MailRule::typed(
+        Match::all(vec![subject(&[subject_value])]),
+        vec![Action::FileInto {
+            mailbox: RuleMailbox::Role(MailboxRole::Trash),
+            copy: false,
+        }],
+    )
+    .body
+}
+
+fn discard(subject_value: &str) -> RuleBody {
+    MailRule::typed(
+        Match::all(vec![subject(&[subject_value])]),
+        vec![Action::Discard],
+    )
+    .body
+}
+
 fn forward(rule: &MailRule, to: &str) -> MailRule {
     let mut rule = rule.clone();
     if let RuleBody::Typed(typed) = &mut rule.body {
@@ -45,6 +71,10 @@ fn forward(rule: &MailRule, to: &str) -> MailRule {
     rule
 }
 
+fn writes(state: &std::sync::Mutex<Filters>) -> Vec<(&'static str, String)> {
+    state.lock().unwrap().writes.clone()
+}
+
 #[tokio::test]
 async fn a_set_written_back_as_read_sends_nothing() {
     let (client, state) = client(three());
@@ -52,8 +82,9 @@ async fn a_set_written_back_as_read_sends_nothing() {
     let receipt = replace(&client, &no_names(), &base, &base.rules)
         .await
         .unwrap();
-    assert_eq!(state.lock().unwrap().writes.len(), 0);
-    assert_eq!(receipt.failures.len(), 0);
+    assert_eq!(writes(&state), Vec::new());
+    assert_eq!(receipt.failures, Vec::new());
+    assert_eq!(receipt.left_as_read, Vec::<usize>::new());
     assert!(receipt.version.is_none());
 }
 
@@ -64,16 +95,14 @@ async fn a_changed_rule_is_created_before_the_filter_it_replaces_is_deleted() {
     let (client, state) = client(three());
     let base = read(&client).await;
     let mut rules = base.rules.clone();
-    rules[1].body =
-        MailRule::typed(Match::all(vec![subject(&["new"])]), vec![Action::Discard]).body;
+    rules[1].body = discard("new");
     let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
-    let state = state.lock().unwrap();
     assert_eq!(
-        state.writes,
+        writes(&state),
         [("POST", "new".to_owned()), ("DELETE", "b".to_owned())]
     );
-    assert_eq!(state.ids(), ["a", "c", "new4"]);
-    assert_eq!(receipt.failures.len(), 0);
+    assert_eq!(state.lock().unwrap().ids(), ["a", "c", "new4"]);
+    assert_eq!(receipt.failures, Vec::new());
 }
 
 #[tokio::test]
@@ -83,8 +112,7 @@ async fn a_failed_create_keeps_the_filter_it_was_to_replace() {
     let (client, state) = client(filters);
     let base = read(&client).await;
     let mut rules = base.rules.clone();
-    rules[0].body =
-        MailRule::typed(Match::all(vec![subject(&["new"])]), vec![Action::Discard]).body;
+    rules[0].body = discard("new");
     let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
     assert_eq!(state.lock().unwrap().ids(), ["a", "b", "c"]);
     assert_eq!(
@@ -100,10 +128,11 @@ async fn a_failed_create_keeps_the_filter_it_was_to_replace() {
             .losses
             .contains(&Loss::new(RulePart::Rule, LossReason::NotWritten))
     );
+    assert_eq!(receipt.left_as_read, [0]);
 }
 
 /// A rule edited into something Gmail cannot hold is not written, and the filter it was read as
-/// is not deleted for it: the write never removes a rule it then refuses to write.
+/// is not deleted for it: the edit did not apply, which the receipt says, and is no failure.
 #[tokio::test]
 async fn a_rule_gmail_cannot_hold_leaves_the_filter_it_was_read_as() {
     let (client, state) = client(three());
@@ -114,7 +143,7 @@ async fn a_rule_gmail_cannot_hold_leaves_the_filter_it_was_read_as() {
         test: TextTest::new(TextOp::Regex, vec!["^x".to_owned()]).unwrap(),
     };
     rules[0].body = MailRule::typed(Match::all(vec![regex]), vec![Action::Discard]).body;
-    // A role Gmail keeps as no label: the plan lets it through, the writer cannot place it.
+    // Filing into Sent, which the plan refuses too.
     rules[1].body = MailRule::typed(
         Match::all(vec![from(&["x"])]),
         vec![Action::FileInto {
@@ -124,16 +153,11 @@ async fn a_rule_gmail_cannot_hold_leaves_the_filter_it_was_read_as() {
     )
     .body;
     let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
-    assert_eq!(state.lock().unwrap().writes.len(), 0);
-    assert_eq!(
-        receipt.failures,
-        [
-            RuleWriteFailure::new(FailedRule::Written(0), FailureClass::Permanent),
-            RuleWriteFailure::new(FailedRule::Written(1), FailureClass::Permanent),
-        ]
-    );
+    assert_eq!(writes(&state), Vec::new());
+    assert_eq!(receipt.failures, Vec::new());
     assert_eq!(receipt.outcomes[0].kept, Kept::NotKept);
     assert_eq!(receipt.outcomes[1].kept, Kept::NotKept);
+    assert_eq!(receipt.left_as_read, [0, 1]);
 }
 
 #[tokio::test]
@@ -150,16 +174,15 @@ async fn filters_left_out_are_deleted_last_and_one_already_gone_is_done() {
         vec![Action::Discard],
     ));
     let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
-    let state = state.lock().unwrap();
     assert_eq!(
-        state.writes,
+        writes(&state),
         [
             ("POST", "new".to_owned()),
             ("DELETE", "b".to_owned()),
             ("DELETE", "c".to_owned()),
         ]
     );
-    assert_eq!(state.ids(), ["a", "b", "c", "new4"]);
+    assert_eq!(state.lock().unwrap().ids(), ["a", "b", "c", "new4"]);
     assert_eq!(
         receipt.failures,
         [RuleWriteFailure::new(
@@ -176,8 +199,7 @@ async fn an_old_filter_that_will_not_go_stays_beside_its_replacement_and_says_so
     let (client, state) = client(filters);
     let base = read(&client).await;
     let mut rules = base.rules.clone();
-    rules[0].body =
-        MailRule::typed(Match::all(vec![subject(&["new"])]), vec![Action::Discard]).body;
+    rules[0].body = discard("new");
     let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
     assert_eq!(state.lock().unwrap().ids(), ["a", "b", "c", "new4"]);
     assert_eq!(
@@ -188,6 +210,8 @@ async fn an_old_filter_that_will_not_go_stays_beside_its_replacement_and_says_so
         )]
     );
     assert_eq!(receipt.outcomes[0].kept, Kept::Reduced);
+    let beside = Loss::new(RulePart::Rule, LossReason::LeftBeside);
+    assert!(receipt.outcomes[0].losses.contains(&beside));
 }
 
 #[tokio::test]
@@ -206,20 +230,17 @@ async fn a_base_not_read_or_moved_since_is_refused_before_anything_is_sent() {
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::Permanent);
 
-    state
-        .lock()
-        .unwrap()
-        .list
-        .push(filter("d", "four@example.com"));
+    state.lock().unwrap().list.push(filter("d", "four"));
     let err = replace(&client, &no_names(), &base, &base.rules)
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::Conflict);
-    assert_eq!(state.lock().unwrap().writes.len(), 0);
+    assert_eq!(writes(&state), Vec::new());
 }
 
-/// Gmail forwards only to an address it has verified: a forward to any other is lost before
-/// anything is sent, and the addresses are asked once per write, only where a rule forwards.
+/// Gmail forwards only to an address it has verified: a forward to any other, typed or Gmail's
+/// own, is lost before anything is sent, and the addresses are asked once per write, only where a
+/// rule forwards.
 #[tokio::test]
 async fn a_forward_to_an_unverified_address_is_not_allowed() {
     let mut filters = three();
@@ -232,18 +253,16 @@ async fn a_forward_to_an_unverified_address_is_not_allowed() {
     let mut rules = base.rules.clone();
     rules[0] = forward(&rules[0], "kept@example.net");
     rules[1] = forward(&rules[1], "pending@example.net");
-    let only = MailRule::typed(
-        Match::all(vec![from(&["x"])]),
-        vec![Action::Forward {
-            to: vec![RuleAddress::new("nobody@example.net").unwrap()],
-        }],
-    );
-    rules[2].body = only.body;
+    let native = Action::Native(NativeAction::new(
+        NativeKind::Gmail,
+        r#"{"forward":"nobody@example.net"}"#,
+    ));
+    rules[2].body = MailRule::typed(Match::all(vec![from(&["x"])]), vec![native]).body;
     let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
     let state = state.lock().unwrap();
     assert_eq!(state.forwarding_reads, 1);
     // The verified forward is written; the pending one loses its forward, which leaves the
-    // filter it was read as, unsent; the third had nothing else to do, so its filter stays too.
+    // filter it was read as, unsent; the third, Gmail's own, had nothing else to do.
     assert_eq!(state.ids(), ["b", "c", "new4"]);
     let forwards: Vec<Option<&str>> = state
         .list
@@ -252,22 +271,13 @@ async fn a_forward_to_an_unverified_address_is_not_allowed() {
         .collect();
     assert_eq!(forwards, [None, None, Some("kept@example.net")]);
     assert_eq!(receipt.outcomes[1].kept, Kept::Reduced);
-    assert!(receipt.outcomes[1].losses.contains(&Loss::new(
-        RulePart::Action(1),
-        LossReason::ForwardNotAllowed
-    )));
+    let held_back = Loss::new(RulePart::Action(1), LossReason::ForwardNotAllowed);
+    assert!(receipt.outcomes[1].losses.contains(&held_back));
     assert_eq!(receipt.outcomes[2].kept, Kept::NotKept);
-    assert!(receipt.outcomes[2].losses.contains(&Loss::new(
-        RulePart::Action(0),
-        LossReason::ForwardNotAllowed
-    )));
-    assert_eq!(
-        receipt.failures,
-        [RuleWriteFailure::new(
-            FailedRule::Written(2),
-            FailureClass::Permanent
-        )]
-    );
+    let held_back = Loss::new(RulePart::Action(0), LossReason::ForwardNotAllowed);
+    assert!(receipt.outcomes[2].losses.contains(&held_back));
+    assert_eq!(receipt.failures, Vec::new());
+    assert_eq!(receipt.left_as_read, [2]);
 }
 
 #[tokio::test]
@@ -281,7 +291,7 @@ async fn forwarding_addresses_that_cannot_be_asked_leave_the_rule_unwritten() {
     let mut rules = base.rules.clone();
     rules[0] = forward(&rules[0], "kept@example.net");
     let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
-    assert_eq!(state.lock().unwrap().writes.len(), 0);
+    assert_eq!(writes(&state), Vec::new());
     assert_eq!(
         receipt.failures,
         [RuleWriteFailure::new(
@@ -289,39 +299,67 @@ async fn forwarding_addresses_that_cannot_be_asked_leave_the_rule_unwritten() {
             FailureClass::Retryable
         )]
     );
+    assert_eq!(receipt.left_as_read, [0]);
+}
+
+fn work_labels() -> Labels {
+    Labels::new(vec![
+        KeywordName::new(Keyword::new("$work").unwrap(), "Work tag").unwrap(),
+    ])
+}
+
+fn tagged() -> MailRule {
+    MailRule::typed(
+        Match::all(vec![from(&["a"])]),
+        vec![Action::AddKeywords([Keyword::new("$work").unwrap()].into())],
+    )
 }
 
 #[tokio::test]
 async fn a_keyword_is_filed_under_the_label_named_for_it_made_where_missing() {
     let (client, state) = client(Filters::default());
     let base = read(&client).await;
-    let work = Keyword::new("$work").unwrap();
-    let labels = Labels::new(vec![KeywordName::new(work.clone(), "Work tag").unwrap()]);
-    let rule = MailRule::typed(
-        Match::all(vec![from(&["a"])]),
-        vec![Action::AddKeywords([work].into())],
-    );
-    let receipt = replace(&client, &labels, &base, &[rule]).await.unwrap();
-    assert_eq!(receipt.failures.len(), 0);
+    let receipt = replace(&client, &work_labels(), &base, &[tagged()])
+        .await
+        .unwrap();
+    assert_eq!(receipt.failures, Vec::new());
     let state = state.lock().unwrap();
     assert_eq!(state.labels[0]["name"], "Work tag");
     assert_eq!(state.list[0]["action"]["addLabelIds"], json!(["Label_900"]));
 }
 
-/// Gmail refuses a filter identical to one it holds (observed): a change the filter does not show
-/// keeps the filter and sends nothing.
+/// A label made for a keyword of a filter Gmail then did not store is removed again: no orphan.
+#[tokio::test]
+async fn a_label_made_for_a_filter_not_stored_is_removed() {
+    let mut filters = Filters::default();
+    filters.failing.insert(("POST", "new".to_owned()), 400);
+    let (client, state) = client(filters);
+    let base = read(&client).await;
+    let receipt = replace(&client, &work_labels(), &base, &[tagged()])
+        .await
+        .unwrap();
+    assert_eq!(receipt.outcomes[0].kept, Kept::NotKept);
+    let state = state.lock().unwrap();
+    assert_eq!(state.labels.len(), 0);
+    assert!(
+        state
+            .writes
+            .contains(&("DELETE label", "Label_900".to_owned()))
+    );
+}
+
+/// Gmail refuses a filter identical to one it holds (observed): a change the filter does not
+/// show keeps the filter and sends nothing.
 #[tokio::test]
 async fn a_change_the_filter_does_not_show_sends_nothing() {
     let (client, state) = client(three());
     let base = read(&client).await;
     let mut rules = base.rules.clone();
-    let is = Condition::Address {
-        field: engine_core::rules::AddressField::From,
-        part: engine_core::rules::AddressPart::All,
-        test: TextTest::new(TextOp::Is, vec!["one@example.com".to_owned()]).unwrap(),
-    };
     rules[0].body = MailRule::typed(
-        Match::all(vec![is]),
+        Match::all(vec![Condition::Header {
+            field: engine_core::rules::HeaderField::Subject,
+            test: TextTest::new(TextOp::Contains, vec!["one".to_owned()]).unwrap(),
+        }]),
         vec![Action::FileInto {
             mailbox: RuleMailbox::Role(MailboxRole::Trash),
             copy: false,
@@ -330,6 +368,74 @@ async fn a_change_the_filter_does_not_show_sends_nothing() {
     .body;
     assert_ne!(rules[0], base.rules[0]);
     let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
-    assert_eq!(state.lock().unwrap().writes.len(), 0);
-    assert_eq!(receipt.failures.len(), 0);
+    assert_eq!(writes(&state), Vec::new());
+    assert_eq!(receipt.failures, Vec::new());
+}
+
+/// A rule a host built that Gmail already holds as a filter takes that filter: nothing is sent,
+/// and the filter is not deleted as one no rule names.
+#[tokio::test]
+async fn a_built_rule_gmail_already_holds_keeps_that_filter() {
+    let (client, state) = client(three());
+    let base = read(&client).await;
+    let mut built = MailRule::typed(Match::all(Vec::new()), Vec::new());
+    built.body = trash("two");
+    let rules = vec![base.rules[0].clone(), base.rules[2].clone(), built];
+    let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
+    assert_eq!(writes(&state), Vec::new());
+    assert_eq!(state.lock().unwrap().ids(), ["a", "b", "c"]);
+    assert_eq!(receipt.failures, Vec::new());
+    assert_eq!(receipt.outcomes[2].kept, Kept::Whole);
+}
+
+/// A rule edited into a copy of another filter: where that filter's own rule is left out, the
+/// edit takes it, and the filter it was read as goes; where it is still there, the edit is held by
+/// it already. Either way no duplicate is sent, and nothing a rule asks for is removed.
+#[tokio::test]
+async fn a_rule_edited_into_a_copy_of_another_sends_no_duplicate() {
+    let (first, state) = client(three());
+    let base = read(&first).await;
+    let mut alone = vec![base.rules[0].clone(), base.rules[2].clone()];
+    alone[0].body = trash("two");
+    let receipt = replace(&first, &no_names(), &base, &alone).await.unwrap();
+    assert_eq!(writes(&state), [("DELETE", "a".to_owned())]);
+    assert_eq!(state.lock().unwrap().ids(), ["b", "c"]);
+    assert_eq!(receipt.failures, Vec::new());
+
+    let (gmail, state) = client(three());
+    let base = read(&gmail).await;
+    let mut both = base.rules.clone();
+    both[0].body = trash("two");
+    let receipt = replace(&gmail, &no_names(), &base, &both).await.unwrap();
+    assert_eq!(writes(&state), [("DELETE", "a".to_owned())]);
+    assert_eq!(state.lock().unwrap().ids(), ["b", "c"]);
+    assert_eq!(receipt.failures, Vec::new());
+}
+
+/// Two rules built alike: the first is created, the second is held by it, never sent twice.
+#[tokio::test]
+async fn two_built_rules_alike_are_created_once() {
+    let (client, state) = client(Filters::default());
+    let base = read(&client).await;
+    let rule = MailRule::typed(Match::all(vec![subject(&["x"])]), vec![Action::Discard]);
+    let receipt = replace(&client, &no_names(), &base, &[rule.clone(), rule])
+        .await
+        .unwrap();
+    assert_eq!(writes(&state), [("POST", "new".to_owned())]);
+    assert_eq!(receipt.failures, Vec::new());
+}
+
+/// A create answered with a success whose body does not read was done: the status says so, and
+/// the filter it replaces goes as after any create.
+#[tokio::test]
+async fn a_create_whose_answer_does_not_read_was_done() {
+    let mut filters = three();
+    filters.unreadable_create = true;
+    let (client, state) = client(filters);
+    let base = read(&client).await;
+    let mut rules = base.rules.clone();
+    rules[0].body = discard("new");
+    let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
+    assert_eq!(receipt.failures, Vec::new());
+    assert_eq!(state.lock().unwrap().ids(), ["b", "c", "new4"]);
 }

@@ -63,6 +63,7 @@ mod quota;
 mod report;
 mod rules;
 mod rules_apply;
+mod rules_apply_support;
 mod rules_query;
 mod rules_read;
 mod rules_write;

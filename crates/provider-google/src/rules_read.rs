@@ -4,8 +4,9 @@
 //! all-of, except a `query` written wholly as terms joined by ` OR ` beside no other criterion,
 //! which is an any-of rule. A `negatedQuery` vetoes the filter where it matches, so where it is
 //! terms joined by ` OR ` they are the rule's exceptions. What the search subset does not read
-//! (`crate::rules_query`) stays whole, as one native condition per criterion; so does
-//! `excludeChats`, which narrows what a filter matches and has no neutral counterpart.
+//! (`crate::rules_query`) stays whole, as one native condition per criterion; so does `to`, which
+//! matches every recipient (`Bcc` too) as no typed condition does, and `excludeChats`, which
+//! narrows what a filter matches and has no neutral counterpart.
 //!
 //! The actions are label changes and a forward:
 //!
@@ -45,11 +46,7 @@ use crate::{
 type MakeTerm = fn(Vec<String>) -> Term;
 
 /// The criteria whose values are a search the subset may read, and the term each is.
-const FIELDS: [(&str, MakeTerm); 3] = [
-    ("from", Term::From),
-    ("to", Term::To),
-    ("subject", Term::Subject),
-];
+const FIELDS: [(&str, MakeTerm); 2] = [("from", Term::From), ("subject", Term::Subject)];
 
 /// The rule the filter `value` at `index` of the listing whose fingerprint is `set` is.
 pub(crate) fn rule(value: &Value, set: u64, index: usize, named: &NamedLabels) -> MailRule {
@@ -136,7 +133,6 @@ fn when(criteria: &Map<String, Value>) -> Match {
         let known = matches!(
             key.as_str(),
             "from"
-                | "to"
                 | "subject"
                 | "hasAttachment"
                 | "size"

@@ -4,9 +4,8 @@ use engine_core::{
     ids::MailboxId,
     mail::{Importance, Keyword, MailboxRole, SystemKeyword},
     rules::{
-        Action, AddressField, AddressPart, Condition, HeaderField, MailRule, Match, NativeAction,
-        NativeCondition, NativeKind, RawRule, RuleAddress, RuleMailbox, RulePart, RuleSyntax,
-        SizeBound, TextOp, TextTest,
+        Action, Condition, HeaderField, MailRule, Match, NativeAction, NativeCondition, NativeKind,
+        RawRule, RuleAddress, RuleMailbox, RulePart, RuleSyntax, SizeBound, TextOp, TextTest,
     },
 };
 use serde_json::{Value, json};
@@ -14,7 +13,7 @@ use serde_json::{Value, json};
 use super::*;
 use crate::rules_read::{
     self,
-    tests::{contains, from, named, subject},
+    tests::{from, named, subject},
 };
 
 fn labels() -> BTreeMap<Keyword, String> {
@@ -62,16 +61,10 @@ fn native(raw: &str) -> Condition {
 
 #[test]
 fn every_typed_part_is_read_back_as_it_was_written() {
-    let recipients = Condition::Address {
-        field: AddressField::ToOrCc,
-        part: AddressPart::All,
-        test: contains(&["team@example.org"]),
-    };
     let rules = [
         MailRule::typed(
             Match::all(vec![
                 from(&["a@example.com", "b c"]),
-                recipients,
                 subject(&["status"]),
                 Condition::HasAttachment,
                 Condition::Size(SizeBound::Under(400)),
@@ -85,7 +78,6 @@ fn every_typed_part_is_read_back_as_it_was_written() {
                 keywords(&[
                     Keyword::system(SystemKeyword::Seen),
                     Keyword::system(SystemKeyword::Flagged),
-                    Keyword::new("$work").unwrap(),
                 ]),
                 Action::MarkImportance(Importance::Low),
                 Action::Redirect {
@@ -121,7 +113,10 @@ fn every_typed_part_is_read_back_as_it_was_written() {
         ),
         MailRule::typed(
             Match::all(vec![subject(&["x"])]),
-            vec![into_role(MailboxRole::Archive, false)],
+            vec![
+                into_role(MailboxRole::Archive, false),
+                keywords(&[Keyword::new("$work").unwrap()]),
+            ],
         ),
         MailRule::typed(
             Match::all(vec![subject(&["x"])]),
@@ -177,17 +172,63 @@ fn native_parts_are_put_back_as_they_were_read() {
     assert_eq!(write(&read_back(&filter)), filter);
 }
 
-/// What the plan cannot see, and the writer must not write: the caller keeps the filter the rule
-/// was read as.
+/// A typed condition that finds its criterion taken goes into the search, after a native one held
+/// there in brackets, so that it stays one term; the exceptions likewise, after a native
+/// `negatedQuery`. A native `hasAttachment` is never overwritten.
+#[test]
+fn a_typed_condition_beside_a_native_search_goes_after_it_in_brackets() {
+    let rule = MailRule::typed(
+        Match::all(vec![
+            from(&["a"]),
+            native(r#"{"query":"invoice OR receipt"}"#),
+            from(&["b"]),
+            native(r#"{"negatedQuery":"x y"}"#),
+            native(r#"{"hasAttachment":"maybe"}"#),
+            Condition::HasAttachment,
+        ])
+        .except(vec![subject(&["z"])]),
+        vec![Action::Discard],
+    );
+    assert_eq!(
+        write(&rule),
+        json!({
+            "criteria": {
+                "from": "a",
+                "query": "(invoice OR receipt) from:b has:attachment",
+                "negatedQuery": "(x y) OR subject:z",
+                "hasAttachment": "maybe",
+            },
+            "action": { "addLabelIds": ["TRASH"] },
+        })
+    );
+    // A native `from` holds the field: the typed one goes into the search.
+    let me = MailRule::typed(
+        Match::all(vec![from(&["a"]), native(r#"{"from":"me"}"#)]),
+        vec![Action::Discard],
+    );
+    assert_eq!(
+        write(&me)["criteria"],
+        json!({"from": "me", "query": "from:a"})
+    );
+}
+
+/// What the writer refuses: each a part the plan refuses first (Gmail's vocabulary and its
+/// limits), and the few it cannot see (two native parts with one key, another provider's own
+/// part). The caller keeps the filter the rule was read as.
 #[test]
 fn what_gmail_cannot_hold_as_said_names_its_part() {
     let rule = MailRule::typed;
-    let quote = TextTest::new(TextOp::Contains, vec!["say \"hi\"".to_owned()]).unwrap();
+    let quote = TextTest::new(TextOp::Words, vec!["say \"hi\"".to_owned()]).unwrap();
     let quoted = Condition::Header {
         field: HeaderField::Subject,
         test: quote,
     };
     let x = || Match::all(vec![subject(&["x"])]);
+    let forward = |to: &str| Action::Forward { to: address(to) };
+    let native_forward = Action::Native(NativeAction::new(
+        NativeKind::Gmail,
+        r#"{"forward":"b@example.com"}"#,
+    ));
     let cases = [
         (
             rule(x(), vec![into_role(MailboxRole::Trash, true)]),
@@ -214,17 +255,6 @@ fn what_gmail_cannot_hold_as_said_names_its_part() {
         ),
         (
             rule(
-                Match::all(vec![
-                    native(r#"{"query":"invoice"}"#),
-                    from(&["a"]),
-                    from(&["b"]),
-                ]),
-                vec![Action::Discard],
-            ),
-            RulePart::Condition(2),
-        ),
-        (
-            rule(
                 Match::any(vec![native(r#"{"query":"x"}"#), from(&["a"])]),
                 vec![Action::Discard],
             ),
@@ -232,10 +262,10 @@ fn what_gmail_cannot_hold_as_said_names_its_part() {
         ),
         (
             rule(
-                Match::all(vec![native(r#"{"negatedQuery":"x"}"#)]).except(vec![from(&["a"])]),
+                Match::all(vec![native(r#"{"query":"x"}"#), native(r#"{"query":"y"}"#)]),
                 vec![Action::Discard],
             ),
-            RulePart::Exception(0),
+            RulePart::Condition(1),
         ),
         (
             rule(
@@ -258,9 +288,7 @@ fn what_gmail_cannot_hold_as_said_names_its_part() {
             rule(
                 x(),
                 vec![
-                    Action::Forward {
-                        to: address("a@example.com"),
-                    },
+                    forward("a@example.com"),
                     Action::Redirect {
                         to: address("b@example.com"),
                         copy: true,
@@ -268,6 +296,25 @@ fn what_gmail_cannot_hold_as_said_names_its_part() {
                 ],
             ),
             RulePart::Action(1),
+        ),
+        // A typed forward and Gmail's own: a second forward is refused, never one dropped.
+        (
+            rule(x(), vec![forward("a@example.com"), native_forward.clone()]),
+            RulePart::Action(1),
+        ),
+        (
+            rule(x(), vec![native_forward, forward("a@example.com")]),
+            RulePart::Action(1),
+        ),
+        (
+            rule(
+                x(),
+                vec![Action::Native(NativeAction::new(
+                    NativeKind::Gmail,
+                    r#"{"forward":1}"#,
+                ))],
+            ),
+            RulePart::Action(0),
         ),
     ];
     for (rule, part) in cases {

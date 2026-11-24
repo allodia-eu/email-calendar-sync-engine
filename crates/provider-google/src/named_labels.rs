@@ -214,36 +214,60 @@ impl Labels {
         }
     }
 
-    /// The id of the label standing for `keyword`, made where the account has none yet, or
-    /// `None` where the host registered no name for it (`crate::rules_apply` files a filter's
-    /// keyword under it).
+    /// The id of the label standing for `keyword`, and whether it was made just now because the
+    /// account had none, or `None` where the host registered no name for it (`crate::rules_apply`
+    /// files a filter's keyword under it, and removes a label it made for a filter it then did not
+    /// store).
     pub(crate) async fn label_id(
         &self,
         client: &GoogleClient,
         keyword: &Keyword,
-    ) -> Option<Result<String, GoogleError>> {
+    ) -> Option<Result<(String, bool), GoogleError>> {
         let named = self.names.iter().find(|named| named.keyword() == keyword)?;
-        Some(self.label_for(client, named).await)
+        Some(self.label_made(client, named).await)
     }
 
-    /// Whether any keyword has a name registered, so a filter can add one.
-    pub(crate) fn any(&self) -> bool {
-        !self.names.is_empty()
+    /// The keywords a name is registered for, which a filter can add.
+    pub(crate) fn keywords(&self) -> BTreeSet<Keyword> {
+        self.names
+            .iter()
+            .map(|named| named.keyword().clone())
+            .collect()
+    }
+
+    /// Deletes the label `id`, made for a filter not stored after all, and forgets it.
+    pub(crate) async fn unmake(&self, client: &GoogleClient, id: &str) -> Result<(), GoogleError> {
+        client
+            .delete(&client.url(&format!("{LABELS}/{id}")), None)
+            .await?;
+        if let Some(known) = self.known().as_mut() {
+            known.0.remove(id);
+        }
+        Ok(())
     }
 
     /// The id of the label standing for `named`: one the account has under any of its names,
-    /// else one created under [`KeywordName::create_as`]. A create another device won by a
-    /// moment (`409`) reads the list again.
+    /// else one created under [`KeywordName::create_as`].
     async fn label_for(
         &self,
         client: &GoogleClient,
         named: &KeywordName,
     ) -> Result<String, GoogleError> {
+        Ok(self.label_made(client, named).await?.0)
+    }
+
+    /// [`label_for`](Self::label_for), and whether the label was made just now. A create another
+    /// device won by a moment (`409`) reads the list again, and made nothing.
+    async fn label_made(
+        &self,
+        client: &GoogleClient,
+        named: &KeywordName,
+    ) -> Result<(String, bool), GoogleError> {
         if let Some(id) = self.resolved(client).await?.id_for(named.keyword()) {
-            return Ok(id.to_owned());
+            return Ok((id.to_owned(), false));
         }
         if let Some(id) = self.reread(client).await?.id_for(named.keyword()) {
-            return Ok(id.to_owned());
+            return Ok((id.to_owned(), false));
         }
         let body = json!({
             "name": named.create_as(),
@@ -268,14 +292,14 @@ impl Labels {
                     .get_or_insert_with(NamedLabels::default)
                     .0
                     .insert(id.clone(), named.keyword().clone());
-                Ok(id)
+                Ok((id, true))
             }
             Ok(None) => Err(GoogleError::protocol("labels.create answered no body")),
             Err(GoogleError::Status { status: 409, .. }) => self
                 .reread(client)
                 .await?
                 .id_for(named.keyword())
-                .map(str::to_owned)
+                .map(|id| (id.to_owned(), false))
                 .ok_or_else(|| GoogleError::protocol("a label conflicted and is not listed")),
             Err(other) => Err(other),
         }

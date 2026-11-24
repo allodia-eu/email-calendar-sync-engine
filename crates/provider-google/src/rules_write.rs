@@ -1,15 +1,17 @@
 //! A neutral rule written as a Gmail filter (`filters-and-out-of-office.md`, §5), the inverse of
 //! `crate::rules_read`.
 //!
-//! `plan_rules` has already decided what the Gmail vocabulary holds. Conditions go into the
-//! criteria Gmail has for them (`from`, `to`, `subject`, `hasAttachment`, `size`), and a second
-//! one of a kind into `query` as a search term; any-of conditions are one `query` of terms joined
-//! by ` OR `, and the exceptions one `negatedQuery`. A native part puts its own keys back.
+//! `plan_rules` has already decided what the Gmail vocabulary holds, limits included (one user
+//! label, a phrase for every value, a native condition only among all-of conditions, roles only
+//! Trash, Junk and the archive, importance high or low, one forward): the writer is not where
+//! those are found. A native part puts its own keys back first. Then each condition goes into the
+//! criterion Gmail has for it (`from`, `subject`, `hasAttachment`, `size`) where that is free, and
+//! otherwise into `query` as a search term, after a native query held there in brackets;
+//! any-of conditions are one `query` of terms joined by ` OR `, and the exceptions one
+//! `negatedQuery`, after a native one held there in brackets.
 //!
-//! A few things are finer than the plan's grain, and this writer is where they are found: a value
-//! holding a double quote or a line break, which no search term spells; a native part whose key a
-//! typed part also writes; a role Gmail keeps as no label to file into (Sent, Drafts), or a copy
-//! into a role; an importance neither high nor low; a keyword no label was named for. The writer
+//! What the plan cannot see: two native parts with one key (a host joining provider fragments by
+//! hand; a set read from Gmail never holds them), and a native part not as Gmail's JSON. The writer
 //! names the part ([`RulePart`]), never its value, and the caller writes nothing for the rule and
 //! keeps the filter it was read as.
 
@@ -37,8 +39,13 @@ pub(crate) fn filter(
         return Err(RulePart::Rule);
     };
     let mut criteria = Map::new();
-    let mut query = Vec::new();
     let when = &typed.when;
+    // A native part first: it holds its own keys, and a typed condition goes where it can.
+    for (i, condition) in when.conditions.iter().enumerate() {
+        if let Condition::Native(native) = condition {
+            native_keys(&mut criteria, native.kind, &native.raw).ok_or(RulePart::Condition(i))?;
+        }
+    }
     if when.mode == MatchMode::Any && when.conditions.len() > 1 {
         let mut terms = Vec::new();
         for (i, condition) in when.conditions.iter().enumerate() {
@@ -46,16 +53,15 @@ pub(crate) fn filter(
         }
         criteria.insert("query".to_owned(), json!(terms.join(" OR ")));
     } else {
-        let mut first_term = None;
+        let mut query = Vec::new();
         for (i, condition) in when.conditions.iter().enumerate() {
-            let held = query.len();
-            criterion(&mut criteria, &mut query, condition).ok_or(RulePart::Condition(i))?;
-            if query.len() > held {
-                first_term.get_or_insert(i);
+            if !matches!(condition, Condition::Native(_)) {
+                criterion(&mut criteria, &mut query, condition).ok_or(RulePart::Condition(i))?;
             }
         }
-        if let Some(at) = first_term {
-            put(&mut criteria, "query", json!(query.join(" "))).ok_or(RulePart::Condition(at))?;
+        if !query.is_empty() {
+            let joined = after_native(&criteria, "query", &query, " ").ok_or(RulePart::Mode)?;
+            criteria.insert("query".to_owned(), json!(joined));
         }
     }
     if !when.except.is_empty() {
@@ -63,8 +69,9 @@ pub(crate) fn filter(
         for (i, exception) in when.except.iter().enumerate() {
             terms.push(term(exception).ok_or(RulePart::Exception(i))?);
         }
-        put(&mut criteria, "negatedQuery", json!(terms.join(" OR ")))
+        let joined = after_native(&criteria, "negatedQuery", &terms, " OR ")
             .ok_or(RulePart::Exception(0))?;
+        criteria.insert("negatedQuery".to_owned(), json!(joined));
     }
     let mut action = Labels::default();
     for (i, act) in typed.actions.iter().enumerate() {
@@ -77,6 +84,22 @@ fn term(condition: &Condition) -> Option<String> {
     Term::of(condition)?.render()
 }
 
+/// `terms` joined by `joint`, after the search a native part holds under `key`, in brackets so
+/// that it stays one term: `(native) a b`, or `(native) OR a OR b`.
+fn after_native(
+    criteria: &Map<String, Value>,
+    key: &str,
+    terms: &[String],
+    joint: &str,
+) -> Option<String> {
+    let joined = terms.join(joint);
+    match criteria.get(key) {
+        None => Some(joined),
+        Some(Value::String(native)) => Some(format!("({native}){joint}{joined}")),
+        Some(_) => None,
+    }
+}
+
 /// Puts `value` under `key`, where no other part has: two parts writing one key would each be
 /// read as the other.
 fn put(map: &mut Map<String, Value>, key: &str, value: Value) -> Option<()> {
@@ -87,29 +110,30 @@ fn put(map: &mut Map<String, Value>, key: &str, value: Value) -> Option<()> {
     Some(())
 }
 
-/// Adds one condition: into the criterion Gmail has for it where that is free, else as a term
-/// of `query`; a native part as its own keys.
+/// A native part's own keys, put back as they were read.
+fn native_keys(map: &mut Map<String, Value>, kind: NativeKind, raw: &str) -> Option<()> {
+    if kind != NativeKind::Gmail {
+        return None;
+    }
+    let Value::Object(fragment) = serde_json::from_str(raw).ok()? else {
+        return None;
+    };
+    for (key, value) in fragment {
+        put(map, &key, value)?;
+    }
+    Some(())
+}
+
+/// Adds one typed condition: into the criterion Gmail has for it where that is free, else as a
+/// term of `query`.
 fn criterion(
     criteria: &mut Map<String, Value>,
     query: &mut Vec<String>,
     condition: &Condition,
 ) -> Option<()> {
-    if let Condition::Native(native) = condition {
-        if native.kind != NativeKind::Gmail {
-            return None;
-        }
-        let Value::Object(fragment) = serde_json::from_str(&native.raw).ok()? else {
-            return None;
-        };
-        for (key, value) in fragment {
-            put(criteria, &key, value)?;
-        }
-        return Some(());
-    }
     let term = Term::of(condition)?;
     let field = match &term {
         Term::From(values) => Some(("from", values)),
-        Term::To(values) => Some(("to", values)),
         Term::Subject(values) => Some(("subject", values)),
         _ => None,
     };
@@ -117,10 +141,13 @@ fn criterion(
         (_, Some((key, values))) if !criteria.contains_key(key) => {
             criteria.insert(key.to_owned(), json!(render_values(values)?));
         }
-        (Term::HasAttachment, _) => {
+        (Term::HasAttachment, _) if criteria.get("hasAttachment") == Some(&Value::Bool(true)) => {}
+        (Term::HasAttachment, _) if !criteria.contains_key("hasAttachment") => {
             criteria.insert("hasAttachment".to_owned(), Value::Bool(true));
         }
-        (Term::Larger(bytes) | Term::Smaller(bytes), _) if !criteria.contains_key("size") => {
+        (Term::Larger(bytes) | Term::Smaller(bytes), _)
+            if !criteria.contains_key("size") && !criteria.contains_key("sizeComparison") =>
+        {
             let comparison = if matches!(term, Term::Larger(_)) {
                 "larger"
             } else {
@@ -173,7 +200,7 @@ impl Labels {
             // Gmail deletes to Trash, where the message can still be recovered.
             Action::Discard => Self::push(&mut self.add, "TRASH"),
             Action::Redirect { to, copy: true } | Action::Forward { to } => match to.as_slice() {
-                [one] if self.forward.is_none() => self.forward = Some(one.as_str().to_owned()),
+                [one] => self.forward(one.as_str())?,
                 _ => return None,
             },
             Action::AddKeywords(keywords) if !keywords.is_empty() => {
@@ -204,15 +231,25 @@ impl Labels {
                                 Self::push(&mut self.remove, id?);
                             }
                         }
-                        ("forward", Value::String(address)) if self.forward.is_none() => {
-                            self.forward = Some(address);
-                        }
+                        ("forward", Value::String(address)) => self.forward(&address)?,
+                        // A forward of another shape is refused, never kept as some other key.
+                        ("forward", _) => return None,
                         (key, value) => put(&mut self.other, key, value)?,
                     }
                 }
             }
             _ => return None,
         }
+        Some(())
+    }
+
+    /// Sends the message on to `address`: one forward per filter, so a second is refused rather
+    /// than either dropped.
+    fn forward(&mut self, address: &str) -> Option<()> {
+        if self.forward.is_some() {
+            return None;
+        }
+        self.forward = Some(address.to_owned());
         Some(())
     }
 

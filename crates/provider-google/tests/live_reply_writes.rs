@@ -7,8 +7,8 @@
 //! all it prints. The reply it writes runs only in 2099, so no mail is answered meanwhile.
 //!
 //! It proves a guarded write (and whether Gmail shows it at once, measured by reads), the window
-//! rounded to the millisecond and never wider, a reply with both bodies refused before sending
-//! (Gmail drops the text where HTML is set: shown by an earlier run that sent both), a stale read
+//! rounded to the millisecond and never wider, a reply with both bodies refused before sending, and
+//! Gmail dropping the text where HTML is set when both are sent by hand anyway, a stale read
 //! refused, a part left out cleared, and a write of the reply as read giving back what was read.
 
 mod gmail_settings_support;
@@ -146,6 +146,39 @@ async fn cycle(token: String) {
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::Conflict, "stale read");
+
+    // Both bodies sent anyway, by hand: Gmail keeps the HTML and drops the text, which is why the
+    // engine refuses a reply with both. Off and in 2099, so nothing is answered meanwhile.
+    let both = serde_json::json!({
+        "enableAutoReply": false,
+        "responseBodyPlainText": format!("Text {marker}"),
+        "responseBodyHtml": format!("<p>Html {marker}</p>"),
+        "startTime": "4070908800000",
+    });
+    let (status, _) = send(&token, Method::PUT, "/settings/vacation", Some(&both)).await;
+    assert_eq!(status, 200, "both bodies sent by hand");
+    let kept = settled(
+        "the both-bodies write",
+        3,
+        Duration::from_secs(2),
+        || raw(&token),
+        |now: &Value| {
+            now["responseBodyHtml"]
+                .as_str()
+                .is_some_and(|h| h.contains(&marker))
+        },
+    )
+    .await
+    .state;
+    let text_kept = kept["responseBodyPlainText"]
+        .as_str()
+        .is_some_and(|t| !t.is_empty());
+    eprintln!("both bodies sent by hand, the text kept: {text_kept}");
+    assert!(!text_kept, "Gmail drops the text where HTML is set");
+    let model = vacation
+        .read_vacation(&account())
+        .await
+        .unwrap_or_else(|err| failed("read", &err));
 
     // A part left out is cleared: no subject, no HTML.
     let mut plain = reply.clone();

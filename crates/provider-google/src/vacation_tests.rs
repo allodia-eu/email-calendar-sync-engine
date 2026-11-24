@@ -252,3 +252,67 @@ fn a_reply_never_set_reads_as_off_and_empty() {
     assert_eq!(off.audience, ReplyAudience::Everyone);
     assert!(off.window.is_open());
 }
+
+/// A token that may not ask who the account belongs to (`401` or `403` from `userinfo`) gets the
+/// narrower, personal vocabulary rather than an error; a reply limited to the organization is then
+/// refused before sending, as one the account is not known to hold.
+#[tokio::test]
+async fn a_token_that_may_not_ask_the_affiliation_gets_the_personal_vocabulary() {
+    for status in [401, 403] {
+        let (client, log) = recording_client(vec![
+            (
+                "/oauth2/v3/userinfo",
+                Err((status, json!({"error": {"code": status}}))),
+            ),
+            ("/settings/vacation", Ok(json!(null))),
+        ]);
+        let provider = GmailProvider::new(client);
+        let vocabulary = provider.vocabulary(&account()).await.unwrap();
+        assert!(
+            !vocabulary
+                .audiences()
+                .contains(&ReplyAudience::Organization)
+        );
+        assert!(vocabulary.audiences().contains(&ReplyAudience::Contacts));
+        let org = VacationResponse::default().with_audience(ReplyAudience::Organization);
+        let err = provider
+            .set_vacation(&account(), VacationPrecondition::Unconditional, &org)
+            .await
+            .unwrap_err();
+        assert_eq!(err.class(), FailureClass::Permanent);
+        assert!(log.lock().unwrap().iter().all(|r| r.method == "GET"));
+    }
+    // Any other failure is still one.
+    let client = fake_client_fallible(vec![(
+        "/oauth2/v3/userinfo",
+        Err((500, json!({"error": {"code": 500}}))),
+    )]);
+    let err = GmailProvider::new(client)
+        .vocabulary(&account())
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), FailureClass::Retryable);
+}
+
+/// A write answered with a success whose body does not read was done: the status says so.
+#[tokio::test]
+async fn a_write_whose_answer_does_not_read_was_done() {
+    let (base, _seen) = crate::test_support::capturing_server("200 OK", "not json");
+    let client = GoogleClient::with_base(
+        "t",
+        base,
+        crate::test_support::tls(),
+        &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
+    )
+    .unwrap();
+    let receipt = GmailProvider::new(client)
+        .set_vacation(
+            &account(),
+            VacationPrecondition::Unconditional,
+            &VacationResponse::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.rules, RulesEffect::Untouched);
+}

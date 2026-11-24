@@ -1,34 +1,36 @@
 //! The part of Gmail's search language a filter is read into typed conditions from, and written
 //! back in (`filters-and-out-of-office.md`, decision 4).
 //!
-//! A Gmail filter's criteria are search expressions: `from`, `to` and `subject` hold one each,
-//! and `query` and `negatedQuery` hold whole searches. Only a small subset is read typed, and only
-//! where every part of the expression is in it; anything else stays whole, as a native condition
-//! that carries to Gmail unchanged and to no other target:
+//! A Gmail filter's criteria are search expressions: `from` and `subject` hold one each (`to`
+//! too, read native: below), and `query` and `negatedQuery` hold whole searches. Only a small
+//! subset is read typed, and only where every part of the expression is in it; anything else stays
+//! whole, as a native condition that carries to Gmail unchanged and to no other target:
 //!
 //! - **A value** is a word (no space, quote, bracket or colon, not starting with `-` or `+`, and
-//!   not one of the operators `OR`, `AND`, `AROUND`), or a phrase in double quotes holding no
-//!   quote. Several values are any-of: `a OR b`, `(a OR b)` or `{a b}`. The word `me` (the
-//!   account's own addresses) is not a value here.
-//! - **A term** is `from:`, `to:` or `subject:` with a value or a bracketed any-of,
-//!   `has:attachment`, or `larger:` / `smaller:` with a size in bytes (no unit: what `10M` means in
-//!   bytes is not pinned).
+//!   not one of the operators `OR`, `AND`, `AROUND`), or a phrase in double quotes ([`is_phrase`]).
+//!   Several values are any-of: `a OR b`, `(a OR b)` or `{a b}`. `me` (the account's own
+//!   addresses), bare or quoted, is not a value here.
+//! - **A term** is `from:` or `subject:` with a value or a bracketed any-of, `has:attachment`, or
+//!   `larger:` / `smaller:` with a size in bytes (no unit: what `10M` means is not pinned; a plain
+//!   number is bytes, observed through the same search on mail).
 //! - **A search** is terms joined by spaces, all of which must hold ([`conjunction`]), or terms
 //!   joined by ` OR `, any one of which suffices ([`disjunction`]).
 //!
-//! Gmail matches these as a search does: by words and phrases, ignoring case, `from:` over the
-//! sender's name and address, `to:` over every recipient. So each typed condition is a
-//! `Contains` test, and the vocabulary marks every one it writes as approximated.
+//! Gmail matches these as a search does: by words and phrases, ignoring case
+//! ([`TextOp::Words`]), `from:` over the sender's name and address ([`AddressPart::WithName`]).
+//! Each is read as exactly that. `to:` matches every recipient, `To`, `Cc` and `Bcc`, which no
+//! typed condition says, so it stays native. A subject that *contains* a value is written as a
+//! word search, which matches less: approximated, and held as a condition only (an exception
+//! that vetoes less makes the rule do more).
 
 use engine_core::rules::{
-    AddressField, AddressPart, Condition, HeaderField, SizeBound, TextOp, TextTest,
+    AddressField, AddressPart, Condition, HeaderField, SizeBound, TextOp, TextTest, is_phrase,
 };
 
 /// One term of the subset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Term {
     From(Vec<String>),
-    To(Vec<String>),
     Subject(Vec<String>),
     HasAttachment,
     Larger(u64),
@@ -38,19 +40,15 @@ pub(crate) enum Term {
 impl Term {
     /// The condition this term is.
     pub(crate) fn condition(self) -> Option<Condition> {
-        let address = |field, values| {
-            Some(Condition::Address {
-                field,
-                part: AddressPart::All,
-                test: TextTest::new(TextOp::Contains, values).ok()?,
-            })
-        };
         match self {
-            Self::From(values) => address(AddressField::From, values),
-            Self::To(values) => address(AddressField::ToOrCc, values),
+            Self::From(values) => Some(Condition::Address {
+                field: AddressField::From,
+                part: AddressPart::WithName,
+                test: TextTest::new(TextOp::Words, values).ok()?,
+            }),
             Self::Subject(values) => Some(Condition::Header {
                 field: HeaderField::Subject,
-                test: TextTest::new(TextOp::Contains, values).ok()?,
+                test: TextTest::new(TextOp::Words, values).ok()?,
             }),
             Self::HasAttachment => Some(Condition::HasAttachment),
             Self::Larger(bytes) => Some(Condition::Size(SizeBound::Over(bytes))),
@@ -58,24 +56,18 @@ impl Term {
         }
     }
 
-    /// The term `condition` is, where the subset has one: a sender or the recipients together,
-    /// tested whole by `is` or `contains`; the subject by `contains`; an attachment; a size bound.
+    /// The term `condition` is, where the subset has one: the sender with its name by words; the
+    /// subject by words, or by `contains` as a word search (narrower); an attachment; a size
+    /// bound.
     pub(crate) fn of(condition: &Condition) -> Option<Self> {
-        let text = |test: &TextTest| {
-            matches!(test.op(), TextOp::Contains | TextOp::Is).then(|| test.values().to_vec())
-        };
         match condition {
             Condition::Address {
-                field,
-                part: AddressPart::All,
+                field: AddressField::From,
+                part: AddressPart::WithName,
                 test,
-            } => match field {
-                AddressField::From => text(test).map(Self::From),
-                AddressField::ToOrCc => text(test).map(Self::To),
-                _ => None,
-            },
+            } if test.op() == TextOp::Words => Some(Self::From(test.values().to_vec())),
             Condition::Header { field, test }
-                if field.is_subject() && test.op() == TextOp::Contains =>
+                if field.is_subject() && matches!(test.op(), TextOp::Words | TextOp::Contains) =>
             {
                 Some(Self::Subject(test.values().to_vec()))
             }
@@ -96,7 +88,6 @@ impl Term {
         };
         match self {
             Self::From(v) => values("from", v),
-            Self::To(v) => values("to", v),
             Self::Subject(v) => values("subject", v),
             Self::HasAttachment => Some("has:attachment".to_owned()),
             Self::Larger(bytes) => Some(format!("larger:{bytes}")),
@@ -105,7 +96,7 @@ impl Term {
     }
 }
 
-/// The values of a criteria field (`from`, `to`, `subject`): one value, or any-of.
+/// The values of a criteria field (`from`, `subject`): one value, or any-of.
 pub(crate) fn field_values(text: &str) -> Option<Vec<String>> {
     let mut lexer = Lexer::new(text);
     let values = lexer.values(true)?;
@@ -149,14 +140,13 @@ fn any_of(values: &[String]) -> Option<String> {
     Some(atoms?.join(" OR "))
 }
 
-/// One value as Gmail reads it back as that value: a word as it is, anything else quoted. A value
-/// holding a quote, a line break or a control character, or nothing but spaces, cannot be.
+/// One value as Gmail reads it back as that value: a word as it is, any other phrase quoted
+/// ([`is_phrase`], what the plan holds the values to). Any other value cannot be.
 fn atom(value: &str) -> Option<String> {
     if is_word(value) {
         return Some(value.to_owned());
     }
-    let quotable = !value.trim().is_empty() && !value.chars().any(|c| c == '"' || c.is_control());
-    quotable.then(|| format!("\"{value}\""))
+    is_phrase(value).then(|| format!("\"{value}\""))
 }
 
 /// Whether `text` is a value as it stands: no character the search language reads as syntax.
@@ -214,8 +204,7 @@ impl<'a> Lexer<'a> {
             let close = quoted.find('"')?;
             let phrase = &quoted[..close];
             self.rest = &quoted[close + 1..];
-            return (!phrase.trim().is_empty() && !phrase.chars().any(char::is_control))
-                .then(|| phrase.to_owned());
+            return is_phrase(phrase).then(|| phrase.to_owned());
         }
         let end = self
             .rest
@@ -271,7 +260,6 @@ impl<'a> Lexer<'a> {
         }
         for (key, make) in [
             ("from:", Term::From as fn(Vec<String>) -> Term),
-            ("to:", Term::To),
             ("subject:", Term::Subject),
         ] {
             if self.eat(key) {

@@ -13,7 +13,8 @@
 //!   `restrictToDomain` ([`Organization`](ReplyAudience::Organization)), both
 //!   ([`ContactsInOrganization`](ReplyAudience::ContactsInOrganization)), or neither. The domain
 //!   restriction is a Workspace account's alone, so the vocabulary asks the account's affiliation
-//!   (`crate::affiliation`), and a write asks it only for a reply limited to the organization.
+//!   (`crate::affiliation`), and a write asks it only for a reply limited to the organization. A
+//!   token that may not ask gets the narrower, personal vocabulary.
 //! - **The window is never written wider than asked**: Gmail keeps milliseconds, so a start is
 //!   rounded up and an end down, and a window that then holds no whole millisecond is refused.
 //! - **No write guard on the server**: the setting carries no ETag. The version is a SHA-256 of the
@@ -35,15 +36,12 @@ use engine_core::{
     version::VacationVersion,
 };
 use engine_provider::{
-    ProviderError, ProviderResult, Vacation, VacationPrecondition, WriteGuard,
+    ProviderError, ProviderResult, Vacation, VacationPrecondition, WriteGuard, digest_hex,
     refuse_unheld_vacation,
 };
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 
-use crate::{
-    error::GoogleError, json::opt_str, provider::GmailProvider, rules::hex, transport::GoogleClient,
-};
+use crate::{error::GoogleError, json::opt_str, provider::GmailProvider, transport::GoogleClient};
 
 const SETTING: &str = "/gmail/v1/users/me/settings/vacation";
 
@@ -65,11 +63,18 @@ pub(crate) fn vocabulary(workspace: bool) -> VacationVocabulary {
     }
 }
 
+/// Whether the account is a Workspace one, which alone can limit a reply to its domain. A token
+/// that may not ask (`401` or `403` from `userinfo`, a grant without `userinfo.email`) answers
+/// `false`: the narrower vocabulary, so a reply limited to the organization is refused as one the
+/// account is not known to hold, rather than every vocabulary question failing.
 async fn workspace(client: &GoogleClient) -> ProviderResult<bool> {
-    Ok(matches!(
-        client.affiliation().await?,
-        Affiliation::Organization(_)
-    ))
+    match client.affiliation().await {
+        Ok(affiliation) => Ok(matches!(affiliation, Affiliation::Organization(_))),
+        Err(GoogleError::Status {
+            status: 401 | 403, ..
+        }) => Ok(false),
+        Err(err) => Err(err.into()),
+    }
 }
 
 #[async_trait]
@@ -115,14 +120,14 @@ impl Vacation for GmailProvider {
                 ));
             }
         }
-        client
+        let put = client
             .put(
                 &client.url(SETTING),
                 "application/json",
                 body.to_string().into_bytes(),
             )
-            .await
-            .map_err(GoogleError::into_write_error)?;
+            .await;
+        GoogleError::optional_answer(put)?;
         Ok(VacationReceipt::new(None, RulesEffect::Untouched))
     }
 }
@@ -170,7 +175,7 @@ pub(crate) fn reply(setting: &Value) -> ProviderResult<VacationResponse> {
         .with_window(window)
         .with_reply(body)
         .with_audience(audience)
-        .with_version(VacationVersion::new(hex(&Sha256::digest(raw.as_bytes()))))
+        .with_version(VacationVersion::new(digest_hex(&raw)))
         .with_raw(RawVacation::new(raw));
     if flag("enableAutoReply") {
         out = out.turned_on();

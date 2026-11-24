@@ -27,8 +27,10 @@ pub(crate) struct Filters {
     pub(crate) labels: Vec<Value>,
     /// Requests that fail: `(method, filter id, or "new" for a create)` to the status answered.
     pub(crate) failing: BTreeMap<(&'static str, String), u16>,
-    /// Every write, as `(method, filter id or "new")`.
+    /// Every write, as `(method, filter id or "new")`; a label removed as `("DELETE label", id)`.
     pub(crate) writes: Vec<(&'static str, String)>,
+    /// Whether a create is stored and then answered with a body that does not read.
+    pub(crate) unreadable_create: bool,
     /// How often the forwarding addresses were asked.
     pub(crate) forwarding_reads: usize,
 }
@@ -127,9 +129,22 @@ impl GoogleTransport for Fake {
         state.writes.push(("POST", "new".to_owned()));
         state.fail("POST", "new")?;
         let mut filter: Value = serde_json::from_slice(&body)?;
+        // Gmail refuses a filter identical to one it holds (observed).
+        if state.list.iter().any(|held| {
+            held["criteria"] == filter["criteria"] && held["action"] == filter["action"]
+        }) {
+            let body = json!({"error": {"code": 400, "status": "FAILED_PRECONDITION",
+                "errors": [{"reason": "failedPrecondition"}]}});
+            return Err(GoogleError::status(400, body.to_string()));
+        }
         state.next += 1;
         filter["id"] = json!(format!("new{}", state.next));
         state.list.push(filter.clone());
+        if state.unreadable_create {
+            return Err(serde_json::from_str::<Value>("not json")
+                .unwrap_err()
+                .into());
+        }
         Ok(Some(filter))
     }
 
@@ -147,6 +162,11 @@ impl GoogleTransport for Fake {
 
     async fn delete(&self, url: &str, _if_match: Option<&str>) -> Result<(), GoogleError> {
         let mut state = self.0.lock().expect("fake");
+        if let Some((_, label)) = url.split_once("/labels/") {
+            state.writes.push(("DELETE label", label.to_owned()));
+            state.labels.retain(|held| held["id"] != label);
+            return Ok(());
+        }
         let id = id_of(url).ok_or_else(|| GoogleError::protocol("no filter id"))?;
         state.writes.push(("DELETE", id.to_owned()));
         state.fail("DELETE", id)?;

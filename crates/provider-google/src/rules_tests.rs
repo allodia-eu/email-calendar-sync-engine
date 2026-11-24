@@ -10,6 +10,11 @@ use serde_json::json;
 use super::*;
 use crate::rules_read::tests::{from, named, subject};
 
+/// The keyword the host named a label for in these tests (`rules_read::tests::named`).
+fn work() -> BTreeSet<Keyword> {
+    [Keyword::new("$work").unwrap()].into()
+}
+
 fn listing() -> Listing {
     Listing::new(vec![
         json!({"id": "b", "criteria": {"from": "a@example.com"}, "action": {"addLabelIds": ["STARRED"]}}),
@@ -23,20 +28,20 @@ fn the_listing_is_kept_in_id_order_so_its_version_ignores_how_gmail_listed_it() 
     let mut reversed = one.filters.clone();
     reversed.reverse();
     let other = Listing::new(reversed);
-    assert_eq!(one.version(), other.version());
-    assert_eq!(one.set(), other.set());
+    assert_eq!(one.listing.version(), other.listing.version());
+    assert_eq!(one.listing.fingerprint(), other.listing.fingerprint());
     assert_eq!(opt_str(&one.filters[0], "id"), Some("a"));
-    assert_eq!(one.version().len(), 64);
 
     let set = one.rule_set(&named());
     let back = Listing::from_raw(set.raw.as_ref().unwrap()).unwrap();
-    assert_eq!(back.version(), set.version.unwrap().as_str());
+    assert_eq!(Some(back.listing.version()), set.version);
     assert!(Listing::from_raw(&RawRules::new("{}")).is_none());
     assert!(Listing::from_raw(&RawRules::new("not json")).is_none());
 }
 
-/// A set read from Gmail is written back as it is: every rule plans whole, but for the order
-/// Gmail does not keep.
+/// A set read from Gmail is written back as it is: every rule plans whole. Its order is
+/// approximated: Gmail applies every filter that matches, with no stop, so the order meant nothing
+/// there and keeps what it does elsewhere but a stop, which is lost on its own.
 #[test]
 fn rules_read_from_gmail_plan_whole_against_its_own_vocabulary() {
     let filters = vec![
@@ -50,21 +55,24 @@ fn rules_read_from_gmail_plan_whole_against_its_own_vocabulary() {
         json!({"id": "3", "criteria": {"query": "invoice"}, "action": {"removeLabelIds": ["INBOX"]}}),
     ];
     let set = Listing::new(filters).rule_set(&named());
-    let plan = plan_rules(&set.rules, &vocabulary(true), PlanMode::Edit);
+    let plan = plan_rules(&set.rules, &vocabulary(&work()), PlanMode::Edit);
     assert_eq!(plan.written(), set.rules);
     for outcome in &plan.outcomes {
-        assert_eq!(outcome.kept, Kept::Reduced, "{outcome:?}");
+        assert_eq!(outcome.kept, Kept::Whole, "{outcome:?}");
         assert!(
             outcome
                 .losses
                 .iter()
-                .all(|loss| loss.reason == LossReason::Approximated
-                    || *loss == Loss::new(RulePart::Order, LossReason::NotExpressible)),
+                .all(|loss| loss.reason == LossReason::Approximated),
             "{outcome:?}"
         );
     }
     // A keyword kept as a label is held only where the host named one.
-    let unnamed = plan_rules(&set.rules[..1], &vocabulary(false), PlanMode::Edit);
+    let unnamed = plan_rules(
+        &set.rules[..1],
+        &vocabulary(&BTreeSet::new()),
+        PlanMode::Edit,
+    );
     assert_eq!(unnamed.outcomes[0].kept, Kept::Reduced);
     assert!(
         unnamed.outcomes[0]
@@ -75,7 +83,7 @@ fn rules_read_from_gmail_plan_whole_against_its_own_vocabulary() {
 
 #[test]
 fn what_a_filter_cannot_be_is_decided_by_the_plan() {
-    let vocabulary = vocabulary(false);
+    let vocabulary = vocabulary(&BTreeSet::new());
     let trash = vec![Action::Discard];
     let plan = |rule: MailRule| {
         plan_rules(&[rule], &vocabulary, PlanMode::Edit)
@@ -93,8 +101,20 @@ fn what_a_filter_cannot_be_is_decided_by_the_plan() {
         .named(RuleName::new("n").unwrap())
         .stopping();
     assert_eq!(plan(named).kept, Kept::Reduced);
-    // A condition Gmail would widen drops the rule.
+    // A condition Gmail would widen drops the rule: as a condition, and as an exception.
+    let contains = |field| Condition::Address {
+        field,
+        part: AddressPart::All,
+        test: TextTest::new(TextOp::Contains, vec!["x".to_owned()]).unwrap(),
+    };
     let widened = [
+        contains(AddressField::From),
+        contains(AddressField::ToOrCc),
+        Condition::Address {
+            field: AddressField::From,
+            part: AddressPart::All,
+            test: TextTest::new(TextOp::Is, vec!["x@example.com".to_owned()]).unwrap(),
+        },
         Condition::Header {
             field: engine_core::rules::HeaderField::Subject,
             test: TextTest::new(TextOp::Is, vec!["x".to_owned()]).unwrap(),
@@ -189,7 +209,7 @@ async fn no_filters_is_an_empty_answer_and_an_empty_listing() {
 #[test]
 fn one_label_of_the_users_per_filter_and_none_without_a_criterion() {
     let plan = |rule: MailRule| {
-        plan_rules(&[rule], &vocabulary(true), PlanMode::Edit)
+        plan_rules(&[rule], &vocabulary(&work()), PlanMode::Edit)
             .outcomes
             .remove(0)
     };
@@ -220,4 +240,27 @@ fn one_label_of_the_users_per_filter_and_none_without_a_criterion() {
     );
     let every = MailRule::typed(Match::all(Vec::new()), vec![Action::Discard]);
     assert_eq!(plan(every).kept, Kept::NotKept);
+}
+
+/// A subject that contains a value is written as a word search, which matches less: held as a
+/// condition (the rule does less), lost as an exception (it would veto less, so the rule would do
+/// more).
+#[test]
+fn a_subject_that_contains_is_approximated_as_a_condition_and_lost_as_an_exception() {
+    let contains = Condition::Header {
+        field: engine_core::rules::HeaderField::Subject,
+        test: TextTest::new(TextOp::Contains, vec!["x".to_owned()]).unwrap(),
+    };
+    let plan = |rule: MailRule| {
+        plan_rules(&[rule], &vocabulary(&BTreeSet::new()), PlanMode::Edit)
+            .outcomes
+            .remove(0)
+    };
+    let condition = MailRule::typed(Match::all(vec![contains.clone()]), vec![Action::Discard]);
+    assert_eq!(plan(condition).kept, Kept::Whole);
+    let exception = MailRule::typed(
+        Match::all(vec![from(&["a"])]).except(vec![contains]),
+        vec![Action::Discard],
+    );
+    assert_eq!(plan(exception).kept, Kept::NotKept);
 }

@@ -30,26 +30,28 @@ fn typed(rule: &MailRule) -> (&Match, &[Action]) {
     (&typed.when, &typed.actions)
 }
 
-pub(crate) fn contains(values: &[&str]) -> TextTest {
+pub(crate) fn words(values: &[&str]) -> TextTest {
     TextTest::new(
-        TextOp::Contains,
+        TextOp::Words,
         values.iter().map(|value| (*value).to_owned()).collect(),
     )
     .unwrap()
 }
 
+/// A sender, name and address, matched by words: Gmail's `from:`.
 pub(crate) fn from(values: &[&str]) -> Condition {
     Condition::Address {
         field: AddressField::From,
-        part: AddressPart::All,
-        test: contains(values),
+        part: AddressPart::WithName,
+        test: words(values),
     }
 }
 
+/// A subject matched by words: Gmail's `subject:`.
 pub(crate) fn subject(values: &[&str]) -> Condition {
     Condition::Header {
         field: HeaderField::Subject,
-        test: contains(values),
+        test: words(values),
     }
 }
 
@@ -95,14 +97,11 @@ fn criteria_read_as_typed_conditions_all_of_which_hold() {
         when.conditions,
         [
             from(&["a@example.com", "b@example.com"]),
-            Condition::Address {
-                field: AddressField::ToOrCc,
-                part: AddressPart::All,
-                test: contains(&["team@example.org"]),
-            },
             subject(&["weekly report"]),
             Condition::HasAttachment,
             Condition::Size(SizeBound::Over(1_000_000)),
+            // Every recipient, Bcc too, which no typed condition says.
+            native(r#"{"to":"team@example.org"}"#),
         ]
     );
     assert_eq!(when.except.len(), 0);

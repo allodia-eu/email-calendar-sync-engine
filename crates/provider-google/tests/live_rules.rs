@@ -123,3 +123,69 @@ async fn live_forwarding_addresses_are_listed() {
         .count();
     eprintln!("forwarding addresses: {addresses}; verified: {accepted}");
 }
+
+/// `larger:` and `smaller:` with a plain number mean bytes: a message's own size, halved and
+/// doubled, puts it above the one and below the other, through the same search a filter's query
+/// is. Read only; it prints nothing of the message.
+#[tokio::test]
+async fn live_a_plain_size_in_a_search_is_bytes() {
+    let Some(token) = token() else {
+        eprintln!("skipping: GOOGLE_ACCESS_TOKEN not set");
+        return;
+    };
+    let (status, page) = send(&token, reqwest::Method::GET, "/messages?maxResults=1", None).await;
+    assert_eq!(status, 200);
+    let Some(id) = page["messages"][0]["id"].as_str() else {
+        eprintln!("skipping: the account holds no message to measure");
+        return;
+    };
+    let path = format!("/messages/{id}?format=metadata&metadataHeaders=Message-Id");
+    let (status, message) = send(&token, reqwest::Method::GET, &path, None).await;
+    assert_eq!(status, 200);
+    let size = message["sizeEstimate"].as_u64().expect("a size");
+    let header = message["payload"]["headers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|h| {
+            h["name"]
+                .as_str()
+                .is_some_and(|n| n.eq_ignore_ascii_case("message-id"))
+        })
+        .and_then(|h| h["value"].as_str())
+        .expect("a Message-Id")
+        .trim_matches(['<', '>'])
+        .to_owned();
+    let found = |term: String| {
+        let token = token.clone();
+        let header = header.clone();
+        async move {
+            let q = format!("rfc822msgid:{header} {term}");
+            let path = format!(
+                "/messages?includeSpamTrash=true&q={}",
+                q.bytes()
+                    .map(|b| if b.is_ascii_alphanumeric() {
+                        char::from(b).to_string()
+                    } else {
+                        format!("%{b:02X}")
+                    })
+                    .collect::<String>()
+            );
+            let (status, page) = send(&token, reqwest::Method::GET, &path, None).await;
+            assert_eq!(status, 200);
+            page["messages"].as_array().map_or(0, Vec::len)
+        }
+    };
+    let (half, double) = (size / 2, size * 2);
+    let found_above_half = found(format!("larger:{half}")).await;
+    let found_above_double = found(format!("larger:{double}")).await;
+    let found_below_double = found(format!("smaller:{double}")).await;
+    eprintln!(
+        "larger than half: {found_above_half}; larger than double: {found_above_double}; \
+         smaller than double: {found_below_double}"
+    );
+    // Were the number kilobytes, half the size would be 512 times the message: not larger.
+    assert_eq!(found_above_half, 1);
+    assert_eq!(found_above_double, 0);
+    assert_eq!(found_below_double, 1);
+}

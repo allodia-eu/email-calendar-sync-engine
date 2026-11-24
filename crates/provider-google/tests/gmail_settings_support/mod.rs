@@ -8,6 +8,8 @@
     reason = "each live suite uses a different subset of these helpers"
 )]
 
+pub(crate) mod filter_probes;
+
 use std::time::Duration;
 
 use engine_core::ids::AccountId;

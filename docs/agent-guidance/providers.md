@@ -395,6 +395,11 @@ An account's rules are a setting too, written whole and directly, guarded by the
   one that stores the set at once fails whole. A rule listed there says so on its outcome too
   (`LossReason::NotWritten`). What a target holds part by part but not together is a `RuleLimit`
   of its vocabulary, so the plan, not the writer, decides it.
+- **An edit that is not kept does not apply.** On a transport that stores rules one by one
+  (Graph, Gmail), a rule not kept, by the plan or because its write failed, leaves the rule it was
+  read as where it is, and the receipt names it (`RulesReceipt::left_as_read`): one answer,
+  `RuleListing::left_as_read`. The Sieve targets still leave such a rule out of the script they
+  write; the same treatment there is a follow-up.
 - **A write never switches stored rules on or off** (`RuleSet::activation`, `RulesStored`), and
   says on the receipt whether the rules it wrote run (`RulesReceipt::activation`) and what it did
   to a running reply (`ReplyEffect`).
@@ -406,7 +411,7 @@ An account's rules are a setting too, written whole and directly, guarded by the
 | JMAP (Sieve, RFC 9661) | **Implemented** (`jmap.md` → "Mail rules") | `Enforced` (`ifInState` on `SieveScript`) | the dialect's, from the account's `sieveExtensions` and `maxNumberRedirects` |
 | IMAP + ManageSieve | **Implemented** (`imap-smtp.md` → "Rules and the reply over ManageSieve"): the same dialect, one script with the reply | `Absent`; a stale read (a SHA-256 of the script list and the script) is refused in the write's own session | the dialect's, from the `SIEVE` and `MAXREDIRECTS` the server lists once signed in |
 | Graph (`messageRule`) | **Implemented** (`graph.md` → "Mail rules and the out-of-office reply"): read typed or native per predicate; written rule by rule by position, a change that drops a part as a new rule in its place, each failure in the receipt's `failures` and on the rule's outcome | `Absent`: no `@odata.etag` and a stale `If-Match` ignored (observed); a stale read (a SHA-256 of the listing) is refused after reading again, though the listing can lag a write | fixed (`provider-graph`'s `rules::vocabulary`), with `RuleLimit`s |
-| Gmail (filters) | **Implemented** (`google.md` → "Filters and the vacation reply"): criteria read typed from a small search subset or kept whole; written filter by filter, a change as a new filter before the old is deleted, a rule not written leaving the filter it was read as | `Absent`: a filter has no ETag and no update; a stale read (a SHA-256 of the listing) is refused after reading again | fixed (`provider-google`'s `rules::vocabulary`): no stop, order, name or disabled rule; one forward address, one user label and at least one criterion per filter |
+| Gmail (filters) | **Implemented** (`google.md` → "Filters and the vacation reply"): criteria read typed (a word match of Gmail's own, `TextOp::Words`) from a small search subset or kept whole; written filter by filter, a change as a new filter before the old is deleted, a filter Gmail already holds kept rather than sent again, a rule not written leaving the filter it was read as | `Absent`: a filter has no ETag and no update; a stale read (a SHA-256 of the listing) is refused after reading again | fixed (`provider-google`'s `rules::vocabulary`): no stop, order, name or disabled rule; one forward, one user label and at least one criterion per filter; exact exceptions; values as phrases; the order approximated |
 | CalDAV / CardDAV | n/a | | |
 
 ### Importing rules and the reply (`RulesImporter`, the `import` feature)
