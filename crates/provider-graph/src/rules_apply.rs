@@ -2,7 +2,9 @@
 //! (`filters-and-out-of-office.md`, §4: "Graph and Gmail adapters diff `base` against `rules`").
 //!
 //! 1. **Planned** by `plan_rules` in edit mode against [`vocabulary`]; what the writer still cannot
-//!    place (`crate::rules_write`) is not kept either, and the receipt says which part.
+//!    place (`crate::rules_write`) is not kept either, and the receipt says which part. The set
+//!    written is the set planned, as on every transport: a rule not kept is not there afterwards,
+//!    so the rule it was read as is removed with the others left out.
 //! 2. **Refused before sending** where `base` was not read (no version, or a raw form that is not
 //!    the one its version names: `Permanent`), or where the listing moved since (`Conflict`).
 //! 3. **Written in order.** Each written rule is the `messageRule` its origin names in `base`, or a
