@@ -9,6 +9,7 @@ use crate::transport_read::{LineLimits, read_framed_line};
 const LIMITS: LineLimits = LineLimits {
     max_literal: 1 << 20,
     max_line: Some(2 << 20),
+    literal_needs_crlf: true,
 };
 
 macro_rules! fixture {
@@ -247,6 +248,18 @@ fn a_capability_that_is_not_a_string_or_a_count_that_is_not_a_number_is_refused(
     ]])
     .unwrap();
     assert_eq!(unknown, Capabilities::default());
+}
+
+#[tokio::test]
+async fn imap_still_takes_a_bare_lf_after_a_literal_s_length() {
+    let imap = LineLimits {
+        max_literal: 1 << 20,
+        max_line: None,
+        literal_needs_crlf: false,
+    };
+    let mut reader = BufReader::new(b"* {3}\nabc)\r\n".as_slice());
+    let line = read_framed_line(&mut reader, None, imap).await.unwrap();
+    assert_eq!(line, b"* {3}\nabc)\r\n");
 }
 
 #[tokio::test]

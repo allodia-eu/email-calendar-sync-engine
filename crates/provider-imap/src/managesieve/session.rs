@@ -29,6 +29,7 @@ use crate::{
 const LIMITS: LineLimits = LineLimits {
     max_literal: 4 * 1024 * 1024,
     max_line: Some(4 * 1024 * 1024 + 64 * 1024),
+    literal_needs_crlf: true,
 };
 
 /// The most bytes one response may hold, all its lines together: a response is read whole before

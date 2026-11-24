@@ -45,6 +45,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let limits = LineLimits {
             max_literal: MAX_LITERAL,
             max_line: None,
+            literal_needs_crlf: false,
         };
         read_framed_line(&mut self.inner, stall, limits).await
     }
@@ -56,6 +57,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 pub(crate) struct LineLimits {
     pub(crate) max_literal: usize,
     pub(crate) max_line: Option<usize>,
+    /// Whether only `{n}` and CRLF announce a literal (ManageSieve, whose tokenizer requires it),
+    /// or a bare LF after it does too (IMAP, as it always has).
+    pub(crate) literal_needs_crlf: bool,
 }
 
 /// Reads one logical line off `reader`: bytes through the next `\n`, with every `{n}` or `{n+}`
@@ -79,7 +83,7 @@ pub(crate) async fn read_framed_line<R: AsyncBufRead + Unpin>(
         if read == 0 {
             return Err(closed_mid_response());
         }
-        if let Some(len) = trailing_literal_len(&line[before..]) {
+        if let Some(len) = trailing_literal_len(&line[before..], limits.literal_needs_crlf) {
             if len > limits.max_literal || over(line.len().saturating_add(len)) {
                 return Err(ImapError::protocol(format!(
                     "server announced a {len}-byte literal exceeding the {}-byte cap",
@@ -155,11 +159,17 @@ fn closed_mid_response() -> ImapError {
     ))
 }
 
-/// The literal length a line announces (`…{n}` or `…{n+}` and then CRLF), if any. Only a CRLF
-/// ends a literal's announcement, as RFC 9051 §4.3 and RFC 5804 §4 write it, so this reader and
-/// ManageSieve's tokenizer (`crate::managesieve::response`) agree on what is a literal.
-fn trailing_literal_len(line: &[u8]) -> Option<usize> {
-    let trimmed = line.strip_suffix(b"\r\n")?;
+/// The literal length a line announces (`…{n}` or `…{n+}` before its line end), if any. With
+/// `needs_crlf`, only a CRLF ends the announcement, as RFC 5804 §4 writes it, so the reader and
+/// ManageSieve's tokenizer (`crate::managesieve::response`) agree on what is a literal; IMAP takes
+/// a bare LF too, as it always has.
+fn trailing_literal_len(line: &[u8], needs_crlf: bool) -> Option<usize> {
+    let trimmed = if needs_crlf {
+        line.strip_suffix(b"\r\n")?
+    } else {
+        let trimmed = line.strip_suffix(b"\n")?;
+        trimmed.strip_suffix(b"\r").unwrap_or(trimmed)
+    };
     let inside = trimmed.strip_suffix(b"}")?;
     let inside = inside.strip_suffix(b"+").unwrap_or(inside);
     let open = inside.iter().rposition(|&b| b == b'{')?;
