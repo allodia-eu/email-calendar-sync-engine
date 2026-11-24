@@ -20,13 +20,20 @@ use super::{
 use crate::{
     deadline::{self, BOUNDS},
     error::ImapError,
-    transport_read::read_framed_line,
+    transport_read::{LineLimits, read_framed_line},
 };
 
-/// The largest literal read into memory. Sieve scripts are small (Stalwart's limit is 100 KiB,
-/// Dovecot's 1 MiB by default); a server announcing more is refused before anything is
-/// allocated for it.
-const MAX_LITERAL: usize = 16 * 1024 * 1024;
+/// How much one logical line may hold: a literal of at most 4 MiB (Sieve scripts are far smaller:
+/// Stalwart refuses one over 100 KiB, Dovecot over 1 MiB by default), and 64 KiB besides. A larger
+/// literal is refused before anything is allocated for it, a longer line before its bytes are kept.
+const LIMITS: LineLimits = LineLimits {
+    max_literal: 4 * 1024 * 1024,
+    max_line: Some(4 * 1024 * 1024 + 64 * 1024),
+};
+
+/// The most bytes one response may hold, all its lines together: a response is read whole before
+/// it is answered, so a server that never completes one is cut off here.
+const MAX_RESPONSE: usize = 8 * 1024 * 1024;
 
 /// One script as `LISTSCRIPTS` lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +49,8 @@ type DataLines = Vec<Vec<Token>>;
 pub(crate) struct Session<S> {
     pub(super) inner: BufReader<S>,
     capabilities: Capabilities,
+    /// The bytes the response being read has held so far ([`MAX_RESPONSE`]).
+    received: usize,
 }
 
 impl<S> core::fmt::Debug for Session<S> {
@@ -65,6 +74,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
         let mut session = Self {
             inner: BufReader::new(stream),
             capabilities: Capabilities::default(),
+            received: 0,
         };
         let lines = session.read_ok("the greeting").await?;
         session.capabilities = Capabilities::from_lines(&lines)?;
@@ -262,12 +272,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
 
     /// Writes bytes, a piece at a time under the stall bound (`crate::deadline::write`).
     pub(super) async fn send(&mut self, bytes: &[u8]) -> SieveResult<()> {
+        // Whatever is read next answers what is sent now: its count starts again.
+        self.received = 0;
         Ok(deadline::write(&mut self.inner, bytes).await?)
     }
 
     /// Reads one logical line, its literals inlined, under the reply bound.
     pub(super) async fn read_line(&mut self) -> SieveResult<Line> {
-        let line = read_framed_line(&mut self.inner, Some(BOUNDS.reply()), MAX_LITERAL).await?;
+        let line = read_framed_line(&mut self.inner, Some(BOUNDS.reply()), LIMITS).await?;
+        self.received = self.received.saturating_add(line.len());
+        if self.received > MAX_RESPONSE {
+            return Err(ImapError::protocol(format!(
+                "a ManageSieve response exceeding the {MAX_RESPONSE}-byte cap"
+            ))
+            .into());
+        }
         Ok(parse_line(&line)?)
     }
 

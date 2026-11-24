@@ -17,7 +17,8 @@ use crate::{
 /// The largest `{n}` literal we will read into memory. A hostile or buggy server
 /// could announce an enormous literal (`* {4000000000}`); the cap bounds the
 /// allocation so adversarial input cannot exhaust memory (`north-star.md` security).
-/// Generous enough for any real metadata response (and future body fetches).
+/// It caps one literal only: an IMAP line as a whole is not capped, so a server that never sends
+/// a line end can make a line grow without bound (a known gap, beyond this cap).
 const MAX_LITERAL: usize = 64 * 1024 * 1024;
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
@@ -40,8 +41,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         &mut self,
         stall: Option<Duration>,
     ) -> ImapResult<Vec<u8>> {
-        read_framed_line(&mut self.inner, stall, MAX_LITERAL).await
+        // No cap on the line as a whole: a `FETCH` literal carries a whole message.
+        let limits = LineLimits {
+            max_literal: MAX_LITERAL,
+            max_line: None,
+        };
+        read_framed_line(&mut self.inner, stall, limits).await
     }
+}
+
+/// How much one logical line may hold: the largest literal it may announce, and, where there is
+/// one, the most bytes in all, literals included.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LineLimits {
+    pub(crate) max_literal: usize,
+    pub(crate) max_line: Option<usize>,
 }
 
 /// Reads one logical line off `reader`: bytes through the next `\n`, with every `{n}` or `{n+}`
@@ -49,24 +63,27 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 /// ManageSieve (RFC 5804 §4) frame literals the same way, so both sessions read through this.
 ///
 /// Each wait is bounded by `stall` when there is one, and a literal is read in pieces so that the
-/// bound is on each wait, never on the whole literal. A literal over `max_literal` bytes is
-/// refused before anything is allocated for it.
+/// bound is on each wait, never on the whole literal. A literal over `limits.max_literal` bytes is
+/// refused before anything is allocated for it, and where `limits.max_line` is set, so is a line
+/// that would grow past it, before the bytes that would take it there are kept.
 pub(crate) async fn read_framed_line<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     stall: Option<Duration>,
-    max_literal: usize,
+    limits: LineLimits,
 ) -> ImapResult<Vec<u8>> {
+    let over = |len: usize| limits.max_line.is_some_and(|max| len > max);
     let mut line = Vec::new();
     loop {
         let before = line.len();
-        let read = within(stall, reader.read_until(b'\n', &mut line)).await?;
+        let read = read_until_newline(reader, &mut line, stall, limits.max_line).await?;
         if read == 0 {
             return Err(closed_mid_response());
         }
         if let Some(len) = trailing_literal_len(&line[before..]) {
-            if len > max_literal {
+            if len > limits.max_literal || over(line.len().saturating_add(len)) {
                 return Err(ImapError::protocol(format!(
-                    "server announced a {len}-byte literal exceeding the {max_literal}-byte cap"
+                    "server announced a {len}-byte literal exceeding the {}-byte cap",
+                    limits.max_literal
                 )));
             }
             let start = line.len();
@@ -82,6 +99,41 @@ pub(crate) async fn read_framed_line<R: AsyncBufRead + Unpin>(
             continue;
         }
         return Ok(line);
+    }
+}
+
+/// Appends to `line` through the next `\n`, answering how many bytes it appended (0 at the end of
+/// the stream). With no `max`, as `read_until` does; with one, refusing to let `line` grow past it.
+async fn read_until_newline<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+    stall: Option<Duration>,
+    max: Option<usize>,
+) -> ImapResult<usize> {
+    let Some(max) = max else {
+        return Ok(within(stall, reader.read_until(b'\n', line)).await?);
+    };
+    let mut read = 0;
+    loop {
+        let available = within(stall, reader.fill_buf()).await?;
+        if available.is_empty() {
+            return Ok(read);
+        }
+        let (take, done) = match available.iter().position(|&byte| byte == b'\n') {
+            Some(at) => (at + 1, true),
+            None => (available.len(), false),
+        };
+        if line.len() + take > max {
+            return Err(ImapError::protocol(format!(
+                "server sent a line exceeding the {max}-byte cap"
+            )));
+        }
+        line.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        read += take;
+        if done {
+            return Ok(read);
+        }
     }
 }
 

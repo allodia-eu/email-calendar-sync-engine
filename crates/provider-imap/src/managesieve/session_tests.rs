@@ -217,3 +217,34 @@ async fn an_inactive_script_with_a_name_rfc_5804_forbids_is_left_out_not_fatal()
         }]
     );
 }
+
+#[tokio::test]
+async fn a_line_or_a_response_past_its_cap_is_refused_before_it_is_kept() {
+    // A line that never ends.
+    let endless = vec![b'a'; 4 * 1024 * 1024 + 65 * 1024];
+    let (mut session, _) = greeted(&[&endless]).await;
+    let err = session.list_scripts().await.unwrap_err();
+    assert!(
+        matches!(err, SieveError::Imap(ImapError::Protocol(_))),
+        "{err:?}"
+    );
+    // A response that never completes, in lines each under the cap.
+    let mut lines = Vec::new();
+    let one = format!("\"{}\"\r\n", "a".repeat(60 * 1024));
+    while lines.len() < 9 * 1024 * 1024 {
+        lines.extend_from_slice(one.as_bytes());
+    }
+    let (mut session, _) = greeted(&[&lines]).await;
+    let err = session.list_scripts().await.unwrap_err();
+    assert!(
+        matches!(err, SieveError::Imap(ImapError::Protocol(_))),
+        "{err:?}"
+    );
+    // A literal announced past the cap allocates nothing.
+    let (mut session, _) = greeted(&[b"{999999999}\r\n"]).await;
+    let err = session.get_script(&name("a")).await.unwrap_err();
+    assert!(
+        matches!(err, SieveError::Imap(ImapError::Protocol(_))),
+        "{err:?}"
+    );
+}

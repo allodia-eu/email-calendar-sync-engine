@@ -4,7 +4,12 @@
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use super::*;
-use crate::transport_read::read_framed_line;
+use crate::transport_read::{LineLimits, read_framed_line};
+
+const LIMITS: LineLimits = LineLimits {
+    max_literal: 1 << 20,
+    max_line: Some(2 << 20),
+};
 
 macro_rules! fixture {
     ($name:literal) => {
@@ -17,7 +22,7 @@ async fn lines(bytes: &[u8]) -> Vec<Line> {
     let mut reader = BufReader::new(bytes);
     let mut out = Vec::new();
     while !reader.fill_buf().await.unwrap().is_empty() {
-        let line = read_framed_line(&mut reader, None, 1 << 20).await.unwrap();
+        let line = read_framed_line(&mut reader, None, LIMITS).await.unwrap();
         out.push(parse_line(&line).unwrap());
     }
     out
@@ -248,11 +253,11 @@ fn a_capability_that_is_not_a_string_or_a_count_that_is_not_a_number_is_refused(
 async fn only_a_crlf_announces_a_literal_in_both_readers() {
     // `{3}` then a bare LF is no literal to the framed reader, and none to the tokenizer either.
     let mut reader = BufReader::new(b"{3}\nabc\r\n".as_slice());
-    let line = read_framed_line(&mut reader, None, 1 << 20).await.unwrap();
+    let line = read_framed_line(&mut reader, None, LIMITS).await.unwrap();
     assert_eq!(line, b"{3}\n");
     assert!(parse_line(&line).is_err());
     let mut reader = BufReader::new(b"{3}\r\nabc\r\n".as_slice());
-    let line = read_framed_line(&mut reader, None, 1 << 20).await.unwrap();
+    let line = read_framed_line(&mut reader, None, LIMITS).await.unwrap();
     assert_eq!(line, b"{3}\r\nabc\r\n");
     assert_eq!(
         parse_line(&line).unwrap(),
