@@ -51,6 +51,35 @@ pub(crate) fn scripted(answers: &[&[u8]]) -> (ManageSieve<MockStream>, Arc<Mutex
     (ManageSieve::new(dial, budget, true), sessions)
 }
 
+/// A service whose sessions answer `sessions` in turn, one script each after the TLS greeting
+/// (the last again for any later session), and what each was sent: for a call that opens several.
+#[cfg(feature = "import")]
+pub(crate) fn scripted_sessions(
+    sessions: &[&[&[u8]]],
+) -> (ManageSieve<MockStream>, Arc<Mutex<Vec<Recorded>>>) {
+    let scripts: Vec<Vec<u8>> = sessions
+        .iter()
+        .map(|answers| {
+            let mut script = GREETING.to_vec();
+            answers
+                .iter()
+                .for_each(|answer| script.extend_from_slice(answer));
+            script
+        })
+        .collect();
+    let recorded: Arc<Mutex<Vec<Recorded>>> = Arc::default();
+    let record = Arc::clone(&recorded);
+    let dial: SieveDial<MockStream> = Arc::new(move || {
+        let mut record = record.lock().unwrap();
+        let at = record.len().min(scripts.len() - 1);
+        let (stream, sent) = MockStream::new(scripts[at].clone());
+        record.push(sent);
+        Box::pin(Session::open(stream))
+    });
+    let budget = Arc::new(OneSlot(Arc::new(Semaphore::new(1))));
+    (ManageSieve::new(dial, budget, true), recorded)
+}
+
 /// Everything the client sent, across its sessions.
 pub(crate) fn sent(sessions: &Mutex<Vec<Recorded>>) -> String {
     sessions.lock().unwrap().iter().map(written).collect()

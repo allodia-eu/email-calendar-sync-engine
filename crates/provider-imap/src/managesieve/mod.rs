@@ -17,13 +17,16 @@
 //! - `service` — [`ManageSieve`](service::ManageSieve), the account's service: a session per call,
 //!   in a slot of the account's budget.
 //! - `state` — which script holds the rules and the reply, and the version a write is guarded by.
-//! - `rules`, `vacation` — [`MailRules`] and [`Vacation`] over it.
+//! - `rules`, `vacation` — [`MailRules`] and [`Vacation`] over it; `import` — the importer of both
+//!   (the `import` feature).
 //! - `reach` — the greeting read when the account connects, which decides whether the account's
 //!   providers offer the two.
 
 mod auth;
 pub(crate) mod dial;
 pub(crate) mod error;
+#[cfg(feature = "import")]
+mod import;
 pub(crate) mod name;
 mod probe_state;
 pub(crate) mod reach;
@@ -45,6 +48,9 @@ pub(crate) trait Sieve: MailRules + Vacation {
     fn offered(&self) -> Option<bool>;
     /// Asks a later dial to probe (`ImapAccount::invalidate`).
     fn want_probe(&self);
+    /// The rules and the reply as an importer (`import`).
+    #[cfg(feature = "import")]
+    fn importer(&self) -> &dyn engine_provider::import::RulesImporter;
 }
 
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> Sieve
@@ -56,6 +62,11 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> S
 
     fn want_probe(&self) {
         self.probe.want();
+    }
+
+    #[cfg(feature = "import")]
+    fn importer(&self) -> &dyn engine_provider::import::RulesImporter {
+        self
     }
 }
 
