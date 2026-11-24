@@ -49,10 +49,12 @@ pub use raw_rule::{Expansion, RawRule, RuleOrigin, RuleSyntax};
 pub use receipt::{FailedRule, ReplyEffect, RuleWriteFailure, RulesReceipt, RulesStored};
 pub use rule::{MailRule, Match, MatchMode, RuleBody, RuleSet, RulesActivation, TypedRule};
 pub use values::{MailboxPath, RuleAddress, RuleName, RuleValueError};
-pub use vocabulary::{RuleFeature, RuleVocabulary, Support};
+pub use vocabulary::{RuleFeature, RuleLimit, RuleVocabulary, Support};
 
 #[cfg(test)]
 mod import_plan_tests;
+#[cfg(test)]
+mod plan_limit_tests;
 #[cfg(test)]
 mod plan_review_tests;
 #[cfg(test)]

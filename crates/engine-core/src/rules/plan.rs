@@ -1,9 +1,11 @@
 //! What a target keeps of a rule set, decided before anything is sent.
 
 use super::{
-    Action, MailRule, MatchMode, RuleBody, RuleFeature, RuleMailbox, RuleVocabulary, Support,
-    TypedRule,
-    plan_support::{action_support, both, condition_support, sends_out, spans_lines},
+    Action, Condition, MailRule, MatchMode, RuleBody, RuleFeature, RuleLimit, RuleMailbox,
+    RuleVocabulary, Support, TypedRule,
+    plan_support::{
+        action_kind, action_support, both, condition_support, sends_out, spans_lines, test_kind,
+    },
 };
 
 /// Why rules are being planned.
@@ -180,6 +182,10 @@ pub enum LossReason {
 ///   ([`Kept::Disabled`]) unless the import says [`ForwardingRules::Enabled`], and not kept where
 ///   the target cannot store a disabled rule. A user's own edit ([`PlanMode::Edit`]) is written as
 ///   given.
+///
+/// What a target holds part by part it may still not hold together ([`RuleLimit`]): a second
+/// test of one kind is a lost condition or exception, and a second action of one kind a lost
+/// action, judged as any other.
 ///
 /// A rule its source marks in error ([`MailRule::in_error`]) says so
 /// ([`LossReason::SourceInError`]); an import stores it disabled as well, since what it does on
@@ -373,14 +379,27 @@ impl Planned {
         if when.mode == MatchMode::Any && when.conditions.len() > 1 {
             self.require(RulePart::Mode, target.support(RuleFeature::MatchAny));
         }
+        let one_per_kind = target.has_limit(RuleLimit::OneTestPerKind);
+        // A second test of a kind already tested, where the target keeps one per kind.
+        let repeated = |tests: &[Condition], i: usize| {
+            one_per_kind
+                && test_kind(&tests[i]).is_some_and(|kind| {
+                    tests[..i]
+                        .iter()
+                        .any(|t| test_kind(t).as_ref() == Some(&kind))
+                })
+        };
         for (i, condition) in when.conditions.iter().enumerate() {
-            self.require(RulePart::Condition(i), condition_support(condition, target));
+            let support =
+                condition_support(condition, target).filter(|_| !repeated(&when.conditions, i));
+            self.require(RulePart::Condition(i), support);
         }
         for (i, exception) in when.except.iter().enumerate() {
             let support = both(
                 target.support(RuleFeature::Except),
                 condition_support(exception, target),
-            );
+            )
+            .filter(|_| !repeated(&when.except, i));
             self.require(RulePart::Exception(i), support);
         }
         let had_actions = !rule.actions.is_empty();
@@ -420,7 +439,14 @@ impl Planned {
                 .is_some_and(|max| redirects + addresses > max)
             {
                 self.lose(RulePart::Action(i), LossReason::ForwardNotAllowed);
-            } else if self.optional(RulePart::Action(i), action_support(action, target)) {
+            } else if self.optional(RulePart::Action(i), {
+                // A second action of a kind kept already, where the target keeps one per kind.
+                let repeated = target.has_limit(RuleLimit::OneActionPerKind)
+                    && action_kind(action).is_some_and(|kind| {
+                        kept.iter().any(|k| action_kind(k).as_ref() == Some(&kind))
+                    });
+                action_support(action, target).filter(|_| !repeated)
+            }) {
                 redirects += addresses;
                 kept.push(action.clone());
             }
