@@ -17,22 +17,27 @@
 //! - **A byte-exact snapshot** of the listing is taken first; afterwards, settled, the rules it did
 //!   not create must be that snapshot exactly (ids, order, numbers, content), and the count of
 //!   differences is all it prints. Whatever happens, the rules holding the marker are removed.
-//! - **The reply** is kept exactly as read, written once as a reply scheduled for 2099, and only
-//!   once that has settled `PATCH`ed back verbatim; the setting must then settle on the snapshot.
+//! - **The reply** is written only where it is off (`status: disabled`), kept exactly as read,
+//!   written once as a reply scheduled for 2099, and only once that has settled (five matching
+//!   reads a minute apart) `PATCH`ed back verbatim; the setting must then settle on the snapshot
+//!   the same way and still match it five minutes later.
+//! - **Nothing of the mailbox is printed**, on success or failure: comparisons report counts of
+//!   differing rules or fields, never their values.
 //!
 //! Settled by its first run (`graph.md`): a stale `If-Match` on a rule is ignored, `sequence` is a
 //! dense position, clamped to the end, a `PATCH` of `sequence` alone works, a `POST` without a
 //! name is accepted and named by Graph, an id with `=` goes as `%3D`, and `null` clears nothing.
 //! It prints only statuses, counts and numbers.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use engine_core::{
     error::FailureClass,
     ids::{AccountId, MailboxId},
-    mail::{Importance, Keyword, SystemKeyword},
+    mail::{Keyword, SystemKeyword},
     rules::{
-        Action, Condition, HeaderField, MailRule, Match, RuleBody, RuleName, TextOp, TextTest,
+        Action, AddressField, AddressPart, Condition, HeaderField, MailRule, Match, RuleBody,
+        RuleName, TextOp, TextTest,
     },
     time::UtcDateTime,
     vacation::{AutoReply, VacationWindow},
@@ -43,6 +48,12 @@ use serde_json::{Value, json};
 
 const GRAPH: &str = "https://graph.microsoft.com/v1.0";
 const RULES: &str = "/me/mailFolders/inbox/messageRules";
+
+/// Panics with the failure's class alone: a provider error's detail can carry the server's
+/// words, which can echo the mailbox's content.
+fn failed<T>(what: &str, err: &engine_provider::ProviderError) -> T {
+    panic!("{what} failed: {:?}", err.class())
+}
 
 fn account() -> AccountId {
     AccountId::try_from("live").unwrap()
@@ -143,23 +154,38 @@ fn differences(before: &[Value], after: &[Value]) -> usize {
     paired + before.len().abs_diff(after.len())
 }
 
-/// Reads with `read` until `holds` is true of three reads in a row, ten seconds apart, within
-/// five minutes: Graph applies a write some time after answering it.
-async fn settled<T, F, R>(what: &str, read: F, holds: impl Fn(&T) -> bool) -> T
+/// Reads with `read` until `holds` is true of `reads` reads in a row, `gap` apart, within
+/// `reads` × `gap` × 10: Graph applies a write some time after answering it.
+async fn settled_by<T, F, R>(
+    what: &str,
+    reads: u32,
+    gap: Duration,
+    read: F,
+    holds: impl Fn(&T) -> bool,
+) -> T
 where
     F: Fn() -> R,
     R: std::future::Future<Output = T>,
 {
     let mut streak = 0;
-    for _ in 0..30 {
+    for _ in 0..reads * 10 {
         let now = read().await;
         streak = if holds(&now) { streak + 1 } else { 0 };
-        if streak == 3 {
+        if streak == reads {
             return now;
         }
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        tokio::time::sleep(gap).await;
     }
-    panic!("{what} did not settle within five minutes");
+    panic!("{what} did not settle");
+}
+
+/// Three matching reads ten seconds apart: enough for the rules' listing.
+async fn settled<T, F, R>(what: &str, read: F, holds: impl Fn(&T) -> bool) -> T
+where
+    F: Fn() -> R,
+    R: std::future::Future<Output = T>,
+{
+    settled_by(what, 3, Duration::from_secs(10), read, holds).await
 }
 
 fn capture(name: &str, value: &Value) {
@@ -222,6 +248,19 @@ fn tags(rules: &[Value], marker: &str) -> Vec<String> {
     rules.iter().filter_map(|r| tag(r, marker)).collect()
 }
 
+/// The addresses of a rule's `fromAddresses` condition.
+fn senders(rule: &Value) -> usize {
+    rule["conditions"]["fromAddresses"]
+        .as_array()
+        .map_or(0, Vec::len)
+}
+
+fn find<'a>(listed: &'a [Value], marker: &str, wanted: &str) -> Option<&'a Value> {
+    listed
+        .iter()
+        .find(|rule| tag(rule, marker).as_deref() == Some(wanted))
+}
+
 #[tokio::test]
 async fn live_rules_are_written_and_every_rule_the_test_did_not_create_stays_byte_for_byte() {
     let Some(token) = token() else {
@@ -236,8 +275,8 @@ async fn live_rules_are_written_and_every_rule_the_test_did_not_create_stays_byt
         .filter_map(|r| r["sequence"].as_i64())
         .collect();
     let dense: Vec<i64> = (1..=i64::try_from(before.len()).unwrap()).collect();
-    assert_eq!(
-        numbers, dense,
+    assert!(
+        numbers == dense,
         "unexpected state: the rules are not numbered 1 to n; nothing was written"
     );
     let run = tokio::spawn(rule_cycle(token.clone(), marker.clone(), before.len())).await;
@@ -249,45 +288,64 @@ async fn live_rules_are_written_and_every_rule_the_test_did_not_create_stays_byt
     )
     .await;
     let changed = differences(&before, &theirs(&after, &marker));
-    eprintln!("differences from the snapshot: {changed}");
+    let identical = serde_json::to_string(&before).ok() == serde_json::to_string(&after).ok();
+    eprintln!("rules differing from the snapshot: {changed}; byte for byte: {identical}");
     if let Err(panic) = run {
         std::panic::resume_unwind(panic.into_panic());
     }
-    assert_eq!(changed, 0);
-    assert_eq!(
-        Value::Array(before).to_string(),
-        Value::Array(after).to_string(),
-        "the listing is byte for byte the snapshot"
+    assert!(
+        changed == 0 && identical,
+        "{changed} rules differ from the snapshot"
     );
 }
 
 async fn rule_cycle(token: String, marker: String, count: usize) {
     let graph = provider(&token);
     let rules = graph.mail_rules().unwrap();
-    let ours_in = |order: &'static [&'static str]| {
+    let order = |wanted: &'static [&'static str]| {
         let marker = marker.clone();
-        move |listed: &Vec<Value>| tags(listed, &marker) == order
+        move |listed: &Vec<Value>| tags(listed, &marker) == wanted
     };
+    let from = |addresses: &[&str]| Condition::Address {
+        field: AddressField::From,
+        part: AddressPart::All,
+        test: TextTest::new(
+            TextOp::Is,
+            addresses.iter().map(|a| (*a).to_owned()).collect(),
+        )
+        .unwrap(),
+    };
+    let with_senders = |tag: &str, addresses: &[&str]| {
+        let mut rule = subject_rule(&marker, tag, vec![mark_read()]);
+        if let RuleBody::Typed(typed) = &mut rule.body {
+            typed.when.conditions.push(from(addresses));
+        }
+        rule
+    };
+    let two = ["a@example.com", "b@example.com"];
 
-    // Two rules of ours, after every other rule.
-    let base = rules.read_rules(&account()).await.expect("read");
-    let a = subject_rule(
-        &marker,
-        "a",
-        vec![mark_read(), Action::MarkImportance(Importance::Low)],
-    );
-    let b = subject_rule(&marker, "b", vec![mark_read()]);
+    // Five rules of ours, after every other rule.
+    let base = rules
+        .read_rules(&account())
+        .await
+        .unwrap_or_else(|err| failed("read", &err));
     let mut written = base.rules.clone();
-    written.extend([a.clone(), b.clone()]);
+    written.extend([
+        subject_rule(&marker, "a", vec![mark_read()]),
+        subject_rule(&marker, "b", vec![mark_read()]),
+        subject_rule(&marker, "c", vec![mark_read()]),
+        with_senders("d", &two),
+        with_senders("e", &two),
+    ]);
     let receipt = rules
         .replace_rules(&account(), &base, &written)
         .await
-        .expect("create");
+        .unwrap_or_else(|err| failed("create", &err));
     assert_eq!(receipt.failures, Vec::new(), "create");
     let listed = settled(
         "the created rules",
         || listing(&token),
-        ours_in(&["a", "b"]),
+        order(&["a", "b", "c", "d", "e"]),
     )
     .await;
     let numbers: Vec<i64> = listed
@@ -296,72 +354,124 @@ async fn rule_cycle(token: String, marker: String, count: usize) {
         .filter_map(|r| r["sequence"].as_i64())
         .collect();
     eprintln!("created: sequences {numbers:?}");
-    let created = rules.read_rules(&account()).await.expect("read back");
-    for (read, sent) in created.rules[count..].iter().zip([&a, &b]) {
+    let created = rules
+        .read_rules(&account())
+        .await
+        .unwrap_or_else(|err| failed("read back", &err));
+    for (read, sent) in created.rules[count..].iter().zip(&written[count..]) {
         let mut read = read.clone();
         read.origin = None;
-        assert_eq!(&read, sent, "read back as written");
+        assert!(&read == sent, "a rule read back is not the one written");
     }
-    capture(
-        "created_rule",
-        listed.iter().find(|r| ours(r, &marker)).unwrap(),
+    capture("created_rule", find(&listed, &marker, "d").unwrap());
+
+    // A rotation of three: a b c to b c a, by the engine.
+    let mut rotated = created.rules.clone();
+    rotated[count..count + 3].rotate_left(1);
+    let receipt = rules
+        .replace_rules(&account(), &created, &rotated)
+        .await
+        .unwrap_or_else(|err| failed("rotate", &err));
+    assert_eq!(receipt.failures, Vec::new(), "rotate");
+    settled(
+        "the rotation",
+        || listing(&token),
+        order(&["b", "c", "a", "d", "e"]),
+    )
+    .await;
+
+    // Does a PATCH replace a list it is sent shorter? Asked of d alone, by hand.
+    let listed = listing(&token).await;
+    let d_id = find(&listed, &marker, "d").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, _) = send(
+        &token,
+        reqwest::Method::PATCH,
+        &format!("{RULES}/{}", encode(&d_id)),
+        Some(json!({"conditions": {
+            "subjectContains": [format!("{marker}-d")],
+            "fromAddresses": [{"emailAddress": {"address": two[0]}}]
+        }})),
+    )
+    .await;
+    let listed = settled_by(
+        "the shorter list",
+        3,
+        Duration::from_secs(10),
+        || listing(&token),
+        |listed: &Vec<Value>| find(listed, &marker, "d").is_some(),
+    )
+    .await;
+    eprintln!(
+        "PATCH of a list sent shorter: {status}; addresses after: {} of 2",
+        senders(find(&listed, &marker, "d").unwrap())
     );
 
-    // A drops its importance: a new rule in its place, the old one removed.
-    let mut dropped = created.rules.clone();
-    if let RuleBody::Typed(typed) = &mut dropped[count].body {
-        typed.actions = vec![mark_read()];
-    }
-    let receipt = rules
-        .replace_rules(&account(), &created, &dropped)
+    // The engine shortens e's list: a rule written anew in e's place.
+    let now = rules
+        .read_rules(&account())
         .await
-        .expect("drop");
-    assert_eq!(receipt.failures, Vec::new(), "drop");
+        .unwrap_or_else(|err| failed("read", &err));
+    let mut shortened = now.rules.clone();
+    let e = shortened.len() - 1;
+    shortened[e] = with_senders("e", &two[..1]);
+    shortened[e].origin = now.rules[e].origin;
+    let receipt = rules
+        .replace_rules(&account(), &now, &shortened)
+        .await
+        .unwrap_or_else(|err| failed("shorten", &err));
+    assert_eq!(receipt.failures, Vec::new(), "shorten");
     let listed = settled(
-        "the rule written anew",
+        "the shortened rule",
         || listing(&token),
         |listed: &Vec<Value>| {
-            tags(listed, &marker) == ["a", "b"]
-                && listed.iter().any(|r| {
-                    tag(r, &marker).as_deref() == Some("a")
-                        && r["actions"]
-                            .get("markImportance")
-                            .is_none_or(Value::is_null)
-                })
+            tags(listed, &marker) == ["b", "c", "a", "d", "e"]
+                && find(listed, &marker, "e").is_some_and(|e| senders(e) == 1)
         },
     )
     .await;
-    capture(
-        "rule_written_anew",
-        listed.iter().find(|r| ours(r, &marker)).unwrap(),
-    );
+    capture("rule_written_anew", find(&listed, &marker, "e").unwrap());
 
-    // B before A, among our rules only.
-    let before_swap = rules.read_rules(&account()).await.expect("read");
-    let mut swapped = before_swap.rules.clone();
-    swapped.swap(count, count + 1);
+    // A rename, PATCHed in place.
+    let before_rename = rules
+        .read_rules(&account())
+        .await
+        .unwrap_or_else(|err| failed("read", &err));
+    let mut renamed = before_rename.rules.clone();
+    renamed[count].name = Some(RuleName::new(format!("Engine test renamed {marker}")).unwrap());
     let receipt = rules
-        .replace_rules(&account(), &before_swap, &swapped)
+        .replace_rules(&account(), &before_rename, &renamed)
         .await
-        .expect("swap");
-    assert_eq!(receipt.failures, Vec::new(), "swap");
-    let listed = settled("the swap", || listing(&token), ours_in(&["b", "a"])).await;
-    let numbers: Vec<i64> = listed
-        .iter()
-        .filter(|r| ours(r, &marker))
-        .filter_map(|r| r["sequence"].as_i64())
-        .collect();
-    eprintln!("swapped: sequences {numbers:?}");
+        .unwrap_or_else(|err| failed("rename", &err));
+    assert_eq!(receipt.failures, Vec::new(), "rename");
+    settled(
+        "the rename",
+        || listing(&token),
+        |listed: &Vec<Value>| {
+            find(listed, &marker, "b").is_some_and(|b| {
+                b["displayName"]
+                    .as_str()
+                    .is_some_and(|n| n.contains("renamed"))
+            })
+        },
+    )
+    .await;
 
-    // Read before the swap, the base is stale now that the swap has settled.
+    // Read before the rename, the base is stale now that the rename has settled.
     let stale = rules
-        .replace_rules(&account(), &before_swap, &before_swap.rules)
+        .replace_rules(&account(), &before_rename, &before_rename.rules)
         .await
-        .unwrap_err();
+        .err()
+        .unwrap_or_else(|| panic!("a stale write was taken"));
     assert_eq!(stale.class(), FailureClass::Conflict);
 
     // Ours removed through the engine: everything read but our rules.
-    let end = rules.read_rules(&account()).await.expect("read");
+    let end = rules
+        .read_rules(&account())
+        .await
+        .unwrap_or_else(|err| failed("read", &err));
     let without: Vec<MailRule> = end
         .rules
         .iter()
@@ -377,9 +487,9 @@ async fn rule_cycle(token: String, marker: String, count: usize) {
     let receipt = rules
         .replace_rules(&account(), &end, &without)
         .await
-        .expect("remove");
+        .unwrap_or_else(|err| failed("remove", &err));
     assert_eq!(receipt.failures, Vec::new(), "remove");
-    settled("the removal", || listing(&token), ours_in(&[])).await;
+    settled("the removal", || listing(&token), order(&[])).await;
 }
 
 /// Removes every rule holding the marker, and nothing else.
@@ -401,9 +511,25 @@ const SETTING: &str = "/me/mailboxSettings/automaticRepliesSetting";
 /// The reply's setting as Graph answers it, without the context that names the mailbox.
 async fn setting(token: &str) -> Value {
     let (status, mut setting) = send(token, reqwest::Method::GET, SETTING, None).await;
-    assert_eq!(status, 200);
+    assert!(status == 200, "reading the reply answered {status}");
     setting.as_object_mut().unwrap().remove("@odata.context");
     setting
+}
+
+/// How many of `kept`'s fields `now` does not hold as they were, either way.
+fn differing(kept: &Value, now: &Value) -> usize {
+    let (Some(kept), Some(now)) = (kept.as_object(), now.as_object()) else {
+        return usize::MAX;
+    };
+    kept.keys()
+        .chain(now.keys().filter(|key| !kept.contains_key(*key)))
+        .filter(|key| kept.get(*key) != now.get(*key))
+        .count()
+}
+
+/// Five matching reads a minute apart: a `mailboxSettings` write has landed out of order before.
+async fn settled_setting(token: &str, what: &str, holds: impl Fn(&Value) -> bool) -> Value {
+    settled_by(what, 5, Duration::from_secs(60), || setting(token), holds).await
 }
 
 #[tokio::test]
@@ -413,16 +539,20 @@ async fn live_a_reply_scheduled_for_2099_is_written_settled_and_the_setting_rest
         return;
     };
     let kept = setting(&token).await;
+    assert!(
+        kept["status"] == "disabled",
+        "unexpected state: the reply is not off; nothing was written"
+    );
     let graph = provider(&token);
     let before = graph
         .vacation()
         .unwrap()
         .read_vacation(&account())
         .await
-        .expect("read");
+        .unwrap_or_else(|err| failed("read", &err));
     let run = tokio::spawn(reply_cycle(token.clone(), before)).await;
     // Put the setting back exactly as it was read, once the write above has settled (or failed),
-    // and wait until the restore has settled in turn.
+    // wait until the restore has settled in turn, and read once more five minutes later.
     let (restored, _) = send(
         &token,
         reqwest::Method::PATCH,
@@ -430,28 +560,21 @@ async fn live_a_reply_scheduled_for_2099_is_written_settled_and_the_setting_rest
         Some(json!({ "automaticRepliesSetting": kept })),
     )
     .await;
-    let after = settled(
-        "the restored setting",
-        || setting(&token),
-        |now: &Value| *now == kept,
-    )
+    settled_setting(&token, "the restored setting", |now| {
+        differing(&kept, now) == 0
+    })
     .await;
-    let changed = kept
-        .as_object()
-        .unwrap()
-        .iter()
-        .filter(|(key, value)| after.get(key.as_str()) != Some(value))
-        .count();
-    eprintln!("restore: {restored}; properties differing from the snapshot: {changed}");
+    tokio::time::sleep(Duration::from_secs(300)).await;
+    let changed = differing(&kept, &setting(&token).await);
+    eprintln!("restore: {restored}; fields differing five minutes after it settled: {changed}");
     if let Err(panic) = run {
         std::panic::resume_unwind(panic.into_panic());
     }
-    assert!((200..300).contains(&restored));
-    assert_eq!(
-        kept.to_string(),
-        after.to_string(),
-        "the setting is as it was"
+    assert!(
+        (200..300).contains(&restored),
+        "restore answered {restored}"
     );
+    assert!(changed == 0, "{changed} fields differ from the snapshot");
 }
 
 async fn reply_cycle(token: String, before: engine_core::vacation::VacationResponse) {
@@ -469,24 +592,23 @@ async fn reply_cycle(token: String, before: engine_core::vacation::VacationRespo
     let receipt = reply
         .set_vacation(&account(), VacationPrecondition::IfUnchanged(&before), &new)
         .await
-        .expect("write");
+        .unwrap_or_else(|err| failed("write", &err));
     // Graph settles the write later: the receipt names no version.
     assert_eq!(receipt.version, None);
-    let read = settled(
-        "the written reply",
-        || async { reply.read_vacation(&account()).await.expect("read back") },
-        |read: &engine_core::vacation::VacationResponse| read.enabled && read.window == window,
-    )
+    settled_setting(&token, "the written reply", |now| {
+        now["status"] == "scheduled"
+            && now["scheduledStartDateTime"]["dateTime"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("2099-01-01T09:00:00"))
+            && now["internalReplyMessage"]
+                .as_str()
+                .is_some_and(|m| m.contains("Engine live test reply"))
+    })
     .await;
-    assert!(
-        read.reply
-            .html
-            .as_deref()
-            .is_some_and(|html| html.contains("Engine live test reply"))
-    );
     let stale = reply
         .set_vacation(&account(), VacationPrecondition::IfUnchanged(&before), &new)
         .await
-        .unwrap_err();
+        .err()
+        .unwrap_or_else(|| panic!("a stale write was taken"));
     assert_eq!(stale.class(), FailureClass::Conflict);
 }

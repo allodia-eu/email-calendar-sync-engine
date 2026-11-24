@@ -24,6 +24,12 @@ use engine_core::{
 use engine_provider::Provider;
 use provider_graph::{GraphClient, GraphProvider, MailboxPrincipal};
 
+/// Panics with the failure's class alone: a provider error's detail can carry the server's
+/// words, which can echo the mailbox's content.
+fn failed<T>(what: &str, err: &engine_provider::ProviderError) -> T {
+    panic!("{what} failed: {:?}", err.class())
+}
+
 fn account() -> AccountId {
     AccountId::try_from("live").unwrap()
 }
@@ -51,11 +57,14 @@ fn provider(token: String, principal: MailboxPrincipal) -> GraphProvider {
 async fn read_both(graph: &GraphProvider) -> usize {
     let rules = graph.mail_rules().expect("offered");
     let vocabulary = rules.rule_vocabulary(&account()).await.unwrap();
-    let first = rules.read_rules(&account()).await.expect("rules read");
+    let first = rules
+        .read_rules(&account())
+        .await
+        .unwrap_or_else(|err| failed("rules read", &err));
     let again = rules
         .read_rules(&account())
         .await
-        .expect("rules read again");
+        .unwrap_or_else(|err| failed("rules read again", &err));
     assert!(first.version.is_some());
     assert_eq!(
         first.version, again.version,
@@ -66,11 +75,14 @@ async fn read_both(graph: &GraphProvider) -> usize {
         assert_eq!(outcome.kept, Kept::Whole, "{outcome:?}");
     }
     let reply = graph.vacation().expect("offered");
-    let read = reply.read_vacation(&account()).await.expect("reply read");
+    let read = reply
+        .read_vacation(&account())
+        .await
+        .unwrap_or_else(|err| failed("reply read", &err));
     let read_again = reply
         .read_vacation(&account())
         .await
-        .expect("reply read again");
+        .unwrap_or_else(|err| failed("reply read again", &err));
     assert!(read.version.is_some());
     assert_eq!(read.version, read_again.version);
     first.rules.len()
