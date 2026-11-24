@@ -163,26 +163,27 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
         Some(self)
     }
 
-    /// Over ManageSieve, where the host configured it ([`ImapConfig::with_managesieve`]) and its
-    /// greeting at connect did not fail for good; never for a shared mail store, whose rules are
-    /// its owner's. `Some` says the service answered (or may yet), not that signing in works: no
-    /// credential was presented, so a credential ManageSieve does not carry, or a token where the
-    /// server offers only `PLAIN`, fails at the first call.
+    /// Over ManageSieve, where the host configured it ([`ImapConfig::with_managesieve`]) and the
+    /// last probe of its greeting succeeded (at connect, or beside a later dial after a failure
+    /// that may pass or `ImapAccount::invalidate`); never for a shared mail store, whose rules are
+    /// its owner's. `Some` says the service answered, not that signing in works: no credential
+    /// was presented, so a credential ManageSieve does not carry, or a token where the server
+    /// offers only `PLAIN`, fails at the first call.
     ///
     /// [`ImapConfig::with_managesieve`]: crate::ImapConfig::with_managesieve
     fn mail_rules(&self) -> Option<&dyn engine_provider::MailRules> {
         self.sieve
             .as_deref()
+            .filter(|sieve| sieve.available())
             .map(|sieve| sieve as &dyn engine_provider::MailRules)
     }
 
-    /// As [`mail_rules`](Self::mail_rules), where the server also listed `vacation` (or the
-    /// greeting had not finished; each call then checks): the reply is a rule of the same script,
-    /// sharing its version. The same caveat on signing in holds.
+    /// As [`mail_rules`](Self::mail_rules), where the server also listed `vacation`: the reply is
+    /// a rule of the same script, sharing its version. The same caveat on signing in holds.
     fn vacation(&self) -> Option<&dyn engine_provider::Vacation> {
         self.sieve
             .as_deref()
-            .filter(|sieve| sieve.replies())
+            .filter(|sieve| sieve.available() && sieve.replies())
             .map(|sieve| sieve as &dyn engine_provider::Vacation)
     }
 

@@ -109,26 +109,35 @@ impl ImapAccount<TlsStream<TcpStream>> {
             .map(|settings| resolve_smtp(settings, &connector, config));
         // One identity for every connection the account opens, the first included.
         let presented = Arc::new(PresentedIdentity::default());
-        // ManageSieve is probed beside the mail, and never delays it (`crate::managesieve::reach`).
-        let (mail, probed) = {
-            let mut mail = std::pin::pin!(connect_session(config, &presented, &connector));
-            match &config.managesieve {
-                None => (mail.await, None),
-                Some(endpoint) => {
-                    let mut probe = std::pin::pin!(crate::managesieve::probe(endpoint, &connector));
-                    tokio::select! {
-                        biased;
-                        mail = &mut mail => (mail, None),
-                        probed = &mut probe => (mail.await, Some(probed)),
-                    }
-                }
+        // ManageSieve is probed alongside the mail, under its own deadline, so it adds at most
+        // that to the connect (`crate::managesieve::reach`).
+        let (mail, probed) = match &config.managesieve {
+            None => (connect_session(config, &presented, &connector).await, None),
+            Some(endpoint) => {
+                // Boxed, so the two side by side do not make every caller's future large.
+                let (mail, probed) = tokio::join!(
+                    Box::pin(connect_session(config, &presented, &connector)),
+                    Box::pin(crate::managesieve::probe(endpoint, &connector))
+                );
+                (mail, Some(probed))
             }
         };
         let (connection, tls_version) = mail?;
-        let dial = dial_tls(config.clone(), presented, connector.clone());
+        let sieve_slot = Arc::new(OnceLock::new());
+        let dial = dial_tls(
+            config.clone(),
+            presented,
+            connector.clone(),
+            Arc::clone(&sieve_slot),
+        );
         let mut account = Self::build(connection, dial, smtp, config.since, tls_version);
         let budget = Arc::clone(&account.pool) as Arc<dyn Budget>;
-        account.sieve = crate::managesieve::reach(config, &connector, budget, probed);
+        if let Some(sieve) =
+            probed.and_then(|probed| crate::managesieve::reach(config, &connector, budget, probed))
+        {
+            let _ = sieve_slot.set(Arc::clone(&sieve));
+            account.sieve = Some(sieve);
+        }
         Ok(account)
     }
 }
@@ -137,24 +146,38 @@ impl ImapAccount<TlsStream<TcpStream>> {
 /// first connection, from the same config. Each dial asks the config's
 /// [`CredentialSource`](crate::CredentialSource) afresh, so a connection opened an hour after
 /// [`ImapAccount::connect`] presents a token that is valid then, and every one signs in as the
-/// account the first connection signed in as (`presented`).
+/// account the first connection signed in as (`presented`). Where the account's ManageSieve
+/// service wants another probe (after a failure that may pass, or [`ImapAccount::invalidate`]),
+/// the dial runs it alongside (`crate::managesieve::reprobe`).
 fn dial_tls(
     config: ImapConfig,
     presented: Arc<PresentedIdentity>,
     connector: TlsConnector,
+    sieve: SieveSlot,
 ) -> Dial<TlsStream<TcpStream>> {
     let config = Arc::new(config);
     Arc::new(move || {
         let config = Arc::clone(&config);
         let presented = Arc::clone(&presented);
         let connector = connector.clone();
+        let sieve = Arc::clone(&sieve);
         Box::pin(async move {
-            connect_session(&config, &presented, &connector)
-                .await
-                .map(|(connection, _tls_version)| connection)
+            let dial = connect_session(&config, &presented, &connector);
+            Box::pin(crate::managesieve::reprobe(
+                sieve.get().map(Arc::as_ref),
+                &config,
+                &connector,
+                dial,
+            ))
+            .await
+            .map(|(connection, _tls_version)| connection)
         })
     })
 }
+
+/// The account's ManageSieve service, set once the account's first connection is up, for the
+/// dials after it to probe again where it wants that.
+type SieveSlot = Arc<OnceLock<Arc<crate::managesieve::service::ManageSieve<TlsStream<TcpStream>>>>>;
 
 impl<S> ImapAccount<S> {
     /// Builds an account around its first `connection`, advertising submission iff SMTP is
@@ -273,6 +296,10 @@ impl<S> ImapAccount<S> {
     /// watches are untouched, and fail on their own when their socket does.
     pub fn invalidate(&self) {
         self.pool.invalidate();
+        // A new network may reach a ManageSieve service the old one did not, or not reach it.
+        if let Some(sieve) = &self.sieve {
+            sieve.mark_stale();
+        }
     }
 }
 

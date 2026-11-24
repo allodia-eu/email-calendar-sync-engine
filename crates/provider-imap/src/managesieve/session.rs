@@ -279,6 +279,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
         Ok(())
     }
 
+    /// Sends `LOGOUT` and does not wait for its answer: for a session that read what it came for
+    /// and owes the server nothing.
+    pub(crate) async fn leave(mut self) {
+        let _ = self.send(b"LOGOUT\r\n").await;
+    }
+
     /// Ends the session politely. The work is done by then, so a failure here changes nothing.
     pub(crate) async fn logout(&mut self) {
         let _ = self.command(b"LOGOUT", "LOGOUT").await;

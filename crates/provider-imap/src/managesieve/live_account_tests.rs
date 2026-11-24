@@ -12,22 +12,23 @@ use engine_core::{
     vacation::{AutoReply, VacationResponse},
 };
 use engine_provider::{ConnectService, ConnectStep, Credential, VacationPrecondition};
+use tokio::io::AsyncWriteExt;
 
 use super::{
     dial,
     live_provider_tests::{connector, subject_rule, unplaced},
     live_tests::{ONE_AT_A_TIME, address, clean},
     name::ScriptName,
+    reach::PROBE_DEADLINE,
 };
 use crate::{ImapAccount, ImapConfig};
 
 #[tokio::test]
-async fn an_endpoint_that_does_not_answer_neither_delays_the_mail_nor_hides_the_rules() {
+async fn an_endpoint_that_does_not_answer_costs_the_probe_s_deadline_and_hides_the_rules() {
     let Some(imap) = address("stalwart", "STALWART_IMAP_ADDR") else {
         return;
     };
-    // A service that takes the connection and never greets: the probe would wait out its reply
-    // bound, a minute, if the mail waited for it.
+    // A service that takes the connection and never greets.
     let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = silent.local_addr().unwrap().to_string();
     let held = tokio::spawn(async move {
@@ -35,53 +36,103 @@ async fn an_endpoint_that_does_not_answer_neither_delays_the_mail_nor_hides_the_
         tokio::time::sleep(std::time::Duration::from_secs(120)).await;
         drop(accepted);
     });
-    let steps: Arc<Mutex<Vec<(ConnectService, FailureClass)>>> = Arc::default();
-    let seen = Arc::clone(&steps);
-    let config = ImapConfig::new(
-        imap.as_str(),
-        "localhost",
-        Credential::password("carol@test.local", "harness-carol-pw"),
-    )
-    .with_managesieve(addr, "localhost")
-    .with_connect_observer(Arc::new(move |step: &ConnectStep<'_>| {
-        if let ConnectStep::Unavailable { service, class, .. } = step {
-            seen.lock().unwrap().push((*service, *class));
-        }
-    }));
+    let (config, steps) = observed(&imap, &addr);
     let started = std::time::Instant::now();
     let account = ImapAccount::connect(&config, connector())
         .await
         .expect("mail connects whatever Sieve does");
+    let took = started.elapsed();
+    held.abort();
+    // The probe's own deadline, and not the minute its reply bound would allow.
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(20),
-        "{:?}",
-        started.elapsed()
+        took >= PROBE_DEADLINE && took < std::time::Duration::from_secs(20),
+        "{took:?}"
     );
     assert_eq!(
         *steps.lock().unwrap(),
         [(ConnectService::ManageSieve, FailureClass::Retryable)]
     );
-    // Not known to fail for good: offered, and the call fails on its own, as one that may pass.
     let provider = account.provider(MailboxId::try_from("INBOX").unwrap());
-    let rules = engine_provider::Provider::mail_rules(&provider).expect("still offered");
+    assert!(engine_provider::Provider::mail_rules(&provider).is_none());
+    assert!(engine_provider::Provider::vacation(&provider).is_none());
     let id = AccountId::try_from("live-managesieve").unwrap();
     let folders = engine_provider::Provider::sync_mailboxes(&provider, &id, None).await;
     assert!(folders.is_ok(), "the mail works: {folders:?}");
-    held.abort();
-    let unreachable = ImapConfig::new(
-        imap.as_str(),
+}
+
+#[tokio::test]
+async fn after_invalidate_a_service_that_failed_for_good_is_probed_again() {
+    let (Some(imap), Some(sieve)) = (
+        address("stalwart", "STALWART_IMAP_ADDR"),
+        address("stalwart", "STALWART_MANAGESIEVE_ADDR"),
+    ) else {
+        return;
+    };
+    // At first the endpoint greets without `STARTTLS` (a failure that does not pass, so not
+    // probed again by itself); after that it relays to the harness's service.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap();
+    let relay = tokio::spawn(async move {
+        let mut first = true;
+        while let Ok((mut inbound, _)) = listener.accept().await {
+            if std::mem::take(&mut first) {
+                let _ = inbound
+                    .write_all(b"\"IMPLEMENTATION\" \"plain\"\r\nOK\r\n")
+                    .await;
+                continue;
+            }
+            let target = sieve.clone();
+            tokio::spawn(async move {
+                if let Ok(mut outbound) = tokio::net::TcpStream::connect(target).await {
+                    let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                }
+            });
+        }
+    });
+    let (config, steps) = observed(&imap, &port.to_string());
+    let account = ImapAccount::connect(&config, connector()).await.unwrap();
+    let provider = account.provider(MailboxId::try_from("INBOX").unwrap());
+    assert!(engine_provider::Provider::mail_rules(&provider).is_none());
+    assert_eq!(
+        *steps.lock().unwrap(),
+        [(ConnectService::ManageSieve, FailureClass::Permanent)]
+    );
+    // A new network: the next dial probes again.
+    account.invalidate();
+    let id = AccountId::try_from("live-managesieve").unwrap();
+    let folders = engine_provider::Provider::sync_mailboxes(&provider, &id, None).await;
+    relay.abort();
+    assert!(folders.is_ok(), "{folders:?}");
+    assert!(
+        engine_provider::Provider::mail_rules(&provider).is_some(),
+        "offered once a probe succeeded"
+    );
+    assert_eq!(
+        steps.lock().unwrap().len(),
+        1,
+        "one failure, then an answer"
+    );
+}
+
+/// The `Unavailable` steps an observer saw.
+type Steps = Arc<Mutex<Vec<(ConnectService, FailureClass)>>>;
+
+/// carol's account with ManageSieve at `sieve`, and the `Unavailable` steps its observer saw.
+fn observed(imap: &str, sieve: &str) -> (ImapConfig, Steps) {
+    let steps: Steps = Arc::default();
+    let seen = Arc::clone(&steps);
+    let config = ImapConfig::new(
+        imap,
         "localhost",
         Credential::password("carol@test.local", "harness-carol-pw"),
     )
-    .with_managesieve("127.0.0.1:1", "localhost");
-    let account = ImapAccount::connect(&unreachable, connector())
-        .await
-        .unwrap();
-    let provider = account.provider(MailboxId::try_from("INBOX").unwrap());
-    let rules_unreachable = engine_provider::Provider::mail_rules(&provider).unwrap();
-    let err = rules_unreachable.read_rules(&id).await.unwrap_err();
-    assert_eq!(err.class(), FailureClass::Retryable, "{err:?}");
-    let _ = rules;
+    .with_managesieve(sieve, "localhost")
+    .with_connect_observer(Arc::new(move |step: &ConnectStep<'_>| {
+        if let ConnectStep::Unavailable { service, class, .. } = step {
+            seen.lock().unwrap().push((*service, *class));
+        }
+    }));
+    (config, steps)
 }
 
 /// One JMAP call as carol, answering its result's arguments.

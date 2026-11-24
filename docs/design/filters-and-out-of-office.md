@@ -441,13 +441,16 @@ rules and vacation are one script, so both traits are one object and share its v
 As built in slice 3 (`provider-imap/src/managesieve/`): `ImapConfig::with_managesieve(addr,
 server_name)` names the endpoint; `STARTTLS`, the protocol's one transport, is required. When the
 account connects it reads the greeting and what the server offers over TLS, with no credential,
-beside the mail connect and never delaying it (dropped if unfinished when the mail has connected).
+alongside the mail connect (joined, so the outcome never depends on which finishes first), under
+its own 10-second deadline, and leaves without waiting for `LOGOUT`'s answer.
 Where that succeeds the connect observer sees `ConnectStep::Negotiated("ManageSieve", extensions)`
 and `mail_rules()` answers `Some` (`vacation()` too where `vacation` is listed). Where it fails the
 observer sees `ConnectStep::Unavailable { service: ConnectService::ManageSieve, class }`, the class
-alone: a failure that may pass (`Retryable`, or unfinished) leaves both offered, each call failing
-or succeeding on its own, so a blip at connect does not hide them for the account's lifetime; one
-that will not pass (no `STARTTLS`, not ManageSieve) answers `None`, and mail works without them.
+alone, and both answer `None`; mail works without them. The accessors answer what the last probe
+found: a failure that may pass (`Retryable`, a timeout) is probed again beside the account's next
+dial, and `invalidate()` asks for a probe whatever the last one found, so a blip at connect does not
+hide the rules for the account's lifetime. One that will not pass (no `STARTTLS`, not ManageSieve)
+waits for `invalidate()`.
 `Some` says the service answers, not that signing in works: nothing is signed in at connect. Each call opens a session of its own in a
 slot of the account's connection budget (closing a parked IMAP socket when the shelf is full) and
 logs out. The credential is asked as `CredentialProtocol::ManageSieve` for the origin

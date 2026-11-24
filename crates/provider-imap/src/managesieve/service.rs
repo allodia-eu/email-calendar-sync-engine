@@ -39,33 +39,65 @@ pub(crate) type SieveDial<T> =
 pub(crate) struct ManageSieve<T> {
     dial: SieveDial<T>,
     budget: Arc<dyn Budget>,
-    /// Whether the server listed `vacation` when the account connected: where it did not, the
-    /// account has no out-of-office reply to offer.
-    replies: bool,
+    /// Whether the last probe of the service succeeded (`crate::managesieve::reach`): only then
+    /// are the rules and the reply offered.
+    available: AtomicBool,
+    /// Whether the last successful probe found `vacation` listed.
+    replies: AtomicBool,
+    /// Whether the service is to be probed again on the account's next dial: after a failure
+    /// that may pass, or `invalidate()`.
+    stale: AtomicBool,
 }
 
 impl<T> core::fmt::Debug for ManageSieve<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ManageSieve")
-            .field("replies", &self.replies)
+            .field("available", &self.available())
+            .field("replies", &self.lists_vacation())
             .finish_non_exhaustive()
     }
 }
 
 impl<T> ManageSieve<T> {
-    /// The service `dial` signs in to, spending from `budget`; `replies`: whether to offer the
-    /// out-of-office reply (the server listed `vacation`, or is not yet known not to).
+    /// The service `dial` signs in to, spending from `budget`, offered, with the reply where
+    /// `replies`. The account's own service starts unoffered and is offered by its probe
+    /// ([`record`](Self::record)).
     pub(crate) fn new(dial: SieveDial<T>, budget: Arc<dyn Budget>, replies: bool) -> Self {
         Self {
             dial,
             budget,
-            replies,
+            available: AtomicBool::new(true),
+            replies: AtomicBool::new(replies),
+            stale: AtomicBool::new(false),
         }
     }
 
-    /// Whether the out-of-office reply is offered.
+    /// Whether the last probe succeeded.
+    pub(crate) fn available(&self) -> bool {
+        self.available.load(Ordering::SeqCst)
+    }
+
+    /// Whether the last successful probe found `vacation` listed.
     pub(crate) fn lists_vacation(&self) -> bool {
-        self.replies
+        self.replies.load(Ordering::SeqCst)
+    }
+
+    /// Records a probe: offered, with the reply where `replies`, or not offered, and whether to
+    /// probe again on the next dial.
+    pub(crate) fn record(&self, offered: Option<bool>, probe_again: bool) {
+        self.available.store(offered.is_some(), Ordering::SeqCst);
+        self.replies.store(offered == Some(true), Ordering::SeqCst);
+        self.stale.store(probe_again, Ordering::SeqCst);
+    }
+
+    /// Asks for a probe on the account's next dial (`ImapAccount::invalidate`).
+    pub(crate) fn mark_stale(&self) {
+        self.stale.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether a probe is wanted, clearing the want: one dial probes, not every one at once.
+    pub(crate) fn take_stale(&self) -> bool {
+        self.stale.swap(false, Ordering::SeqCst)
     }
 }
 
