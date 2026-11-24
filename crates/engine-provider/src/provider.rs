@@ -9,10 +9,10 @@ use engine_core::{
 };
 
 use crate::{
-    CalendarSync, CalendarWrites, ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, DraftReceipt,
-    EmailStream, HandOver, MailEdit, MailEditReceipt, MailboxWrites, MessageReport, ProviderError,
-    ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SharedAccount,
-    SourceStream, SubmissionReceipt, error::unsupported, sync::jmap_scope,
+    CalendarSync, CalendarWrites, ConnectionInfo, Draft, DraftReceipt, EmailStream, HandOver,
+    MailEdit, MailEditReceipt, MailboxWrites, MessageReport, ProviderError, ProviderResult,
+    ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId, SharedAccount, SourceStream,
+    SubmissionReceipt, error::unsupported, sync::jmap_scope,
 };
 // Named only by intra-doc links, which rustdoc resolves against this module's scope.
 #[allow(unused_imports, reason = "named by intra-doc links only")]
@@ -104,9 +104,7 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
         chunk_size: usize,
     ) -> EmailStream<'a> {
         let _ = (account, cursor, window, fetch_batch, chunk_size);
-        Box::pin(futures_util::stream::once(async {
-            Err(unsupported("mail sync"))
-        }))
+        crate::stream::unsupported_stream()
     }
 
     /// Streams what `widening` newly admits for this scope, keeping `cursor`: called after a
@@ -126,14 +124,7 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
         fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
-        let from = widening.resumes().then_some(cursor);
-        self.stream_email(
-            account,
-            from,
-            widening.to().clone(),
-            fetch_batch,
-            chunk_size,
-        )
+        crate::stream::reopen(self, account, cursor, widening, fetch_batch, chunk_size)
     }
 
     /// Fetches the account's mail objects since `cursor` as a single combined
@@ -155,14 +146,7 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
         account: &AccountId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Message>> {
-        crate::stream::drain_email(self.stream_email(
-            account,
-            cursor,
-            self.default_sync_window().into(),
-            DEFAULT_DRAIN_PAGE,
-            0,
-        ))
-        .await
+        crate::stream::drain_whole(self, account, cursor).await
     }
 
     /// Sends `draft`: creates the message and submits it, filing the sent copy.
