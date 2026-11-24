@@ -43,7 +43,7 @@ use engine_core::{
         RulesReceipt, plan_rules,
     },
 };
-use engine_provider::{ProviderError, ProviderResult, RuleListing};
+use engine_provider::{ProviderResult, RuleListing};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -62,14 +62,9 @@ pub(crate) async fn replace(
     rules: &[MailRule],
 ) -> ProviderResult<RulesReceipt> {
     let plan = plan_rules(rules, &vocabulary(), PlanMode::Edit);
-    let read = RuleListing::base_raw(base)?;
-    Listing::from_raw(read).ok_or_else(RuleListing::unread)?;
+    RuleListing::of_base(base, Listing::from_raw, |read| &read.listing)?;
     let now = Listing::read(client).await?;
-    if now.listing.version() != RuleListing::new(read.as_str()).version() {
-        return Err(ProviderError::conflict(
-            "the mail rules changed since they were read; read them again",
-        ));
-    }
+    now.listing.unchanged_since(base)?;
     let len = now.rules.len();
     let mut keep = BTreeSet::new();
     let mut claimed = BTreeMap::new();
@@ -113,11 +108,13 @@ pub(crate) async fn replace(
     }
     // A rule not kept, whether the plan left it out or its write failed, leaves the rule it
     // claimed as it was read.
-    let left_as_read = now
-        .listing
-        .left_as_read(rules, &write.outcomes, len, |source, index| {
-            claimed.get(&index) == Some(&source)
-        });
+    let left_as_read = now.listing.left_as_read(
+        rules,
+        &write.outcomes,
+        &write.failures,
+        len,
+        |source, index| claimed.get(&index) == Some(&source),
+    );
     // The listing can lag the writes just answered (observed), so a read now names no version a
     // later write could trust: the receipt carries none, and the next write reads first.
     Ok(RulesReceipt::new(None, write.outcomes)

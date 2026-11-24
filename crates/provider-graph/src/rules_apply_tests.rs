@@ -426,3 +426,61 @@ async fn a_patch_keeps_the_names_of_the_recipients_it_sends() {
     let forward = &sent[0].2.as_ref().unwrap()["actions"]["forwardTo"][0]["emailAddress"];
     assert_eq!(forward["name"], "Person 5");
 }
+
+/// The raw form as a host might hand it back after storing it: each object's keys in reverse
+/// order, and spaces and line breaks between them.
+fn re_encoded(raw: &str) -> String {
+    let Value::Array(items) = serde_json::from_str(raw).unwrap() else {
+        panic!("a listing");
+    };
+    let items: Vec<String> = items
+        .iter()
+        .map(|item| {
+            let fields: Vec<String> = item
+                .as_object()
+                .unwrap()
+                .iter()
+                .rev()
+                .map(|(key, value)| format!("\n  {} : {}", json!(key), value))
+                .collect();
+            format!("{{{} }}", fields.join(" ,"))
+        })
+        .collect();
+    format!("[ {} ]\n", items.join(", "))
+}
+
+/// A base whose raw form the host re-encoded is still the listing read: the write goes ahead,
+/// sending what it would have sent for the base as read (here, nothing).
+#[tokio::test]
+async fn a_base_re_encoded_by_the_host_is_accepted() {
+    let (client, log) = client(CAPTURED, vec![]);
+    let mut base = base(&client).await;
+    let raw = base.raw.as_ref().unwrap().as_str().to_owned();
+    let again = re_encoded(&raw);
+    assert_ne!(again, raw);
+    base.raw = Some(engine_core::raw::RawRules::new(again));
+    let rules = base.rules.clone();
+    let receipt = replace(&client, &base, &rules).await.unwrap();
+    assert_eq!(receipt.failures, Vec::new());
+    assert_eq!(writes(&log).len(), 0);
+}
+
+/// A rule whose `PATCH` may have landed (a gateway's `504`: no answer of the server's own) is
+/// not named as left as read: its edit may have applied. One the server refused is.
+#[tokio::test]
+async fn a_rule_whose_write_may_have_landed_is_not_named_left_as_read() {
+    for (status, named) in [(504, false), (400, true)] {
+        let failing = vec![(
+            "messageRules/AQAAAAAAAAk%3D",
+            Err((status, json!({"error": {"code": "Injected"}}))),
+        )];
+        let (client, _log) = client(CAPTURED, failing);
+        let base = base(&client).await;
+        let mut rules = base.rules.clone();
+        rules[8].name = Some(RuleName::new("Renamed").unwrap());
+        let receipt = replace(&client, &base, &rules).await.unwrap();
+        assert_eq!(receipt.outcomes[8].kept, Kept::NotKept, "{status}");
+        assert_eq!(receipt.failures[0].outcome_unknown, !named, "{status}");
+        assert_eq!(receipt.left_as_read.contains(&8), named, "{status}");
+    }
+}

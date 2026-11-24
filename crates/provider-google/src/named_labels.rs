@@ -235,11 +235,16 @@ impl Labels {
             .collect()
     }
 
-    /// Deletes the label `id`, made for a filter not stored after all, and forgets it.
+    /// Deletes the label `id`, made for a filter not stored after all, and forgets it, where it
+    /// holds no message: another device's keyword write may have put the label to use since it was
+    /// made, and then it stays.
     pub(crate) async fn unmake(&self, client: &GoogleClient, id: &str) -> Result<(), GoogleError> {
-        client
-            .delete(&client.url(&format!("{LABELS}/{id}")), None)
-            .await?;
+        let url = client.url(&format!("{LABELS}/{id}"));
+        let label = client.get(&url).await?;
+        if label.get("messagesTotal").and_then(Value::as_u64) != Some(0) {
+            return Ok(());
+        }
+        client.delete(&url, None).await?;
         if let Some(known) = self.known().as_mut() {
             known.0.remove(id);
         }

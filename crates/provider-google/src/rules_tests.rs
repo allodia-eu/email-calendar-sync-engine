@@ -107,9 +107,21 @@ fn what_a_filter_cannot_be_is_decided_by_the_plan() {
         part: AddressPart::All,
         test: TextTest::new(TextOp::Contains, vec!["x".to_owned()]).unwrap(),
     };
+    let words = |field, part| Condition::Address {
+        field,
+        part,
+        test: TextTest::new(TextOp::Words, vec!["x".to_owned()]).unwrap(),
+    };
     let widened = [
         contains(AddressField::From),
         contains(AddressField::ToOrCc),
+        // A word match is Gmail's on the sender with its name alone: `from:` over an address
+        // alone, or `to:` over every recipient, would match more.
+        words(AddressField::From, AddressPart::All),
+        words(AddressField::ToOrCc, AddressPart::WithName),
+        words(AddressField::ToOrCc, AddressPart::All),
+        words(AddressField::To, AddressPart::All),
+        words(AddressField::Cc, AddressPart::WithName),
         Condition::Address {
             field: AddressField::From,
             part: AddressPart::All,
@@ -263,4 +275,25 @@ fn a_subject_that_contains_is_approximated_as_a_condition_and_lost_as_an_excepti
         vec![Action::Discard],
     );
     assert_eq!(plan(exception).kept, Kept::NotKept);
+}
+
+/// Gmail's own actions other than a forward send no mail, so they never take the one forward a
+/// filter holds: a label change kept native, and an action key Gmail may add later
+/// (`rules_read`).
+#[test]
+fn only_a_forward_counts_against_the_one_forward_a_filter_holds() {
+    let read = |action: serde_json::Value| {
+        let filter = json!({"id": "1", "criteria": {"subject": "x"}, "action": action});
+        Listing::new(vec![filter]).rule_set(&named()).rules
+    };
+    let plan = |rules: Vec<MailRule>| {
+        plan_rules(&rules, &vocabulary(&work()), PlanMode::Edit)
+            .outcomes
+            .remove(0)
+    };
+    let labelled = read(json!({"addLabelIds": ["CATEGORY_SOCIAL"],
+        "removeLabelIds": ["SPAM"], "forward": "f@example.net"}));
+    assert_eq!(plan(labelled).kept, Kept::Whole);
+    let unknown = read(json!({"somethingNew": {"x": 1}, "forward": "f@example.net"}));
+    assert_eq!(plan(unknown).kept, Kept::Whole);
 }

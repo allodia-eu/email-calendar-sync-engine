@@ -280,9 +280,12 @@ Implemented as sketched, with these differences, each for a reason the code met:
   vocabulary holds it: a Gmail rule with one is not kept there. Gmail's limits are `RuleLimit`s too
   (slice 5): `ExactExceptions` (an approximated exception is lost: narrowing an exception widens
   the rule), `ImportanceHighOrLow`, `NativeConditionsAllOf`, `PhraseValues` (`rules::is_phrase`:
-  no quote, no control character, not blank, not `me`), `TrashJunkArchiveOnly`; a vocabulary may
+  no quote, no control character, not blank, not `me`), `TrashJunkArchiveOnly`,
+  `WordsOnSubjectAndSender` (a word match on an address only on the sender with its name); a
+  vocabulary may
   hold only some named keywords (`RuleVocabulary::with_keywords`); and a provider's own action that
-  sends mail counts as one address against the redirect limit.
+  sends mail counts as one address against the redirect limit (Gmail's reader marks every action
+  but `forward` as sending none, an action key Gmail may add later included).
 - `LossReason::NotWritten`: a rule-by-rule write asked for a part and did not get it, and the
   receipt's `failures` say why; on the whole rule it is not kept, on its order it is reduced, so no
   outcome reads whole for a rule listed as failed.
@@ -598,7 +601,12 @@ write read, leaves that rule where it is, as it was, and the receipt says so:
 `RulesReceipt::left_as_read` lists it, by its index in the rules handed in. Nothing is removed for
 it. Graph and Gmail do this (Graph's proven offline with its fake, no live Graph write run for it;
 Gmail's live); the question "is the rule as read still there" has one answer,
-`engine_provider::RuleListing::left_as_read`, which both call. A rule written anew whose old copy
+`engine_provider::RuleListing::left_as_read`, which both call. A rule whose write may have landed
+(an outcome-unknown failure: a timeout, a gateway's `502` or `504`) is not named, since its edit
+may have applied. The base check is one answer too: a base is the listing read when its version is
+that of its raw form as the adapter parses it (`RuleListing::of_base`), so a host that re-encoded
+the raw form is still understood, and the listing read now is compared with it by version
+(`RuleListing::unchanged_since`). A rule written anew whose old copy
 could not be removed is `LossReason::LeftBeside`, not `NotWritten`: both run until it goes, so the
 rule is `Reduced` and the account does more than asked meanwhile. The Sieve targets store the set
 as one script and still leave a not-kept rule out of it; giving them the same treatment is a

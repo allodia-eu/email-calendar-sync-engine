@@ -29,6 +29,9 @@ pub(crate) struct Filters {
     pub(crate) failing: BTreeMap<(&'static str, String), u16>,
     /// Every write, as `(method, filter id or "new")`; a label removed as `("DELETE label", id)`.
     pub(crate) writes: Vec<(&'static str, String)>,
+    /// How many messages a label read holds: another device's keyword write, landed between the
+    /// make and the tidy.
+    pub(crate) label_messages: u64,
     /// Whether a create is stored and then answered with a body that does not read.
     pub(crate) unreadable_create: bool,
     /// How often the forwarding addresses were asked.
@@ -93,6 +96,19 @@ impl GoogleTransport for Fake {
         }
         if url.ends_with("/labels") {
             return Ok(json!({ "labels": state.labels }));
+        }
+        if let Some((_, id)) = url.split_once("/labels/") {
+            state.writes.push(("GET label", id.to_owned()));
+            let mut label = state
+                .labels
+                .iter()
+                .find(|held| held["id"] == id)
+                .cloned()
+                .ok_or_else(|| {
+                    GoogleError::status(404, json!({"error": {"code": 404}}).to_string())
+                })?;
+            label["messagesTotal"] = json!(state.label_messages);
+            return Ok(label);
         }
         Err(GoogleError::protocol(format!(
             "no fake route for GET {url}"

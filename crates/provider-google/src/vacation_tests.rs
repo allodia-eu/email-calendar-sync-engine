@@ -282,16 +282,28 @@ async fn a_token_that_may_not_ask_the_affiliation_gets_the_personal_vocabulary()
         assert_eq!(err.class(), FailureClass::Permanent);
         assert!(log.lock().unwrap().iter().all(|r| r.method == "GET"));
     }
-    // Any other failure is still one.
-    let client = fake_client_fallible(vec![(
-        "/oauth2/v3/userinfo",
-        Err((500, json!({"error": {"code": 500}}))),
-    )]);
-    let err = GmailProvider::new(client)
-        .vocabulary(&account())
-        .await
-        .unwrap_err();
-    assert_eq!(err.class(), FailureClass::Retryable);
+    // Any other failure is still one: a throttled or failing ask says nothing of the account.
+    let rate = json!({"error": {"code": 403, "errors": [{"reason": "rateLimitExceeded"}]}});
+    for (status, body, class) in [
+        (
+            500,
+            json!({"error": {"code": 500}}),
+            FailureClass::Retryable,
+        ),
+        (
+            429,
+            json!({"error": {"code": 429}}),
+            FailureClass::RateLimited,
+        ),
+        (403, rate, FailureClass::RateLimited),
+    ] {
+        let client = fake_client_fallible(vec![("/oauth2/v3/userinfo", Err((status, body)))]);
+        let err = GmailProvider::new(client)
+            .vocabulary(&account())
+            .await
+            .unwrap_err();
+        assert_eq!(err.class(), class, "{status}");
+    }
 }
 
 /// A write answered with a success whose body does not read was done: the status says so.

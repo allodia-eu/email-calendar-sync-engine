@@ -633,8 +633,10 @@ scope, known only by asking. The mapping is the Gmail column of
   standing for a keyword (`named_labels`) is that keyword, held only for a keyword the host named;
   `IMPORTANT` added or removed marks the importance high or low (Gmail's own marker,
   approximated); `forward` is a redirect that keeps the message. Every other label change is a
-  native action that sends no mail.
-- **What Gmail refuses, the plan sees** (`RuleLimit`s of `rules::vocabulary`): two of the user's
+  native action that sends no mail, and so is an action key Gmail may add later: Gmail documents
+  three, `forward` is the one that sends, and a Gmail action carries to Gmail alone.
+- **What Gmail refuses, the plan sees** (`RuleLimit`s of `rules::vocabulary`): a word match on an
+  address other than the sender with its name (`WordsOnSubjectAndSender`), two of the user's
   labels on one filter (a folder and a keyword label alike; `400`, observed), a filter with no
   criteria (`400`, observed), a second forward (a native one included), a value no search spells,
   a native condition in an any-of rule or as an exception, an importance neither high nor low,
@@ -652,9 +654,13 @@ scope, known only by asking. The mapping is the Gmail column of
   read as where it is**, and the receipt names it (`RulesReceipt::left_as_read`); only the filters
   no rule names are deleted, last. A forward to an address the account has not verified
   (`settings.forwardingAddresses`, `accepted`), typed or Gmail's own, is held back as
-  `ForwardNotAllowed` before anything is sent; sent anyway, Gmail refuses it
+  `ForwardNotAllowed` before anything is sent. A base is the listing read when its version is that
+  of its raw form as the adapter parses it, so a host that stored the raw form and handed it back
+  re-encoded is still understood (`RuleListing::of_base`); sent anyway, Gmail refuses it
   (`400 failedPrecondition`, observed). A label made for a keyword of a filter then not stored is
-  deleted again. A success whose body does not read counts as done.
+  deleted again, where a read of it shows it still holds no message (`messagesTotal: 0`; a label
+  just made reads so, observed): another device's keyword write may have put it to use since, and
+  then it stays. A success whose body does not read counts as done.
 - **Guards.** Both are `Absent`: a filter and the reply carry no ETag. A write reads again and
   refuses a base that moved as `Conflict`, which narrows the race and does not close it, and
   neither receipt carries a version. Gmail showed every write on the next read (no lag observed).
@@ -665,8 +671,9 @@ scope, known only by asking. The mapping is the Gmail column of
   `ReplyBodies::One` and a reply with both is refused before sending. `restrictToContacts` is
   Contacts, `restrictToDomain` Organization, both ContactsInOrganization; the domain restriction is
   a Workspace account's alone, so the vocabulary asks the affiliation (`userinfo.email`); a token
-  that may not ask (`401`, `403`) gets the personal vocabulary, and a write asks only for a reply
-  limited to the organization.
+  whose grant falls short (a `Permanent` or `Authentication` failure) gets the personal
+  vocabulary, a throttled or failing ask stays an error, and a write asks only for a reply limited
+  to the organization.
 
 Live: `tests/live_rules.rs` (reads), `tests/live_rules_writes.rs` and `tests/live_reply_writes.rs`
 (writes, each behind a gate of its own, `GMAIL_RULES_WRITES=1` and `GMAIL_REPLY_WRITES=1`), all

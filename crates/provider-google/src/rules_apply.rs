@@ -17,7 +17,8 @@
 //!    ([`RulesReceipt::left_as_read`]). Only then are the filters no rule names deleted (one
 //!    already gone is the state asked for).
 //! 5. **No orphan labels.** A label made for a keyword of a filter that was then not stored is
-//!    deleted again, as far as Gmail lets it.
+//!    deleted again where it still holds no message (read first: another device's keyword write may
+//!    have put it to use since), as far as Gmail lets it.
 //!
 //! Each request's failure is a [`RuleWriteFailure`] in the receipt, by position and class, and the
 //! rest go ahead; the rule's outcome says so too ([`LossReason::NotWritten`]). The receipt carries
@@ -31,7 +32,7 @@ use engine_core::rules::{
     FailedRule, Kept, MailRule, PlanMode, RuleOutcome, RulePart, RuleSet, RuleWriteFailure,
     RulesReceipt, plan_rules,
 };
-use engine_provider::{ProviderError, ProviderResult, RuleListing};
+use engine_provider::{ProviderResult, RuleListing};
 use serde_json::Value;
 
 use crate::{
@@ -50,14 +51,9 @@ pub(crate) async fn replace(
     rules: &[MailRule],
 ) -> ProviderResult<RulesReceipt> {
     let plan = plan_rules(rules, &vocabulary(&labels.keywords()), PlanMode::Edit);
-    let read = RuleListing::base_raw(base)?;
-    Listing::from_raw(read).ok_or_else(RuleListing::unread)?;
+    RuleListing::of_base(base, Listing::from_raw, |read| &read.listing)?;
     let now = Listing::read(client).await?;
-    if Some(&now.listing.version()) != base.version.as_ref() {
-        return Err(ProviderError::conflict(
-            "the mail rules changed since they were read; read them again",
-        ));
-    }
+    now.listing.unchanged_since(base)?;
     let named = labels.resolved(client).await?;
     let len = now.filters.len();
     let mut claimed = BTreeMap::new();
@@ -108,11 +104,13 @@ pub(crate) async fn replace(
     }
     write.tidy_labels().await;
     let claims = &write.claimed;
-    let left = now
-        .listing
-        .left_as_read(rules, &write.outcomes, len, |source, index| {
-            claims.get(&index) == Some(&source)
-        });
+    let left = now.listing.left_as_read(
+        rules,
+        &write.outcomes,
+        &write.failures,
+        len,
+        |source, index| claims.get(&index) == Some(&source),
+    );
     Ok(RulesReceipt::new(None, write.outcomes)
         .with_failures(write.failures)
         .with_left_as_read(left))
@@ -253,8 +251,9 @@ impl Write<'_> {
         filter
     }
 
-    /// Deletes the labels this write made for a filter it then did not store. Best effort: a label
-    /// Gmail will not delete stays, holding no message and named in no filter.
+    /// Deletes the labels this write made for a filter it then did not store, where each still
+    /// holds no message: one another device's keyword write put to use meanwhile stays. Best
+    /// effort: a label Gmail will not read or delete stays too, named in no filter.
     async fn tidy_labels(&mut self) {
         let unused: Vec<String> = self
             .made
@@ -293,6 +292,9 @@ impl Write<'_> {
     }
 }
 
+#[cfg(test)]
+#[path = "rules_apply_held_tests.rs"]
+mod held_tests;
 #[cfg(test)]
 #[path = "rules_apply_tests.rs"]
 mod tests;

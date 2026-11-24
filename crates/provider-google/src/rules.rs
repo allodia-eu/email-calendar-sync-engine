@@ -65,7 +65,7 @@ pub(crate) const FILTERS: &str = "/gmail/v1/users/me/settings/filters";
 /// the user's labels per filter; a filter tests something; no system keyword but `$seen` and
 /// `$flagged`; filing only into real folders, and into roles only Trash, Junk and the archive by
 /// a move; an importance high or low; a native condition only among all-of conditions; every value
-/// a phrase.
+/// a phrase; a word match on an address only on the sender with its name.
 #[must_use]
 pub(crate) fn vocabulary(keywords: &BTreeSet<Keyword>) -> RuleVocabulary {
     let approximated = [
@@ -86,6 +86,7 @@ pub(crate) fn vocabulary(keywords: &BTreeSet<Keyword>) -> RuleVocabulary {
         RuleLimit::NativeConditionsAllOf,
         RuleLimit::PhraseValues,
         RuleLimit::TrashJunkArchiveOnly,
+        RuleLimit::WordsOnSubjectAndSender,
     ];
     let vocabulary = approximated
         .into_iter()

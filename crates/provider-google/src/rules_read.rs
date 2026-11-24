@@ -19,7 +19,8 @@
 //!   marker, which the vocabulary calls approximate.
 //! - **`forward`** sends it on, keeping it, as a redirect would (the sender is kept).
 //! - **Any other label change** (an inbox category, `SPAM` removed for "never send it to spam") is
-//!   a native action of its own, which sends no mail.
+//!   a native action of its own, which sends no mail. So is an action key Gmail may add later: only
+//!   `forward` sends, and a Gmail action carries to no other target.
 //!
 //! Reading never fails on a filter: what does not fit a typed part is carried native. A filter has
 //! no name, no order, no stop, and cannot be stored off, so every rule read runs. Its id stays in
@@ -310,10 +311,13 @@ fn actions(action: &Map<String, Value>, named: &NamedLabels) -> Vec<Action> {
     for (key, value) in action {
         let known = matches!(key.as_str(), "addLabelIds" | "removeLabelIds" | "forward");
         if !known && !asks_nothing(value) {
-            out.push(Action::Native(NativeAction::new(
-                NativeKind::Gmail,
-                fragment([(key.as_str(), value)]),
-            )));
+            // Gmail documents three action keys, and `forward` is the one that sends. A key it adds
+            // later is read as sending no mail: a Gmail action carries to Gmail alone, where only
+            // a forward is checked and counted.
+            out.push(Action::Native(
+                NativeAction::new(NativeKind::Gmail, fragment([(key.as_str(), value)]))
+                    .sending_no_mail(),
+            ));
         }
     }
     out

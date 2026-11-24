@@ -26,6 +26,7 @@
 use async_trait::async_trait;
 use engine_core::{
     affiliation::Affiliation,
+    error::FailureClass,
     ids::AccountId,
     raw::RawVacation,
     time::UtcDateTime,
@@ -64,15 +65,23 @@ pub(crate) fn vocabulary(workspace: bool) -> VacationVocabulary {
 }
 
 /// Whether the account is a Workspace one, which alone can limit a reply to its domain. A token
-/// that may not ask (`401` or `403` from `userinfo`, a grant without `userinfo.email`) answers
-/// `false`: the narrower vocabulary, so a reply limited to the organization is refused as one the
-/// account is not known to hold, rather than every vocabulary question failing.
+/// that may not ask (a `Permanent` or `Authentication` failure from `userinfo`: a grant without
+/// `userinfo.email`) answers `false`: the narrower vocabulary, so a reply limited to the
+/// organization is refused as one the account is not known to hold, rather than every vocabulary
+/// question failing. A throttled or failing ask stays an error.
 async fn workspace(client: &GoogleClient) -> ProviderResult<bool> {
     match client.affiliation().await {
         Ok(affiliation) => Ok(matches!(affiliation, Affiliation::Organization(_))),
-        Err(GoogleError::Status {
-            status: 401 | 403, ..
-        }) => Ok(false),
+        // The grant falls short (`401`, or a `403` that is no rate limit): the narrower answer.
+        Err(err)
+            if matches!(
+                err.failure_class(),
+                FailureClass::Permanent | FailureClass::Authentication
+            ) =>
+        {
+            Ok(false)
+        }
+        // Throttled, or failing for a while: that says nothing of the account.
         Err(err) => Err(err.into()),
     }
 }

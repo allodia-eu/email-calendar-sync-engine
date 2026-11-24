@@ -682,7 +682,8 @@ column of `docs/design/filters-and-out-of-office.md` §5; what follows is what t
   its place was not.
 - **An edit that is not kept does not apply.** A rule the plan does not keep, or whose write
   failed, leaves the rule it was read as where it is, as it was, and the receipt names it
-  (`RulesReceipt::left_as_read`); nothing is removed for it. Before this the writer removed the
+  (`RulesReceipt::left_as_read`); nothing is removed for it. A rule whose write may have landed
+  (a timeout, a gateway's `502` or `504`) is not named there: its edit may have applied. Before this the writer removed the
   rule a not-kept edit was read as. Proven offline with the Graph fake (`rules_apply_tests.rs`);
   no live Graph write was run for it. A rule written anew whose old copy could not be removed is
   `LossReason::LeftBeside`: both run until the old one goes.

@@ -329,11 +329,11 @@ fn every_other_label_change_is_native_and_sends_no_mail() {
             native_action(r#"{"removeLabelIds":["STARRED"]}"#),
         ]
     );
-    // An action of a kind this reader has never seen may send mail.
+    // An action key Gmail may add later is read as sending no mail: only `forward` sends.
     let Action::Native(unknown) = &actions[5] else {
         panic!("native");
     };
-    assert!(unknown.sends_mail);
+    assert!(!unknown.sends_mail);
 }
 
 #[test]

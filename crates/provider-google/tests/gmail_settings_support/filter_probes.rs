@@ -27,8 +27,9 @@ async fn try_filter(token: &str, filter: &Value) -> (u16, Value) {
 }
 
 /// Asks, with filters holding `marker` (and, for the one with no criteria, none, deleted by id):
-/// whether Gmail stores two user labels, no criteria, a second identical filter, only a
-/// `negatedQuery`, and a query bracketed as the writer brackets a native one.
+/// whether a label just made reads as holding no message, whether Gmail stores two user labels, no
+/// criteria, a second identical filter, only a `negatedQuery`, and a query bracketed as the writer
+/// brackets a native one.
 pub(crate) async fn ask(token: &str, marker: &str) {
     let mut labels = Vec::new();
     for n in 1..=2 {
@@ -36,7 +37,16 @@ pub(crate) async fn ask(token: &str, marker: &str) {
             "labelListVisibility": "labelHide", "messageListVisibility": "hide"});
         let (status, label) = send(token, Method::POST, "/labels", Some(&body)).await;
         assert_eq!(status, 200, "label create");
-        labels.push(label["id"].as_str().unwrap().to_owned());
+        let id = label["id"].as_str().unwrap().to_owned();
+        // What the writer reads before deleting a label it made: a new one holds no message.
+        let (status, read) = send(token, Method::GET, &format!("/labels/{id}"), None).await;
+        assert_eq!(status, 200, "label read");
+        eprintln!(
+            "a label just made, messagesTotal: {}",
+            read["messagesTotal"]
+        );
+        assert_eq!(read["messagesTotal"], 0, "a new label holds no message");
+        labels.push(id);
     }
     let two = json!({"criteria": {"subject": format!("{marker}-two")},
         "action": {"addLabelIds": labels}});
