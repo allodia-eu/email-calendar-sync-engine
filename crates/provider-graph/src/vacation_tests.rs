@@ -191,7 +191,8 @@ async fn a_guarded_write_reads_again_and_refuses_a_reply_that_moved() {
         .await
         .unwrap();
     assert_eq!(receipt.rules, RulesEffect::Untouched);
-    assert!(receipt.version.is_some());
+    // Graph settles the write later: no read now names its version.
+    assert_eq!(receipt.version, None);
     let sent = patches(&log);
     assert_eq!(sent.len(), 1);
     assert_eq!(

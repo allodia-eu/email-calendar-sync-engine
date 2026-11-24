@@ -70,7 +70,8 @@ async fn the_rules_as_read_are_written_back_with_no_request_but_the_reads() {
     let receipt = replace(&client, &base, &base.rules).await.unwrap();
     assert_eq!(writes(&log).len(), 0);
     assert_eq!(receipt.failures.len(), 0);
-    assert_eq!(receipt.version, base.version);
+    // The listing can lag the writes: the receipt names no version to trust.
+    assert_eq!(receipt.version, None);
     assert!(receipt.outcomes.iter().all(|o| o.kept == Kept::Whole));
 }
 
@@ -133,16 +134,10 @@ async fn a_rule_added_last_is_posted_in_its_place() {
 }
 
 #[tokio::test]
-async fn a_changed_rule_is_patched_whole_with_what_it_dropped_cleared() {
+async fn a_changed_rule_dropping_nothing_is_patched_in_place() {
     let (client, log) = client(CAPTURED, vec![]);
     let base = base(&client).await;
     let mut rules = base.rules.clone();
-    // The first rule loses its forward and its read mark, and gets a new name.
-    if let engine_core::rules::RuleBody::Typed(typed) = &mut rules[0].body {
-        typed
-            .actions
-            .retain(|a| matches!(a, Action::FileInto { .. }));
-    }
     rules[0].name = Some(RuleName::new("Renamed").unwrap());
     let _ = replace(&client, &base, &rules).await.unwrap();
     let sent = writes(&log);
@@ -154,27 +149,50 @@ async fn a_changed_rule_is_patched_whole_with_what_it_dropped_cleared() {
     );
     let body = body.as_ref().unwrap();
     assert_eq!(body["displayName"], "Renamed");
-    assert_eq!(body["actions"]["forwardTo"], Value::Null);
-    assert_eq!(body["actions"]["markAsRead"], false);
     assert_eq!(body["actions"]["stopProcessingRules"], true);
     assert!(body.get("sequence").is_none(), "its place did not move");
 }
 
 #[tokio::test]
-async fn a_rule_put_first_is_posted_first_and_every_rule_after_it_placed_again() {
+async fn a_changed_rule_dropping_a_part_is_created_in_its_place_and_the_old_one_removed() {
+    // Graph keeps on a PATCH what it is asked to clear (observed), so the rule is written anew.
+    let (client, log) = client(CAPTURED, vec![]);
+    let base = base(&client).await;
+    let mut rules = base.rules.clone();
+    if let engine_core::rules::RuleBody::Typed(typed) = &mut rules[0].body {
+        typed
+            .actions
+            .retain(|a| matches!(a, Action::FileInto { .. }));
+    }
+    let receipt = replace(&client, &base, &rules).await.unwrap();
+    assert_eq!(receipt.failures, Vec::new());
+    let sent = writes(&log);
+    assert_eq!(sent.len(), 2);
+    let (method, url, body) = &sent[0];
+    assert_eq!((*method, url.as_str()), ("POST", "messageRules"));
+    let body = body.as_ref().unwrap();
+    assert_eq!(body["sequence"], 1);
+    assert_eq!(body["displayName"], "Example rule 1");
+    assert!(body["actions"].get("forwardTo").is_none());
+    assert!(body["actions"].get("markAsRead").is_none());
+    assert_eq!(
+        (sent[1].0, sent[1].1.as_str()),
+        ("DELETE", "messageRules/AQAAAAAAAAE%3D")
+    );
+}
+
+#[tokio::test]
+async fn a_rule_put_first_is_posted_first_and_no_other_rule_is_sent() {
+    // Graph inserts at the position asked and moves the rest down itself (observed).
     let (client, log) = client(CAPTURED, vec![]);
     let base = base(&client).await;
     let mut rules = vec![new_rule()];
     rules.extend(base.rules.iter().cloned());
     let _ = replace(&client, &base, &rules).await.unwrap();
     let sent = writes(&log);
-    assert_eq!(sent.len(), 10);
+    assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, "POST");
     assert_eq!(sent[0].2.as_ref().unwrap()["sequence"], 1);
-    for (place, (method, _, body)) in sent.iter().enumerate().skip(1) {
-        assert_eq!(*method, "PATCH");
-        assert_eq!(body.as_ref().unwrap(), &json!({"sequence": place + 1}));
-    }
 }
 
 #[tokio::test]
@@ -223,12 +241,13 @@ async fn each_failed_request_lands_in_the_receipt_and_the_rest_go_ahead() {
         .map(|(_, r)| r)
         .collect();
     let receipt = replace(&client, &base, &rules).await.unwrap();
+    // Removals go first, so the positions are those of the rules that stay.
     assert_eq!(
         receipt.failures,
         vec![
-            RuleWriteFailure::new(FailedRule::Written(1), FailureClass::Permanent),
             RuleWriteFailure::new(FailedRule::Removed(2), FailureClass::Retryable)
                 .outcome_unknown(),
+            RuleWriteFailure::new(FailedRule::Written(1), FailureClass::Permanent),
         ]
     );
     // The rule the server refused is not kept as given, and its outcome says so.
@@ -310,13 +329,14 @@ async fn a_read_only_rule_still_in_order_is_in_its_place_and_one_out_of_order_is
             Loss::new(RulePart::Order, LossReason::NotWritten),
         ]
     );
-    // The first follows the third, the read-only one never sent.
+    // The third moves to the top; the read-only one is never sent, and the first is then
+    // already next.
     assert_eq!(
         writes(&log),
         vec![(
             "PATCH",
-            "messageRules/AQAAAAAAAQE%3D".to_owned(),
-            Some(json!({"sequence": 4}))
+            "messageRules/AQAAAAAAAQM%3D".to_owned(),
+            Some(json!({"sequence": 1}))
         )]
     );
 }
@@ -447,10 +467,9 @@ async fn a_rule_id_is_one_percent_encoded_path_segment() {
 }
 
 #[tokio::test]
-async fn a_rule_whose_number_still_fits_is_placed_again_after_one_before_it_moved() {
-    // From 1 2 3 4 5 to 2 1 5 3 4. The fifth's number is above the first's new one, but where
-    // Exchange renumbers the others on each change, the numbers read are stale once the first has
-    // moved: every rule after a move takes the next number.
+async fn moving_rules_sends_only_the_moves_graph_needs() {
+    // From 1 2 3 4 5 to 2 1 5 3 4: moving the second to the top puts the first second, and
+    // moving the fifth to third puts the third and fourth after it.
     let (client, log) = client(CAPTURED, vec![]);
     let base = base(&client).await;
     let mut rules = vec![
@@ -462,21 +481,21 @@ async fn a_rule_whose_number_still_fits_is_placed_again_after_one_before_it_move
     ];
     rules.extend(base.rules[5..].iter().cloned());
     let _ = replace(&client, &base, &rules).await.unwrap();
-    let placed: Vec<(String, Value)> = writes(&log)
-        .into_iter()
-        .map(|(_, url, body)| (url, body.unwrap()["sequence"].clone()))
-        .collect();
-    // The second keeps 2; every rule after the first's move rises from 3.
     assert_eq!(
-        placed[0],
-        ("messageRules/AQAAAAAAAAE%3D".to_owned(), json!(3))
+        writes(&log),
+        vec![
+            (
+                "PATCH",
+                "messageRules/AQAAAAAAAAI%3D".to_owned(),
+                Some(json!({"sequence": 1}))
+            ),
+            (
+                "PATCH",
+                "messageRules/AQAAAAAAAAU%3D".to_owned(),
+                Some(json!({"sequence": 3}))
+            ),
+        ]
     );
-    assert_eq!(
-        placed[1],
-        ("messageRules/AQAAAAAAAAU%3D".to_owned(), json!(4))
-    );
-    let numbers: Vec<u64> = placed.iter().map(|(_, n)| n.as_u64().unwrap()).collect();
-    assert_eq!(numbers, (3..=10).collect::<Vec<_>>());
 }
 
 #[tokio::test]

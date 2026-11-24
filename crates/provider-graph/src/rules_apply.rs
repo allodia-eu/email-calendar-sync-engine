@@ -7,25 +7,29 @@
 //!    rule it was read as is removed with the others left out.
 //! 2. **Refused before sending** where `base` was not read (no version, or a raw form that is not
 //!    the one its version names: `Permanent`), or where the listing moved since (`Conflict`).
-//! 3. **Written in order.** Each written rule is the `messageRule` its origin names in `base`, or a
-//!    new one: a new rule is `POST`ed in its place; one that changed is `PATCH`ed whole, every
-//!    predicate and action it no longer has cleared and its recipients' names kept. Places are
-//!    numbers that only rise through the rules written: a rule keeps its `sequence` while it is
-//!    above the last one placed and nothing before it moved, and otherwise takes the next number,
-//!    so the order holds whether Exchange renumbers the others on each change or keeps the numbers
-//!    given. An unchanged rule in its place is not sent at all.
-//! 4. **Then removed**: every rule of `base` no written rule names is `DELETE`d, after the writes,
-//!    so a failed write never leaves the account with neither the old rule nor the new; one already
-//!    gone is the state asked for.
-//! 5. **Read-only rules are never sent.** One whose number still falls in order is in its place;
-//!    one the caller changed, moved out of order or removed is a `Permanent` failure.
+//!    Graph's listing can lag a write it has just answered (observed: a rule `POST`ed a moment
+//!    earlier was not yet listed), so the check narrows the race and does not close it.
+//! 3. **Removed first**: every rule of `base` no written rule names is `DELETE`d (one already gone
+//!    is the state asked for), so the positions below are those of the rules that stay.
+//! 4. **Written in order, by position.** Graph keeps the rules as a list: `sequence` is a rule's
+//!    position, renumbered on every change, and a number past the end is clamped to it (observed).
+//!    So the writer keeps the server's list as it goes and sends only what moves it: a new rule is
+//!    `POST`ed at the position it takes; a rule elsewhere than its position gets a `PATCH` of its
+//!    `sequence` alone; a rule in place is not sent. Inserting or moving one rule moves no other.
+//! 5. **Changed in place where Graph can.** A changed rule is `PATCH`ed whole, its recipients'
+//!    names kept. Graph does not clear a part on `PATCH`: a predicate, an action or the name sent
+//!    as `null` stays as it was (observed). So a change that drops a part is written as a new rule
+//!    in its place, `POST`ed first, and the old one is `DELETE`d after it; a rule given no name
+//!    gets the name Graph chooses for it (observed).
+//! 6. **Read-only rules are never sent.** One whose position is still right is in its place; one
+//!    the caller changed, moved out of place or removed is a `Permanent` failure.
 //!
 //! Each request's failure is a [`RuleWriteFailure`] in the receipt, by position and class, and the
 //! rest go ahead. The rule's outcome says so too ([`LossReason::NotWritten`]): not kept where the
 //! rule itself was not stored, reduced where only its place was not, so no outcome reads whole for
 //! a rule the receipt lists as failed. A rule the writer cannot place despite the plan is a bug
-//! handled the same way: the server's rule stays as it was. The receipt's version is the listing
-//! read again afterwards.
+//! handled the same way: the server's rule stays as it was. The receipt carries no version: the
+//! listing can lag the writes just made, so the next write reads first.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,7 +41,6 @@ use engine_core::{
         FailedRule, Kept, Loss, LossReason, MailRule, PlanMode, RuleOrigin, RuleOutcome, RulePart,
         RuleSet, RuleWriteFailure, RulesReceipt, plan_rules,
     },
-    version::RuleSetVersion,
 };
 use engine_provider::{ProviderError, ProviderResult};
 use serde_json::{Map, Value, json};
@@ -65,28 +68,31 @@ pub(crate) async fn replace(
             "the mail rules changed since they were read; read them again",
         ));
     }
+    let mut keep = BTreeSet::new();
+    let mut order = Vec::with_capacity(plan.rules.len());
+    for planned in &plan.rules {
+        let existing = existing(&now, &planned.rule).filter(|index| keep.insert(*index));
+        order.push((planned.source, &planned.rule, existing));
+    }
     let mut write = Write {
         client,
         now: &now,
         outcomes: plan.outcomes,
         failures: Vec::new(),
         folders: BTreeMap::new(),
-        last: 0,
-        disturbed: false,
+        live: (0..now.rules.len()).map(Slot::Read).collect(),
+        placed: 0,
+        pending: keep.clone(),
     };
-    let mut kept = BTreeSet::new();
-    for planned in &plan.rules {
-        let existing = existing(&now, &planned.rule).filter(|index| kept.insert(*index));
-        write.one(planned.source, &planned.rule, existing).await;
-    }
-    for index in (0..now.rules.len()).filter(|index| !kept.contains(index)) {
+    for index in (0..now.rules.len()).filter(|index| !keep.contains(index)) {
         write.remove(index).await;
     }
-    let version = Listing::read(client)
-        .await
-        .ok()
-        .map(|after| RuleSetVersion::new(after.version()));
-    Ok(RulesReceipt::new(version, write.outcomes).with_failures(write.failures))
+    for (source, rule, existing) in order {
+        write.one(source, rule, existing).await;
+    }
+    // The listing can lag the writes just answered (observed), so a read now names no version a
+    // later write could trust: the receipt carries none, and the next write reads first.
+    Ok(RulesReceipt::new(None, write.outcomes).with_failures(write.failures))
 }
 
 /// The listing `base` was read from, or a refusal where it was not read: without its version and
@@ -127,11 +133,22 @@ struct Write<'a> {
     failures: Vec<RuleWriteFailure>,
     /// The folder each role resolved to; `None` where the account has none.
     folders: BTreeMap<MailboxRole, Option<MailboxId>>,
-    /// The `sequence` of the last rule placed: every later one is placed above it.
-    last: u64,
-    /// Whether a rule was created or moved, so every later one is placed again: where Exchange
-    /// renumbers the others on a change, the numbers read are stale from there on.
-    disturbed: bool,
+    /// The server's list as the writes leave it, in position order.
+    live: Vec<Slot>,
+    /// How many of `live`'s first entries are final: the rules written so far, and any the
+    /// writer could not move or remove among them.
+    placed: usize,
+    /// The rules read that are still to be written.
+    pending: BTreeSet<usize>,
+}
+
+/// One entry of the server's list.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    /// The rule at this index of the listing read.
+    Read(usize),
+    /// A rule this write created.
+    Created,
 }
 
 /// What part of a rule a failure cost it: the rule as given, or only its place.
@@ -142,63 +159,65 @@ enum Cost {
 }
 
 impl Write<'_> {
-    /// Writes one planned rule: the rule at `existing` in the listing, or a new one.
+    /// Writes one planned rule at the next position: the rule at `existing` in the listing, or a
+    /// new one.
     async fn one(&mut self, source: usize, rule: &MailRule, existing: Option<usize>) {
+        self.skip_unplaced();
         let Some(index) = existing else {
-            let Some(mut body) = self.body(source, rule).await else {
-                return;
-            };
-            let place = self.last + 1;
-            body.insert("sequence".to_owned(), json!(place));
-            let url = self.client.url(RULES);
-            match self
-                .client
-                .post(&url, "application/json", encode(&body))
-                .await
+            if let Some(body) = self.body(source, rule, None).await
+                && self.create(source, body).await
             {
-                Ok(_) => {
-                    self.last = place;
-                    self.disturbed = true;
-                }
-                Err(err) => self.failed(source, Cost::Rule, failure(source, &err)),
+                self.live.insert(self.placed, Slot::Created);
+                self.placed += 1;
             }
+            return;
+        };
+        self.pending.remove(&index);
+        let Some(at) = self.live.iter().position(|slot| *slot == Slot::Read(index)) else {
             return;
         };
         let old = &self.now.rules[index];
-        let current = old.get("sequence").and_then(Value::as_u64);
         let unchanged = self.now.rule(index).as_ref() == Some(rule);
         if read_only(old) {
-            // Never sent. In its place where its number still falls in order.
-            let in_order = current.is_some_and(|number| number > self.last);
+            // Never sent. In its place where its position is already right.
             if !unchanged {
                 self.failed(source, Cost::Rule, refused(source));
-            } else if !in_order {
+            } else if at != self.placed {
                 self.failed(source, Cost::Place, refused(source));
             }
-            if let Some(number) = current.filter(|_| in_order) {
-                self.last = number;
+            if at == self.placed {
+                self.placed += 1;
             }
             return;
         }
-        let place = match current {
-            Some(number) if !self.disturbed && number > self.last => number,
-            _ => self.last + 1,
-        };
         let mut patch = Map::new();
         if !unchanged {
-            let Some(body) = self.body(source, rule).await else {
+            let Some(body) = self.body(source, rule, Some(old)).await else {
+                if at == self.placed {
+                    self.placed += 1;
+                }
                 return;
             };
+            if rules_write::drops(&body, old) {
+                // Graph keeps on a `PATCH` what it is asked to clear: a new rule in its place.
+                if self.create(source, body).await {
+                    self.live.insert(self.placed, Slot::Created);
+                    self.placed += 1;
+                    let at = at + 1;
+                    if self.delete(FailedRule::Removed(index), index).await {
+                        self.live.remove(at);
+                    }
+                }
+                return;
+            }
             patch = body;
-            rules_write::clear_dropped(&mut patch, old);
-            rules_write::keep_names(&mut patch, old);
         }
-        let moved = current != Some(place);
+        let moved = at != self.placed;
         if moved {
-            patch.insert("sequence".to_owned(), json!(place));
+            patch.insert("sequence".to_owned(), json!(self.placed + 1));
         }
         if patch.is_empty() {
-            self.last = place;
+            self.placed += 1;
             return;
         }
         let url = self.rule_url(index);
@@ -208,12 +227,46 @@ impl Write<'_> {
             .await
         {
             Ok(_) => {
-                self.last = place;
-                self.disturbed |= moved;
+                let slot = self.live.remove(at);
+                self.live.insert(self.placed, slot);
+                self.placed += 1;
             }
             Err(err) => {
                 let cost = if unchanged { Cost::Place } else { Cost::Rule };
                 self.failed(source, cost, failure(source, &err));
+                if !moved {
+                    self.placed += 1;
+                }
+            }
+        }
+    }
+
+    /// Steps over the entries at the next position that no written rule will take: a read-only
+    /// rule left out, a rule whose removal failed, a rule left out of place by a failed move.
+    fn skip_unplaced(&mut self) {
+        // Every rule still to be written is found later in the list; what sits at the next
+        // position and is not one of them stays where it is.
+        while let Some(Slot::Read(index)) = self.live.get(self.placed).copied() {
+            if self.pending.contains(&index) {
+                break;
+            }
+            self.placed += 1;
+        }
+    }
+
+    /// `POST`s a new rule at the next position; whether Graph took it.
+    async fn create(&mut self, source: usize, mut body: Map<String, Value>) -> bool {
+        body.insert("sequence".to_owned(), json!(self.placed + 1));
+        let url = self.client.url(RULES);
+        match self
+            .client
+            .post(&url, "application/json", encode(&body))
+            .await
+        {
+            Ok(_) => true,
+            Err(err) => {
+                self.failed(source, Cost::Rule, failure(source, &err));
+                false
             }
         }
     }
@@ -241,6 +294,7 @@ impl Write<'_> {
         };
     }
 
+    /// Removes a rule left out, unless it is read-only.
     async fn remove(&mut self, index: usize) {
         if read_only(&self.now.rules[index]) {
             let refused =
@@ -248,16 +302,21 @@ impl Write<'_> {
             self.failures.push(refused);
             return;
         }
+        if self.delete(FailedRule::Removed(index), index).await {
+            self.live.retain(|slot| *slot != Slot::Read(index));
+        }
+    }
+
+    /// `DELETE`s the rule at `index`; whether it is gone, one already gone included.
+    async fn delete(&mut self, rule: FailedRule, index: usize) -> bool {
         let url = self.rule_url(index);
         match self.client.delete(&url, None).await {
             Err(err) if !is_not_found(&err) => {
-                let failed = with_outcome(
-                    RuleWriteFailure::new(FailedRule::Removed(index), err.failure_class()),
-                    &err,
-                );
+                let failed = with_outcome(RuleWriteFailure::new(rule, err.failure_class()), &err);
                 self.failures.push(failed);
+                false
             }
-            _ => {}
+            _ => true,
         }
     }
 
@@ -270,7 +329,12 @@ impl Write<'_> {
     /// `rule`'s body, or `None` where it is not written, the failure recorded: a folder it names
     /// by role could not be looked up, or the writer cannot place a part the plan let through (a
     /// bug: the server's rule stays as it was).
-    async fn body(&mut self, source: usize, rule: &MailRule) -> Option<Map<String, Value>> {
+    async fn body(
+        &mut self,
+        source: usize,
+        rule: &MailRule,
+        old: Option<&Value>,
+    ) -> Option<Map<String, Value>> {
         for role in roles_needed(rule) {
             if self.folders.contains_key(&role) {
                 continue;
@@ -289,9 +353,11 @@ impl Write<'_> {
             self.folders.insert(role, found);
         }
         let folders = &self.folders;
-        let body = rules_write::body(rule, &|role| folders.get(role).cloned().flatten()).ok();
-        if body.is_none() {
-            self.failed(source, Cost::Rule, refused(source));
+        let mut body = rules_write::body(rule, &|role| folders.get(role).cloned().flatten()).ok();
+        match (&mut body, old) {
+            (None, _) => self.failed(source, Cost::Rule, refused(source)),
+            (Some(body), Some(old)) => rules_write::keep_names(body, old),
+            (Some(_), None) => {}
         }
         body
     }

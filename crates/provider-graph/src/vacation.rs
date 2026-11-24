@@ -13,8 +13,12 @@
 //!   its window where it has one, as the schedule Graph keeps beside `disabled`; with no outside
 //!   reply the external message is the internal one.
 //! - **No write guard on the server**: the setting carries no ETag. The version is a SHA-256 of the
-//!   setting as read, and a guarded write reads it again and refuses as `Conflict` when it moved,
-//!   which narrows the race to one round trip ([`WriteGuard::Absent`]).
+//!   setting as read, and a guarded write reads it again and refuses as `Conflict` when it moved
+//!   ([`WriteGuard::Absent`]). That narrows the race and no more: Graph applies a `mailboxSettings`
+//!   write some time after answering `200`, a read straight after it can show the write while a
+//!   later read shows the one before, and two writes in quick succession may land in either order
+//!   (observed). So the check can pass on a read the server has not settled, and the receipt
+//!   carries no version: a read-back proves nothing.
 //! - **Apart from the rules**: Exchange keeps the reply beside the inbox rules, so a write of one
 //!   never touches the other ([`RulesEffect::Untouched`]).
 
@@ -103,8 +107,10 @@ impl Vacation for GraphProvider {
             )
             .await
             .map_err(GraphError::into_write_error)?;
-        let version = read(client).await.ok().and_then(|after| after.version);
-        Ok(VacationReceipt::new(version, RulesEffect::Untouched))
+        // Graph applies a `mailboxSettings` write after answering it, and two quick writes may
+        // land out of order (observed), so a read now proves nothing: the receipt names no
+        // version, and the next guarded write reads first.
+        Ok(VacationReceipt::new(None, RulesEffect::Untouched))
     }
 }
 

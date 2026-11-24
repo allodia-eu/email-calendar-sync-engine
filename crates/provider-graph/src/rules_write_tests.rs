@@ -14,7 +14,7 @@ use engine_core::{
 };
 use serde_json::{Map, Value, json};
 
-use super::{body, clear_dropped, roles_needed, well_known};
+use super::{body, drops, roles_needed, well_known};
 
 fn test(op: TextOp, value: &str) -> TextTest {
     TextTest::new(op, vec![value.to_owned()]).unwrap()
@@ -273,29 +273,42 @@ fn a_redirect_is_written_only_where_it_keeps_the_message() {
 }
 
 #[test]
-fn a_patch_clears_what_the_old_rule_held_and_the_new_one_does_not() {
+fn a_rule_that_drops_a_part_the_old_one_held_is_told_apart() {
     let old = json!({
-        "conditions": {"subjectContains": ["a"], "hasAttachments": true},
-        "actions": {"moveToFolder": "f", "markAsRead": true},
-        "exceptions": {"bodyContains": ["x"]}
+        "displayName": "Old",
+        "conditions": {"subjectContains": ["a"], "hasAttachments": false},
+        "actions": {"moveToFolder": "f", "markAsRead": true, "delete": false},
+        "exceptions": {}
     });
-    let rule = MailRule::typed(Match::all(vec![subject("b")]), vec![Action::Discard]);
-    let mut new = write(&rule).unwrap();
-    clear_dropped(&mut new, &old);
-    assert_eq!(
-        new["conditions"],
-        json!({"subjectContains": ["b"], "hasAttachments": false})
+    let named = |rule: MailRule| rule.named(RuleName::new("Old").unwrap());
+    let same = named(MailRule::typed(
+        Match::all(vec![subject("b")]),
+        vec![
+            Action::FileInto {
+                mailbox: RuleMailbox::Id(MailboxId::try_from("g").unwrap()),
+                copy: false,
+            },
+            read(),
+        ],
+    ));
+    // Values changed, nothing dropped; a part asking for nothing is no part.
+    assert!(!drops(&write(&same).unwrap(), &old));
+    let fewer = named(MailRule::typed(
+        Match::all(vec![subject("b")]),
+        vec![read()],
+    ));
+    assert!(drops(&write(&fewer).unwrap(), &old));
+    let unnamed = MailRule::typed(
+        Match::all(vec![subject("b")]),
+        vec![
+            Action::FileInto {
+                mailbox: RuleMailbox::Id(MailboxId::try_from("g").unwrap()),
+                copy: false,
+            },
+            read(),
+        ],
     );
-    assert_eq!(
-        new["actions"],
-        json!({"permanentDelete": true, "moveToFolder": null, "markAsRead": false})
-    );
-    assert_eq!(new["exceptions"], json!({"bodyContains": null}));
-    // The new rule has no name: the old one's is cleared.
-    let named = json!({"displayName": "Old"});
-    let mut unnamed = write(&rule).unwrap();
-    clear_dropped(&mut unnamed, &named);
-    assert_eq!(unnamed["displayName"], Value::Null);
+    assert!(drops(&write(&unnamed).unwrap(), &old));
 }
 
 #[test]

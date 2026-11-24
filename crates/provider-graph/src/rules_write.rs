@@ -134,33 +134,30 @@ pub(crate) fn keep_names(new: &mut Map<String, Value>, old: &Value) {
     }
 }
 
-/// Clears in `new` every predicate and action `old` holds that `new` does not, so a `PATCH`
-/// leaves none of the old rule's parts behind whether Graph merges the objects or replaces them:
-/// a flag as `false`, anything else as `null`. A name the rule no longer has is cleared too.
-pub(crate) fn clear_dropped(new: &mut Map<String, Value>, old: &Value) {
-    if old.get("displayName").is_some_and(|name| !name.is_null())
-        && !new.contains_key("displayName")
-    {
-        new.insert("displayName".to_owned(), Value::Null);
+/// Whether `new` drops a part `old` holds: a predicate or an action it asks for, or its name.
+/// Graph keeps such a part on a `PATCH` whatever is sent to clear it (`null` was observed to clear
+/// nothing), so a rule that drops one is written anew.
+pub(crate) fn drops(new: &Map<String, Value>, old: &Value) -> bool {
+    let asks = |value: &Value| match value {
+        Value::Null | Value::Bool(false) => false,
+        Value::Array(items) => !items.is_empty(),
+        _ => true,
+    };
+    let named =
+        |value: Option<&Value>| value.and_then(Value::as_str).is_some_and(|n| !n.is_empty());
+    if named(old.get("displayName")) && !named(new.get("displayName")) {
+        return true;
     }
-    for section in ["conditions", "exceptions", "actions"] {
-        let Some(old) = old.get(section).and_then(Value::as_object) else {
-            continue;
-        };
-        let Some(Value::Object(new)) = new.get_mut(section) else {
-            continue;
-        };
-        for (key, value) in old {
-            if !new.contains_key(key) {
-                let cleared = if value.is_boolean() {
-                    Value::Bool(false)
-                } else {
-                    Value::Null
-                };
-                new.insert(key.clone(), cleared);
-            }
-        }
-    }
+    ["conditions", "exceptions", "actions"]
+        .iter()
+        .any(|section| {
+            let kept = new.get(*section).and_then(Value::as_object);
+            old.get(*section)
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .any(|(key, value)| asks(value) && !kept.is_some_and(|kept| kept.contains_key(key)))
+        })
 }
 
 /// Adds `value` under `key`: a list merges where any-of is meant (`merge`), and otherwise a key
