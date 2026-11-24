@@ -21,9 +21,10 @@ use engine_core::{
     ids::{AccountId, MailboxId},
     mail::Importance,
     rules::{
-        Action, AddressField, AddressPart, Condition, ForwardingRules, Kept, LossReason, MailRule,
-        MailboxPath, Match, NativeCondition, NativeKind, RuleAddress, RuleBody, RuleMailbox,
-        RuleName, RulePart, RulesActivation, RulesStored, TextOp, TextTest, held_forwarding,
+        Action, AddressField, AddressPart, Condition, FolderMap, ForwardingRules, Kept, LossReason,
+        MailRule, MailboxPath, Match, NativeCondition, NativeKind, RuleAddress, RuleBody,
+        RuleMailbox, RuleName, RulePart, RulesActivation, RulesStored, TextOp, TextTest,
+        held_forwarding,
     },
     time::UtcDateTime,
     vacation::{AutoReply, VacationResponse, VacationWindow},
@@ -72,8 +73,9 @@ fn graph_rules(marker: &str) -> Vec<MailRule> {
         test: TextTest::new(TextOp::Contains, vec!["board@example.com".to_owned()]).unwrap(),
     };
     let automatic_reply = NativeCondition::new(NativeKind::Graph, r#"{"isAutomaticReply":true}"#);
+    // A folder by path, as a host names an IMAP target's folders.
     let inbox = || Action::FileInto {
-        mailbox: RuleMailbox::Path(MailboxPath::new("INBOX").unwrap()),
+        mailbox: RuleMailbox::Path(MailboxPath::new("Archive").unwrap()),
         copy: false,
     };
     vec![
@@ -139,7 +141,7 @@ async fn run(label: &str, imap: &str, sieve: &str, user: &str, password: &str) {
     let vocabulary = rules.rule_vocabulary(&id).await.unwrap();
     let preflight = held_forwarding(&wanted, &vocabulary);
     let receipt = importer
-        .import_rules(&id, &wanted, ForwardingRules::Disabled)
+        .import_rules(&id, &wanted, ForwardingRules::Disabled, &FolderMap::new())
         .await
         .unwrap_or_else(|err| panic!("{label}: {err:?}"));
     let kept: Vec<Kept> = receipt
@@ -211,14 +213,28 @@ async fn run(label: &str, imap: &str, sieve: &str, user: &str, password: &str) {
         "{label}: {forward:?}"
     );
 
-    // The reply: where none is held, again for nothing, never over another.
+    // Run again: everything it wrote is already held, and nothing is written.
+    let again = importer
+        .import_rules(&id, &wanted, ForwardingRules::Disabled, &FolderMap::new())
+        .await
+        .unwrap();
+    assert_eq!(again.already_held, [0, 2], "{label}");
+    assert_eq!(again.stored, RulesStored::Unwritten, "{label}");
+    assert_eq!(
+        admin.get_script(&rules_script).await.unwrap(),
+        text,
+        "{label}"
+    );
+
+    // The reply: where none is held, again for nothing, never over another. Its text spans lines,
+    // which the script holds as a `text:` block with CRLF line ends.
     let start = UtcDateTime::new(2030, 1, 2, 9, 0, 0).unwrap();
     let away = VacationResponse::default()
         .with_window(VacationWindow::default().with_start(start))
         .with_reply(
             AutoReply::default()
                 .with_subject("Away")
-                .with_text("I am away."),
+                .with_text("I am away.\nBack on Monday."),
         )
         .turned_on();
     let written = importer

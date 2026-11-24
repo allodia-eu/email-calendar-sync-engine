@@ -26,6 +26,7 @@
 
 mod action;
 mod condition;
+mod folders;
 mod plan;
 mod plan_support;
 mod preflight;
@@ -39,6 +40,7 @@ pub use action::{Action, NativeAction, NativeCondition, NativeKind, RuleMailbox}
 pub use condition::{
     AddressField, AddressPart, Condition, HeaderField, MeField, SizeBound, TextOp, TextTest,
 };
+pub use folders::FolderMap;
 pub use plan::{
     ForwardingRules, Kept, Loss, LossReason, PlanMode, RuleOutcome, RulePart, RulesPlan, plan_rules,
 };

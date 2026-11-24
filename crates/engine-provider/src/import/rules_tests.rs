@@ -2,22 +2,23 @@ use std::sync::Mutex;
 
 use engine_core::{
     error::FailureClass,
+    ids::MailboxId,
     rules::{
-        Action, Condition, HeaderField, Kept, LossReason, MailboxPath, Match, RuleAddress,
-        RuleBody, RuleFeature, RuleMailbox, RuleName, RulePart, RuleVocabulary, RulesActivation,
-        TextOp, TextTest,
+        Action, Condition, FolderMap, HeaderField, Kept, LossReason, MailboxPath, Match,
+        RuleAddress, RuleBody, RuleFeature, RuleMailbox, RuleName, RulePart, RuleVocabulary,
+        RulesActivation, TextOp, TextTest,
     },
-    vacation::{AutoReply, ReplyAudience, VacationVocabulary, VacationWindow, WindowSupport},
+    vacation::{AutoReply, RulesEffect, VacationVocabulary, WindowSupport},
     version::{RuleSetVersion, VacationVersion},
 };
 
 use super::*;
 use crate::{
-    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, MailboxWrites, Provider,
-    WriteGuard, tests::FakeJmap,
+    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, MailboxWrites, Provider, Vacation,
+    VacationPrecondition, WriteGuard, tests::FakeJmap,
 };
 
-fn account() -> AccountId {
+pub(crate) fn account() -> AccountId {
     AccountId::try_from("account").unwrap()
 }
 
@@ -53,6 +54,14 @@ fn rule(name: &str, actions: Vec<Action>) -> MailRule {
     MailRule::typed(Match::all(vec![subject(name)]), actions).named(RuleName::new(name).unwrap())
 }
 
+/// The host's folder map: the source's `src-finance` is the target's `finance`.
+fn folders() -> FolderMap {
+    FolderMap::new().with(
+        MailboxId::try_from("src-finance").unwrap(),
+        MailboxId::try_from("finance").unwrap(),
+    )
+}
+
 fn vocabulary() -> RuleVocabulary {
     RuleVocabulary::new().with_exact([
         RuleFeature::SubjectText(TextOp::Contains),
@@ -66,17 +75,17 @@ fn vocabulary() -> RuleVocabulary {
 }
 
 /// A target with rules and a reply, recording what it was asked to write.
-struct Target {
-    vocabulary: RuleVocabulary,
-    own: RuleSet,
-    replaced: Mutex<Vec<(RuleSet, Vec<MailRule>)>>,
-    refuse_replace: Option<FailureClass>,
-    reply: VacationResponse,
-    replies: Mutex<Vec<(Option<VacationVersion>, VacationResponse)>>,
+pub(crate) struct Target {
+    pub(crate) vocabulary: RuleVocabulary,
+    pub(crate) own: RuleSet,
+    pub(crate) replaced: Mutex<Vec<(RuleSet, Vec<MailRule>)>>,
+    pub(crate) refuse_replace: Option<FailureClass>,
+    pub(crate) reply: VacationResponse,
+    pub(crate) replies: Mutex<Vec<(Option<VacationVersion>, VacationResponse)>>,
 }
 
 impl Target {
-    fn with_own(own: Vec<MailRule>) -> Self {
+    pub(crate) fn with_own(own: Vec<MailRule>) -> Self {
         Self {
             vocabulary: vocabulary(),
             own: RuleSet::new(own).with_version(RuleSetVersion::new("r1")),
@@ -165,9 +174,9 @@ impl RulesImporter for Target {
         account: &AccountId,
         rules: &[MailRule],
         forwarding: ForwardingRules,
+        folders: &FolderMap,
     ) -> ProviderResult<RulesReceipt> {
-        let mailboxes = [MailboxId::try_from("finance").unwrap()].into();
-        append_rules(self, account, rules, forwarding, &mailboxes).await
+        append_rules(self, account, rules, forwarding, folders).await
     }
 
     async fn import_vacation(
@@ -175,7 +184,7 @@ impl RulesImporter for Target {
         account: &AccountId,
         reply: &VacationResponse,
     ) -> ProviderResult<VacationReceipt> {
-        import_reply(self, account, reply).await
+        super::super::import_reply(self, account, reply).await
     }
 }
 
@@ -201,10 +210,10 @@ async fn imported_rules_are_appended_after_the_targets_own_as_they_were_read() {
     let imported = vec![
         rule("forward", vec![redirect()]),
         rule("file", vec![into_id("unmapped"), into("Kept")]),
-        rule("finance", vec![into_id("finance")]),
+        rule("finance", vec![into_id("src-finance")]),
     ];
     let receipt = target
-        .import_rules(&account(), &imported, ForwardingRules::Disabled)
+        .import_rules(&account(), &imported, ForwardingRules::Disabled, &folders())
         .await
         .unwrap();
 
@@ -248,6 +257,7 @@ async fn forwarding_armed_by_the_host_arrives_running() {
             &account(),
             &[rule("forward", vec![redirect()])],
             ForwardingRules::Enabled,
+            &folders(),
         )
         .await
         .unwrap();
@@ -272,6 +282,7 @@ async fn a_target_whose_own_rules_an_edit_would_change_takes_no_import() {
             &account(),
             &[rule("new", vec![into("x")])],
             ForwardingRules::Disabled,
+            &folders(),
         )
         .await
         .unwrap_err();
@@ -282,7 +293,7 @@ async fn a_target_whose_own_rules_an_edit_would_change_takes_no_import() {
     let reduced = rule("y", vec![into("x"), Action::Discard]);
     let target = Target::with_own(vec![reduced]);
     let err = target
-        .import_rules(&account(), &[], ForwardingRules::Disabled)
+        .import_rules(&account(), &[], ForwardingRules::Disabled, &folders())
         .await
         .unwrap_err();
     assert!(err.is_item_unavailable());
@@ -297,13 +308,14 @@ async fn nothing_left_to_add_writes_nothing() {
             &account(),
             &[rule("gone", vec![into_id("unmapped")])],
             ForwardingRules::Disabled,
+            &folders(),
         )
         .await
         .unwrap();
     assert!(target.replaced().is_empty(), "nothing written");
     assert_eq!(receipt.outcomes[0].kept, Kept::NotKept);
     assert_eq!(receipt.version, Some(RuleSetVersion::new("r1")));
-    assert_eq!(receipt.stored, RulesStored::InPlace);
+    assert_eq!(receipt.stored, RulesStored::Unwritten);
     assert_eq!(receipt.activation, RulesActivation::Inactive);
 }
 
@@ -316,68 +328,98 @@ async fn a_failed_write_is_the_targets_own_answer() {
             &account(),
             &[rule("new", vec![into("x")])],
             ForwardingRules::Disabled,
+            &folders(),
         )
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::Conflict);
 }
 
-fn away() -> VacationResponse {
-    VacationResponse::default().turned_on().with_reply(
-        AutoReply::default()
-            .with_subject("Away")
-            .with_text("Back soon"),
-    )
-}
-
 #[tokio::test]
-async fn a_reply_is_imported_where_the_target_holds_none() {
+async fn imported_rules_are_written_as_rules_of_no_script() {
+    // Read from a source script, a rule names that script's segment; a target script with the
+    // same text would otherwise take it for one of its own.
+    let origin = engine_core::rules::RuleOrigin::ScriptSegment {
+        script: 7,
+        index: 1,
+    };
     let target = Target::with_own(Vec::new());
-    let receipt = target.import_vacation(&account(), &away()).await.unwrap();
-    assert_eq!(receipt.version, Some(VacationVersion::new("v2")));
-    let replies = target.replies.lock().unwrap().clone();
-    assert_eq!(replies, [(Some(VacationVersion::new("v1")), away())]);
+    let read = rule("from source", vec![into("x")]).with_origin(origin);
+    let _ = target
+        .import_rules(&account(), &[read], ForwardingRules::Disabled, &folders())
+        .await
+        .unwrap();
+    assert_eq!(target.replaced()[0].1[0].origin, None);
 }
 
 #[tokio::test]
-async fn the_same_reply_again_writes_nothing() {
-    let mut target = Target::with_own(Vec::new());
-    target.reply = away().with_version(VacationVersion::new("v7"));
-    let receipt = target.import_vacation(&account(), &away()).await.unwrap();
-    assert_eq!(receipt.version, Some(VacationVersion::new("v7")));
-    assert_eq!(receipt.rules, RulesEffect::Untouched);
-    assert!(target.replies.lock().unwrap().is_empty());
+async fn a_rule_the_target_already_holds_is_not_written_again() {
+    let disabled_forward = rule("forward", vec![redirect()]).disabled();
+    let own = vec![
+        rule("same", vec![into("z"), into("x")]),
+        // As a first import left it: disabled for review.
+        disabled_forward,
+    ];
+    let target = Target::with_own(own.clone());
+    // The same actions in another order are the same rule: a Sieve writer puts marks first.
+    let imported = vec![
+        rule("same", vec![into("x"), into("z")]),
+        rule("same", vec![into("x"), into("z")]),
+        rule("forward", vec![redirect()]),
+        rule("new", vec![into("y")]),
+        // Not the same: one action twice is not two different ones.
+        rule("same", vec![into("x"), into("x")]),
+    ];
+    let receipt = target
+        .import_rules(&account(), &imported, ForwardingRules::Disabled, &folders())
+        .await
+        .unwrap();
+    // One held `same` answers for one of the two handed in; the forward is held as planned.
+    assert_eq!(receipt.already_held, [0, 2]);
+    let written = &target.replaced()[0].1;
+    assert_eq!(&written[..2], &own[..]);
+    assert_eq!(written[2..].len(), 3, "{written:?}");
+    assert_eq!(written[2].name, imported[1].name);
+    assert_eq!(written[3].name, imported[3].name);
+    assert_eq!(
+        written[4], imported[4],
+        "one action twice is a rule of its own"
+    );
+    assert_eq!(
+        receipt.outcomes.len(),
+        5,
+        "every rule handed in has its outcome"
+    );
+
+    // Run again over what that wrote: nothing is written.
+    let again = Target::with_own(written.clone());
+    let receipt = again
+        .import_rules(&account(), &imported, ForwardingRules::Disabled, &folders())
+        .await
+        .unwrap();
+    assert_eq!(receipt.already_held, [0, 1, 2, 3, 4]);
+    assert_eq!(receipt.stored, RulesStored::Unwritten);
+    assert!(again.replaced().is_empty(), "nothing written");
 }
 
 #[tokio::test]
-async fn a_reply_of_the_targets_own_is_never_replaced() {
-    // On, or off with words of its own: either is the target's.
-    for held in [
-        away().with_reply(AutoReply::default().with_text("Other")),
-        away().turned_off(),
-        VacationResponse::default().with_window(VacationWindow::default().with_start(
-            engine_core::time::UtcDateTime::parse_rfc3339("2026-01-01T00:00:00Z").unwrap(),
-        )),
-        VacationResponse::default().with_audience(ReplyAudience::Contacts),
-    ] {
-        let mut target = Target::with_own(Vec::new());
-        target.reply = held;
-        let err = target
-            .import_vacation(&account(), &away())
-            .await
-            .unwrap_err();
-        assert!(err.is_item_unavailable(), "{err:?}");
-        assert!(target.replies.lock().unwrap().is_empty());
-    }
-}
-
-#[tokio::test]
-async fn a_reply_with_a_part_the_target_cannot_hold_is_refused_whole() {
-    let target = Target::with_own(Vec::new());
-    let html = away().with_outside_reply(AutoReply::default().with_text("Outside"));
-    let err = target.import_vacation(&account(), &html).await.unwrap_err();
-    assert!(err.is_item_unavailable());
-    assert!(target.replies.lock().unwrap().is_empty());
+async fn a_rule_carried_whole_is_never_taken_as_already_held() {
+    let raw = engine_core::rules::RawRule::new(engine_core::rules::RuleSyntax::Sieve, "keep;")
+        .requiring(Vec::new())
+        .sending_no_mail();
+    let mut target = Target::with_own(vec![MailRule::opaque(raw.clone())]);
+    target.vocabulary = vocabulary().with_opaque(engine_core::rules::RuleSyntax::Sieve, Vec::new());
+    let receipt = target
+        .import_rules(
+            &account(),
+            &[MailRule::opaque(raw)],
+            ForwardingRules::Disabled,
+            &folders(),
+        )
+        .await
+        .unwrap();
+    assert!(receipt.already_held.is_empty(), "text is never compared");
+    assert_eq!(target.replaced()[0].1.len(), 2);
 }
 
 /// Reaches the accessor as a host generic over `P: Provider` does, through the `Box` impl.
@@ -389,7 +431,10 @@ fn importer_of<P: Provider + ?Sized>(provider: &P) -> Option<&dyn RulesImporter>
 async fn a_host_holding_a_boxed_provider_reaches_its_rules_importer() {
     let held: Box<dyn Provider> = Box::new(Target::with_own(Vec::new()));
     let importer = importer_of(&held).expect("an adapter that imports rules answers itself");
-    let receipt = importer.import_vacation(&account(), &away()).await.unwrap();
+    let away = VacationResponse::default()
+        .turned_on()
+        .with_reply(AutoReply::default().with_text("Away"));
+    let receipt = importer.import_vacation(&account(), &away).await.unwrap();
     assert_eq!(receipt.version, Some(VacationVersion::new("v2")));
 
     let none: Box<dyn Provider> = Box::new(FakeJmap {

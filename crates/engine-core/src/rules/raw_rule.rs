@@ -33,6 +33,8 @@ pub struct RawRule {
     sends_mail: bool,
     name: Option<RuleName>,
     expansion: Option<Expansion>,
+    folders_by_id: bool,
+    includes: bool,
 }
 
 /// How a script reads the `${…}` a carried rule's strings hold.
@@ -57,6 +59,8 @@ impl RawRule {
             sends_mail: true,
             name: None,
             expansion: None,
+            folders_by_id: false,
+            includes: false,
         }
     }
 
@@ -93,6 +97,36 @@ impl RawRule {
     pub fn named(mut self, name: RuleName) -> Self {
         self.name = Some(name);
         self
+    }
+
+    /// Records that the text names a folder by its id (Sieve's `fileinto :mailboxid`), which is
+    /// its own account's (builder-style).
+    #[must_use]
+    pub fn naming_folders_by_id(mut self) -> Self {
+        self.folders_by_id = true;
+        self
+    }
+
+    /// Whether the text names a folder by its id: an import does not carry it, since the id is
+    /// the source's.
+    #[must_use]
+    pub fn names_folders_by_id(&self) -> bool {
+        self.folders_by_id
+    }
+
+    /// Records that the text runs another script of its account (Sieve's `include`)
+    /// (builder-style).
+    #[must_use]
+    pub fn including_scripts(mut self) -> Self {
+        self.includes = true;
+        self
+    }
+
+    /// Whether the text runs another script of its account: an import does not carry it, since
+    /// the script is the source's.
+    #[must_use]
+    pub fn includes_scripts(&self) -> bool {
+        self.includes
     }
 
     /// The rule's language.
@@ -133,6 +167,8 @@ impl fmt::Debug for RawRule {
             .field("len", &self.text.len())
             .field("requires", &self.requires)
             .field("sends_mail", &self.sends_mail)
+            .field("folders_by_id", &self.folders_by_id)
+            .field("includes", &self.includes)
             .finish_non_exhaustive()
     }
 }

@@ -23,6 +23,7 @@ mod calendar;
 pub mod conformance;
 mod contact;
 mod message;
+mod reply;
 mod rules;
 
 use std::sync::Arc;
@@ -35,7 +36,8 @@ use engine_core::{
     sync::SyncState,
 };
 pub use message::{ImportedMessage, MailImportLimits, MessageImport};
-pub use rules::{RulesImporter, append_rules, import_reply};
+pub use reply::import_reply;
+pub use rules::{RulesImporter, append_rules};
 
 use crate::{ProviderError, ProviderResult};
 

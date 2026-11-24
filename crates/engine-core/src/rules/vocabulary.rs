@@ -2,8 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{NativeKind, RawRule, RuleSyntax, TextOp};
-use crate::ids::MailboxId;
+use super::{FolderMap, NativeKind, RawRule, RuleSyntax, TextOp};
 
 /// One thing a rule can say, as a target either can or cannot hold it.
 ///
@@ -101,7 +100,7 @@ pub struct RuleVocabulary {
     max_redirects: Option<usize>,
     opaque: Option<(RuleSyntax, BTreeSet<String>)>,
     native: Option<NativeKind>,
-    mailboxes: Option<BTreeSet<MailboxId>>,
+    folders: Option<FolderMap>,
 }
 
 impl RuleVocabulary {
@@ -162,23 +161,22 @@ impl RuleVocabulary {
         self
     }
 
-    /// Files by id only into `mailboxes`, the account's own folders (builder-style): what an
-    /// importer knows of its target, so a rule naming a folder the host could not map to one of
-    /// them loses that action as [`MissingMailbox`](super::LossReason::MissingMailbox) rather than
-    /// filing into a folder that is not there. Without it, any id is taken as the account's.
+    /// Files by id only into the target folders `folders` maps a source folder to, each written
+    /// as the target's id (builder-style): what an importer knows of its pair. A rule naming a
+    /// folder the map does not hold loses that action as
+    /// [`MissingMailbox`](super::LossReason::MissingMailbox), rather than filing into whatever
+    /// folder of the target's own has that id. Without it, an id is the account's own, as an edit
+    /// has it.
     #[must_use]
-    pub fn with_mailboxes(mut self, mailboxes: impl IntoIterator<Item = MailboxId>) -> Self {
-        self.mailboxes = Some(mailboxes.into_iter().collect());
+    pub fn with_folders(mut self, folders: FolderMap) -> Self {
+        self.folders = Some(folders);
         self
     }
 
-    /// Whether a rule may file into the folder `id`: it is one of the account's folders, or
-    /// they are not known ([`with_mailboxes`](Self::with_mailboxes)).
+    /// The source folders an import maps to the target's ([`with_folders`](Self::with_folders)).
     #[must_use]
-    pub fn has_mailbox(&self, id: &MailboxId) -> bool {
-        self.mailboxes
-            .as_ref()
-            .is_none_or(|mailboxes| mailboxes.contains(id))
+    pub fn folders(&self) -> Option<&FolderMap> {
+        self.folders.as_ref()
     }
 
     /// How the language holds `feature`, or `None` where it cannot.

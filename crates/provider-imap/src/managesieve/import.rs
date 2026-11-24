@@ -2,18 +2,17 @@
 //! the engine's one import ([`append_rules`], [`import_reply`]) over this service's own
 //! [`MailRules`](engine_provider::MailRules) and [`Vacation`](engine_provider::Vacation).
 //!
-//! No folder is known by id here. A Sieve `fileinto :mailboxid` names a folder by its RFC 8474
-//! `MAILBOXID`, which this adapter does not read: its folder ids are their names. So a rule that
-//! files by id is lost as `MissingMailbox` rather than written with an id the server would not
-//! know (it would file into the inbox, RFC 9042's fallback); a host names an IMAP target's
-//! folders by path.
-
-use std::collections::BTreeSet;
+//! No rule files by id here (`crate::managesieve::rules`): a Sieve `fileinto :mailboxid` names a
+//! folder by its RFC 8474 `MAILBOXID`, which this adapter does not read, its folder ids being
+//! their names. So a rule filing by id loses that action, as `MissingMailbox` where the host's
+//! folder map does not hold the folder and as `NotExpressible` where it does, rather than being
+//! written with an id the server would not know (it would file into the inbox, RFC 9042's
+//! fallback); a host names an IMAP target's folders by path.
 
 use async_trait::async_trait;
 use engine_core::{
     ids::AccountId,
-    rules::{ForwardingRules, MailRule, RulesReceipt},
+    rules::{FolderMap, ForwardingRules, MailRule, RulesReceipt},
     vacation::{VacationReceipt, VacationResponse},
 };
 use engine_provider::{
@@ -31,8 +30,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> RulesImporter for Manag
         account: &AccountId,
         rules: &[MailRule],
         forwarding: ForwardingRules,
+        folders: &FolderMap,
     ) -> ProviderResult<RulesReceipt> {
-        append_rules(self, account, rules, forwarding, &BTreeSet::new()).await
+        append_rules(self, account, rules, forwarding, folders).await
     }
 
     /// Refused, as [`Vacation`](engine_provider::Vacation) refuses, where the server lists no

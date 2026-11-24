@@ -46,3 +46,18 @@ fn rules_from_another_script_are_left_as_they_are() {
     let other = format!("{SCRIPT}keep;\r\n");
     assert_eq!(folder_ids_carried(&other, typed.clone()), typed);
 }
+
+#[test]
+fn a_rule_carried_whole_says_whether_it_names_a_folder_by_id_or_runs_another_script() {
+    let script = "require [\"fileinto\",\"mailboxid\",\"include\"];\r\nfileinto :mailboxid \"a\" \
+                  \"Other\";\r\ninclude :personal \"more\";\r\nkeep;\r\n";
+    let rules = read_rules(script);
+    let facts: Vec<(bool, bool)> = rules
+        .iter()
+        .map(|rule| match &rule.body {
+            RuleBody::Opaque(raw) => (raw.names_folders_by_id(), raw.includes_scripts()),
+            _ => panic!("carried whole"),
+        })
+        .collect();
+    assert_eq!(facts, [(true, false), (false, true), (false, false)]);
+}

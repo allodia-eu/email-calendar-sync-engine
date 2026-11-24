@@ -30,45 +30,114 @@ fn by_id() -> RuleVocabulary {
     rich().with_exact([RuleFeature::FileIntoId])
 }
 
+/// The host's map: the source's `src-finance` is the target's `finance`.
+fn folders() -> FolderMap {
+    FolderMap::new().with(id("src-finance"), id("finance"))
+}
+
 #[test]
-fn a_folder_id_the_target_does_not_have_is_a_missing_mailbox() {
-    let target = by_id().with_mailboxes([id("finance")]);
-    let rule = MailRule::typed(
-        Match::all(vec![subject("a")]),
-        vec![into_id("unmapped"), mark_read()],
-    );
-    let (written, outcome) = one(&rule, &target, IMPORT);
-    assert_eq!(outcome.kept, Kept::Reduced);
-    assert_eq!(
-        outcome.losses,
-        vec![loss(RulePart::Action(0), LossReason::MissingMailbox)]
-    );
+fn a_folder_id_is_written_as_the_targets_and_one_the_host_did_not_map_is_missing() {
+    let target = by_id().with_folders(folders());
+    let mapped = MailRule::typed(Match::all(vec![subject("a")]), vec![into_id("src-finance")]);
+    let (written, outcome) = one(&mapped, &target, IMPORT);
+    assert_eq!(outcome.kept, Kept::Whole);
     let Some(RuleBody::Typed(written)) = written.map(|rule| rule.body) else {
         panic!("the rule is written typed");
     };
-    assert_eq!(written.actions, vec![mark_read()]);
+    assert_eq!(written.actions, vec![into_id("finance")], "the target's id");
 
+    // An id the host did not map loses its action, even one the target happens to have: ids repeat
+    // across accounts, so the source's `finance` is not the target's.
+    for unmapped in ["unmapped", "finance"] {
+        let rule = MailRule::typed(
+            Match::all(vec![subject("a")]),
+            vec![into_id(unmapped), mark_read()],
+        );
+        let (written, outcome) = one(&rule, &target, IMPORT);
+        assert_eq!(outcome.kept, Kept::Reduced, "{unmapped}");
+        assert_eq!(
+            outcome.losses,
+            vec![loss(RulePart::Action(0), LossReason::MissingMailbox)]
+        );
+        let Some(RuleBody::Typed(written)) = written.map(|rule| rule.body) else {
+            panic!("the rule is written typed");
+        };
+        assert_eq!(written.actions, vec![mark_read()]);
+    }
     // Filing into it was all it did: nothing is left to do.
     let only = MailRule::typed(Match::all(vec![subject("a")]), vec![into_id("unmapped")]);
     assert_eq!(one(&only, &target, IMPORT).1.kept, Kept::NotKept);
-    // A folder the target has is kept, and so is any id where the target's folders are not known.
-    let mapped = MailRule::typed(Match::all(vec![subject("a")]), vec![into_id("finance")]);
-    assert_eq!(one(&mapped, &target, IMPORT).1.kept, Kept::Whole);
-    assert_eq!(one(&only, &by_id(), IMPORT).1.kept, Kept::Whole);
-    assert!(target.has_mailbox(&id("finance")));
-    assert!(!target.has_mailbox(&id("unmapped")));
-    assert!(by_id().has_mailbox(&id("unmapped")));
+    // Without a map, an id is the account's own, as an edit has it.
+    assert_eq!(one(&only, &by_id(), PlanMode::Edit).1.kept, Kept::Whole);
 }
 
 #[test]
 fn a_missing_mailbox_is_reported_where_the_target_cannot_file_by_id_at_all_too() {
     // The folder has no counterpart: that is the reason, whatever else the target lacks.
-    let target = rich().with_mailboxes([id("finance")]);
+    let target = rich().with_folders(folders());
     let rule = MailRule::typed(Match::default(), vec![into_id("unmapped"), mark_read()]);
     assert_eq!(
         one(&rule, &target, IMPORT).1.losses,
         vec![loss(RulePart::Action(0), LossReason::MissingMailbox)]
     );
+    // Mapped, it is the target that cannot file by id.
+    let rule = MailRule::typed(Match::default(), vec![into_id("src-finance"), mark_read()]);
+    assert_eq!(
+        one(&rule, &target, IMPORT).1.losses,
+        vec![loss(RulePart::Action(0), LossReason::NotExpressible)]
+    );
+}
+
+#[test]
+fn a_folder_map_shows_no_id_in_its_debug() {
+    let map = folders().with(id("secret-source"), id("secret-target"));
+    assert_eq!(map.target(&id("src-finance")), Some(&id("finance")));
+    assert_eq!(map.len(), 2);
+    let shown = format!("{map:?} {:?}", by_id().with_folders(map.clone()));
+    assert!(
+        !shown.contains("secret") && !shown.contains("finance"),
+        "{shown}"
+    );
+    let collected: FolderMap = map.iter().map(|(a, b)| (a.clone(), b.clone())).collect();
+    assert_eq!(collected, map);
+    assert!(FolderMap::new().is_empty());
+}
+
+#[test]
+fn an_import_carries_no_rule_whose_text_names_a_folder_by_id_or_another_script() {
+    let target = rich().with_opaque(
+        RuleSyntax::Sieve,
+        ["mailboxid".to_owned(), "include".to_owned()],
+    );
+    let enabled = PlanMode::Import {
+        forwarding: ForwardingRules::Enabled,
+    };
+    let by_id = MailRule::opaque(
+        RawRule::new(RuleSyntax::Sieve, "fileinto :mailboxid \"a\" \"INBOX\";")
+            .requiring(["mailboxid".to_owned()])
+            .sending_no_mail()
+            .naming_folders_by_id(),
+    );
+    let (written, outcome) = one(&by_id, &target, enabled);
+    assert_eq!(written, None);
+    assert_eq!(
+        outcome.losses,
+        vec![loss(RulePart::Rule, LossReason::MissingMailbox)]
+    );
+    let include = MailRule::opaque(
+        RawRule::new(RuleSyntax::Sieve, "include :personal \"vacation\";")
+            .requiring(["include".to_owned()])
+            .including_scripts(),
+    );
+    let (written, outcome) = one(&include, &target, enabled);
+    assert_eq!(written, None);
+    assert_eq!(
+        outcome.losses,
+        vec![loss(RulePart::Rule, LossReason::NotExpressible)]
+    );
+    // An edit of the account's own carries both.
+    assert_eq!(one(&by_id, &target, PlanMode::Edit).1.kept, Kept::Whole);
+    assert_eq!(one(&include, &target, PlanMode::Edit).1.kept, Kept::Whole);
 }
 
 /// One rule of each kind an import changes, for a target that takes them in some form.
@@ -84,7 +153,10 @@ fn imported() -> Vec<MailRule> {
         .stopping(),
         MailRule::typed(
             Match::all(vec![subject("c")]),
-            vec![Action::MarkImportance(Importance::High), into_id("finance")],
+            vec![
+                Action::MarkImportance(Importance::High),
+                into_id("src-finance"),
+            ],
         ),
         MailRule::typed(
             Match::all(vec![subject("d")]),
@@ -106,7 +178,8 @@ fn approximating() -> RuleVocabulary {
 fn a_planned_import_written_again_as_an_edit_is_written_as_planned() {
     // An importer writes the planned rules through the target's own edit, which plans them
     // again: that second plan must keep every one exactly as the first wrote it.
-    let target = approximating().with_mailboxes([id("finance")]);
+    let target =
+        approximating().with_folders(FolderMap::new().with(id("src-finance"), id("finance")));
     let plan = plan_rules(&imported(), &target, IMPORT);
     let outcomes: Vec<Kept> = plan.outcomes.iter().map(|outcome| outcome.kept).collect();
     assert_eq!(

@@ -136,8 +136,9 @@ pub enum LossReason {
     NotExpressible,
     /// Carried with a stated difference.
     Approximated,
-    /// The folder it names has no counterpart on the target: an id the host could not map to one
-    /// of the target's folders ([`RuleVocabulary::with_mailboxes`]).
+    /// The folder it names has no counterpart on the target: an id the host's folder map does
+    /// not hold ([`RuleVocabulary::with_folders`]), or a rule carried whole that names a folder
+    /// by id.
     MissingMailbox,
     /// The target refuses to send mail on there: too many addresses, an address it has not
     /// verified, or a forwarding rule an import arms only on request.
@@ -263,11 +264,8 @@ impl Planned {
                     self.lose(RulePart::Enabled, LossReason::NotExpressible);
                     self.fatal = true;
                 }
-                // Its `${` means what its own script made of it, and may name a variable another
-                // of that script's commands sets: it does not move to another script.
-                if raw.expansion().is_some() && matches!(mode, PlanMode::Import { .. }) {
-                    self.lose(RulePart::Rule, LossReason::NotExpressible);
-                    self.fatal = true;
+                if matches!(mode, PlanMode::Import { .. }) {
+                    self.imported_whole(raw);
                 }
             }
             RuleBody::Typed(typed) => self.typed(typed, target),
@@ -322,6 +320,21 @@ impl Planned {
         written
     }
 
+    /// What a rule carried whole cannot take to another account: its `${`, which means what its
+    /// own script made of it and may name a variable another of that script's commands sets; a
+    /// folder it names by id, which is the source's; and another script it runs, which is the
+    /// source's too.
+    fn imported_whole(&mut self, raw: &super::RawRule) {
+        if raw.expansion().is_some() || raw.includes_scripts() {
+            self.lose(RulePart::Rule, LossReason::NotExpressible);
+            self.fatal = true;
+        }
+        if raw.names_folders_by_id() {
+            self.lose(RulePart::Rule, LossReason::MissingMailbox);
+            self.fatal = true;
+        }
+    }
+
     fn typed(&mut self, rule: &mut TypedRule, target: &RuleVocabulary) {
         let when = &rule.when;
         if when.mode == MatchMode::Any && when.conditions.len() > 1 {
@@ -347,14 +360,29 @@ impl Planned {
                 Action::Redirect { to, .. } | Action::Forward { to } => to.len(),
                 _ => 0,
             };
-            if let Action::FileInto {
-                mailbox: RuleMailbox::Id(id),
-                ..
-            } = action
-                && !target.has_mailbox(id)
-            {
-                self.lose(RulePart::Action(i), LossReason::MissingMailbox);
-            } else if target
+            // An import files into the target's counterpart of a source folder, or nowhere.
+            let mapped;
+            let action = match (action, target.folders()) {
+                (
+                    Action::FileInto {
+                        mailbox: RuleMailbox::Id(id),
+                        copy,
+                    },
+                    Some(folders),
+                ) => {
+                    let Some(to) = folders.target(id) else {
+                        self.lose(RulePart::Action(i), LossReason::MissingMailbox);
+                        continue;
+                    };
+                    mapped = Action::FileInto {
+                        mailbox: RuleMailbox::Id(to.clone()),
+                        copy: *copy,
+                    };
+                    &mapped
+                }
+                _ => action,
+            };
+            if target
                 .max_redirects()
                 .is_some_and(|max| redirects + addresses > max)
             {

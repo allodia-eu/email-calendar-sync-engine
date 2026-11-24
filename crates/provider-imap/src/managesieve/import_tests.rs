@@ -4,8 +4,9 @@
 use engine_core::{
     mail::{Keyword, SystemKeyword},
     rules::{
-        Action, Condition, HeaderField, Kept, LossReason, MailboxPath, Match, RuleAddress,
-        RuleMailbox, RuleName, RulePart, RulesActivation, RulesStored, TextOp, TextTest,
+        Action, Condition, FolderMap, HeaderField, Kept, LossReason, MailboxPath, Match,
+        RuleAddress, RuleMailbox, RuleName, RulePart, RulesActivation, RulesStored, TextOp,
+        TextTest,
     },
     vacation::AutoReply,
 };
@@ -76,7 +77,12 @@ async fn rules_are_appended_after_the_scripts_own_and_a_folder_named_by_id_is_lo
         ),
     ];
     let receipt = sieve
-        .import_rules(&account(), &rules, ForwardingRules::Disabled)
+        .import_rules(
+            &account(),
+            &rules,
+            ForwardingRules::Disabled,
+            &FolderMap::new(),
+        )
         .await
         .unwrap();
     let kept: Vec<Kept> = receipt

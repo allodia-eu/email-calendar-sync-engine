@@ -30,8 +30,8 @@ use engine_core::{
     ids::MailboxId,
     mail::Importance,
     rules::{
-        Action, AddressField, AddressPart, Condition, ForwardingRules, HeaderField, Kept,
-        LossReason, MailRule, Match, NativeCondition, NativeKind, RuleAddress, RuleBody,
+        Action, AddressField, AddressPart, Condition, FolderMap, ForwardingRules, HeaderField,
+        Kept, LossReason, MailRule, Match, NativeCondition, NativeKind, RuleAddress, RuleBody,
         RuleMailbox, RuleName, RulePart, RulesActivation, RulesStored, TextOp, TextTest,
         held_forwarding,
     },
@@ -41,6 +41,7 @@ use engine_core::{
 use engine_provider::{MailRules, Provider, Vacation};
 use futures_util::FutureExt;
 use provider_jmap::{JmapClient, JmapProvider};
+use serde_json::json;
 use sieve_common::{
     account, client, create_folder, provider, remove_folder, reply_object, restore, rules, scripts,
     text,
@@ -64,9 +65,9 @@ fn into(id: &str) -> Action {
     }
 }
 
-/// Four rules as a Graph source reads them, the folder ids already mapped to the target's where
-/// the host could: `folder` is the target's, `AAMkunmapped` one it could not map.
-fn graph_rules(marker: &str, folder: &str) -> Vec<MailRule> {
+/// Four rules as a Graph source reads them, filing into the source's folders: `AAMk-finance`, which
+/// the host maps to the target's, and `AAMkunmapped`, which it could not map.
+fn graph_rules(marker: &str) -> Vec<MailRule> {
     let from_board = Condition::Address {
         field: AddressField::From,
         part: AddressPart::All,
@@ -76,13 +77,16 @@ fn graph_rules(marker: &str, folder: &str) -> Vec<MailRule> {
     vec![
         MailRule::typed(
             Match::all(vec![subject(&format!("{marker}-invoice"))]),
-            vec![into(folder), Action::MarkImportance(Importance::High)],
+            vec![
+                into("AAMk-finance"),
+                Action::MarkImportance(Importance::High),
+            ],
         )
         .named(RuleName::new("Invoices").unwrap())
         .stopping(),
         MailRule::typed(
             Match::all(vec![from_board]).except(vec![Condition::Native(automatic_reply)]),
-            vec![into(folder)],
+            vec![into("AAMk-finance")],
         )
         .named(RuleName::new("Board").unwrap()),
         MailRule::typed(
@@ -167,14 +171,18 @@ async fn import_rules(
     let own_text = script_text(raw).await;
     let own_segment = &own_text[own_text.find("# rule:[Own]").unwrap()..];
 
-    let wanted = graph_rules(marker, folder);
+    let wanted = graph_rules(marker);
+    let folders = FolderMap::new().with(
+        MailboxId::try_from("AAMk-finance").unwrap(),
+        MailboxId::try_from(folder).unwrap(),
+    );
     let vocabulary = rules.rule_vocabulary(&account()).await.unwrap();
-    let preflight = held_forwarding(&wanted, &vocabulary);
+    let preflight = held_forwarding(&wanted, &vocabulary.with_folders(folders.clone()));
     let importer = carol
         .rules_importer()
         .expect("an account with rules imports");
     let receipt = importer
-        .import_rules(&account(), &wanted, ForwardingRules::Disabled)
+        .import_rules(&account(), &wanted, ForwardingRules::Disabled, &folders)
         .await
         .expect("imported");
     let kept: Vec<Kept> = receipt
@@ -258,6 +266,14 @@ async fn import_rules(
         [Action::MarkImportance(Importance::High), into(folder)]
     );
     assert!(invoices.stop);
+    // Run again: everything it wrote is already held, and nothing is written.
+    let again = importer
+        .import_rules(&account(), &wanted, ForwardingRules::Disabled, &folders)
+        .await
+        .expect("imported again");
+    assert_eq!(again.already_held, [0, 2]);
+    assert_eq!(again.stored, RulesStored::Unwritten);
+    assert_eq!(script_text(raw).await, after_text, "nothing written");
     own
 }
 
@@ -281,7 +297,7 @@ async fn import_reply(carol: &JmapProvider, own: &MailRule) {
         .with_reply(
             AutoReply::default()
                 .with_subject("Away")
-                .with_text("I am away."),
+                .with_text("I am away.\nBack on Monday."),
         );
     let receipt = importer
         .import_vacation(&account(), &away)
@@ -318,4 +334,107 @@ async fn import_reply(carol: &JmapProvider, own: &MailRule) {
     let mut first = rules.rules[0].clone();
     first.origin = None;
     assert_eq!(&first, own);
+}
+
+#[tokio::test]
+async fn live_an_import_into_a_script_switched_off_drops_its_idle_include_and_copies_the_rest() {
+    let Some(harness) = sieve_common::harness("live_rules_import") else {
+        return;
+    };
+    let carol = provider(&harness, &harness.scratch[1]).await;
+    let raw = client(&harness, &harness.scratch[1]).await;
+    let (prior, _) = scripts(&raw).await;
+    let prior_reply = reply_object(&raw).await;
+    let checked = AssertUnwindSafe(idle_script(&carol, &raw, &prior))
+        .catch_unwind()
+        .await;
+    let restored = restore(&raw, &prior, &prior_reply).await;
+    if let Err(failed) = checked {
+        if let Err(problem) = restored {
+            eprintln!("and restoring Carol failed too: {problem}");
+        }
+        resume_unwind(failed);
+    }
+    restored.expect("Carol is left as she was found");
+}
+
+/// The account holds a rules script, switched off, that includes the reply's script; the source
+/// held the very same text, so the rules handed in name segments of a script with the same
+/// fingerprint as the target's.
+async fn idle_script(carol: &JmapProvider, raw: &JmapClient, prior: &[sieve_common::Listed]) {
+    assert!(prior.is_empty(), "{prior:?}");
+    let marker = sieve_common::marker("importidle");
+    let rule = |name: &str, action: &str| {
+        format!(
+            "# rule:[{name}]\r\nif header :contains \"subject\" \"{marker}-{name}\"\r\n{{\r\n\t\
+             {action};\r\n}}\r\n"
+        )
+    };
+    let forward = rule("Forward", "redirect \"away@example.com\"");
+    let own = rule("Own", "fileinto \"INBOX\"");
+    let text = format!(
+        "require [\"fileinto\",\"include\"];\r\ninclude :personal :optional \"vacation\";\r\n\
+         {forward}{own}"
+    );
+    let created = sieve_common::sieve_set(
+        raw,
+        json!({ "create": { "r": { "name": "rules", "blobId": "#b1" } } }),
+        Some(&text),
+    )
+    .await;
+    assert!(created["created"]["r"].is_object(), "{created}");
+
+    let source = engine_sieve::dialect::include::without_include(&text, "vacation");
+    assert_eq!(source.len(), 2);
+    let importer = carol.rules_importer().unwrap();
+    let receipt = importer
+        .import_rules(
+            &account(),
+            &source,
+            ForwardingRules::Disabled,
+            &FolderMap::new(),
+        )
+        .await
+        .expect("imported");
+    let kept: Vec<Kept> = receipt.outcomes.iter().map(|o| o.kept).collect();
+    assert_eq!(kept, [Kept::Disabled, Kept::Whole]);
+    assert_eq!(
+        receipt.already_held,
+        [1],
+        "the account's own rule, as it is"
+    );
+    assert_eq!(receipt.activation, RulesActivation::Inactive);
+    assert_eq!(receipt.stored, RulesStored::InPlace);
+
+    let after = script_text(raw).await;
+    eprintln!("after the import into a script switched off:\n{after}");
+    assert!(
+        !after.contains("include :personal"),
+        "the idle include is left out"
+    );
+    let held = format!("{forward}{own}");
+    let at = after
+        .find(&held)
+        .expect("the account's rules, byte for byte");
+    assert!(
+        after[at + held.len()..].starts_with("# rule:[Forward]\r\nif false # header"),
+        "the forward appended, disabled: {after}"
+    );
+    let (listed, _) = scripts(raw).await;
+    assert!(
+        listed.iter().all(|(.., active, _)| !active),
+        "nothing switched on"
+    );
+
+    let again = importer
+        .import_rules(
+            &account(),
+            &source,
+            ForwardingRules::Disabled,
+            &FolderMap::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again.already_held, [0, 1]);
+    assert_eq!(again.stored, RulesStored::Unwritten);
 }

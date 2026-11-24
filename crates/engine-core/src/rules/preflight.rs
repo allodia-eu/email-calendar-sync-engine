@@ -11,7 +11,9 @@ use super::{ForwardingRules, MailRule, PlanMode, RuleOutcome, RuleVocabulary, pl
 ///
 /// These are exactly the rules the forwarding switch decides: those [`plan_rules`] keeps
 /// differently with [`ForwardingRules::Enabled`]. It is decided by `plan_rules` alone, so the list
-/// and the receipt of the import that follows can never disagree. A rule already disabled at the
+/// agrees with the receipt of an import planned against the same `target`; an import plans
+/// against the vocabulary and folders it reads when it runs, so a target that changed in between
+/// can answer differently, and the receipt is what happened. A rule already disabled at the
 /// source, or one the target would not keep either way, is not listed: the switch changes nothing
 /// for it.
 #[must_use]

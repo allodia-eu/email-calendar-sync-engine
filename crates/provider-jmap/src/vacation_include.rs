@@ -51,7 +51,11 @@ pub(crate) struct Prepared {
 pub(crate) enum Path {
     /// With the server's own flag, as without rules: no script of the user's runs, or the reply
     /// is to go on and the running script cannot take the include.
-    Flag,
+    Flag {
+        /// Whether a script of the user's runs now, which turning the reply on by the flag
+        /// switches off (RFC 9661 §2.1).
+        rules_running: bool,
+    },
     /// Through the running script: the words, then, where `toggled` is a script, the include
     /// added or taken out.
     Include {
@@ -78,28 +82,42 @@ pub(crate) enum Path {
 pub(crate) async fn path(executor: &dyn Executor, enabled: bool) -> ProviderResult<Path> {
     let session = executor.session();
     if !rules::reachable(session) {
-        return Ok(Path::Flag);
+        return Ok(Path::Flag {
+            rules_running: false,
+        });
     }
     let listing = rules::list(executor).await?;
     let Some(running) = listing.scripts.rules_running().cloned() else {
-        return Ok(Path::Flag);
+        return Ok(Path::Flag {
+            rules_running: false,
+        });
     };
     let account = sieve_account(session)?;
     let text = match sieve_scripts::download(executor, account, &running.blob).await {
         Ok(text) => text,
         // It may include the reply: switching it off by the flag could leave it running.
         Err(err) if !enabled => return Err(err.into()),
-        Err(_) => return Ok(Path::Flag),
+        Err(_) => {
+            return Ok(Path::Flag {
+                rules_running: true,
+            });
+        }
     };
     let toggled = if includes_reply(&text) == enabled {
         None
     } else if enabled {
         if !listing.include_usable(session) {
-            return Ok(Path::Flag);
+            return Ok(Path::Flag {
+                rules_running: true,
+            });
         }
         match compose(&text, true) {
             Ok(text) => Some(text),
-            Err(_) => return Ok(Path::Flag),
+            Err(_) => {
+                return Ok(Path::Flag {
+                    rules_running: true,
+                });
+            }
         }
     } else {
         Some(compose(&text, false).map_err(|err| {
