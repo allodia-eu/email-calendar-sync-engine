@@ -122,7 +122,7 @@ impl JmapConfig {
     /// [permits](CredentialSource::permits) and, over plaintext HTTP, a loopback origin from
     /// a `base_url` on plaintext loopback too, or the request fails before anything is sent.
     /// A plaintext loopback base also gets a client that ignores the environment's proxies
-    /// (`engine_http::client_for`). When the server refuses the credential
+    /// (`engine_http::AuthenticatedClient`). When the server refuses the credential
     /// with a `401`, the source is asked once for a
     /// [replacement](CredentialSource::replace), and the request sent once more with it.
     ///

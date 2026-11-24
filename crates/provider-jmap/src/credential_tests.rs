@@ -1,5 +1,5 @@
 //! Every authenticated JMAP request asks the account's credential source, through
-//! `engine_http::send_authenticated`: a refused credential is replaced once and the request
+//! `engine_http::AuthenticatedClient::send`: a refused credential is replaced once and the request
 //! replayed with the replacement, re-framing and replacement never answer the same `401`, and
 //! an origin the rules refuse (the source's `permits`, plaintext off loopback) is sent nothing,
 //! whether it was configured, reached by a redirect, or advertised by the session.

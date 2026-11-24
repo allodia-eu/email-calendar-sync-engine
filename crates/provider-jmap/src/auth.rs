@@ -12,7 +12,8 @@
 //! a scheme the server does offer, and latch it for the rest of the connection. A `401`
 //! that *does* offer our scheme is a genuine bad-credential answer: the re-framing never
 //! masks a wrong password, and only then is the account's credential source asked for a
-//! replacement (`engine_http::send_authenticated`). One `401` gets one of the two, never both.
+//! replacement (`engine_http::AuthenticatedClient::send`). One `401` gets one of the two, never
+//! both.
 //!
 //! A challenge offering only schemes the credential cannot be framed under (Basic alone, to a
 //! token) is final: the source is not asked for a replacement, because another token would be
