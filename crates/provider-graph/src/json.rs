@@ -38,3 +38,17 @@ pub(crate) fn datetime(value: &Value, key: &str) -> Result<Option<UtcDateTime>, 
 pub(crate) fn wrap_id<T>(result: Result<T, IdError>, what: &str) -> Result<T, GraphError> {
     result.map_err(|e| GraphError::protocol(format!("bad {what}: {e}")))
 }
+
+/// The SHA-256 of `text`, in lowercase hex: the version of a setting Graph keeps no ETag on.
+pub(crate) fn digest_hex(text: &str) -> String {
+    use core::fmt::Write as _;
+
+    use sha2::Digest as _;
+
+    sha2::Sha256::digest(text.as_bytes())
+        .iter()
+        .fold(String::with_capacity(64), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}

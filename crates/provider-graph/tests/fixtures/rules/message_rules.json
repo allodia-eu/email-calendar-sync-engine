@@ -1,0 +1,219 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('user%40example.test')/mailFolders('inbox')/messageRules",
+  "value": [
+    {
+      "id": "AQAAAAAAAAE=",
+      "displayName": "Example rule 1",
+      "sequence": 1,
+      "isEnabled": true,
+      "hasError": false,
+      "isReadOnly": false,
+      "conditions": {
+        "subjectContains": [
+          "marker-subject-1"
+        ]
+      },
+      "actions": {
+        "moveToFolder": "AAMkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfolder1=",
+        "markAsRead": true,
+        "stopProcessingRules": true,
+        "forwardTo": [
+          {
+            "emailAddress": {
+              "name": "Person 1",
+              "address": "person1@example.com"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "AQAAAAAAAAI=",
+      "displayName": "Example rule 2",
+      "sequence": 2,
+      "isEnabled": true,
+      "hasError": false,
+      "isReadOnly": false,
+      "conditions": {
+        "subjectContains": [
+          "marker-subject-2",
+          "marker-subject-3"
+        ],
+        "bodyContains": [
+          "marker-body-4"
+        ]
+      },
+      "actions": {
+        "moveToFolder": "AAMkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfolder2=",
+        "markAsRead": true,
+        "stopProcessingRules": true
+      }
+    },
+    {
+      "id": "AQAAAAAAAAM=",
+      "displayName": "Example rule 3",
+      "sequence": 3,
+      "isEnabled": true,
+      "hasError": false,
+      "isReadOnly": false,
+      "conditions": {
+        "subjectContains": [
+          "marker-subject-5"
+        ],
+        "bodyContains": [
+          "marker-body-6"
+        ]
+      },
+      "actions": {
+        "moveToFolder": "AAMkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfolder2=",
+        "markAsRead": true,
+        "stopProcessingRules": true
+      }
+    },
+    {
+      "id": "AQAAAAAAAAQ=",
+      "displayName": "Example rule 4",
+      "sequence": 4,
+      "isEnabled": true,
+      "hasError": false,
+      "isReadOnly": false,
+      "conditions": {
+        "subjectContains": [
+          "marker-subject-7"
+        ]
+      },
+      "actions": {
+        "moveToFolder": "AAMkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfolder3=",
+        "stopProcessingRules": true
+      }
+    },
+    {
+      "id": "AQAAAAAAAAU=",
+      "displayName": "Example rule 5",
+      "sequence": 5,
+      "isEnabled": true,
+      "hasError": false,
+      "isReadOnly": false,
+      "conditions": {
+        "subjectContains": [
+          "marker-subject-8"
+        ],
+        "hasAttachments": true
+      },
+      "actions": {
+        "moveToFolder": "AAMkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfolder1=",
+        "redirectTo": [
+          {
+            "emailAddress": {
+              "name": "Person 1",
+              "address": "person1@example.com"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "AQAAAAAAAAY=",
+      "displayName": "Example rule 6",
+      "sequence": 6,
+      "isEnabled": false,
+      "hasError": false,
+      "isReadOnly": false,
+      "conditions": {
+        "fromAddresses": [
+          {
+            "emailAddress": {
+              "name": "Person 2",
+              "address": "person2@example.com"
+            }
+          }
+        ]
+      },
+      "actions": {
+        "moveToFolder": "AAMkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfolder4=",
+        "markAsRead": true,
+        "stopProcessingRules": true
+      }
+    },
+    {
+      "id": "AQAAAAAAAAc=",
+      "displayName": "Example rule 7",
+      "sequence": 7,
+      "isEnabled": false,
+      "hasError": false,
+      "isReadOnly": false,
+      "conditions": {
+        "fromAddresses": [
+          {
+            "emailAddress": {
+              "name": "Person 3",
+              "address": "person3@example.com"
+            }
+          }
+        ]
+      },
+      "actions": {
+        "moveToFolder": "AAMkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfolder5=",
+        "stopProcessingRules": true
+      }
+    },
+    {
+      "id": "AQAAAAAAAAg=",
+      "displayName": "Example rule 8",
+      "sequence": 8,
+      "isEnabled": false,
+      "hasError": false,
+      "isReadOnly": false,
+      "conditions": {
+        "senderContains": [
+          "@sender1.example.com"
+        ]
+      },
+      "actions": {
+        "moveToFolder": "AAMkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfolder6="
+      },
+      "exceptions": {
+        "fromAddresses": [
+          {
+            "emailAddress": {
+              "name": "Person 3",
+              "address": "person3@example.com"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "AQAAAAAAAAk=",
+      "displayName": "Example rule 9",
+      "sequence": 9,
+      "isEnabled": false,
+      "hasError": false,
+      "isReadOnly": false,
+      "conditions": {
+        "hasAttachments": true,
+        "fromAddresses": [
+          {
+            "emailAddress": {
+              "name": "Person 4",
+              "address": "person4@example.com"
+            }
+          }
+        ]
+      },
+      "actions": {
+        "assignCategories": [
+          "Example Category 1"
+        ],
+        "forwardTo": [
+          {
+            "emailAddress": {
+              "name": "Person 5",
+              "address": "person5@example.com"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

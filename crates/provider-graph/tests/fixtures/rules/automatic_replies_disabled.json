@@ -1,0 +1,15 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('user%40example.test')/mailboxSettings/automaticRepliesSetting",
+  "status": "disabled",
+  "externalAudience": "all",
+  "internalReplyMessage": "<html>\r\n<head>\r\n<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\r\n<meta name=\"Generator\" content=\"Microsoft Word 15 (filtered medium)\">\r\n<style><!--\r\np\r\n\t{margin:0cm;}\r\n--></style>\r\n</head>\r\n<body lang=\"EN-US\">\r\n<div>\r\n<p>Example reply for senders inside the organization.<o:p></o:p></p>\r\n</div>\r\n</body>\r\n</html>\r\n",
+  "externalReplyMessage": "<html>\r\n<head>\r\n<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\r\n<meta name=\"Generator\" content=\"Microsoft Word 15 (filtered medium)\">\r\n<style><!--\r\np\r\n\t{margin:0cm;}\r\n--></style>\r\n</head>\r\n<body lang=\"EN-US\">\r\n<div>\r\n<p>Example reply for senders outside the organization.<o:p></o:p></p>\r\n</div>\r\n</body>\r\n</html>\r\n",
+  "scheduledStartDateTime": {
+    "dateTime": "2026-01-01T09:00:00.0000000",
+    "timeZone": "UTC"
+  },
+  "scheduledEndDateTime": {
+    "dateTime": "2026-01-02T09:00:00.0000000",
+    "timeZone": "UTC"
+  }
+}

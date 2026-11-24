@@ -64,10 +64,15 @@ mod normalize_state;
 mod principal;
 mod provider;
 mod report;
+mod rules;
+mod rules_apply;
+mod rules_read;
+mod rules_write;
 mod shared;
 mod submit;
 mod teams_meetings;
 mod transport;
+mod vacation;
 
 #[cfg(test)]
 mod contact_fixture_tests;
