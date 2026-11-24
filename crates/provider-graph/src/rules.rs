@@ -164,7 +164,7 @@ impl MailRules for GraphProvider {
     }
 
     /// [`WriteGuard::Absent`]: a `messageRule` has no ETag. A write still refuses a base whose
-    /// listing moved, as read again just before it writes ([module docs](self)).
+    /// listing moved, as read again just before it writes (the module docs).
     fn rules_write_guard(&self) -> WriteGuard {
         WriteGuard::Absent
     }

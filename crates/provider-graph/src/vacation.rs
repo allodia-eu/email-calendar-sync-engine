@@ -62,7 +62,7 @@ impl Vacation for GraphProvider {
     }
 
     /// [`WriteGuard::Absent`]: the setting has no ETag. A guarded write still refuses a reply
-    /// that moved, as read again just before it writes ([module docs](self)).
+    /// that moved, as read again just before it writes (the module docs).
     fn vacation_write_guard(&self) -> WriteGuard {
         WriteGuard::Absent
     }
