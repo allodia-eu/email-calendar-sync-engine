@@ -165,3 +165,22 @@ async fn a_request_built_by_a_client_that_follows_redirects_does_not_follow_one(
         "the credential went nowhere else"
     );
 }
+
+/// `Debug` shows where the account is configured, never what its URL may carry besides: a host
+/// that put a password in the userinfo or a token in the query does not see it printed.
+#[test]
+fn debug_names_the_configured_origin_only() {
+    let source = Arc::new(Tokens::new("A", &[]));
+    let client = account(
+        &source,
+        "https://someone:hunter2@jmap.example.com:8443/jmap/session?access_token=t0ken#frag",
+    );
+    let printed = format!("{client:?}");
+    assert!(
+        printed.contains("https://jmap.example.com:8443"),
+        "{printed}"
+    );
+    for secret in ["someone", "hunter2", "t0ken", "/jmap/session", "frag"] {
+        assert!(!printed.contains(secret), "{secret} printed: {printed}");
+    }
+}

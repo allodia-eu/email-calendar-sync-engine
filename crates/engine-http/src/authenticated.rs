@@ -92,7 +92,11 @@ pub struct AuthenticatedClient {
 impl core::fmt::Debug for AuthenticatedClient {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AuthenticatedClient")
-            .field("configured", &self.configured.as_str())
+            // The origin only: a host may have put a password or a token in the URL.
+            .field(
+                "configured",
+                &self.configured.origin().ascii_serialization(),
+            )
             .field("retry", &self.retry)
             .finish_non_exhaustive()
     }

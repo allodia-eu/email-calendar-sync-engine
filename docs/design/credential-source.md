@@ -226,7 +226,8 @@ as it came. What counts as a refusal is decided by each adapter, and the rule is
 The HTTP half lives in `engine-http` beside the send funnel, as `send_authenticated(source,
 request, build, is_refusal)`. `build` makes the request from a credential, and `is_refusal` is the
 adapter's predicate. Every adapter goes through this one funnel, so no path can forget to ask, to
-check `permits`, or to replay.
+check `permits`, or to replay. (As built in step 3, the funnel is
+`engine_http::AuthenticatedClient`, which also builds the client it sends on; see "Phasing".)
 
 ### Host binding
 
