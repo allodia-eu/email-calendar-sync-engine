@@ -141,7 +141,7 @@ impl GoogleError {
     /// `502` or `504` says the server behind it gave no answer rather than that it refused,
     /// or a success arrived whose body cannot be read. Every other status is the server's own
     /// answer, and a connect or handshake that never completed sent nothing.
-    fn leaves_outcome_unknown(&self) -> bool {
+    pub(crate) fn leaves_outcome_unknown(&self) -> bool {
         match self {
             Self::Transport(err) => err.may_have_been_received(),
             Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
@@ -157,10 +157,17 @@ impl GoogleError {
     pub(crate) fn optional_answer(
         result: Result<Option<Value>, Self>,
     ) -> Result<Option<Value>, ProviderError> {
+        Self::readable(result).map_err(Self::into_write_error)
+    }
+
+    /// A write's answer with a success whose body does not read taken as done, with no body: the
+    /// status already says the write was done. Failures stay as they are, for a caller that
+    /// classifies them itself.
+    pub(crate) fn readable(result: Result<Option<Value>, Self>) -> Result<Option<Value>, Self> {
         match result {
             // The transport makes this only from a success's body.
             Err(Self::Json(_)) => Ok(None),
-            other => other.map_err(Self::into_write_error),
+            other => other,
         }
     }
 

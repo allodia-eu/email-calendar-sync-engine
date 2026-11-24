@@ -148,7 +148,11 @@ impl GoogleTransport for HttpTransport {
             let body = resp.text().await.unwrap_or_default();
             return Err(GoogleError::status(status.as_u16(), body).with_retry_after(wait));
         }
-        Ok(serde_json::from_slice(&resp.bytes().await?)?)
+        let bytes = resp.bytes().await?;
+        if status == reqwest::StatusCode::NO_CONTENT && bytes.is_empty() {
+            return Ok(Value::Null);
+        }
+        Ok(serde_json::from_slice(&bytes)?)
     }
 
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GoogleError> {

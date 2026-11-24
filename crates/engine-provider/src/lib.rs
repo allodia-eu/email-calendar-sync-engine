@@ -71,6 +71,7 @@ mod provider;
 #[cfg(feature = "http")]
 mod redirect;
 mod report;
+mod rule_listing;
 mod shared;
 mod sources;
 mod stream;
@@ -126,6 +127,7 @@ pub use redirect::{redirect_refused, redirect_target};
 pub use report::{
     MessageReport, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
 };
+pub use rule_listing::{RuleListing, digest_hex};
 pub use shared::{SharedAccount, SharedAccounts, StoreDomains};
 pub use sources::{SourceStream, one_at_a_time};
 pub use stream::{EmailChunk, EmailStream, PassMode, split_page};

@@ -228,7 +228,7 @@ async fn a_failed_delete_after_the_create_shows_the_duplicate_on_the_rules_outco
     assert_eq!(receipt.outcomes[0].kept, Kept::Reduced);
     assert_eq!(
         receipt.outcomes[0].losses,
-        vec![Loss::new(RulePart::Rule, LossReason::NotWritten)]
+        vec![Loss::new(RulePart::Rule, LossReason::LeftBeside)]
     );
     // The new rule first, the old one still beside it.
     assert_eq!(state.lock().unwrap().names(), ["a", "a", "b"]);

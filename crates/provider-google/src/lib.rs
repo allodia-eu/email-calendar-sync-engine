@@ -61,9 +61,16 @@ mod pass;
 mod provider;
 mod quota;
 mod report;
+mod rules;
+mod rules_apply;
+mod rules_apply_support;
+mod rules_query;
+mod rules_read;
+mod rules_write;
 mod submit;
 mod throttle;
 mod transport;
+mod vacation;
 mod window_listing;
 
 #[cfg(test)]
@@ -72,6 +79,8 @@ mod contact_fixture_tests;
 mod contact_shape_tests;
 #[cfg(test)]
 mod contact_tests;
+#[cfg(test)]
+mod rules_fake;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]

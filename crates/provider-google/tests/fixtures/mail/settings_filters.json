@@ -1,0 +1,36 @@
+{
+  "filter": [
+    {
+      "action": {
+        "addLabelIds": [
+          "STARRED"
+        ],
+        "removeLabelIds": [
+          "UNREAD"
+        ]
+      },
+      "criteria": {
+        "from": "a@example.com",
+        "subject": "engine-live-filter-a"
+      },
+      "id": "filter-0"
+    },
+    {
+      "action": {
+        "addLabelIds": [
+          "IMPORTANT"
+        ],
+        "removeLabelIds": [
+          "INBOX"
+        ]
+      },
+      "criteria": {
+        "negatedQuery": "has:attachment OR from:boss@example.com",
+        "size": 5000000,
+        "sizeComparison": "larger",
+        "subject": "engine-live-filter-b1 OR engine-live-filter-b2"
+      },
+      "id": "filter-1"
+    }
+  ]
+}

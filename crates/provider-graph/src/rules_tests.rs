@@ -120,8 +120,11 @@ async fn every_page_is_read_and_the_rules_are_ordered_by_sequence() {
     // The order Graph listed them in does not move the version.
     let (straight, ..) = fake_client_logged(vec![("messageRules", Ok(json(CAPTURED)))]);
     let straight = Listing::read(&straight).await.unwrap();
-    assert_eq!(listing.version(), straight.version());
-    assert_eq!(listing.set(), straight.set());
+    assert_eq!(listing.listing.version(), straight.listing.version());
+    assert_eq!(
+        listing.listing.fingerprint(),
+        straight.listing.fingerprint()
+    );
 }
 
 #[tokio::test]
@@ -136,4 +139,31 @@ async fn a_credential_without_the_scope_is_refused_permanently() {
         graph.read_rules(&account()).await.unwrap_err().class(),
         FailureClass::Permanent
     );
+}
+
+/// A word match (a search's, Gmail's) has no Graph predicate: the vocabulary does not hold it, so a
+/// rule with one is not kept here, and the writer refuses it too.
+#[test]
+fn a_word_match_is_not_held() {
+    use engine_core::rules::{
+        Action, AddressField, AddressPart, Condition, HeaderField, Kept, MailRule, Match, PlanMode,
+        TextTest, plan_rules,
+    };
+    let words = TextTest::new(TextOp::Words, vec!["invoice".to_owned()]).unwrap();
+    for condition in [
+        Condition::Header {
+            field: HeaderField::Subject,
+            test: words.clone(),
+        },
+        Condition::Address {
+            field: AddressField::From,
+            part: AddressPart::WithName,
+            test: words,
+        },
+    ] {
+        let rule = MailRule::typed(Match::all(vec![condition]), vec![Action::Discard]);
+        let plan = plan_rules(std::slice::from_ref(&rule), &vocabulary(), PlanMode::Edit);
+        assert_eq!(plan.outcomes[0].kept, Kept::NotKept);
+        assert!(crate::rules_write::body(&rule, &|_| None).is_err());
+    }
 }

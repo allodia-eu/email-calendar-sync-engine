@@ -27,6 +27,7 @@
 mod action;
 mod condition;
 mod folders;
+mod outcome;
 mod plan;
 mod plan_support;
 mod preflight;
@@ -39,11 +40,11 @@ mod vocabulary;
 pub use action::{Action, NativeAction, NativeCondition, NativeKind, RuleMailbox};
 pub use condition::{
     AddressField, AddressPart, Condition, HeaderField, MeField, SizeBound, TextOp, TextTest,
+    is_phrase,
 };
 pub use folders::FolderMap;
-pub use plan::{
-    ForwardingRules, Kept, Loss, LossReason, PlanMode, RuleOutcome, RulePart, RulesPlan, plan_rules,
-};
+pub use outcome::{Kept, Loss, LossReason, RuleOutcome, RulePart};
+pub use plan::{ForwardingRules, PlanMode, RulesPlan, plan_rules};
 pub use preflight::held_forwarding;
 pub use raw_rule::{Expansion, RawRule, RuleOrigin, RuleSyntax};
 pub use receipt::{FailedRule, ReplyEffect, RuleWriteFailure, RulesReceipt, RulesStored};
@@ -58,8 +59,12 @@ mod plan_limit_tests;
 #[cfg(test)]
 mod plan_review_tests;
 #[cfg(test)]
+mod plan_search_tests;
+#[cfg(test)]
 mod plan_source_tests;
 #[cfg(test)]
 mod plan_tests;
+#[cfg(test)]
+mod receipt_tests;
 #[cfg(test)]
 mod tests;

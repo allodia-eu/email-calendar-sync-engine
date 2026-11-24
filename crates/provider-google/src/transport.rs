@@ -43,7 +43,8 @@ pub(crate) const MEET_BASE: &str = "https://meet.googleapis.com";
 /// orchestration runs offline.
 #[async_trait]
 pub(crate) trait GoogleTransport: Send + Sync {
-    /// Fetches `url`, returning the parsed JSON or a classified error.
+    /// Fetches `url`, returning the parsed JSON or a classified error. A `204` with no body is
+    /// `null`: Gmail answers an empty list so (its filters and forwarding addresses, observed).
     async fn get(&self, url: &str) -> Result<Value, GoogleError>;
 
     /// Fetches authenticated raw bytes from a Google API URL.

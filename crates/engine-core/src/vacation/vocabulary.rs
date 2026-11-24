@@ -15,7 +15,7 @@ use super::{AutoReply, ReplyAudience, VacationResponse};
 /// |---|---|---|---|---|---|
 /// | JMAP | either end | yes | text and HTML | everyone | no |
 /// | Graph | both ends | no | one (HTML) | everyone, organization, organization and contacts | yes |
-/// | Gmail | either end | yes | text and HTML | everyone, contacts, organization, contacts in organization | no |
+/// | Gmail | either end | yes | one (text or HTML) | everyone, contacts; organization and contacts in organization on Workspace | no |
 ///
 /// Every transport can switch a reply on and off and carry at least one body. Built with
 /// [`everyone`](Self::everyone) and the `with_*` methods, and read through its accessors, so a
@@ -47,11 +47,11 @@ pub enum WindowSupport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ReplyBodies {
-    /// One body per reply: Graph keeps each message as one HTML string, so a reply carrying a
-    /// separate text body and HTML body cannot keep both as they are.
+    /// One body per reply: Graph keeps each message as one HTML string, and Gmail drops the text
+    /// body where an HTML one is set (observed), so a reply carrying a separate text body and HTML
+    /// body cannot keep both as they are.
     One,
-    /// A plain-text body and an HTML body side by side (JMAP `textBody` and `htmlBody`, Gmail's
-    /// `responseBodyPlainText` and `responseBodyHtml`).
+    /// A plain-text body and an HTML body side by side (JMAP `textBody` and `htmlBody`).
     TextAndHtml,
 }
 

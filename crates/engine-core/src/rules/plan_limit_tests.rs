@@ -189,3 +189,69 @@ fn a_virtual_collection_is_no_folder_to_file_into_where_only_folders_are() {
         Kept::Whole
     );
 }
+
+fn named(names: &[&str]) -> Action {
+    Action::AddKeywords(
+        names
+            .iter()
+            .map(|name| Keyword::new(*name).unwrap())
+            .collect(),
+    )
+}
+
+/// Gmail keeps a folder and a named keyword alike as a label of the user's, and a filter adds at
+/// most one (observed: two are refused, `400`): the second is a lost action, seen by the plan.
+#[test]
+fn one_folder_or_named_keyword_per_rule_where_the_target_keeps_one() {
+    let roles = [RuleFeature::FileIntoRole, RuleFeature::MarkRead];
+    let target = limited(RuleLimit::OneFolderPerRule).with_exact(roles);
+    let read = Action::AddKeywords([Keyword::system(SystemKeyword::Seen)].into());
+    let trash = Action::FileInto {
+        mailbox: RuleMailbox::Role(MailboxRole::Trash),
+        copy: false,
+    };
+    let cases = [
+        (vec![move_to("a"), move_to("b")], vec![1]),
+        (vec![move_to("a"), named(&["$work"])], vec![1]),
+        (vec![named(&["$work"]), move_to("a")], vec![1]),
+        (vec![named(&["$one", "$two"]), move_to("a")], vec![0]),
+        (vec![move_to("a"), trash.clone(), read.clone()], vec![]),
+        (vec![named(&["$work"]), trash, read], vec![]),
+    ];
+    let unlimited = limited(RuleLimit::RecipientsTogether).with_exact(roles);
+    for (actions, lost) in cases {
+        let rule = MailRule::typed(Match::all(vec![subject("x")]), actions.clone());
+        let (_, outcome) = one(&rule, &target, EDIT);
+        let expected: Vec<Loss> = lost
+            .iter()
+            .map(|i| loss(RulePart::Action(*i), LossReason::NotExpressible))
+            .collect();
+        assert_eq!(outcome.losses, expected, "{actions:?}");
+        assert_eq!(
+            one(&rule, &unlimited, EDIT).1.losses,
+            Vec::new(),
+            "{actions:?}"
+        );
+    }
+}
+
+/// Gmail stores no filter without a criterion (observed: `400`), so a rule that matches every
+/// message is not held there; one with exceptions alone tests something.
+#[test]
+fn a_rule_matching_every_message_is_not_held_where_the_target_needs_a_test() {
+    let target = limited(RuleLimit::SomeTest);
+    let every = MailRule::typed(Match::all(Vec::new()), vec![Action::Discard]);
+    let (written, outcome) = one(&every, &target, EDIT);
+    assert_eq!(written, None);
+    assert_eq!(outcome.kept, Kept::NotKept);
+    assert_eq!(
+        outcome.losses,
+        [loss(RulePart::Rule, LossReason::NotExpressible)]
+    );
+    let except = MailRule::typed(
+        Match::all(Vec::new()).except(vec![subject("x")]),
+        vec![Action::Discard],
+    );
+    assert_eq!(one(&except, &target, EDIT).1.kept, Kept::Whole);
+    assert_eq!(one(&every, &rich(), EDIT).1.kept, Kept::Whole);
+}

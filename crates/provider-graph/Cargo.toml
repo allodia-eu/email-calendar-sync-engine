@@ -30,9 +30,6 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
-# The version of the mail rules and the out-of-office reply: a SHA-256 of each as read, since
-# Graph keeps no ETag on either (`rules`, `vacation`).
-sha2 = { workspace = true }
 thiserror = { workspace = true }
 # `async-stream` builds the `stream_email` chunk stream with `try_stream!`.
 async-stream = { workspace = true }

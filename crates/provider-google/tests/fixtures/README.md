@@ -25,6 +25,8 @@ on the account.
 | Fixture | Real call | Protects |
 | --- | --- | --- |
 | `mail/settings_send_as.json` | `users.settings.sendAs.list` | The shape a real account's send-as list has: `displayName` is present and **empty** on a mailbox nobody has named, which is what the adapter reads as "no name" rather than as a blank one. |
+| `mail/settings_filters.json` | `users.settings.filters.list`, the two filters `live_rules_writes.rs` wrote through the engine (ids replaced, its marker shortened to `engine-live-filter`; nothing else of the account) | that Gmail keeps a filter's criteria and actions exactly as created: any-of values as `a OR b`, the exceptions as a `negatedQuery` of terms joined by `OR`, the size as a number, `INBOX` removed for the archive |
+| `mail/settings_vacation_off.json` | `users.settings.getVacation` on an account that never set a reply | the few fields Gmail answers for a reply never set (an empty subject, no bodies, no window), read as off and empty |
 | `mail/label_created_hidden.json` | `POST /gmail/v1/users/me/labels` with `labelListVisibility: labelHide`, `messageListVisibility: show` | the create a label standing for a keyword answers with: the new id, and both visibilities echoed as sent |
 | `error/label_name_conflict.json` | the same create again, for a name the account already has | the `409` another device's create leaves behind, on which the adapter reads the list again rather than creating a second label |
 | `mail/draft_created.json` | `POST /gmail/v1/users/me/drafts` | the draft object a create returns: a `drafts` id plus the message it wraps, already labelled `DRAFT` |
