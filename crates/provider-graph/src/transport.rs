@@ -36,7 +36,8 @@ pub(crate) trait GraphTransport: Send + Sync {
     async fn get(&self, url: &str) -> Result<Value, GraphError>;
 
     /// Fetches `url` with an extra `Prefer` value (the calendar read's
-    /// `outlook.timezone="<IANA>"`, so Graph returns event times in that zone). The
+    /// `outlook.timezone="<IANA>"`, so Graph returns event times in that zone, or a mail
+    /// delta page's `odata.maxpagesize`). The
     /// default ignores it and falls back to [`get`](Self::get) — a fake serving canned
     /// fixtures has no header to honor; only the reqwest transport sends it.
     async fn get_with_prefer(&self, url: &str, prefer: Option<&str>) -> Result<Value, GraphError> {
@@ -269,7 +270,8 @@ impl GraphClient {
     }
 
     /// Authenticated `GET` with an extra `Prefer` value (a calendar read's
-    /// `outlook.timezone`), rebasing absolute Graph links like [`get`](Self::get).
+    /// `outlook.timezone`, a mail delta page's `odata.maxpagesize`), rebasing absolute Graph links
+    /// like [`get`](Self::get).
     ///
     /// # Errors
     ///

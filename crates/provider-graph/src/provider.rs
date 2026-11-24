@@ -233,9 +233,8 @@ impl Provider for GraphProvider {
         _account: &'a AccountId,
         cursor: Option<&'a SyncState>,
         window: MailboxWindows,
-        // Graph consumer `messages/delta` page size is server-controlled (`graph.md`),
-        // so the fetch-batch knob has no lever here; each server page is drained whole.
-        _fetch_batch: usize,
+        // Asked for as each delta page's `odata.maxpagesize` (`fetch::page_size_prefer`).
+        fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
         // A sync-depth window bounds a snapshot via a `receivedDateTime` `$filter`. A
@@ -262,6 +261,7 @@ impl Provider for GraphProvider {
                     page_token.as_ref(),
                     floor,
                     self.categories.names(),
+                    fetch_batch,
                 )
                 .await
                 {

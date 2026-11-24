@@ -69,7 +69,7 @@ async fn a_lightweight_importance_change_reaches_the_message() {
         ),
     ]);
     let drafts = MailboxId::try_from("folder-drafts").unwrap();
-    let page = messages_page(&client, &drafts, Some(&cursor), None, None, &[])
+    let page = messages_page(&client, &drafts, Some(&cursor), None, None, &[], 0)
         .await
         .unwrap();
     assert_eq!(page.kind, SyncKind::Delta);

@@ -4,7 +4,7 @@
 //! two knobs a single page size used to conflate** (`store-and-sync.md`):
 //!
 //! - **fetch batching** — how many objects the adapter pulls per network round trip (an IMAP `UID
-//!   FETCH` window, a JMAP `Email/get` page, a Graph `$top`);
+//!   FETCH` window, a JMAP `Email/get` page, a Graph delta page's `odata.maxpagesize`);
 //! - **streaming granularity** — how many objects it emits per [`EmailChunk`], the unit the
 //!   orchestrator commits and reports.
 //!
@@ -291,7 +291,8 @@ pub fn split_page(
 /// # The two knobs (`store-and-sync.md`)
 ///
 /// - `fetch_batch` bounds each **network round trip** (an IMAP `UID FETCH` window, a JMAP
-///   `Email/get` page, a Graph `$top`); `0` means the adapter's protocol maximum.
+///   `Email/get` page, a Graph delta page's `odata.maxpagesize`); `0` means the adapter's protocol
+///   maximum.
 /// - `chunk_size` bounds how many messages accumulate before a chunk is **yielded** — the streaming
 ///   granularity a host commits and renders; `0` means one chunk per batch.
 ///
