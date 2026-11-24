@@ -22,6 +22,10 @@ pub struct RulesReceipt {
     /// but switched off are stored, and do not run until the user switches it on. Said here so a
     /// transfer host's record of an import says it without a second read.
     pub activation: RulesActivation,
+    /// The rules handed in, by index, that an import found the target already holding as they
+    /// would be written, and did not write again: what makes running an import twice add nothing.
+    /// Each still has its [`outcome`](Self::outcomes), as planned. Empty for an edit.
+    pub already_held: Vec<usize>,
 }
 
 impl RulesReceipt {
@@ -34,7 +38,14 @@ impl RulesReceipt {
             stored: RulesStored::InPlace,
             reply: ReplyEffect::Untouched,
             activation: RulesActivation::Running,
+            already_held: Vec::new(),
         }
+    }
+
+    /// Records the rules handed in that the target already held (builder-style).
+    pub fn with_already_held(mut self, already_held: Vec<usize>) -> Self {
+        self.already_held = already_held;
+        self
     }
 
     /// Records whether the rules run now (builder-style).
@@ -65,6 +76,9 @@ pub enum RulesStored {
     /// In a container the write created and switched on, because the account had no rules to
     /// edit (on Sieve, a new script named `rules`, made the active one).
     CreatedRunning,
+    /// Nowhere: nothing was written, because no rule handed in was left to add (an import whose
+    /// rules the target already held, or could keep none of).
+    Unwritten,
 }
 
 /// What a write of the rules did to the account's out-of-office reply.

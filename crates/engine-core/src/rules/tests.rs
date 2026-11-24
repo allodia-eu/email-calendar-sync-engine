@@ -219,6 +219,9 @@ fn a_receipt_says_whether_the_rules_it_wrote_run() {
     assert_eq!(receipt.activation, RulesActivation::Running);
     let receipt = receipt.with_activation(RulesActivation::Inactive);
     assert_eq!(receipt.activation, RulesActivation::Inactive);
+    assert!(receipt.already_held.is_empty(), "nothing for an edit");
+    let receipt = receipt.with_already_held(vec![2]);
+    assert_eq!(receipt.already_held, [2]);
 }
 
 #[test]
