@@ -11,7 +11,8 @@ use crate::version::VacationVersion;
 #[must_use = "the receipt says whether the write switched the user's rules off"]
 pub struct VacationReceipt {
     /// The version the reply has now, so the next write can be guarded without reading it
-    /// again; `None` on a transport that keeps none.
+    /// again; `None` on a transport that keeps none, or that cannot say it yet because it applies
+    /// a write after answering it (Graph): read it before the next write.
     pub version: Option<VacationVersion>,
     /// What the write did to the account's own mail rules.
     pub rules: RulesEffect,

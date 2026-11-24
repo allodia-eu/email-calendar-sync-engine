@@ -9,7 +9,8 @@ use crate::{error::FailureClass, version::RuleSetVersion};
 #[must_use = "the receipt says which rules the target did not keep"]
 pub struct RulesReceipt {
     /// The version the rules have now, so the next write can be guarded without reading them
-    /// again; `None` on a transport that keeps none.
+    /// again; `None` on a transport that keeps none, or that cannot say it yet because it applies
+    /// a write after answering it (Graph): read them before the next write.
     pub version: Option<RuleSetVersion>,
     /// One outcome per rule handed in, as [`plan_rules`](super::plan_rules) decided it.
     pub outcomes: Vec<RuleOutcome>,

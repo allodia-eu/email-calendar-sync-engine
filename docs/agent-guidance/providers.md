@@ -365,7 +365,7 @@ adapter can reach.
 |---|---|---|---|---|
 | JMAP (`VacationResponse`, RFC 8621 §8) | **Implemented** (`jmap.md` → "Out-of-office") | `Enforced` (`ifInState`) | either end, subject, text and HTML; everyone; one reply | observed through JMAP Sieve, else `Unknown` |
 | IMAP + ManageSieve | **Implemented** (`imap-smtp.md` → "Rules and the reply over ManageSieve"): Roundcube's reply rule in the rules' script | `Absent`, with a stale read refused in the write's session | either end where `date` and `relational` are listed, subject, text only; everyone; one reply | `Untouched`: one script holds both |
-| Graph (`automaticRepliesSetting`) | **Implemented** (`graph.md` → "Mail rules and the out-of-office reply"): read canonically, the zoned schedule as instants; written with a `PATCH` of `mailboxSettings` | `Absent` (no ETag), with a stale read refused after reading again | both ends, no subject, one (HTML) body; organization, organization and contacts; outside reply | `Untouched` |
+| Graph (`automaticRepliesSetting`) | **Implemented** (`graph.md` → "Mail rules and the out-of-office reply"): read canonically, the zoned schedule as instants; written with a `PATCH` of `mailboxSettings`, applied by Graph after it answers, so the receipt names no version | `Absent` (no ETag), with a stale read refused after reading again | both ends, no subject, one (HTML) body; organization, organization and contacts; outside reply | `Untouched` |
 | Gmail (`VacationSettings`) | Planned (slice 5) | `Absent` | either end, subject, text and HTML; contacts, organization, contacts in organization (Workspace) | `Untouched` |
 | CalDAV / CardDAV | n/a | | | |
 
@@ -392,9 +392,9 @@ An account's rules are a setting too, written whole and directly, guarded by the
   base is a `Conflict`; a lost answer is `requires_confirmation`. A transport that stores rules
   one by one (Graph) goes on past a rule the server refuses, and lists each such rule in the
   receipt's `failures` (`RuleWriteFailure`: which rule, its class, and whether it may have landed);
-  one that stores the set at once fails whole. A rule the writer finds finer than the vocabulary's
-  grain cannot place (two subject tests that Graph would read as either) is reported `NotKept`
-  with the part named (`Loss::new`).
+  one that stores the set at once fails whole. A rule listed there says so on its outcome too
+  (`LossReason::NotWritten`). What a target holds part by part but not together is a `RuleLimit`
+  of its vocabulary, so the plan, not the writer, decides it.
 - **A write never switches stored rules on or off** (`RuleSet::activation`, `RulesStored`), and
   says on the receipt whether the rules it wrote run (`RulesReceipt::activation`) and what it did
   to a running reply (`ReplyEffect`).
@@ -405,7 +405,7 @@ An account's rules are a setting too, written whole and directly, guarded by the
 |---|---|---|---|
 | JMAP (Sieve, RFC 9661) | **Implemented** (`jmap.md` → "Mail rules") | `Enforced` (`ifInState` on `SieveScript`) | the dialect's, from the account's `sieveExtensions` and `maxNumberRedirects` |
 | IMAP + ManageSieve | **Implemented** (`imap-smtp.md` → "Rules and the reply over ManageSieve"): the same dialect, one script with the reply | `Absent`; a stale read (a SHA-256 of the script list and the script) is refused in the write's own session | the dialect's, from the `SIEVE` and `MAXREDIRECTS` the server lists once signed in |
-| Graph (`messageRule`) | **Implemented** (`graph.md` → "Mail rules and the out-of-office reply"): read typed or native per predicate; written rule by rule, each failure in the receipt's `failures` | `Absent`: no `@odata.etag` on a rule (observed); a stale read (a SHA-256 of the listing) is refused after reading again | fixed (`provider-graph`'s `rules::vocabulary`) |
+| Graph (`messageRule`) | **Implemented** (`graph.md` → "Mail rules and the out-of-office reply"): read typed or native per predicate; written rule by rule by position, a change that drops a part as a new rule in its place, each failure in the receipt's `failures` and on the rule's outcome | `Absent`: no `@odata.etag` and a stale `If-Match` ignored (observed); a stale read (a SHA-256 of the listing) is refused after reading again, though the listing can lag a write | fixed (`provider-graph`'s `rules::vocabulary`), with `RuleLimit`s |
 | Gmail (filters) | Planned (slice 5) | `Absent` | fixed: no stop, no order, no disabled rule |
 | CalDAV / CardDAV | n/a | | |
 

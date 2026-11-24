@@ -615,44 +615,71 @@ column of `docs/design/filters-and-out-of-office.md` §5; what follows is what t
   (observed 2026-11-24; the listing it read was byte for byte the one the user's own delegated
   token read), which is what a transfer host holding application permissions uses; `/me` means
   nothing to such a token and is refused.
-- **Reading.** The listing is followed through `@odata.nextLink` and sorted by `sequence`;
-  `$top` is ignored on it (asked for two, got nine, no next link). Each predicate and action the
-  model types is read typed; every other one (an Exchange message class, `headerContains`,
-  `bodyOrSubjectContains`, `withinSizeRange`, a category list that is not lowercase keywords,
-  `forwardAsAttachmentTo`) is one `Native` part holding that key alone, so it goes back as it
-  came. `hasError` and `isReadOnly` are `MailRule::in_error` and `read_only`; the rule's id stays
-  in the raw listing and its origin is `RuleOrigin::Listed`, its index there.
-- **No ETag on either.** A `messageRule` carries no `@odata.etag`, in the listing or read alone
-  (observed), and neither does the reply, so there is nothing to send as `If-Match` and both
-  guards are `WriteGuard::Absent`. The version is a SHA-256 of what was read (the listing in
-  order; the reply's setting without `@odata.context`, which names the mailbox), and a write
-  reads again first and refuses a moved base as `Conflict`: a change landing in the time the write
-  takes is still lost.
-- **Writing the rules, one by one.** `plan_rules` first; a rule the writer finds finer than the
-  vocabulary's grain (two conditions on one predicate key, which Graph would read as either; `To`
-  or `Cc` alone; a domain by anything but equality; two folders) is `NotKept` with the part named.
-  Then in order: a new rule is `POST`ed with its place as `sequence`; a changed one is `PATCH`ed
-  whole, every predicate and action it dropped sent as `false` or `null`; one whose place moved,
-  or that follows one that moved, has its `sequence` `PATCH`ed, so the order holds whether
-  Exchange renumbers the others or keeps the numbers given; then every rule left out is
-  `DELETE`d (one already gone is fine). An `isReadOnly` rule is never sent: changing, moving or
-  removing it is a `Permanent` entry in the receipt's `failures`, as is every request that fails,
-  and the rest go ahead. An id holding a `/` is never put in a path (Graph decodes `%2F` into a
-  separator, `principal.rs`).
+- **Reading.** The listing is followed through `@odata.nextLink` and sorted by `sequence`, ties
+  by id; `$top` is ignored on it (asked for two, got nine, no next link). Each predicate and
+  action the model types is read typed; every other one (an Exchange message class,
+  `headerContains`, `bodyOrSubjectContains`, `withinSizeRange`, a category list that is not
+  lowercase keywords, `forwardAsAttachmentTo`) is one `Native` part holding that key alone, so it
+  goes back as it came. `hasError` and `isReadOnly` are `MailRule::in_error` and `read_only`; the
+  rule's id stays in the raw listing and its origin is `RuleOrigin::Listed`, its index there. No
+  `fromAddresses` entry of the mailbox read was an X.500 address (checked, 0 of 4).
+- **What Graph holds** is a constant vocabulary with `RuleLimit`s, so `plan_rules` sees every
+  limit before anything is written: one test per kind on each side (Graph's predicates are keys of
+  one object, any-of within a key), one move, copy and importance per rule, `To` and `Cc` only
+  together, no system keyword but `$seen`. A domain is not offered: `senderContains
+  "@example.com"` also matches `example.com.evil.test`, which would widen the condition. A rule the
+  writer still cannot place (a role whose folder the account lacks) keeps the server's rule as it
+  was and is a `Permanent` failure.
+- **Graph keeps the rules as a list** (observed on a work account, 2026-11-24): `sequence` is a
+  rule's position, renumbered on every change; a number past the end is clamped to it; a `PATCH`
+  of `sequence` alone moves the rule. So the writer removes left-out rules first, then walks the
+  planned rules keeping the server's list as it goes: a new rule is `POST`ed at its position, a
+  rule out of place gets a `PATCH` of `sequence` alone, a rule in place is not sent. Inserting or
+  moving one rule sends nothing to the others.
+- **A `PATCH` clears nothing.** A predicate, an action or `displayName` sent as `null` stays as it
+  was, with a `200` (observed). A changed rule that drops none is `PATCH`ed whole, its recipients'
+  display names kept; one that drops a part (or its name) is written as a new rule in its place,
+  `POST`ed first, and the old one `DELETE`d after. A `POST` without `displayName` is accepted and
+  Graph gives the rule a name of its own (observed), so a Graph rule always has a name.
+- **No ETag, and no read to trust straight after a write.** A `messageRule` carries no
+  `@odata.etag`, in the listing or read alone, and a `PATCH` with a stale `If-Match` lands
+  (observed), so both guards are `WriteGuard::Absent`. The version is a SHA-256 of what was read
+  (the listing in order; the reply's setting without `@odata.context`, which names the mailbox),
+  and a write reads again first and refuses a moved base as `Conflict`. That narrows the race and
+  no more, because **Graph answers a write before it applies it** (observed): the rules' listing
+  did not yet show a rule `POST`ed a moment earlier, so a base read before it passed the check;
+  and of two `mailboxSettings` writes a few seconds apart, the reads straight after the second
+  showed it while reads minutes later showed the first. So neither receipt carries a version: the
+  next write reads first, and a host that needs to know a write landed reads until it holds.
+- **Ids are percent-encoded path segments**: every byte outside RFC 3986's unreserved set, so a
+  base64 `=` goes as `%3D` (observed to work) and a `/` or `+` as data (none seen: 0 of 9 ids read
+  and 0 of the test's own; Graph re-parses a decoded `%2F`, `principal.rs`, so such an id is
+  unproven live).
+- **Every failure lands in the receipt and on the rule's outcome.** An `isReadOnly` rule is never
+  sent: changing it, moving it out of place or removing it is a `Permanent` entry in `failures`, as
+  is every request that fails, and the rest go ahead. The rule's outcome then says
+  `LossReason::NotWritten`, not kept where the rule itself was not stored and reduced where only
+  its place was not.
 - **The reply** is canonical on read (`vacation.rs`): `disabled` is off with no window, even where
   Graph keeps a schedule beside it; `scheduled` is on within its two ends, each
-  `dateTimeTimeZone` read as the instant it names (the zone kept in the raw form); one HTML
-  string per message; an external message equal to the internal one, or one nobody outside gets
-  (`externalAudience: none`), is no outside reply. Written, a text body is escaped into HTML, and
-  an off reply keeps its window. Both accounts read so far store their schedule in `UTC`.
+  `dateTimeTimeZone` read as the instant it names; one HTML string per message; an external
+  message equal to the internal one, or one nobody outside gets (`externalAudience: none`), is no
+  outside reply. A wall time the zone skips or repeats names two instants: the start takes the
+  later and the end the earlier, so the window never widens; a zone the engine cannot resolve is
+  `item_unavailable`, never a guess. Written, a text body is escaped into HTML, an off reply keeps
+  its window, and a message the model does not hold is not sent: with no outside reply and an
+  audience of the organization, `externalReplyMessage` is left out. Both accounts read so far store
+  their schedule in `UTC`.
 
 **Live status.** Reads are proven live: delegated at `/me`, application-only for a user's and a
-shared mailbox (`tests/live_rules.rs`). **Writes are proven offline only**, against fakes that log
-each request; writes to the test tenant await the owner's OK. `tests/live_rules_writes.rs` (gated on
-`GRAPH_RULES_WRITES=1`) is ready and settles, once run: the `POST`/`PATCH`/`DELETE` request shapes,
-whether a `PATCH` clears with `null` and `false`, how Exchange numbers `sequence` after a change,
-whether a stale `If-Match` on a rule is refused or ignored, and a scheduled reply written in UTC
-and read back.
+shared mailbox (`tests/live_rules.rs`). Writes ran once against the delegated work mailbox
+(`tests/live_rules_writes.rs`, gated on `GRAPH_RULES_WRITES=1`), only on rules the test created,
+and settled the facts above; every other rule was byte for byte as before. That run wrote the reply
+and restored it seconds later, and minutes afterwards the server held the earlier write: it was
+restored by hand with one verbatim `PATCH` and read back unchanged for fifteen minutes. The suite now
+settles every write by reading until it holds for three reads ten seconds apart before the next,
+and has not run in that form yet: the create-then-delete path and position-only moves are proven
+offline against fakes that log each request.
 
 ## Known limitations (documented, not bugs)
 
