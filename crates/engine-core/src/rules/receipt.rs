@@ -1,7 +1,45 @@
 //! What a write of the rules answers.
 
-use super::{RuleOutcome, RulesActivation};
+use super::{Kept, Loss, LossReason, RuleOutcome, RulePart, RulesActivation};
 use crate::{error::FailureClass, version::RuleSetVersion};
+
+/// What a transport that stores rules one by one records on a planned outcome when the server
+/// did not do what it was asked: one answer for every such adapter, so no outcome reads whole for
+/// a rule the receipt lists as failed ([`RulesReceipt::failures`]).
+impl RuleOutcome {
+    /// The target was asked to store `part` and did not ([`LossReason::NotWritten`], recorded
+    /// once per part). On the whole rule the rule is not kept as given
+    /// ([`Kept::NotKept`]); on any other part (its place in the order) it is reduced.
+    pub fn not_written(&mut self, part: RulePart) {
+        if self.holds_not_written(part) {
+            return;
+        }
+        self.losses.push(Loss::new(part, LossReason::NotWritten));
+        self.kept = match (part, self.kept) {
+            (RulePart::Rule, _) => Kept::NotKept,
+            (_, Kept::Whole) => Kept::Reduced,
+            (_, kept) => kept,
+        };
+    }
+
+    /// The rule was stored, and `part` was left otherwise than asked: a name the server kept, or
+    /// the old copy of a rule written anew that could not be removed (`RulePart::Rule`). The
+    /// rule asked for is there, so it is reduced, never dropped.
+    pub fn written_short(&mut self, part: RulePart) {
+        if !self.holds_not_written(part) {
+            self.losses.push(Loss::new(part, LossReason::NotWritten));
+        }
+        if self.kept == Kept::Whole {
+            self.kept = Kept::Reduced;
+        }
+    }
+
+    fn holds_not_written(&self, part: RulePart) -> bool {
+        self.losses
+            .iter()
+            .any(|loss| loss.part == part && loss.reason == LossReason::NotWritten)
+    }
+}
 
 /// What replacing an account's rules answers once the server has stored them.
 #[derive(Debug, Clone, PartialEq, Eq)]

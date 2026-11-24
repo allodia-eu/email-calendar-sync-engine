@@ -62,4 +62,6 @@ mod plan_source_tests;
 #[cfg(test)]
 mod plan_tests;
 #[cfg(test)]
+mod receipt_tests;
+#[cfg(test)]
 mod tests;

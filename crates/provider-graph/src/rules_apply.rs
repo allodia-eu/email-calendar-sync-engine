@@ -38,8 +38,8 @@ use engine_core::{
     ids::MailboxId,
     mail::MailboxRole,
     rules::{
-        FailedRule, Kept, Loss, LossReason, MailRule, PlanMode, RuleOrigin, RuleOutcome, RulePart,
-        RuleSet, RuleWriteFailure, RulesReceipt, plan_rules,
+        FailedRule, MailRule, PlanMode, RuleOrigin, RuleOutcome, RulePart, RuleSet,
+        RuleWriteFailure, RulesReceipt, plan_rules,
     },
 };
 use engine_provider::{ProviderError, ProviderResult};
@@ -302,34 +302,16 @@ impl Write<'_> {
     /// Records `failure`, and on the rule's outcome what it cost.
     fn failed(&mut self, source: usize, cost: Cost, failure: RuleWriteFailure) {
         self.failures.push(failure);
-        let outcome = &mut self.outcomes[source];
-        let part = match cost {
+        self.outcomes[source].not_written(match cost {
             Cost::Rule => RulePart::Rule,
             Cost::Place => RulePart::Order,
-        };
-        if outcome
-            .losses
-            .iter()
-            .any(|loss| loss.part == part && loss.reason == LossReason::NotWritten)
-        {
-            return;
-        }
-        outcome.losses.push(Loss::new(part, LossReason::NotWritten));
-        outcome.kept = match (cost, outcome.kept) {
-            (Cost::Rule, _) => Kept::NotKept,
-            (Cost::Place, Kept::Whole) => Kept::Reduced,
-            (Cost::Place, kept) => kept,
-        };
+        });
     }
 
     /// Records on a rule's outcome a part not written as asked though the rule was stored: its
     /// name left as it was, or an old copy left beside it.
     fn lost(&mut self, source: usize, part: RulePart) {
-        let outcome = &mut self.outcomes[source];
-        outcome.losses.push(Loss::new(part, LossReason::NotWritten));
-        if outcome.kept == Kept::Whole {
-            outcome.kept = Kept::Reduced;
-        }
+        self.outcomes[source].written_short(part);
     }
 
     /// Removes a rule left out, unless it is read-only.
