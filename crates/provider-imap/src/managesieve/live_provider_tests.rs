@@ -278,7 +278,7 @@ async fn a_script_over_stalwart_s_size_limit_is_refused_by_the_store() {
     }
     assert!(text.len() > 150_000);
     let name = ScriptName::new("zlive-size").unwrap();
-    // Asked first, Stalwart says it would fit (STALWART-NEW-1); RFC 5804 §2.3 has it answer
+    // Asked first, Stalwart says it would fit (STALWART-10); RFC 5804 §2.3 has it answer
     // `NO (QUOTA/MAXSIZE)`, as Dovecot does. The store then refuses it.
     session
         .have_space(&name, text.len())

@@ -245,7 +245,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
 
     /// Asks whether a script of `size` bytes named `name` would fit (RFC 5804 §2.3). The engine
     /// does not ask before storing: Stalwart answers yes to any size and refuses the store
-    /// (`docs/spec-deviations.md`, STALWART-NEW-1), so only the live suite sends it, to pin that.
+    /// (`docs/spec-deviations.md`, STALWART-10), so only the live suite sends it, to pin that.
     #[cfg(test)]
     pub(crate) async fn have_space(&mut self, name: &ScriptName, size: usize) -> SieveResult<()> {
         let mut command = command_with(b"HAVESPACE ", &[name.as_str().as_bytes()]);

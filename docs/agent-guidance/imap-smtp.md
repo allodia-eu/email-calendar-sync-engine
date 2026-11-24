@@ -944,7 +944,7 @@ connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "
   `Absent`; a stale base is refused in the write's own session.
 - **Proven live** on both harness servers (`managesieve/live_tests.rs`,
   `live_provider_tests.rs`); offline over the captured responses in
-  `tests/fixtures/managesieve/`. Stalwart's `HAVESPACE` says yes to any size (STALWART-NEW-1), so
+  `tests/fixtures/managesieve/`. Stalwart's `HAVESPACE` says yes to any size (STALWART-10), so
   nothing asks it before storing.
 
 ## Mail mutations

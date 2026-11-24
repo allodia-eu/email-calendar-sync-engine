@@ -871,7 +871,7 @@ Pigeonhole (as `alice@`), by hand and then by `provider-imap/src/managesieve/liv
   Neither gives a code there; `NONEXISTENT`, `ACTIVE` and `QUOTA/MAXSIZE` were seen elsewhere. The
   engine keeps the code alone.
 - **Stalwart answers `HAVESPACE` yes for any size, and refuses the store**: a 175 KB `PUTSCRIPT`
-  is `NO (QUOTA/MAXSIZE)` (STALWART-NEW-1). Dovecot answers `HAVESPACE` with the code.
+  is `NO (QUOTA/MAXSIZE)` (STALWART-10). Dovecot answers `HAVESPACE` with the code.
 - **A reply rule written over an unread one keeps its blocks and `else`** in a form both servers'
   `CHECKSCRIPT` accept; the bytes Roundcube's settings page stores were captured from the Dovecot
   harness (`engine-sieve/tests/fixtures/roundcube/reply_vacation_post.sieve`).
