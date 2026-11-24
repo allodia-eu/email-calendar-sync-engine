@@ -133,12 +133,11 @@ where
 }
 
 /// Where a request carrying a credential is going, once the plaintext rule has allowed it.
+///
+/// reqwest builds a request only for an `http` or `https` URL, and those always name a host
+/// and have a known default port, so the fallbacks below never apply.
 fn credential_origin(url: &Url) -> Result<Origin, CredentialFailure> {
-    let (Some(host), Some(port)) = (url.host_str(), url.port_or_known_default()) else {
-        return Err(CredentialFailure::refused_origin(
-            "a request without a host cannot carry a credential",
-        ));
-    };
+    let host = url.host_str().unwrap_or_default();
     match url.scheme() {
         "https" => {}
         "http" if is_loopback(host) => {}
@@ -148,6 +147,7 @@ fn credential_origin(url: &Url) -> Result<Origin, CredentialFailure> {
             ));
         }
     }
+    let port = url.port_or_known_default().unwrap_or_default();
     Ok(Origin::new(url.scheme(), host, port))
 }
 
@@ -203,9 +203,9 @@ impl<P, J> Presentation<'_, P, J> {
         loop {
             // Never empty here: the first presentation finds the request, and every later one
             // runs only after `replayable` saw a clone left behind.
-            let Some(request) = self.take() else {
-                unreachable!("a request is presented again only when a clone was kept")
-            };
+            let request = self
+                .take()
+                .expect("a request is presented again only when a clone was kept");
             let builder = RequestBuilder::from_parts(self.client.clone(), request);
             let builder = (self.present)(builder, &credential).map_err(Attempt::Failed)?;
             // Boxed: the exchange is most of this future's size, and the ask, the replacement and

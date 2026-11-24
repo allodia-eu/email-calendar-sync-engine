@@ -33,7 +33,10 @@ bound from the send, connect included, which is only sound while the connect giv
   bounded without a call site having to remember; a `BODY[]` fetch reads under `stall`; every
   write goes out through `deadline::write`, 8 KiB a piece under `stall`; `smtp::converse`
   waits `submission` for the end of data.
-- **HTTP** (`engine-http/src/deadline.rs`): the client every adapter builds with
+- **HTTP** (`engine-http/src/authenticated.rs`, `deadline.rs`): a request that carries the
+  account's credential asks the credential source for it, and for a replacement after a `401`,
+  each under `reply` (`engine_http::send_authenticated`), because the ask is part of the
+  request and nothing has been sent yet, a submission's included. The client every adapter builds with
   `engine_http::client(tls, user_agent)` carries `dial` as reqwest's connect timeout, which
   covers the lookup, the connect and the handshake together. `send_retrying` hands reqwest
   the request body in pieces and watches them go: `stall` between pieces, then `reply` (or `submission`,
@@ -74,6 +77,7 @@ that never sends a message twice.
 |---|---|---|---|
 | every one | connect, TLS handshake | `dial` | `Retryable`: nothing reached the server |
 | IMAP, SMTP | asking the credential source for a credential, or for a replacement after a refusal | `dial`, each ask | `Retryable`: no session was opened and no message sent (SMTP's `AUTH` precedes `MAIL FROM`) |
+| JMAP (every HTTP adapter on `send_authenticated`) | asking the credential source for a credential, or for a replacement after a `401` | `reply`, each ask | `Retryable`: the request was not sent, a submission included |
 | IMAP | greeting, `LOGIN`, `AUTHENTICATE`, `CAPABILITY`, `ENABLE`, `STARTTLS`, `SELECT`/`EXAMINE`, `LIST`, `SEARCH`, metadata `FETCH`, `STORE`, `MOVE`, `EXPUNGE`, `CREATE`, `APPEND`'s continuation and completion, `IDLE`'s start and `DONE` | `reply` per line | `Retryable` |
 | IMAP | a `BODY[]` literal, single or batched | `stall` per read | `Retryable` |
 | IMAP | every write, an `APPEND` literal included | `stall` per 8 KiB | `Retryable` |

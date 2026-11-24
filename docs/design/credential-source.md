@@ -1,7 +1,7 @@
 # Design note: one provider-neutral `CredentialSource`
 
-Status: accepted; steps 1 and 2 of "Phasing" have landed (`engine_provider::credential`,
-IMAP/SMTP on it, and the IMAP authorization identity). The direction is principle 7 of
+Status: accepted; steps 1 to 3 of "Phasing" have landed (`engine_provider::credential`,
+IMAP/SMTP on it, the IMAP authorization identity, and JMAP on `engine_http::send_authenticated`). The direction is principle 7 of
 `north-star.md`: **credentials are asked for, not held.** The owner settled every open
 question on 2026-11-23 ("Decisions", at the end), and the body below states each decision where
 it applies. One `CredentialSource` is a "Next" step in
@@ -407,7 +407,31 @@ These live in `mail-calendar/crates/mailcal-account`, read-only here:
    identity (its impersonation takes `target%admin` as the username, which is a `Password`), and
    that is pinned with its control. See "Types" for the hazard this leaves to the host.
 3. **JMAP**, together with `engine-http::send_authenticated` and the plaintext rule. This is the
-   first per-request HTTP ask, and it deletes `RefreshingJmapProvider`.
+   first per-request HTTP ask, and it deletes `RefreshingJmapProvider`. *Landed.* As built:
+   `send_authenticated(source, request, retry, exchange, present, judge)`. The design's `build`
+   is split in two: the funnel keeps the unauthenticated request and clones it for each
+   presentation, and `present` only adds the credential (and may refuse a kind it cannot send,
+   which ends the request before anything goes out: JMAP refuses `ActingAs`, since HTTP has no
+   authorization identity). The design's `is_refusal` became `judge`, which reads only a `401`
+   and answers `Unauthorized::{Refused, Reframe, Final}`: `Reframe` is JMAP's Basic/Bearer
+   re-framing, which the funnel performs once per credential with the same credential, so
+   re-framing and replacement cannot both answer one `401` and an adapter cannot forget the
+   order. The ask runs under `Deadlines::reply`, the bound on an answer owed (nothing has been
+   sent, so a submission's ask is not ambiguous either). The funnel is built on
+   `engine_provider::with_credential`, so `permits`, the single replacement and the source's
+   classes are the IMAP path's; the plaintext rule fails as `Permanent` through
+   `CredentialFailure::refused_origin`. Every JMAP request goes through it: discovery and each
+   redirect hop, method calls, blob download and upload, and the push stream, so each origin
+   is checked as it is used. `JmapConfig::from_credential_source` is new; `JmapConfig::new`
+   wraps its `Credentials` in `FixedCredential::unique`. Proven live on Stalwart
+   (`provider-jmap/tests/live_credential_source.rs`): a wrong password replaced (Stalwart's
+   `401` offers `Bearer` and `Basic` in two headers, so the password is refused as it stands
+   and not re-framed), and a revoked bearer token replaced by a fresh one, both minted through
+   Stalwart's own OAuth endpoints on the existing harness (RFC 7591 registration and an
+   authorization code with PKCE); no second server was needed for JMAP. The sync host's
+   `RefreshingJmapProvider` can now go; that is its change to make. The Basic header is still built by
+   reqwest's `basic_auth` (marked sensitive, not zeroed), so its `username:password` input is
+   one of the copies "Security review" places out of reach.
 4. **CalDAV/CardDAV**: `permits` absorbs `CredentialHosts`, and the scope is keyed by subject.
 5. **Graph and Google API**: the same bearer funnel. Google's IMAP and API halves share one source.
    This deletes the token halves of the Graph and Gmail wrappers. Graph application permissions
@@ -456,11 +480,17 @@ Live (`AGENTS.md`: any new request shape is run against a real server):
   naming no account cannot be shown on this harness.
 - **SMTP**: Stalwart submission on 465 and 587, wrong then right.
 - **JMAP**: Stalwart, wrong Basic then right. This proves the replayed request and that the `401`
-  offered `Basic` (re-framing and replacement must not both fire).
+  offered `Basic` (re-framing and replacement must not both fire). As run: Stalwart's `401`
+  carries two challenges, `Bearer …` and then `Basic realm="Stalwart Server"`, in separate
+  headers; a tool that prints only the first header shows `Bearer` alone.
 - **Bearer replacement on JMAP and CalDAV**: Stalwart's own OAuth endpoint mints the tokens. The
-  mail-calendar app repository already runs a Stalwart OAuth harness (its containers are named
-  `mailcal-core-harness-stalwart-oauth*`); the engine reuses or ports that approach, presents an
-  expired or revoked token first, and succeeds with the token `replace` mints.
+  sync host's repository runs a Stalwart OAuth harness; the engine reuses or ports that approach,
+  presents an expired or revoked token first, and succeeds with the token `replace` mints. As run
+  for JMAP: the engine's existing harness serves the OAuth endpoints on its loopback port, so
+  the live suite registers a public client, signs in through Stalwart's login form with an
+  authorization code and PKCE (`provider-jmap/tests/stalwart_oauth/`), revokes one token and
+  presents it, and succeeds with a second. A second Stalwart is needed only where an issuer must
+  be reachable by discovery, which presenting a token does not need.
 - **CalDAV/CardDAV**: Stalwart, SabreDAV and Nextcloud, wrong then right on an origin already
   authenticated after discovery, plus a full discovery with `permits` limited to the harness host,
   showing nothing regresses.

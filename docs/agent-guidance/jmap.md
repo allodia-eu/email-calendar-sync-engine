@@ -98,6 +98,32 @@ are what this replaces.
   sent, because the request carries the account's credential and the session is the only party
   that names where it may go. Where blobs live on an origin of their own (Fastmail's
   user-content domain), that origin gets the credential and the API origin does not.
+- **The credential is asked for, per request.** `JmapConfig::from_credential_source` takes the
+  account's `engine_provider::CredentialSource`, and the transport asks it for every request it
+  sends (session discovery and each redirect hop, method calls, blob download and upload, the
+  EventSource stream) through `engine_http::send_authenticated`; `JmapConfig::new` wraps its
+  `Credentials` in a `FixedCredential` of its own. So a host whose token is refreshed builds the
+  client once and never rebuilds it to present a new token (`docs/design/credential-source.md`).
+  Two behaviours came with it:
+  - **No credential over plaintext HTTP except to loopback** (`localhost`, `127.0.0.0/8`,
+    `::1`), and none to an origin the source does not `permits`: whether configured, reached by
+    a well-known redirect, or advertised by the session (`apiUrl`, `downloadUrl`, `uploadUrl`,
+    `eventSourceUrl`), the request fails as `Permanent` (`JmapError::Credential`) before
+    anything is sent. The harness serves on `127.0.0.1`, so nothing there changed.
+  - **A `401` the source can answer is replayed once.** The Basic/Bearer re-framing below runs
+    first; only a `401` whose challenge offers the scheme used, or offers none, refuses the
+    credential, and then the source is asked once to `replace` it and the request goes once more
+    with the replacement. One `401` gets one or the other, never both. A `403`, a failed
+    exchange and a second refusal are never replayed. Stalwart's `401` (v1.0.2) carries two
+    challenges, `Bearer realm="Stalwart Server", resource_metadata="…"` and then
+    `Basic realm="Stalwart Server"`, in separate headers, so a wrong password is a refusal and
+    is not re-framed; a tool that prints only the first header shows `Bearer` alone. Proven live
+    with a wrong password and with a revoked token minted by the harness's own OAuth endpoints
+    (`tests/live_credential_source.rs`).
+
+  A credential JMAP cannot present (`Credential::ActingAs`: HTTP carries no authorization
+  identity) is refused before anything is sent. A source's own failure reaches the host with
+  the class the source gave it.
 - **`blob::download_url` and `blob::upload_url`** fill the templates in, percent-encoding every
   substitution. Before this, a draft's upload URL substituted the account id raw; both now go
   through the one encoder.
@@ -401,16 +427,18 @@ Fixtures: `sieve_get_rules_and_reply_response.json`, `sieve_set_create_rules_res
   instead.
 
   ⚠️ **Know what that trust buys and what it costs.** The JMAP transport authenticates
-  every request unconditionally, with no `same_origin` gate (CalDAV has one, for URLs
-  named by card *content*), so whoever controls the web server at the user's own domain
-  can point `/.well-known/jmap` at any `https` origin and be handed the account's
-  password or bearer token on the first request. That is inherent to RFC 8620 §2.2
+  every request, with no `same_origin` gate (CalDAV has one, for URLs named by card
+  *content*), and a host that sets no `CredentialSource::permits` narrows nothing, so
+  whoever controls the web server at the user's own domain can point `/.well-known/jmap`
+  at any `https` origin and be handed the account's password or bearer token on the first
+  request. That is inherent to RFC 8620 §2.2
   discovery rather than something this adapter chose: the apex is the authority for its
   own domain's mail, and a client that would not follow it cannot connect a hosted
   provider at all. It is written down because it used to be bounded by accident. While
   redirects were rebased onto the connection origin a credential structurally could not
   leave it, and removing that (a bug: it made such providers unconnectable) removed the
-  bound with it. TLS is now the only floor, so a change that would let a chain leave it,
+  bound with it. TLS is now the floor (plaintext only to loopback), and a host holding
+  OAuth tokens narrows it with `permits`, so a change that would let a chain leave it,
   or that widens what a `Location` may name, is a decision and not a detail. **The rebase is scoped to the session's own advertised
   origin.** A session may legitimately span two: Fastmail serves `apiUrl` from
   `api.fastmail.com` and `downloadUrl` from `www.fastmailusercontent.com`, a separate
