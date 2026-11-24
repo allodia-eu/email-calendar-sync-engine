@@ -64,6 +64,13 @@ pub(super) enum TestKind {
     Importance,
 }
 
+impl TestKind {
+    /// Whether the kind holds a single value, which two tests of it cannot share.
+    pub(super) fn single_valued(&self) -> bool {
+        matches!(self, Self::SizeOver | Self::SizeUnder | Self::Importance)
+    }
+}
+
 pub(super) fn test_kind(condition: &Condition) -> Option<TestKind> {
     Some(match condition {
         Condition::Header { field, test } => {
@@ -142,6 +149,11 @@ pub(super) fn action_support(action: &Action, target: &RuleVocabulary) -> Option
                 }
                 // A role no transport names has no folder to file into.
                 RuleMailbox::Role(MailboxRole::Other(_)) => return None,
+                RuleMailbox::Role(
+                    MailboxRole::All | MailboxRole::Flagged | MailboxRole::Important,
+                ) if target.has_limit(RuleLimit::RealFoldersOnly) => {
+                    return None;
+                }
                 RuleMailbox::Role(_) => RuleFeature::FileIntoRole,
                 RuleMailbox::Id(_) => RuleFeature::FileIntoId,
             };

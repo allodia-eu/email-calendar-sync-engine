@@ -84,9 +84,11 @@ pub enum RuleFeature {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum RuleLimit {
-    /// At most one test of each kind among the conditions, and one among the exceptions: the
-    /// target keeps one test per kind, its values any-of. A kind is the condition with its field,
-    /// part and operation: a subject that contains, a sender that is, an importance.
+    /// At most one test of each kind among the conditions, where all must hold: the target keeps
+    /// one test per kind, its values any-of, so two would read as either. Among the exceptions,
+    /// where any one vetoes, tests of a kind with values merge into one, and only a kind with a
+    /// single value (an importance, a size bound) is held once. A kind is the condition with its
+    /// field, part and operation: a subject that contains, a sender that is, an importance.
     OneTestPerKind,
     /// At most one action of each kind that names one thing: one move, one copy, one importance.
     OneActionPerKind,
@@ -94,6 +96,9 @@ pub enum RuleLimit {
     RecipientsTogether,
     /// No system keyword is added but `$seen` and `$flagged`.
     NoOtherSystemKeyword,
+    /// Files only into folders: a role naming a virtual collection (all mail, flagged, important)
+    /// is no folder to file into.
+    RealFoldersOnly,
 }
 
 /// How a target holds a feature it has.

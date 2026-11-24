@@ -385,17 +385,19 @@ impl Planned {
         }
         let one_per_kind = target.has_limit(RuleLimit::OneTestPerKind);
         // A second test of a kind already tested, where the target keeps one per kind.
-        let repeated = |tests: &[Condition], i: usize| {
+        // Among exceptions, only a kind with a single value: the others merge into one any-of.
+        let repeated = |tests: &[Condition], i: usize, except: bool| {
             one_per_kind
                 && test_kind(&tests[i]).is_some_and(|kind| {
-                    tests[..i]
-                        .iter()
-                        .any(|t| test_kind(t).as_ref() == Some(&kind))
+                    (!except || kind.single_valued())
+                        && tests[..i]
+                            .iter()
+                            .any(|t| test_kind(t).as_ref() == Some(&kind))
                 })
         };
         for (i, condition) in when.conditions.iter().enumerate() {
-            let support =
-                condition_support(condition, target).filter(|_| !repeated(&when.conditions, i));
+            let support = condition_support(condition, target)
+                .filter(|_| !repeated(&when.conditions, i, false));
             self.require(RulePart::Condition(i), support);
         }
         for (i, exception) in when.except.iter().enumerate() {
@@ -403,7 +405,7 @@ impl Planned {
                 target.support(RuleFeature::Except),
                 condition_support(exception, target),
             )
-            .filter(|_| !repeated(&when.except, i));
+            .filter(|_| !repeated(&when.except, i, true));
             self.require(RulePart::Exception(i), support);
         }
         let had_actions = !rule.actions.is_empty();
