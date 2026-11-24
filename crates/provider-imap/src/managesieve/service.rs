@@ -5,7 +5,13 @@
 //! before the dial and held until the session is done (`crate::pool::other`), so the account's
 //! IMAP connections and its Sieve session never together go over the ceiling.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use futures_util::future::BoxFuture;
 use tokio::{
@@ -76,8 +82,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> ManageSieve<T> {
         work: impl AsyncFnOnce(&mut Session<T>) -> Result<R, E>,
     ) -> Result<R, E> {
         let _slot = self.budget.reserve().await;
+        let wrote = Arc::new(AtomicBool::new(false));
         let session = async {
             let mut session = (self.dial)().await.map_err(E::from)?;
+            session.watch_writes(Arc::clone(&wrote));
             let outcome = work(&mut session).await;
             if !session.broken() {
                 session.logout().await;
@@ -87,10 +95,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> ManageSieve<T> {
         tokio::time::timeout(SESSION_DEADLINE, session)
             .await
             .unwrap_or_else(|_| {
-                Err(E::from(SieveError::from(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "the ManageSieve session did not finish in time",
-                ))))
+                // Past a write, the store or the switch may have landed: the caller must read
+                // before writing again, as after any write whose answer was lost.
+                Err(E::from(if wrote.load(Ordering::SeqCst) {
+                    SieveError::Unconfirmed
+                } else {
+                    SieveError::from(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "the ManageSieve session did not finish in time",
+                    ))
+                }))
             })
     }
 }

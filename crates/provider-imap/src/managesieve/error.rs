@@ -18,6 +18,10 @@ pub(crate) enum SieveError {
     /// The transport, TLS, sign-in, or a malformed answer, as IMAP classes them.
     #[error(transparent)]
     Imap(#[from] ImapError),
+    /// The session ended, past its deadline, after a write had gone out: the script may have been
+    /// stored or switched on.
+    #[error("the ManageSieve session ended after a write went out; it may have been applied")]
+    Unconfirmed,
     /// The server answered `NO` to `command`, with `code` where it gave one.
     #[error("the ManageSieve server refused {command}{}", code_suffix(*.code))]
     Refused {
@@ -58,7 +62,7 @@ impl SieveError {
     pub(crate) fn code(&self) -> Option<ResponseCode> {
         match self {
             Self::Refused { code, .. } => *code,
-            Self::Imap(_) => None,
+            Self::Imap(_) | Self::Unconfirmed => None,
         }
     }
 }
@@ -72,6 +76,9 @@ impl From<SieveError> for ProviderError {
     fn from(error: SieveError) -> Self {
         let (command, code) = match error {
             SieveError::Imap(error) => return error.into(),
+            SieveError::Unconfirmed => {
+                return ProviderError::needs_confirmation(error.to_string()).with_source(error);
+            }
             SieveError::Refused { command, code } => (command, code),
         };
         match code {

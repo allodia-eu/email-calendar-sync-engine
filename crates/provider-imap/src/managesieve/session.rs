@@ -10,6 +10,11 @@
 //! Signing in is [`crate::managesieve::auth`]; dialling, with TLS and the credential source, is
 //! [`crate::managesieve::dial`].
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 
 use super::{
@@ -57,6 +62,9 @@ pub(crate) struct Session<S> {
     received: usize,
     /// Whether the stream failed under the session ([`broken`](Self::broken)).
     broken: bool,
+    /// Set once a write (`PUTSCRIPT`, `SETACTIVE`) goes out, so a caller that gives up on the
+    /// session afterwards knows the write may have landed ([`watch_writes`](Self::watch_writes)).
+    wrote: Arc<AtomicBool>,
 }
 
 impl<S> core::fmt::Debug for Session<S> {
@@ -82,6 +90,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
             capabilities: Capabilities::default(),
             received: 0,
             broken: false,
+            wrote: Arc::default(),
         };
         let lines = session.read_ok("the greeting").await?;
         session.capabilities = Capabilities::from_lines(&lines)?;
@@ -216,6 +225,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
     /// it has no room for. Otherwise the command's failure.
     pub(crate) async fn put_script(&mut self, name: &ScriptName, text: &str) -> SieveResult<()> {
         let command = command_with(b"PUTSCRIPT ", &[name.as_str().as_bytes(), text.as_bytes()]);
+        self.wrote.store(true, Ordering::SeqCst);
         self.command(&command, "PUTSCRIPT").await?;
         Ok(())
     }
@@ -252,6 +262,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
     pub(crate) async fn set_active(&mut self, name: Option<&ScriptName>) -> SieveResult<()> {
         let name = name.map_or("", ScriptName::as_str);
         let command = command_with(b"SETACTIVE ", &[name.as_bytes()]);
+        self.wrote.store(true, Ordering::SeqCst);
         self.command(&command, "SETACTIVE").await?;
         Ok(())
     }
@@ -289,6 +300,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
         let sent = deadline::write(&mut self.inner, bytes).await;
         self.broken |= sent.is_err();
         Ok(sent?)
+    }
+
+    /// Shares the flag a write sets as it goes out, so it can be read after the session is gone.
+    pub(crate) fn watch_writes(&mut self, wrote: Arc<AtomicBool>) {
+        self.wrote = wrote;
     }
 
     /// Whether the stream failed under the session (I/O, a timeout, an answer it could not

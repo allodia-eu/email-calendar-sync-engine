@@ -224,7 +224,7 @@ fn refused_store(err: SieveError) -> ProviderError {
             .with_source(err),
         SieveError::Refused { .. } => err.into(),
         // The command went out: the script may have been stored.
-        SieveError::Imap(_) => ProviderError::needs_confirmation(
+        SieveError::Imap(_) | SieveError::Unconfirmed => ProviderError::needs_confirmation(
             "the Sieve script may have been stored; read it again",
         )
         .with_source(err),

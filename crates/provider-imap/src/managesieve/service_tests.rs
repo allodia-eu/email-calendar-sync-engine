@@ -67,3 +67,48 @@ async fn no_logout_is_sent_on_a_stream_that_failed_and_one_is_on_a_sound_one() {
     let sent = crate::managesieve::test_support::sent(&sessions);
     assert_eq!(sent, "LISTSCRIPTS\r\nLOGOUT\r\n");
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_deadline_after_the_script_was_stored_and_before_it_was_switched_on_needs_confirmation() {
+    use engine_core::{ids::AccountId, rules::RuleSet, version::RuleSetVersion};
+    use engine_provider::MailRules;
+
+    use crate::managesieve::test_support::{capability, listing};
+
+    let slots = Arc::new(Semaphore::new(1));
+    let budget = Arc::new(OneSlot(Arc::clone(&slots)));
+    let (client, mut server) = tokio::io::duplex(1 << 20);
+    let client = std::sync::Mutex::new(Some(client));
+    let dial: SieveDial<tokio::io::DuplexStream> = Arc::new(move || {
+        let stream = client.lock().unwrap().take().expect("one dial");
+        Box::pin(Session::open(stream))
+    });
+    // Greeting, CAPABILITY, LISTSCRIPTS (none), PUTSCRIPT stored at once; then the answer to
+    // SETACTIVE a byte at a time, until the session's deadline.
+    tokio::spawn(async move {
+        let mut quick = GREETING.to_vec();
+        quick.extend_from_slice(&capability("fileinto"));
+        quick.extend_from_slice(&listing(&[]));
+        quick.extend_from_slice(b"OK\r\n");
+        server.write_all(&quick).await.unwrap();
+        loop {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            if server.write_all(b"O").await.is_err() {
+                return;
+            }
+        }
+    });
+    let sieve = ManageSieve::new(dial, budget, true);
+    let account = AccountId::try_from("sieve").unwrap();
+    // The version an empty account reads at: no script, no text.
+    let empty = crate::managesieve::state::State {
+        listed: Vec::new(),
+        script: None,
+        text: String::new(),
+        server_reply: None,
+    };
+    let base = RuleSet::new(Vec::new()).with_version(RuleSetVersion::new(empty.version()));
+    let err = sieve.replace_rules(&account, &base, &[]).await.unwrap_err();
+    assert!(err.requires_confirmation(), "{err:?}");
+    assert_eq!(slots.available_permits(), 1);
+}
