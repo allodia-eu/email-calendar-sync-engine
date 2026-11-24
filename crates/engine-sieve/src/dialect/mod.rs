@@ -18,8 +18,9 @@
 //!   changes.
 //! - [`reply`] reads and writes the out-of-office reply where it is a rule of the script, as the
 //!   plugin's vacation engine writes it.
-//! - [`include`] is a rules script's `include` of a server's reply script, and [`scripts`] which of
-//!   an account's scripts holds the rules: one answer for JMAP and ManageSieve.
+//! - [`include`](mod@include) is a rules script's `include` of a server's reply script, and
+//!   [`scripts`] which of an account's scripts holds the rules: one answer for JMAP and
+//!   ManageSieve.
 //! - [`vocabulary`] says what the writer can write for an account, from its server's extensions,
 //!   for [`plan_rules`](engine_core::rules::plan_rules).
 //!
