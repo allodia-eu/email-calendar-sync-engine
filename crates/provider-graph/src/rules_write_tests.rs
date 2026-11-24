@@ -291,6 +291,11 @@ fn a_patch_clears_what_the_old_rule_held_and_the_new_one_does_not() {
         json!({"permanentDelete": true, "moveToFolder": null, "markAsRead": false})
     );
     assert_eq!(new["exceptions"], json!({"bodyContains": null}));
+    // The new rule has no name: the old one's is cleared.
+    let named = json!({"displayName": "Old"});
+    let mut unnamed = write(&rule).unwrap();
+    clear_dropped(&mut unnamed, &named);
+    assert_eq!(unnamed["displayName"], Value::Null);
 }
 
 #[test]

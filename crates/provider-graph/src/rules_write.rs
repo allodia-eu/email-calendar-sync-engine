@@ -136,8 +136,13 @@ pub(crate) fn keep_names(new: &mut Map<String, Value>, old: &Value) {
 
 /// Clears in `new` every predicate and action `old` holds that `new` does not, so a `PATCH`
 /// leaves none of the old rule's parts behind whether Graph merges the objects or replaces them:
-/// a flag as `false`, anything else as `null`.
+/// a flag as `false`, anything else as `null`. A name the rule no longer has is cleared too.
 pub(crate) fn clear_dropped(new: &mut Map<String, Value>, old: &Value) {
+    if old.get("displayName").is_some_and(|name| !name.is_null())
+        && !new.contains_key("displayName")
+    {
+        new.insert("displayName".to_owned(), Value::Null);
+    }
     for section in ["conditions", "exceptions", "actions"] {
         let Some(old) = old.get(section).and_then(Value::as_object) else {
             continue;
