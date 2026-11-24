@@ -1136,14 +1136,17 @@ Captured, scrubbed, as `provider-graph/tests/fixtures/rules/`.
   adapter follows a next link all the same.
 - **The schedule is in UTC** on both mailboxes read; another zone is resolved through the tzdb, a
   skipped or repeated wall time never widening the window.
+- **Writes, settled, proven on the test's own rules**: a rotation of three by position, a list
+  shortened by the engine (written anew in place), a rename in place, a stale base refused once the
+  listing settled; and a reply scheduled for 2099, settled, restored and still matching five
+  minutes later. A `PATCH` replaces a list sent shorter, where it keeps a part sent as `null`.
 - **An unscheduled reply reports a rolling schedule**: from the top of the current hour to a day
   later, moving every hour. The version leaves the two ends out unless the reply is scheduled.
 
 **Follow-ups for Graph.**
 
-- **A second live write run** of the reworked suite, which settles each write by repeated reads:
-  the create-then-delete path, position-only moves, and a reply written and restored with a settle
-  period between.
+- **A shortened list as a `PATCH`**: Graph replaces a list a `PATCH` sends shorter (observed), so
+  the rule need not be written anew for that; it is, for now, which is proven too.
 - **A typed subject-or-body condition**, so `bodyOrSubjectContains` (a common Outlook condition)
   carries to Sieve as `anyof (header, body)` instead of staying `Native`.
 - **Size ranges** typed, once a one-sided `withinSizeRange` and its kilobyte rounding are proven.

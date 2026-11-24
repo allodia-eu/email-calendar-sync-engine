@@ -695,14 +695,23 @@ column of `docs/design/filters-and-out-of-office.md` §5; what follows is what t
   unless `status` is `scheduled`, or a guarded write would meet a conflict nothing caused.
 
 **Live status.** Reads are proven live: delegated at `/me`, application-only for a user's and a
-shared mailbox (`tests/live_rules.rs`). Writes ran once against the delegated work mailbox
-(`tests/live_rules_writes.rs`, gated on `GRAPH_RULES_WRITES=1`), only on rules the test created,
-and settled the facts above; every other rule was byte for byte as before. That run wrote the reply
-and restored it seconds later, and minutes afterwards the server held the earlier write: it was
-restored by hand with one verbatim `PATCH` and read back unchanged for fifteen minutes. The suite now
-settles every write by reading until it holds for three reads ten seconds apart before the next,
-and has not run in that form yet: the create-then-delete path and position-only moves are proven
-offline against fakes that log each request.
+shared mailbox (`tests/live_rules.rs`). Writes are proven live on the delegated work mailbox, only
+on rules each test created, every other rule byte for byte as before after every run:
+
+- the first run settled the facts above, and showed a reply write and its restore landing out of
+  order (restored by hand with one verbatim `PATCH`, read back unchanged for fifteen minutes);
+- `tests/live_reply_writes.rs` (gate `GRAPH_REPLY_WRITES=1`) wrote a reply scheduled for 2099,
+  settled it over five minutes, restored the setting and settled that, and found 0 fields differing
+  five minutes later;
+- `tests/live_rules_writes.rs` (gate `GRAPH_RULES_WRITES=1`) created five rules after the user's,
+  rotated three of them, shortened a list by hand and by the engine (written anew in place), renamed
+  one in place, saw a stale base refused once the listing had settled, and removed them, each write
+  settled by three reads ten seconds apart. It refuses to start unless the user's rules are numbered
+  1 to n and every one plans whole, and finds every rule it edits by its marker and tag.
+
+A `PATCH` replaces a list it is sent shorter (observed: two addresses sent as one read back as
+one), where it keeps a part sent as `null`. The writer still writes a shortened list anew, which is
+proven too; sending it as a `PATCH` instead is a follow-up.
 
 ## Known limitations (documented, not bugs)
 
