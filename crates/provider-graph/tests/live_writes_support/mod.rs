@@ -4,6 +4,8 @@
 
 #![allow(dead_code)]
 
+pub(crate) mod rules;
+
 use std::time::Duration;
 
 use engine_core::ids::{AccountId, MailboxId};
