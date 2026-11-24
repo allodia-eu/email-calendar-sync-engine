@@ -358,3 +358,46 @@ async fn a_fixed_credential_built_by_new_is_presented_and_never_replaced() {
     assert_eq!(err.class(), FailureClass::Authentication, "{err}");
     assert_eq!(authorizations(&seen), [EXPECTED_BASIC]);
 }
+
+/// Stalwart's `401` (v1.0.2) to a wrong password and to a revoked token alike, captured from the
+/// harness: two challenges, each in a header of its own, Bearer first.
+fn stalwart_401() -> String {
+    http(
+        "401 Unauthorized",
+        &[
+            (
+                "WWW-Authenticate",
+                r#"Bearer realm="Stalwart Server", resource_metadata="https://mail.test.local/.well-known/oauth-protected-resource/jmap/session""#,
+            ),
+            ("WWW-Authenticate", r#"Basic realm="Stalwart Server""#),
+        ],
+        "",
+    )
+}
+
+#[tokio::test]
+async fn stalwarts_401_to_a_wrong_password_is_a_refusal_and_not_a_reframe() {
+    // Its first challenge names Bearer; the second names Basic, the scheme the password went
+    // out under, so the password was judged. Re-framing it as a token would spend a second
+    // failed sign-in on the same wrong password.
+    let (base, seen) = mock_server(vec![stalwart_401(), ok("{}")]);
+    let source = Arc::new(Rotating::new(
+        Credential::password("alice@example.com", "wrong"),
+        vec![Credential::password("alice@example.com", "s3cret")],
+    ));
+    transport(&source).get(&base).await.expect("replaced");
+    let sent = authorizations(&seen);
+    assert!(sent[0].starts_with("Basic "), "{sent:?}");
+    assert_eq!(sent[1], EXPECTED_BASIC);
+    assert_eq!(sent.len(), 2);
+    assert_eq!(source.replaced(), 1);
+}
+
+#[tokio::test]
+async fn stalwarts_401_to_a_revoked_token_is_a_refusal() {
+    let (base, seen) = mock_server(vec![stalwart_401(), ok("{}")]);
+    let source = Arc::new(Rotating::tokens("revoked", &["fresh"]));
+    transport(&source).get(&base).await.expect("replaced");
+    assert_eq!(authorizations(&seen), ["Bearer revoked", "Bearer fresh"]);
+    assert_eq!(source.replaced(), 1);
+}

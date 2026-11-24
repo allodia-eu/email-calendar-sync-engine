@@ -15,8 +15,9 @@
 //! replacement (`engine_http::send_authenticated`). One `401` gets one of the two, never both.
 //!
 //! This is what lets one stored secret work against servers that disagree about the
-//! wire format: Stalwart challenges `Basic`, while Fastmail challenges
-//! `Bearer resource_metadata="…"` and rejects a Basic header outright ("Invalid
+//! wire format: Stalwart challenges `Bearer` and `Basic`, in two headers (v1.0.2), so a wrong
+//! password presented as Basic is refused as it stands, while Fastmail challenges
+//! `Bearer resource_metadata="…"` alone and rejects a Basic header outright ("Invalid
 //! Authorization header, not bearer"). Neither is special-cased.
 
 use core::sync::atomic::{AtomicU8, Ordering};
