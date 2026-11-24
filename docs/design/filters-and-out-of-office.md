@@ -214,9 +214,10 @@ Implemented as sketched, with these differences, each for a reason the code met:
   went (`RulesStored`), what the write did to a running reply (`ReplyEffect`), and whether the
   rules written run (`RulesActivation`, slice 4); `RulesPlan.rules` pairs each written rule with
   its source index (`PlannedRule`).
-- `RuleVocabulary::with_mailboxes` narrows filing by id to a target's own folders, which an
-  importer knows and an edit does not: an id outside them loses its action as `MissingMailbox`
-  (slice 4).
+- `RuleVocabulary::with_folders` (a `FolderMap`, source folder id to target folder id) is how an
+  import files by id: a mapped id is written as the target's, and one the map does not hold loses
+  its action as `MissingMailbox` (slice 4). `RuleVocabulary::without` takes a feature out, for a
+  transport that cannot use what its language could say (ManageSieve, filing by id).
 - A `RawRule` carries what the reader learned of its text:
   - the extensions it requires, from one table of command, test and tag, a tag read in the
     context of its command (`:seconds` is `vacation-seconds` on `vacation` only), and where a
@@ -574,7 +575,7 @@ IMAP import, #376) gains a sibling, reached the same way, through `Provider::rul
 pub trait RulesImporter: Send + Sync {
     /// Appends `rules` after the target's own, never replacing them, and answers per rule.
     async fn import_rules(&self, account: &AccountId, rules: &[MailRule],
-        forwarding: ForwardingRules) -> ProviderResult<RulesReceipt>;
+        forwarding: ForwardingRules, folders: &FolderMap) -> ProviderResult<RulesReceipt>;
     /// Writes `reply` where the target holds none of its own.
     async fn import_vacation(&self, account: &AccountId, reply: &VacationResponse)
         -> ProviderResult<VacationReceipt>;
@@ -582,56 +583,101 @@ pub trait RulesImporter: Send + Sync {
 ```
 
 It differs from `replace_rules` in what it may touch: it appends, keeps the target's existing
-rules, and applies the import-only defaults above. The host rewrites each `RuleMailbox::Id` from
-source to target mailbox ids first, with the folder map the mail import already built; an id it
-cannot map stays, and the plan reports `MissingMailbox`. Errors follow `MailImporter`:
+rules, and applies the import-only defaults above. Errors follow `MailImporter`:
 `requires_confirmation` means the script or a rule may have been stored; `item_unavailable`
 means it never will be. Unlike `import_messages`, the call answers one result for the set,
 because a Sieve target stores the set as one script; what each rule kept is in its
 `RuleOutcome`, as an imported message reports the `MessageMetadata` the target kept (#383).
 
-**As built (slice 4, the target half).** The sketch answered `Vec<RuleOutcome>`; the import
-answers a whole `RulesReceipt`, its outcomes indexed by the rules handed in, because an import can
-do what an edit can: create a `rules` script and switch it on (`RulesStored::CreatedRunning`),
-stop a reply that ran (`ReplyEffect::Stopped`, on a JMAP account whose reply's script cannot be
-included), or write into a script that does not run (`RulesReceipt::activation`). A bare list
-would lose all three, and the receipt is the transfer host's record of what it did to the pair.
+**As built (slice 4, the target half).** The contract is: **never change what the target
+already had, and be safe to run again.** Where the code differs from the sketch above, it says
+why.
 
+- **A receipt, not a list.** The sketch answered `Vec<RuleOutcome>`; the import answers a whole
+  `RulesReceipt`, its outcomes indexed by the rules handed in, because an import can do what an
+  edit can: create a `rules` script and switch it on (`RulesStored::CreatedRunning`), or write into
+  a script that does not run (`RulesReceipt::activation`). It also says which rules the target
+  already held (`already_held`), and that nothing was written (`RulesStored::Unwritten`). A bare
+  list would lose all of it, and the receipt is the transfer host's record of the pair.
+- **The importer takes the folder map; the host does not rewrite ids.** The sketch had the host
+  rewrite each `RuleMailbox::Id` and leave an unmapped one as it was. Folder ids are a server's
+  own and repeat across accounts (Stalwart numbers each account's from `a`), so an unmapped source
+  id can be a folder the target has, and an existence check cannot tell the two apart: the rule
+  would file into the wrong folder and report `Whole`. So the host hands in its `FolderMap`
+  (source id to target id), the plan writes each mapped id as the target's
+  (`RuleVocabulary::with_folders`), and an id the map does not hold loses its action as
+  `MissingMailbox`. JMAP also asks the server for the mapped target ids the rules need
+  (`Mailbox/get` for exactly those, in chunks of `maxObjectsInGet`) and drops a pair whose target
+  folder is gone, so it is `MissingMailbox` too. ManageSieve files by no id at all (below).
 - **One import for every target**, in `engine_provider::import`: `append_rules` and
-  `import_reply` over the target's own `&dyn MailRules` and `&dyn Vacation`. An adapter's
-  `RulesImporter` calls them and adds only what it alone knows. So the import writes through
+  `import_reply` over a target's `&dyn MailRules` and `&dyn Vacation`. An adapter's
+  `RulesImporter` calls them, and adds only what it alone knows. So the import writes through
   `replace_rules` and `set_vacation`, and which script holds the rules, the guard, the reply's
   include and the rule that a write never switches stored rules on or off are each decided in one
   place, for an edit and an import alike.
-- **The rules.** `append_rules` reads the target's rules, plans the imported ones in `Import` mode
-  against the target's vocabulary narrowed to its folders (`RuleVocabulary::with_mailboxes`: an
-  id not among them loses its action as `MissingMailbox`), and writes the target's own rules,
-  unchanged, followed by the planned ones, through `replace_rules` built on that read. A race with
-  another client between the read and the write is the edit's `Conflict`, nothing written. Before
-  writing, it plans the target's own rules as an edit would: where that would write any of them
-  differently or not at all (a rule needing an extension the server takes in `require` without
-  listing it, STALWART-8), the import is refused (`item_unavailable`), because it never changes
-  them. The imported rules are planned twice, once as an import and once inside `replace_rules` as
-  an edit; the second keeps every planned rule as the first wrote it (pinned by a test), so the
-  outcomes are the import's. Where nothing is left to add, nothing is written.
+- **The rules.** `append_rules` reads the target's rules and plans the imported ones in `Import`
+  mode. Before writing, it plans the target's own rules as an edit would: where that would write
+  any of them differently or not at all (a rule needing an extension the server takes in `require`
+  without listing it, STALWART-8), the import is refused (`item_unavailable`). It then writes the
+  target's own rules, unchanged, followed by the planned ones, through `replace_rules` built on
+  that read; a race with another client in between is the edit's `Conflict`, nothing written. The
+  imported rules are planned twice, once as an import and once inside `replace_rules` as an edit;
+  the second keeps every planned rule as the first wrote it (pinned by a test), so the outcomes
+  are the import's. Each is written as a rule of no script (`MailRule::origin` cleared): the
+  segment it names is the source's, and a target script with the same text must not be taken for
+  it. The target's own rules are copied byte for byte, and `require` grows. One more line changes
+  in one case: where the target's rules script is stored but switched off and includes a server
+  reply that does not run, the write leaves the include out, as an edit does, because an included
+  script runs even where it is not the active one: kept, it would switch a reply that is off on
+  with the rules.
+- **Safe to run again.** A planned rule the target already holds an equal typed rule for is not
+  written again, each held rule answering for one handed in (two equal rules need two held), and
+  the receipt lists it (`already_held`); its outcome is still what the plan decided. A rule equal
+  to one the user wrote themselves counts as imported: written again it would do nothing more,
+  since the held copy runs first on the same messages. A rule carried whole is never taken as held
+  (its text is compared by no one), so running an import twice writes such a rule twice. Rules
+  are compared as the target reads them back, their actions in any order (the writer puts marks
+  first); a rule the target's reader reads in another form (a Sieve `fileinto "INBOX"` reads as
+  the inbox's role, not as a path) is not recognised, and a second run writes it again. A
+  forwarding rule an operator has switched on since reads differently from the disabled one the
+  import writes, so a second run adds it again, disabled.
+- **Never stop what runs.** On JMAP, where the target runs the server's reply script and the new
+  rules script cannot include it (the condition fails), an import that would create and switch on
+  `rules` is refused (`item_unavailable`) rather than stop the reply, as ManageSieve refuses where
+  its server lists no `include`. The other way round, a reply import that would switch the running
+  rules off (the server's flag, with no include path) is refused too. Both are the edit's own
+  write paths, asked to refuse where an edit writes and says so (`ReplyEffect::Stopped`,
+  `RulesEffect::Deactivated`): the JMAP importer hands the engine's import a view of the adapter
+  whose writes refuse (`ImportTarget`), so the question "would this stop what runs" keeps one
+  answer, computed where the write is.
 - **Where the target's rules script is stored but switched off**, the imported rules are written
   into it and do not run until the user switches it on: activating it would switch on rules the
   user left off, or switch off the server's own reply script, and a write never does either. The
   receipt says so (`RulesReceipt::activation: Inactive`), as every rules write's receipt now does.
+- **What a rule carried whole cannot take across.** On import, a rule carried whole that holds
+  `${`, names a folder by id (`fileinto :mailboxid`), or runs another script (`include`) is
+  `NotKept`: the first means what its own script made of it, and the other two name the source
+  account's folders and scripts. The reader marks the last two
+  (`RawRule::names_folders_by_id`, `includes_scripts`). A *typed* imported rule whose value holds
+  `${`, going into a target script that requires `variables`, still refuses the whole import
+  (the writer's `Variable` refusal): the plan cannot see the target's script, and judging it by
+  the account's extensions instead would drop every such rule on both servers surveyed, which
+  list `variables` whether or not the script requires it.
 - **The reply.** `import_reply` refuses a reply with a part the target cannot hold, whole
   (`refuse_unheld_vacation`, as an edit is refused: a lost window, audience or outside reply would
-  widen who is answered). It then reads the target's reply. Where that is empty (off, nothing to
-  say, no window, the default audience) it writes the imported one, guarded by that read. Where
-  it already says the same in every modelled part, it answers without writing, so an import run
-  again after an interruption answers as the first did. Any other reply, on or off, is the
-  target's own and is refused (`item_unavailable`): an import never replaces it, as it never
-  replaces a rule. A host that means to replace it writes through `Vacation::set_vacation` itself,
-  `Unconditional` if it must. A window read back from Sieve is whole seconds, so a reply whose
-  window holds a fraction of a second reads back different and a second run refuses it.
-- **Folders by id, per target.** JMAP asks the server for exactly the ids the rules name (one
-  `Mailbox/get`, `notFound` for one it lacks). ManageSieve knows no folder by id: Sieve's
-  `:mailboxid` names an RFC 8474 `MAILBOXID`, which the IMAP adapter does not read (its folder ids
-  are names), so every rule filing by id loses that action there, and a host names an IMAP
+  widen who is answered). It then reads the target's reply and compares the two as the target
+  holds them (`as_held`): a CRLF is an LF, one line end closing a text is dropped (a Sieve `text:`
+  block adds it), and the window is taken to whole seconds inward, as the Sieve writer stores it.
+  Where the target's reply is empty (off, nothing to say, no window, the default audience) it
+  writes the imported one, guarded by that read. Where it already says the same, it answers
+  without writing, so an import run again after an interruption answers as the first did. Any
+  other reply, on or off, is the target's own and is refused (`item_unavailable`): an import never
+  replaces it, as it never replaces a rule. A host that means to replace it writes through
+  `Vacation::set_vacation` itself, `Unconditional` if it must.
+- **Folders by id, per target.** JMAP files by the target's `Mailbox` id, which its Sieve
+  `:mailboxid` names. ManageSieve files by no id: Sieve's `:mailboxid` names an RFC 8474
+  `MAILBOXID`, which the IMAP adapter does not read (its folder ids are names), so its vocabulary
+  leaves filing by id out, a rule filing by id loses that action there, and a host names an IMAP
   target's folders by path. Written unchecked, `fileinto :mailboxid` with an id the server lacks
   files into the inbox (RFC 9042's fallback), which is why neither target writes one it has not
   seen.
@@ -640,9 +686,10 @@ The preflight list of decision 2 is `engine_core::rules::held_forwarding(rules, 
 rule an import holds back because it sends mail out of the account, with its outcome under the
 default, `Disabled` (stored for review) or `NotKept` (the target cannot store it disabled). It is
 the set of rules `plan_rules` keeps differently with `ForwardingRules::Enabled`, so `plan_rules`
-alone decides it, and the list and the receipt of the import that follows cannot disagree. A rule
-already disabled at the source, or one the target would not keep either way, is not listed: the
-switch changes nothing for it.
+alone decides it; it agrees with the receipt of an import planned against the same vocabulary and
+folders, and a target that changed in between can answer differently. A rule already disabled at
+the source, or one the target would not keep either way, is not listed: the switch changes
+nothing for it.
 
 A transfer host reads the source and writes the target with administrative access where the
 provider offers it: Graph application permissions (shared-mailbox settings need them; delegated
@@ -970,7 +1017,8 @@ Captured, scrubbed, as `provider-jmap/tests/fixtures/mailbox_get_rule_folders_re
 - **`Mailbox/get` for named ids answers `notFound` for one the account lacks**, beside the one it
   has, in one call; the import loses that rule's action.
 - **Imported rules land after the account's own, which the server then holds byte for byte**, on
-  all three: only `require` grows. A rule set built as Graph reads it imports as planned: an
+  all three: `require` grows, and an include of a reply that does not run, in a rules script that
+  is switched off, is left out (JMAP, live). A rule set built as Graph reads it imports as planned: an
   importance mark is `addheader` on Stalwart (`Approximated`) and lost on Dovecot, a rule with an
   Exchange-only exception is not kept, a redirect arrives `if false #`-disabled and reads back
   typed and disabled, and `held_forwarding` lists exactly it.

@@ -365,14 +365,26 @@ answers it where the session addresses an account with `urn:ietf:params:jmap:sie
   rules script is stored and not the active one, `Running` where it is, or where the write created
   it.
 - **Import** (`src/import/rules.rs`, the `import` feature): `RulesImporter` through
-  `engine_provider::import::append_rules` and `import_reply` over this adapter's own `MailRules`
-  and `Vacation` (`providers.md`, "Importing rules and the reply"), answered by
-  `Provider::rules_importer` wherever the rules are. What JMAP adds is the target's folders: one
-  `Mailbox/get` (`ids` exactly those the rules name, `properties: ["id"]`) before planning, and an
-  id the server answers `notFound` is lost as `MissingMailbox` rather than written as
-  `fileinto :mailboxid`, which would file into the inbox, RFC 9042's fallback. No request where no
-  rule names a folder by id. The reply's import refuses an account without
-  `urn:ietf:params:jmap:vacationresponse`.
+  `engine_provider::import::append_rules` and `import_reply` (`providers.md`, "Importing rules and
+  the reply"), answered by `Provider::rules_importer` wherever the rules are. What JMAP adds:
+  - **The target's folders.** The host's `FolderMap` gives each source folder its target id; the
+    mapped ids the rules need are asked of the server (`Mailbox/get`, `ids` exactly those,
+    `properties: ["id"]`, as many to a call as `maxObjectsInGet` allows), and a pair whose target
+    the server answers `notFound` is dropped, so the rule loses that action as `MissingMailbox`
+    rather than being written as `fileinto :mailboxid`, which would file into the inbox (RFC
+    9042's fallback). No request where no rule names a folder by id.
+  - **Never stopping what runs.** The import writes through `ImportTarget`, this adapter's rules
+    and reply with `WhenItStops::Refuse`: the edit's own write paths (`rules::replace`,
+    `vacation::set`), refusing before anything is sent where the edit would write and say so. A
+    rules import that would create and switch on `rules` while the server's reply script runs and
+    the include condition fails (`ReplyEffect::Stopped` for an edit) is `item_unavailable`; so is a
+    reply import that would go on by the server's flag while a script of the user's runs
+    (`vacation_include::Path::Flag { rules_running: true }`, `RulesEffect::Deactivated` for an
+    edit).
+  - An include of a reply that does not run, in a rules script that is switched off, is left out
+    by the write, as an edit leaves it: an included script runs even where it is not the active
+    one.
+  The reply's import refuses an account without `urn:ietf:params:jmap:vacationresponse`.
 
 Live: `tests/live_rules.rs` (rules written, read back typed, guarded both ways, refused whole,
 the vocabulary the server's), `tests/live_rules_import.rs` (a Graph-shaped set imported after a

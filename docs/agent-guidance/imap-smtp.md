@@ -951,10 +951,11 @@ connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "
 - **Import** (`managesieve/import.rs`, the `import` feature): `RulesImporter` through
   `engine_provider::import::append_rules` and `import_reply` over the same service
   (`providers.md`, "Importing rules and the reply"), answered by `Provider::rules_importer`
-  wherever `mail_rules` is. No folder is known by id: a Sieve `:mailboxid` names an RFC 8474
-  `MAILBOXID`, which this adapter does not read (its folder ids are names), so a rule filing by id
-  loses that action as `MissingMailbox` rather than being written with an id the server does not
-  know; a host names an IMAP target's folders by path.
+  wherever `mail_rules` is. No rule files by id here (above), so a rule filing by id loses that
+  action: `MissingMailbox` where the host's `FolderMap` does not hold the folder, `NotExpressible`
+  where it does; a host names an IMAP target's folders by path. A rules import never stops a
+  running reply here either: the write refuses where the server's reply script runs and it lists
+  no `include`, as an edit does, and the reply's own write refuses to switch stored rules on.
 - **Proven live** on both harness servers (`managesieve/live_tests.rs`,
   `live_provider_tests.rs`, and `live_import_tests.rs` for the import, which CI's Dovecot job runs
   with `--features import`); offline over the captured responses in
