@@ -106,6 +106,27 @@ async fn a_rule_changed_is_stored_in_place_over_the_script_read() {
 }
 
 #[tokio::test]
+async fn rules_written_into_a_script_switched_off_stay_off_and_the_receipt_says_so() {
+    let base = read_set(&[&listing(&[("mine", false)]), &script(RULE), LOGOUT]).await;
+    let (sieve, sessions) = scripted(&[
+        &capability("fileinto"),
+        &listing(&[("mine", false)]),
+        &script(RULE),
+        b"OK\r\n",
+        &listing(&[("mine", false)]),
+        &script(RULE),
+        LOGOUT,
+    ]);
+    let receipt = sieve
+        .replace_rules(&account(), &base, &base.rules)
+        .await
+        .unwrap();
+    assert_eq!(receipt.stored, RulesStored::InPlace);
+    assert_eq!(receipt.activation, RulesActivation::Inactive);
+    assert!(!sent(&sessions).contains("SETACTIVE"), "never switched on");
+}
+
+#[tokio::test]
 async fn an_account_with_no_script_gets_rules_created_and_switched_on() {
     let empty = read_set(&[&listing(&[]), LOGOUT]).await;
     let rules = base(RULE).await.rules;
@@ -123,6 +144,7 @@ async fn an_account_with_no_script_gets_rules_created_and_switched_on() {
         .await
         .unwrap();
     assert_eq!(receipt.stored, RulesStored::CreatedRunning);
+    assert_eq!(receipt.activation, RulesActivation::Running);
     let sent = sent(&sessions);
     assert!(sent.contains("PUTSCRIPT \"rules\" {"), "{sent}");
     assert!(sent.contains("SETACTIVE \"rules\"\r\n"), "{sent}");
@@ -369,4 +391,43 @@ async fn rules_are_not_written_into_a_script_holding_a_vacation_no_rule_names() 
 
 async fn base_rules() -> Vec<MailRule> {
     base(RULE).await.rules
+}
+
+/// A rule filing by `:mailboxid`, as a JMAP client of the same Stalwart account writes one.
+const BY_ID: &str = "require [\"fileinto\",\"mailboxid\"];\r\n# rule:[By id]\r\nif header \
+                     :contains \"subject\" \"zid\"\r\n{\r\n\tfileinto :mailboxid \"a\" \
+                     \"INBOX\";\r\n}\r\n";
+
+#[tokio::test]
+async fn a_rule_filing_by_mailboxid_is_carried_whole_and_no_rule_files_by_id_here() {
+    // The IMAP adapter knows a folder by its name, never by its RFC 8474 `MAILBOXID`: such a rule
+    // is no typed `Id` a host could take for one of its own folder ids (fix to #411).
+    let set = base(BY_ID).await;
+    assert!(
+        matches!(&set.rules[0].body, engine_core::rules::RuleBody::Opaque(_)),
+        "{:?}",
+        set.rules[0]
+    );
+    let (sieve, _) = scripted(&[&capability("fileinto mailboxid"), LOGOUT]);
+    let vocabulary = sieve.rule_vocabulary(&account()).await.unwrap();
+    assert_eq!(
+        vocabulary.support(engine_core::rules::RuleFeature::FileIntoId),
+        None
+    );
+    // Written back unchanged, byte for byte.
+    let (sieve, sessions) = scripted(&[
+        &capability("fileinto mailboxid"),
+        &listing(&[("zfixture", true)]),
+        &script(BY_ID),
+        b"OK\r\n",
+        &listing(&[("zfixture", true)]),
+        &script(BY_ID),
+        LOGOUT,
+    ]);
+    let receipt = sieve
+        .replace_rules(&account(), &set, &set.rules)
+        .await
+        .unwrap();
+    assert_eq!(receipt.outcomes[0].kept, Kept::Whole);
+    assert!(sent(&sessions).contains(BY_ID), "{}", sent(&sessions));
 }

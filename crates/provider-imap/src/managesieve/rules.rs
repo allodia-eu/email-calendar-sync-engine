@@ -27,8 +27,8 @@ use engine_core::{
     ids::AccountId,
     raw::RawRules,
     rules::{
-        MailRule, PlanMode, ReplyEffect, RuleSet, RuleVocabulary, RulesActivation, RulesReceipt,
-        RulesStored, plan_rules,
+        MailRule, PlanMode, ReplyEffect, RuleFeature, RuleSet, RuleVocabulary, RulesActivation,
+        RulesReceipt, RulesStored, plan_rules,
     },
     version::RuleSetVersion,
 };
@@ -82,11 +82,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> MailRules for ManageSie
 
 /// What the account's extensions let the dialect write, from what the server lists once signed in
 /// (Dovecot lists `MAXREDIRECTS` only then).
+///
+/// Never filing by id: `fileinto :mailboxid` names an RFC 8474 `MAILBOXID`, and this adapter knows
+/// a folder by its name, so an id a host holds for it is no id the server would know.
 fn vocabulary(capabilities: &Capabilities) -> RuleVocabulary {
     engine_sieve::dialect::vocabulary(
         capabilities.sieve.iter().map(String::as_str),
         capabilities.max_redirects,
     )
+    .without(RuleFeature::FileIntoId)
 }
 
 fn rule_set(state: &State) -> RuleSet {
@@ -149,9 +153,16 @@ async fn write<T: AsyncRead + AsyncWrite + Unpin + Send>(
     } else {
         RulesStored::InPlace
     };
+    // Written where they were, running or not as they were; a script the write created runs.
+    let activation = if state.running() {
+        RulesActivation::Running
+    } else {
+        RulesActivation::Inactive
+    };
     Ok(RulesReceipt::new(version, plan.outcomes)
         .with_stored(stored)
-        .with_reply(ReplyEffect::Untouched))
+        .with_reply(ReplyEffect::Untouched)
+        .with_activation(activation))
 }
 
 /// Refuses a write built on `read`, a version the script no longer has, or on none at all: a base

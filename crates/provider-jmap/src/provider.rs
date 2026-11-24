@@ -307,6 +307,13 @@ impl Provider for JmapProvider {
         crate::rules::reachable(self.executor.session()).then_some(self)
     }
 
+    /// Mail rules and the reply imported (`crate::import::rules`) where the account has rules:
+    /// the reply's half answers for itself where it has none.
+    #[cfg(feature = "import")]
+    fn rules_importer(&self) -> Option<&dyn engine_provider::import::RulesImporter> {
+        crate::rules::reachable(self.executor.session()).then_some(self)
+    }
+
     async fn report_message(
         &self,
         _account: &AccountId,

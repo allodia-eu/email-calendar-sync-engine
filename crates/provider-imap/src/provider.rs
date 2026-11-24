@@ -187,6 +187,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
             .map(|sieve| sieve as &dyn engine_provider::Vacation)
     }
 
+    /// As [`mail_rules`](Self::mail_rules): rules and the reply imported over the same script.
+    #[cfg(feature = "import")]
+    fn rules_importer(&self) -> Option<&dyn engine_provider::import::RulesImporter> {
+        self.sieve
+            .as_deref()
+            .filter(|sieve| sieve.offered().is_some())
+            .map(crate::managesieve::Sieve::importer)
+    }
+
     /// The negotiated facts, and as many overlapping body fetches as the account has worker
     /// connections for right now: each fetch borrows its own from the pool, so the width is the
     /// pool's, less the connections its watches hold. Read per call, because it moves as

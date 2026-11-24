@@ -336,6 +336,12 @@ mod tests {
             crate::ImapProvider::with_connection(connection, MailboxId::try_from("INBOX").unwrap())
                 .with_sieve(Some(Arc::clone(&sieve) as Arc<dyn super::super::Sieve>));
         let offered = |provider: &crate::ImapProvider<MockStream>| {
+            // Rules are imported wherever they are offered.
+            #[cfg(feature = "import")]
+            assert_eq!(
+                provider.rules_importer().is_some(),
+                provider.mail_rules().is_some()
+            );
             (
                 provider.mail_rules().is_some(),
                 provider.vacation().is_some(),

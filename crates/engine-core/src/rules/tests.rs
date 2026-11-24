@@ -212,3 +212,23 @@ fn a_named_header_shows_its_length_not_its_name() {
     );
     assert!(!raw.contains("secret"), "{raw}");
 }
+
+#[test]
+fn a_receipt_says_whether_the_rules_it_wrote_run() {
+    let receipt = RulesReceipt::new(None, Vec::new());
+    assert_eq!(receipt.activation, RulesActivation::Running);
+    let receipt = receipt.with_activation(RulesActivation::Inactive);
+    assert_eq!(receipt.activation, RulesActivation::Inactive);
+    assert!(receipt.already_held.is_empty(), "nothing for an edit");
+    let receipt = receipt.with_already_held(vec![2]);
+    assert_eq!(receipt.already_held, [2]);
+}
+
+#[test]
+fn a_feature_taken_out_is_held_no_longer() {
+    let vocabulary = RuleVocabulary::new()
+        .with_exact([RuleFeature::FileIntoId, RuleFeature::Stop])
+        .without(RuleFeature::FileIntoId);
+    assert_eq!(vocabulary.support(RuleFeature::FileIntoId), None);
+    assert_eq!(vocabulary.support(RuleFeature::Stop), Some(Support::Exact));
+}

@@ -193,6 +193,11 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
     }
 
     #[cfg(feature = "import")]
+    fn rules_importer(&self) -> Option<&dyn crate::import::RulesImporter> {
+        (**self).rules_importer()
+    }
+
+    #[cfg(feature = "import")]
     fn calendar_importer(&self) -> Option<&dyn crate::import::CalendarImporter> {
         (**self).calendar_importer()
     }

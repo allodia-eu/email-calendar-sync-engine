@@ -21,6 +21,8 @@ pub enum RuleSyntax {
 /// - **Whether it may send mail** out of the account (a Sieve `redirect`, or `notify`), so an
 ///   import that arms no forwarding rule does not carry it: its text cannot be disabled. Assumed
 ///   until the reader says otherwise.
+/// - **Whether it may name a folder by id or run another script**, which are its own account's, so
+///   an import does not carry it. Assumed too, until the reader says otherwise.
 /// - **The name it carries**, as read, which its text holds and a write cannot change.
 /// - **Whether its strings hold `${`**, and whether the script it came from expanded them
 ///   ([`Expansion`]): such a rule means something else in a script that expands differently, and
@@ -33,6 +35,8 @@ pub struct RawRule {
     sends_mail: bool,
     name: Option<RuleName>,
     expansion: Option<Expansion>,
+    folders_by_id: bool,
+    includes: bool,
 }
 
 /// How a script reads the `${…}` a carried rule's strings hold.
@@ -57,6 +61,8 @@ impl RawRule {
             sends_mail: true,
             name: None,
             expansion: None,
+            folders_by_id: true,
+            includes: true,
         }
     }
 
@@ -93,6 +99,37 @@ impl RawRule {
     pub fn named(mut self, name: RuleName) -> Self {
         self.name = Some(name);
         self
+    }
+
+    /// Records that the text names no folder by its id (builder-style). Until a reader says so,
+    /// it is assumed to (Sieve's `fileinto :mailboxid`), as sending mail is: an import does not
+    /// carry what it cannot vouch for.
+    #[must_use]
+    pub fn naming_no_folder_by_id(mut self) -> Self {
+        self.folders_by_id = false;
+        self
+    }
+
+    /// Whether the text may name a folder by its id, which is its own account's: an import does
+    /// not carry it.
+    #[must_use]
+    pub fn names_folders_by_id(&self) -> bool {
+        self.folders_by_id
+    }
+
+    /// Records that the text runs no other script of its account (builder-style). Until a reader
+    /// says so, it is assumed to (Sieve's `include`).
+    #[must_use]
+    pub fn including_no_script(mut self) -> Self {
+        self.includes = false;
+        self
+    }
+
+    /// Whether the text may run another script of its account: an import does not carry it, since
+    /// the script is the source's.
+    #[must_use]
+    pub fn includes_scripts(&self) -> bool {
+        self.includes
     }
 
     /// The rule's language.
@@ -133,6 +170,8 @@ impl fmt::Debug for RawRule {
             .field("len", &self.text.len())
             .field("requires", &self.requires)
             .field("sends_mail", &self.sends_mail)
+            .field("folders_by_id", &self.folders_by_id)
+            .field("includes", &self.includes)
             .finish_non_exhaustive()
     }
 }

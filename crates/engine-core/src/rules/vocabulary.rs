@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{NativeKind, RawRule, RuleSyntax, TextOp};
+use super::{FolderMap, NativeKind, RawRule, RuleSyntax, TextOp};
 
 /// One thing a rule can say, as a target either can or cannot hold it.
 ///
@@ -100,6 +100,7 @@ pub struct RuleVocabulary {
     max_redirects: Option<usize>,
     opaque: Option<(RuleSyntax, BTreeSet<String>)>,
     native: Option<NativeKind>,
+    folders: Option<FolderMap>,
 }
 
 impl RuleVocabulary {
@@ -122,6 +123,14 @@ impl RuleVocabulary {
         for feature in features {
             self.features.insert(feature, Support::Exact);
         }
+        self
+    }
+
+    /// Holds `feature` no longer (builder-style): for a transport that cannot use what its
+    /// language could say (filing by id where the account's folder ids are not the language's).
+    #[must_use]
+    pub fn without(mut self, feature: RuleFeature) -> Self {
+        self.features.remove(&feature);
         self
     }
 
@@ -150,6 +159,24 @@ impl RuleVocabulary {
     pub fn with_native(mut self, kind: NativeKind) -> Self {
         self.native = Some(kind);
         self
+    }
+
+    /// Files by id only into the target folders `folders` maps a source folder to, each written
+    /// as the target's id (builder-style): what an importer knows of its pair. A rule naming a
+    /// folder the map does not hold loses that action as
+    /// [`MissingMailbox`](super::LossReason::MissingMailbox), rather than filing into whatever
+    /// folder of the target's own has that id. Without it, an id is the account's own, as an edit
+    /// has it.
+    #[must_use]
+    pub fn with_folders(mut self, folders: FolderMap) -> Self {
+        self.folders = Some(folders);
+        self
+    }
+
+    /// The source folders an import maps to the target's ([`with_folders`](Self::with_folders)).
+    #[must_use]
+    pub fn folders(&self) -> Option<&FolderMap> {
+        self.folders.as_ref()
     }
 
     /// How the language holds `feature`, or `None` where it cannot.

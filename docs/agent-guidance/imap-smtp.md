@@ -941,9 +941,24 @@ connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "
 - **Rules and reply.** `managesieve::state` picks the script (as JMAP does) and hashes the list and
   the script into the version; `rules` and `vacation` implement the traits over
   `engine_sieve::dialect`, the reply as Roundcube's reply rule (`dialect::reply`). The guard is
-  `Absent`; a stale base is refused in the write's own session.
+  `Absent`; a stale base is refused in the write's own session. The receipt says whether the
+  rules written run (`RulesReceipt::activation`): a write never switches the script on or off.
+  **No rule files by id here**: `fileinto :mailboxid` names an RFC 8474 `MAILBOXID`, and this
+  adapter knows a folder by its name, so the vocabulary leaves `FileIntoId` out
+  (`RuleVocabulary::without`), and a rule another client wrote with `:mailboxid` is read carried
+  whole (`engine_sieve::dialect::folder_ids_carried`) and copied back as it was, never handed to a
+  host as one of its folder ids.
+- **Import** (`managesieve/import.rs`, the `import` feature): `RulesImporter` through
+  `engine_provider::import::append_rules` and `import_reply` over the same service
+  (`providers.md`, "Importing rules and the reply"), answered by `Provider::rules_importer`
+  wherever `mail_rules` is. No rule files by id here (above), so a rule filing by id loses that
+  action: `MissingMailbox` where the host's `FolderMap` does not hold the folder, `NotExpressible`
+  where it does; a host names an IMAP target's folders by path. A rules import never stops a
+  running reply here either: the write refuses where the server's reply script runs and it lists
+  no `include`, as an edit does, and the reply's own write refuses to switch stored rules on.
 - **Proven live** on both harness servers (`managesieve/live_tests.rs`,
-  `live_provider_tests.rs`); offline over the captured responses in
+  `live_provider_tests.rs`, and `live_import_tests.rs` for the import, which CI's Dovecot job runs
+  with `--features import`); offline over the captured responses in
   `tests/fixtures/managesieve/`. Stalwart's `HAVESPACE` says yes to any size (STALWART-10), so
   nothing asks it before storing.
 

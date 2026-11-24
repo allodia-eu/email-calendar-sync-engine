@@ -1,0 +1,21 @@
+{
+  "methodResponses": [
+    [
+      "Mailbox/get",
+      {
+        "accountId": "e",
+        "state": "sxmeq",
+        "list": [
+          {
+            "id": "a"
+          }
+        ],
+        "notFound": [
+          "AAMkunmapped"
+        ]
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "f8671d06"
+}

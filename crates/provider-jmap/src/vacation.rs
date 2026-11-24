@@ -42,7 +42,8 @@ use engine_core::{
     version::VacationVersion,
 };
 use engine_provider::{
-    ProviderResult, Vacation, VacationPrecondition, WriteGuard, refuse_unheld_vacation,
+    ProviderError, ProviderResult, Vacation, VacationPrecondition, WriteGuard,
+    refuse_unheld_vacation,
 };
 use serde_json::{Value, json};
 
@@ -51,6 +52,7 @@ use crate::{
     error::{JmapError, set_refusal},
     executor::Executor,
     request::{Request, capability},
+    rules::WhenItStops,
     session::Session,
     session_accounts::JmapAccountId,
 };
@@ -98,19 +100,38 @@ impl Vacation for JmapProvider {
         precondition: VacationPrecondition<'_>,
         new: &VacationResponse,
     ) -> ProviderResult<VacationReceipt> {
-        refuse_unheld_vacation(&vocabulary(), new)?;
-        let guard = precondition.version(self.vacation_write_guard())?;
-        let executor = self.executor();
-        // While the user's rules run, through their include where it can be; otherwise with the
-        // server's own flag, as without rules (`crate::vacation_include::path`).
-        match crate::vacation_include::path(executor, new.enabled).await? {
-            crate::vacation_include::Path::Include { prepared, toggled } => {
-                let account = vacation_account(executor.session())?;
-                let body = to_json(new);
-                crate::vacation_include::write(executor, account, guard, &prepared, toggled, body)
-                    .await
+        set(self, precondition, new, WhenItStops::Report).await
+    }
+}
+
+/// Replaces the reply with `new`, under `precondition`: [`Vacation::set_vacation`], and an import's
+/// write, which `stops` makes refuse where the reply would switch the user's running rules off.
+pub(crate) async fn set(
+    provider: &JmapProvider,
+    precondition: VacationPrecondition<'_>,
+    new: &VacationResponse,
+    stops: WhenItStops,
+) -> ProviderResult<VacationReceipt> {
+    refuse_unheld_vacation(&vocabulary(), new)?;
+    let guard = precondition.version(provider.vacation_write_guard())?;
+    let executor = provider.executor();
+    // While the user's rules run, through their include where it can be; otherwise with the
+    // server's own flag, as without rules (`crate::vacation_include::path`).
+    match crate::vacation_include::path(executor, new.enabled).await? {
+        crate::vacation_include::Path::Include { prepared, toggled } => {
+            let account = vacation_account(executor.session())?;
+            let body = to_json(new);
+            crate::vacation_include::write(executor, account, guard, &prepared, toggled, body).await
+        }
+        crate::vacation_include::Path::Flag { rules_running } => {
+            // On by the flag, the reply's script becomes the one that runs, and the user's stops.
+            if new.enabled && rules_running && stops == WhenItStops::Refuse {
+                return Err(ProviderError::item_unavailable(
+                    "turning this out-of-office reply on would switch the account's running mail \
+                     rules off, since the rules script cannot run it through its include",
+                ));
             }
-            crate::vacation_include::Path::Flag => Ok(write(executor, guard, new).await?),
+            Ok(write(executor, guard, new).await?)
         }
     }
 }

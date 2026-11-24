@@ -148,6 +148,17 @@ fn contextual(tag: &str, command: &str) -> Option<Need> {
     })
 }
 
+/// Whether `tokens` name a folder by its id (`fileinto :mailboxid`, RFC 9042), an id of their own
+/// account's.
+pub(super) fn names_folders_by_id(tokens: &[Token<'_>]) -> bool {
+    tokens.iter().any(|token| token.is_tag("mailboxid"))
+}
+
+/// Whether `tokens` run another script of their account (`include`, RFC 6609).
+pub(super) fn includes_scripts(tokens: &[Token<'_>]) -> bool {
+    tokens.iter().any(|token| token.is_identifier("include"))
+}
+
 /// The extensions `tokens` use. Where a token is one the tables above do not know, everything
 /// `script_requires` names (the source script's `require`s), so nothing a command needs is ever
 /// left out; `None` where there is no source script to fall back to.

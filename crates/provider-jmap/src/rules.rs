@@ -92,9 +92,30 @@ impl MailRules for JmapProvider {
         base: &RuleSet,
         rules: &[MailRule],
     ) -> ProviderResult<RulesReceipt> {
-        let guard = guard_version(base, self.rules_write_guard())?;
-        write(self.executor(), guard, base, rules).await
+        replace(self, base, rules, WhenItStops::Report).await
     }
+}
+
+/// What a write does where it would stop something of the account's that runs now: the reply, for
+/// a write of the rules; the rules, for a write of the reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WhenItStops {
+    /// Writes, and says so on the receipt: a user's own edit.
+    Report,
+    /// Refuses before anything is sent: an import, which never changes what the target had.
+    Refuse,
+}
+
+/// Replaces the rules with `rules`, built on `base`: [`MailRules::replace_rules`], and an import's
+/// write, which `stops` makes refuse where the write would stop the running reply.
+pub(crate) async fn replace(
+    provider: &JmapProvider,
+    base: &RuleSet,
+    rules: &[MailRule],
+    stops: WhenItStops,
+) -> ProviderResult<RulesReceipt> {
+    let guard = guard_version(base, provider.rules_write_guard())?;
+    write(provider.executor(), guard, base, rules, stops).await
 }
 
 /// The scripts as listed now, and, where the account has a reply, its state read in the same
@@ -171,6 +192,7 @@ async fn write(
     guard: Option<&RuleSetVersion>,
     base: &RuleSet,
     rules: &[MailRule],
+    stops: WhenItStops,
 ) -> ProviderResult<RulesReceipt> {
     let session = executor.session();
     let account = sieve_account(session)?;
@@ -211,6 +233,16 @@ async fn write(
             text.len()
         )));
     }
+    // The reply stops where it ran through what this write replaces or switches off, and the
+    // written script cannot include it.
+    let reply_script_runs = scripts.reply().is_some_and(|reply| reply.active) && target.is_some();
+    let reply_stops = reply_ran && !include && !reply_script_runs;
+    if reply_stops && stops == WhenItStops::Refuse {
+        return Err(ProviderError::item_unavailable(
+            "writing these rules would stop the account's running out-of-office reply, which the \
+             new rules script cannot include",
+        ));
+    }
     let blob = sieve_scripts::upload(executor, account, &text).await?;
 
     // Written in place, running or not as it was; only an account with no script to edit gets
@@ -247,10 +279,7 @@ async fn write(
         .get("newState")
         .and_then(Value::as_str)
         .map(RuleSetVersion::new);
-    // The reply stops where it ran through what this write replaced or switched off, and the
-    // written script could not include it.
-    let reply_script_runs = scripts.reply().is_some_and(|reply| reply.active) && target.is_some();
-    let reply = if reply_ran && !include && !reply_script_runs {
+    let reply = if reply_stops {
         ReplyEffect::Stopped
     } else {
         ReplyEffect::Untouched
@@ -260,9 +289,16 @@ async fn write(
     } else {
         RulesStored::CreatedRunning
     };
+    // Written where they were, running or not as they were; a script the write created runs.
+    let activation = if target.is_none_or(|script| script.active) {
+        RulesActivation::Running
+    } else {
+        RulesActivation::Inactive
+    };
     Ok(RulesReceipt::new(version, plan.outcomes)
         .with_stored(stored)
-        .with_reply(reply))
+        .with_reply(reply)
+        .with_activation(activation))
 }
 
 /// A refused script. Invalid Sieve (`invalidSieve`, RFC 9661 §2.4; Stalwart answers

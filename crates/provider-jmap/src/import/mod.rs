@@ -19,8 +19,11 @@
 //!   mailbox.
 //! - **Mailboxes are not created here.** A host creates a folder with
 //!   `MailboxWrites::edit_mailbox`, the one `Mailbox/set` path, and imports into its id.
+//! - **Mail rules and the reply** (`rules`): `RulesImporter`, through the engine's one import over
+//!   this adapter's own `MailRules` and `Vacation`, the folders the rules name asked of the server.
 
 mod plan;
+mod rules;
 mod wire;
 
 use std::num::{NonZeroU64, NonZeroUsize};
