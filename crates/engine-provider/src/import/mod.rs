@@ -10,10 +10,12 @@
 //!
 //! [`MailImporter`] is the mail half, [`CalendarImporter`] the calendar half and
 //! [`ContactImporter`] the contact half (the `calendar` and `contact` modules say where they
-//! differ from mail). An adapter that can import implements it; one that cannot
-//! does not, so there is no capability flag to check. A host that picks its adapter at runtime
-//! holds it as a `Box<dyn MailImporter>` or an `Arc<dyn MailImporter>` beside its
-//! `dyn Provider`, and both are importers themselves, so a function generic over
+//! differ from mail). [`RulesImporter`] carries an account's mail rules and its out-of-office
+//! reply, which are settings rather than objects: it appends rules after the target's own and
+//! never replaces a reply the target holds (the `rules` module). An adapter that can import
+//! implements it; one that cannot does not, so there is no capability flag to check. A host that
+//! picks its adapter at runtime holds it as a `Box<dyn MailImporter>` or an `Arc<dyn MailImporter>`
+//! beside its `dyn Provider`, and both are importers themselves, so a function generic over
 //! `I: MailImporter` takes either.
 
 mod calendar;
@@ -21,6 +23,7 @@ mod calendar;
 pub mod conformance;
 mod contact;
 mod message;
+mod rules;
 
 use std::sync::Arc;
 
@@ -32,6 +35,7 @@ use engine_core::{
     sync::SyncState,
 };
 pub use message::{ImportedMessage, MailImportLimits, MessageImport};
+pub use rules::{RulesImporter, append_rules, import_reply};
 
 use crate::{ProviderError, ProviderResult};
 

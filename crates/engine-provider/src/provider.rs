@@ -451,6 +451,14 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
         None
     }
 
+    /// This adapter as a [`RulesImporter`](crate::import::RulesImporter), importing mail rules and
+    /// the out-of-office reply, or `None` where the account has no rules it can write (the
+    /// default), as for [`mail_rules`](Self::mail_rules).
+    #[cfg(feature = "import")]
+    fn rules_importer(&self) -> Option<&dyn crate::import::RulesImporter> {
+        None
+    }
+
     /// This adapter as a [`CalendarImporter`](crate::import::CalendarImporter), or `None` where
     /// it cannot import events (the default), as for [`mail_importer`](Self::mail_importer).
     #[cfg(feature = "import")]
