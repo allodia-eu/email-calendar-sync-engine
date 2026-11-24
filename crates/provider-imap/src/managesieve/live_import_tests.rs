@@ -228,13 +228,16 @@ async fn run(label: &str, imap: &str, sieve: &str, user: &str, password: &str) {
 
     // The reply: where none is held, again for nothing, never over another. Its text spans lines,
     // which the script holds as a `text:` block with CRLF line ends.
-    let start = UtcDateTime::new(2030, 1, 2, 9, 0, 0).unwrap();
+    // Line ends as a Windows source writes them, and a start between two seconds: the target holds
+    // the text with its own line ends and the window to whole seconds, and an import run again
+    // must still know the reply as its own.
+    let start = UtcDateTime::parse_rfc3339("2030-01-02T09:00:00.500Z").unwrap();
     let away = VacationResponse::default()
         .with_window(VacationWindow::default().with_start(start))
         .with_reply(
             AutoReply::default()
                 .with_subject("Away")
-                .with_text("I am away.\nBack on Monday."),
+                .with_text("I am away.\r\nBack on Monday.\r\n"),
         )
         .turned_on();
     let written = importer
@@ -244,10 +247,20 @@ async fn run(label: &str, imap: &str, sieve: &str, user: &str, password: &str) {
     let reply = provider.vacation().expect("reply offered");
     let on = reply.read_vacation(&id).await.unwrap();
     assert!(on.enabled, "{label}");
+    eprintln!("{label} holds the text as {:?}", on.reply.text);
+    assert_eq!(on.reply.subject, away.reply.subject, "{label}");
     assert_eq!(
-        (on.window, on.reply.clone()),
-        (away.window, away.reply.clone()),
+        on.reply
+            .text
+            .as_deref()
+            .map(|text| text.replace("\r\n", "\n").trim_end_matches('\n').to_owned()),
+        Some("I am away.\nBack on Monday.".to_owned()),
         "{label}"
+    );
+    assert_eq!(
+        on.window.start,
+        UtcDateTime::parse_rfc3339("2030-01-02T09:00:01Z").ok(),
+        "{label}: to the next whole second"
     );
     assert_eq!(on.version, written.version, "{label}");
     let again = importer.import_vacation(&id, &away).await.unwrap();
