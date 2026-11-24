@@ -213,10 +213,12 @@ Implemented as sketched, with these differences, each for a reason the code met:
   `RuleVocabulary` is a map from a `RuleFeature` (the grain where transports differ) to `Support`
   (`Exact` or `Approximated`), plus the redirect limit and the kinds of opaque and native parts it
   stores back.
-- The receipt is `RulesReceipt { version, outcomes, stored, reply, activation }`: where the rules
-  went (`RulesStored`), what the write did to a running reply (`ReplyEffect`), and whether the
-  rules written run (`RulesActivation`, slice 4); `RulesPlan.rules` pairs each written rule with
-  its source index (`PlannedRule`).
+- The receipt is `RulesReceipt { version, outcomes, stored, reply, activation, already_held,
+  failures }`: where the rules went (`RulesStored`), what the write did to a running reply
+  (`ReplyEffect`), whether the rules written run (`RulesActivation`, slice 4), the rules handed
+  in that an import found already held (slice 4), and each rule a rule-by-rule write did not store
+  or remove (`RuleWriteFailure`, Graph); `RulesPlan.rules` pairs each written rule with its source
+  index (`PlannedRule`).
 - `RuleVocabulary::with_folders` (a `FolderMap`, source folder id to target folder id) is how an
   import files by id: a mapped id is written as the target's, and one the map does not hold loses
   its action as `MissingMailbox` (slice 4). `RuleVocabulary::without` takes a feature out, for a
@@ -549,7 +551,10 @@ every change and clamped to its end; a `PATCH` clears nothing it is sent as `nul
 guards are `Absent`, with a SHA-256 of what was read as the version, read again before writing and
 refused as `Conflict` where it moved, which narrows the race and does not close it, and neither
 receipt carries a version. A write plans (the vocabulary's `RuleLimit`s carrying Graph's grain),
-removes the rules left out, then walks the planned rules keeping the server's list as it goes: a
+removes the rules left out first (so a replacement a host built, with no origin, deletes the old
+rule before its new copy is `POST`ed, and a failed `POST` leaves neither; editing the rule read
+instead writes it anew, new first), then walks the planned rules keeping the server's list as it
+goes: a
 new rule `POST`ed at its position, one out of place given its position by a `sequence`-only
 `PATCH`, one in place not sent; a changed rule `PATCH`ed whole where it drops nothing, and written
 anew in its place (new first, then the old deleted) where it drops a part or shortens a list,
@@ -676,7 +681,9 @@ why.
   script runs even where it is not the active one: kept, it would switch a reply that is off on
   with the rules.
 - **Safe to run again.** A planned rule the target already holds an equal typed rule for is not
-  written again, each held rule answering for one handed in (two equal rules need two held), and
+  written again (equal leaving out where each was read and the source's marks, `in_error` and
+  `read_only`, which a target reads its rules back without; whether it runs, `enabled`, still
+  counts), each held rule answering for one handed in (two equal rules need two held), and
   the receipt lists it (`already_held`); its outcome is still what the plan decided. A rule equal
   to one the user wrote themselves counts as imported: written again it would do nothing more,
   since the held copy runs first on the same messages. A rule carried whole is never taken as held
