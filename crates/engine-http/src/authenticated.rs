@@ -208,7 +208,10 @@ impl<P, J> Presentation<'_, P, J> {
             };
             let builder = RequestBuilder::from_parts(self.client.clone(), request);
             let builder = (self.present)(builder, &credential).map_err(Attempt::Failed)?;
-            let sent = send_retrying(builder, self.retry, self.exchange)
+            // Boxed: the exchange is most of this future's size, and the ask, the replacement and
+            // the re-framing around it would otherwise make every caller's future that much
+            // larger again. One allocation per presentation is nothing beside a request.
+            let sent = Box::pin(send_retrying(builder, self.retry, self.exchange))
                 .await
                 .map_err(|err| Attempt::Failed(err.into()))?;
             if sent.status() != StatusCode::UNAUTHORIZED {
