@@ -15,6 +15,10 @@
 //!   it refuses (RFC 5804 §2.6), so `CHECKSCRIPT` is not sent first, and `HAVESPACE` neither: a
 //!   script too large is refused by the store itself. Only a script the write created is made the
 //!   active one ([`RulesStored::CreatedRunning`]).
+//! - **Not into a server's reply script.** A script with a `vacation` in a command that carries no
+//!   `# rule:[…]` name is one no client writing the dialect wrote, such as the script Stalwart
+//!   keeps its JMAP reply in, active while that reply is on; the server rewrites it, so rules are
+//!   not written there (`engine_sieve::dialect::reply::unnamed_vacation`).
 //! - **No content in errors.** A refusal carries its response code, never the server's text, which
 //!   quotes the script.
 
@@ -108,6 +112,14 @@ async fn write<T: AsyncRead + AsyncWrite + Unpin + Send>(
     );
     let state = State::read(session).await?;
     refuse_stale(base.version.as_ref().map(RuleSetVersion::as_str), &state)?;
+    // A script a server keeps its own reply in is the server's to rewrite: rules written there
+    // would be dropped by its next reply write.
+    if engine_sieve::dialect::reply::unnamed_vacation(&state.text) {
+        return Err(ProviderError::item_unavailable(
+            "the rules' script holds an automatic reply no rule names, as a server's own reply \
+             script does; rules written there could be undone by the server",
+        ));
+    }
     let text = engine_sieve::dialect::write_rules(&state.text, &plan.written()).map_err(|err| {
         ProviderError::item_unavailable(format!("the rules cannot be written as Sieve: {err}"))
     })?;

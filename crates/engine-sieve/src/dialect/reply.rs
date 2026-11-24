@@ -356,6 +356,28 @@ fn another_vacation(segments: &[Segment<'_>], reply: Option<usize>) -> bool {
         })
 }
 
+/// Whether a top-level command of `script` runs `vacation` without the `# rule:[…]` name the
+/// dialect writes on every rule, the reply's included: a reply no client writing this dialect
+/// wrote, such as the script a server keeps its own reply in (Stalwart's, as its JMAP
+/// `VacationResponse` writes it). Such a script is the server's to rewrite, and would drop rules
+/// written into it, so a host does not write rules there. A script that cannot be split at its
+/// commands answers `true`: nothing is known of it.
+#[must_use]
+pub fn unnamed_vacation(script: &str) -> bool {
+    crate::segment(script).map_or(true, |segments| {
+        segments
+            .iter()
+            .filter(|segment| segment.kind() == SegmentKind::Command)
+            .any(|segment| {
+                read::name(segment.leading()).is_none()
+                    && segment
+                        .tokens()
+                        .iter()
+                        .any(|token| token.is_identifier("vacation"))
+            })
+    })
+}
+
 /// Whether `script` runs another script through `include` (RFC 6609), anywhere outside a comment.
 /// The dialect reads no other script, so it cannot tell whether that one replies too; a host that
 /// can read it decides, and [`write_reply`] refuses a reply that is on beside one

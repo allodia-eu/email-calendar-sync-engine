@@ -9,7 +9,9 @@ use engine_core::{
 use engine_provider::{MailRules, TargetRefusal};
 
 use super::*;
-use crate::managesieve::test_support::{capability, listing, script, scripted, sent};
+use crate::managesieve::test_support::{
+    STALWART_REPLY, capability, listing, script, scripted, sent,
+};
 
 const RULE: &str = "require [\"fileinto\"];\r\n# rule:[Fixture]\r\nif header :contains \
                     \"subject\" \"zfixture\"\r\n{\r\n\tfileinto \"Archive\";\r\n}\r\n";
@@ -219,4 +221,54 @@ async fn the_reply_s_rule_is_no_rule_and_is_kept_by_a_write_of_the_rules() {
         !sent.contains("fileinto \"Archive\""),
         "the rule is gone: {sent}"
     );
+}
+
+#[tokio::test]
+async fn rules_are_not_written_into_a_script_a_server_keeps_its_reply_in() {
+    // Stalwart's own reply script, running: rules written there are undone by its next reply write.
+    let base = read_set(&[
+        &listing(&[("vacation", true)]),
+        &script(STALWART_REPLY),
+        LOGOUT,
+    ])
+    .await;
+    let rules = base_rules().await;
+    let (sieve, sessions) = scripted(&[
+        &capability("fileinto vacation"),
+        &listing(&[("vacation", true)]),
+        &script(STALWART_REPLY),
+        LOGOUT,
+    ]);
+    let err = sieve
+        .replace_rules(&account(), &base, &rules)
+        .await
+        .unwrap_err();
+    assert!(err.is_item_unavailable(), "{err:?}");
+    assert!(!sent(&sessions).contains("PUTSCRIPT"));
+
+    // A Roundcube-named rule of the user's that replies does not stop a write.
+    let boss = format!(
+        "require [\"fileinto\",\"vacation\"];\r\n# rule:[Boss]\r\nif header :contains \
+         \"from\" \"boss\"\r\n{{\r\n\tvacation \"In a meeting.\";\r\n}}\r\n{}",
+        &RULE[23..]
+    );
+    let base = read_set(&[&listing(&[("zfixture", true)]), &script(&boss), LOGOUT]).await;
+    let (sieve, sessions) = scripted(&[
+        &capability("fileinto vacation"),
+        &listing(&[("zfixture", true)]),
+        &script(&boss),
+        b"OK\r\n",
+        &listing(&[("zfixture", true)]),
+        &script(&boss),
+        LOGOUT,
+    ]);
+    let _ = sieve
+        .replace_rules(&account(), &base, &base.rules)
+        .await
+        .unwrap();
+    assert!(sent(&sessions).contains("PUTSCRIPT"));
+}
+
+async fn base_rules() -> Vec<MailRule> {
+    base(RULE).await.rules
 }

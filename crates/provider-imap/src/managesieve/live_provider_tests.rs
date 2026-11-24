@@ -424,7 +424,24 @@ async fn a_reply_a_jmap_server_runs_from_its_own_script_is_neither_read_nor_writ
     let account_handle = ImapAccount::connect(&config, connector()).await.unwrap();
     let provider = account_handle.provider(MailboxId::try_from("INBOX").unwrap());
     let vacation = engine_provider::Provider::vacation(&provider).unwrap();
+    let rules_of = engine_provider::Provider::mail_rules(&provider).unwrap();
     let id = AccountId::try_from("live-managesieve").unwrap();
+    // Rules are not written into the server's reply script while it runs: its next reply write
+    // would drop them.
+    let base = rules_of.read_rules(&id).await.unwrap();
+    let marker = subject_rule(
+        "zlive-server-script",
+        vec![Action::FileInto {
+            mailbox: RuleMailbox::Path(MailboxPath::new("Archive").unwrap()),
+            copy: false,
+        }],
+    );
+    // Refused before anything is sent: Stalwart would refuse `PUTSCRIPT "vacation"` itself, so the
+    // refusal must be the engine's, which names the reply no rule names.
+    let rules_refused = rules_of
+        .replace_rules(&id, &base, std::slice::from_ref(&marker))
+        .await
+        .is_err_and(|err| err.is_item_unavailable() && err.detail().contains("no rule names"));
     let mut outcome = Vec::new();
     // Its script running; then the shape the JMAP adapter leaves, the user's `rules` running and
     // including it.
@@ -460,6 +477,10 @@ async fn a_reply_a_jmap_server_runs_from_its_own_script_is_neither_read_nor_writ
     admin.delete_script(&reply).await.unwrap();
     admin.logout().await;
 
+    assert!(
+        rules_refused,
+        "rules written into the server's reply script"
+    );
     assert_eq!(
         outcome,
         [(true, vec![true, true]), (true, vec![true, true])]

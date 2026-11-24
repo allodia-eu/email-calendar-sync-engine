@@ -855,17 +855,22 @@ Pigeonhole (as `alice@`), by hand and then by `provider-imap/src/managesieve/liv
   `include`, or holds a `vacation` outside the reply rule (`managesieve::vacation::reply_elsewhere`):
   it cannot read that reply as the account's, and one written beside it would make two. Proven on
   Stalwart with the reply set over JMAP, in both shapes, nothing written; the guard reverted, the
-  `include` shape read as off and took a write. The rules stay readable and writable; a host should
-  prefer JMAP for such an account. A write of the rules into Stalwart's own `vacation` script, where
-  that is the active one, is not refused yet: the next JMAP reply write would replace them.
+  `include` shape read as off and took a write. The rules stay readable and writable, except into a
+  script that holds a `vacation` in a command no `# rule:[…]` name marks (Stalwart's own reply
+  script is one, active while that reply is on): the server rewrites it, so the next JMAP reply
+  write would drop them (`engine_sieve::dialect::reply::unnamed_vacation`). Stalwart refuses
+  `PUTSCRIPT "vacation"` itself too; the live suite checks the refusal is the engine's, made before
+  anything is sent, and went red with the check reverted. A host should prefer JMAP for such an
+  account.
 
 **Follow-ups from slice 3.**
 
 - **An HTML reply over Sieve**, as `vacation :mime` with a `multipart/alternative` body (what
   Stalwart's own JMAP rendering writes); Roundcube reads such a reply as raw MIME, so it is not
   written yet, and a `:mime` reply reads as one the engine cannot show.
-- **SRV discovery of the endpoint** (RFC 5804 §1.8), and whether ManageSieve carries an
-  authorization identity where IMAP does.
+- **SRV discovery of the endpoint** (RFC 5804 §1.8).
+- **An authorization identity over ManageSieve** (`Credential::ActingAs`, a Dovecot master user),
+  proven live: refused before sending for now, as SMTP refuses it.
 
 **Follow-ups from slice 2.**
 
