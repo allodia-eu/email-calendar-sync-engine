@@ -302,6 +302,49 @@ pub fn read_request_blocking(stream: &mut impl std::io::Read) -> Vec<u8> {
     }
 }
 
+/// A blocking server on the loopback address that answers each connection with the next of
+/// `replies`, one connection each, and records every request whole (its head and its body), in
+/// the order they came. Its base URL and the record.
+///
+/// For a suite that asserts what each request carried rather than answering whatever it is
+/// sent ([`authorization`] reads the credential a recorded request presented). A reply of `""`
+/// closes the connection unanswered; once the script is spent, a connection is closed the same
+/// way.
+pub fn scripted(replies: Vec<String>) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let record = Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for (index, stream) in listener.incoming().enumerate() {
+            let Ok(mut stream) = stream else { break };
+            let request = read_request_blocking(&mut stream);
+            record
+                .lock()
+                .expect("record")
+                .push(String::from_utf8_lossy_owned(request));
+            if let Some(reply) = replies.get(index).filter(|reply| !reply.is_empty()) {
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        }
+    });
+    (format!("http://{addr}"), seen)
+}
+
+/// The `Authorization` a recorded request carried, or `None` for one that went without.
+#[must_use]
+pub fn authorization(request: &str) -> Option<String> {
+    request
+        .lines()
+        .take_while(|line| !line.is_empty())
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("authorization")
+                .then(|| value.trim().to_owned())
+        })
+}
+
 /// Where the first request in `buffer` ends, once all of it is there.
 fn request_end(buffer: &[u8]) -> Option<usize> {
     let head = buffer.windows(4).position(|w| w == b"\r\n\r\n")?;

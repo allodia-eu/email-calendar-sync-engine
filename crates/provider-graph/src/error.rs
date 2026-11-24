@@ -59,6 +59,17 @@ pub enum GraphError {
     /// input.
     #[error("invalid mailbox address: {0}")]
     InvalidAddress(String),
+
+    /// The credential could not be presented, or not replaced: the account's
+    /// [`CredentialSource`](engine_provider::CredentialSource) did not permit the origin, had no
+    /// credential to give, or did not answer within the request's deadline; the engine refused
+    /// the origin (plaintext HTTP, except to loopback from an account configured there); or the
+    /// credential is not a token, which is all Graph signs in with. In each of those nothing was
+    /// sent. When the source fails as it is asked to replace a token Graph refused with a `401`,
+    /// a request was sent and refused, and this takes the `401`'s place. Classified as the
+    /// source classified it, and `Permanent` for a refusal.
+    #[error("no credential to present: {0}")]
+    Credential(ProviderError),
 }
 
 impl GraphError {
@@ -126,7 +137,9 @@ impl GraphError {
             Self::Transport(err) => err.may_have_been_received(),
             Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
             Self::Json(_) => true,
-            Self::Protocol(_) | Self::InvalidAddress(_) => false,
+            // Nothing was sent, or what was sent was refused with a `401`, which says the
+            // request was not processed.
+            Self::Protocol(_) | Self::InvalidAddress(_) | Self::Credential(_) => false,
         }
     }
 
@@ -175,6 +188,9 @@ impl GraphError {
             // incompatibility, and a malformed address is the caller's input: retrying the
             // same request will not fix either.
             Self::Json(_) | Self::Protocol(_) | Self::InvalidAddress(_) => FailureClass::Permanent,
+            // The source's own class: a broker that is down is retried, consent that is gone is
+            // the person's to give again.
+            Self::Credential(source) => source.class(),
         }
     }
 }
@@ -193,6 +209,12 @@ fn transport_class(err: &engine_http::SendError) -> FailureClass {
 impl From<reqwest::Error> for GraphError {
     fn from(err: reqwest::Error) -> Self {
         Self::Transport(err.into())
+    }
+}
+
+impl From<engine_provider::CredentialFailure> for GraphError {
+    fn from(failure: engine_provider::CredentialFailure) -> Self {
+        Self::Credential(failure.into_error())
     }
 }
 
@@ -229,6 +251,11 @@ pub(crate) fn unread_answer(detail: &str) -> ProviderError {
 
 impl From<GraphError> for ProviderError {
     fn from(err: GraphError) -> Self {
+        // The source's own error, passed through as it gave it: its class, and a rate limit's
+        // instant with it.
+        if let GraphError::Credential(source) = err {
+            return source;
+        }
         let class = err.failure_class();
         let detail = err.to_string();
         // A rate limit is the one class that carries *when*: the outbox obeys a provider's
@@ -385,6 +412,22 @@ mod tests {
             .into();
         assert_eq!(json.failure_class(), FailureClass::Permanent);
         assert!(json.to_string().contains("malformed Graph JSON"));
+    }
+
+    #[test]
+    fn a_credential_failure_keeps_the_class_its_source_gave() {
+        // A broker that is down is retried; nothing was sent, so a submission it stopped is
+        // not left needing confirmation.
+        let failure = GraphError::Credential(ProviderError::retryable("the broker is down"));
+        assert_eq!(failure.failure_class(), FailureClass::Retryable);
+        assert!(!failure.leaves_outcome_unknown());
+        let neutral = failure.into_submission_error();
+        assert_eq!(neutral.class(), FailureClass::Retryable);
+        assert_eq!(
+            neutral.detail(),
+            "the broker is down",
+            "passed through as it came"
+        );
     }
 
     #[test]

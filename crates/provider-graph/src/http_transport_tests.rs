@@ -10,6 +10,13 @@ use engine_core::error::FailureClass;
 
 use super::*;
 
+/// `token` as a source that never changes.
+fn fixed(token: &str) -> Arc<dyn CredentialSource> {
+    Arc::new(engine_provider::FixedCredential::unique(
+        engine_provider::Credential::bearer(token),
+    ))
+}
+
 /// A blocking single-shot mock HTTP server: serves `response` to one connection, so
 /// the live reqwest transport runs offline (no network).
 fn mock_server(response: String) -> String {
@@ -69,7 +76,8 @@ async fn the_throttle_a_real_mailbox_sends_is_a_wait_and_not_a_loss() {
     let base = mock_server(response);
     let retry = engine_http::RetryConfig::default().with_policy(engine_http::RetryPolicy::none());
     let transport = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &retry,
         &crate::test_support::user_agent(),
@@ -98,7 +106,8 @@ async fn the_throttle_a_real_mailbox_sends_is_a_wait_and_not_a_loss() {
 async fn the_anonymous_byte_path_sends_no_authorization_header() {
     let (base, seen) = mock_server_capturing(http("200 OK", "bytes"));
     let transport = HttpTransport::new(
-        "super-secret".to_owned(),
+        &base,
+        fixed("super-secret"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -129,7 +138,8 @@ fn http(status_line: &str, body: &str) -> String {
 async fn get_parses_a_success_body() {
     let base = mock_server(http("200 OK", r#"{"value":[]}"#));
     let transport = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -146,7 +156,8 @@ async fn the_http_version_is_unknown_until_the_first_response() {
     // provider where `ConnectionInfo::http_version` is `None` on a live connection.
     let base = mock_server(http("200 OK", r#"{"value":[]}"#));
     let transport = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -171,7 +182,8 @@ async fn get_bytes_returns_the_raw_body_verbatim() {
     let mime = "From: a@example.com\r\nSubject: Hi\r\n\r\nBody\r\n";
     let base = mock_server(http("200 OK", mime));
     let bytes = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -189,7 +201,8 @@ async fn get_bytes_non_success_is_a_classified_status_error() {
     let body = r#"{"error":{"code":"ErrorItemNotFound","message":"gone"}}"#;
     let base = mock_server(http("404 Not Found", body));
     let err = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -206,7 +219,8 @@ async fn non_success_status_becomes_a_classified_status_error() {
     let body = r#"{"error":{"code":"InvalidAuthenticationToken","message":"nope"}}"#;
     let base = mock_server(http("401 Unauthorized", body));
     let err = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -225,7 +239,8 @@ async fn non_success_status_becomes_a_classified_status_error() {
 async fn a_non_json_success_body_is_a_permanent_decode_error() {
     let base = mock_server(http("200 OK", "this is not json"));
     let err = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -247,7 +262,8 @@ async fn a_non_json_success_body_is_a_permanent_decode_error() {
 async fn a_refused_connection_is_a_retryable_transport_error() {
     // Nothing is listening on this port → reqwest connect error → retryable.
     let err = HttpTransport::new(
-        "tok".to_owned(),
+        "http://127.0.0.1:1",
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -265,7 +281,8 @@ async fn a_write_body_parses_json_or_treats_empty_as_none() {
     // A create/patch echoes JSON; a 202/204 carries none.
     let base = mock_server(http("201 Created", r#"{"id":"x"}"#));
     let created = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -278,7 +295,8 @@ async fn a_write_body_parses_json_or_treats_empty_as_none() {
 
     let base = mock_server(http("204 No Content", ""));
     let none = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -295,7 +313,8 @@ async fn a_412_write_is_a_classified_conflict() {
     let body = r#"{"error":{"code":"ErrorIrresolvableConflict","message":"stale"}}"#;
     let base = mock_server(http("412 Precondition Failed", body));
     let err = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
