@@ -65,20 +65,27 @@ fn the_include_of_a_reply_script_is_no_rule_and_is_kept_first_on_a_write() {
         "read_rules alone sees the include as a rule"
     );
     // Written with no rules at all, the include stays, byte for byte.
-    let written = compose(INCLUDING, &[], Some("vacation")).unwrap();
+    let written = compose(INCLUDING, &[], Some("vacation"), true).unwrap();
     assert!(
         written.contains("include :personal :optional \"vacation\";\r\n"),
         "{written}"
     );
     assert_eq!(without_include(&written, "vacation").len(), 0);
     // A new include goes first; none is written where there is no reply to run.
-    let new = compose("", &rules, Some("vacation")).unwrap();
+    let new = compose("", &rules, Some("vacation"), true).unwrap();
     assert!(
         new.starts_with("require [\"fileinto\",\"include\"];\r\ninclude :personal"),
         "{new}"
     );
-    let none = compose(INCLUDING, &rules, None).unwrap();
+    let none = compose(INCLUDING, &rules, Some("vacation"), false).unwrap();
     assert!(!none.contains("include :personal"), "{none}");
+    // A caller handing the include back among its rules does not switch the reply on.
+    let handed = read_rules(INCLUDING);
+    let off = compose(INCLUDING, &handed, Some("vacation"), false).unwrap();
+    assert!(!off.contains("include :personal"), "{off}");
+    // With no reply script at all, the rules are written as they are, an include among them.
+    let plain = compose("", &handed, None, false).unwrap();
+    assert!(plain.contains("include :personal"), "{plain}");
     assert_eq!(
         include_command("say \"hi\"").unwrap(),
         "include :personal :optional \"say \\\"hi\\\"\";\r\n"

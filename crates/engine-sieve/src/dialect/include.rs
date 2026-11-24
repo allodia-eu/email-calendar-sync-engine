@@ -139,9 +139,10 @@ impl fmt::Display for ComposeError {
 
 impl std::error::Error for ComposeError {}
 
-/// `rules` written over `base` ([`write_rules`]), with the include of the script `include` first
-/// where there is one, and without any include of it otherwise. An include `base` already has is
-/// copied as it was.
+/// `rules` written over `base` ([`write_rules`]), the reply's script being `reply`: with its
+/// include first where `on`, and without one where not. An include of `reply` among `rules`
+/// themselves is dropped either way, so whether the reply runs is `on` alone; an include `base`
+/// already has is copied as it was. With no `reply`, `rules` are written as they are.
 ///
 /// # Errors
 ///
@@ -149,14 +150,15 @@ impl std::error::Error for ComposeError {}
 pub fn compose(
     base: &str,
     rules: &[MailRule],
-    include: Option<&str>,
+    reply: Option<&str>,
+    on: bool,
 ) -> Result<String, ComposeError> {
     let mut list = Vec::with_capacity(rules.len() + 1);
     let unwritable = ComposeError {
         kind: DialectErrorKind::Unrenderable { rule: 0 },
         rule: None,
     };
-    if let Some(name) = include {
+    if let Some(name) = reply.filter(|_| on) {
         let existing = read_rules(base)
             .into_iter()
             .find(|rule| is_include_rule(rule, name));
@@ -167,7 +169,7 @@ pub fn compose(
     }
     let offset = list.len();
     let kept: Vec<usize> = (0..rules.len())
-        .filter(|&i| include.is_none_or(|name| !is_include_rule(&rules[i], name)))
+        .filter(|&i| reply.is_none_or(|name| !is_include_rule(&rules[i], name)))
         .collect();
     list.extend(kept.iter().map(|&i| rules[i].clone()));
     write_rules(base, &list).map_err(|err| {

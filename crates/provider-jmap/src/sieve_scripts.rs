@@ -166,7 +166,7 @@ pub(crate) fn compose(
     rules: &[MailRule],
     reply_on: bool,
 ) -> Result<String, ComposeError> {
-    include::compose(base, rules, reply_on.then_some(REPLY_SCRIPT))
+    include::compose(base, rules, Some(REPLY_SCRIPT), reply_on)
 }
 
 /// A script's text, downloaded by its blob id.

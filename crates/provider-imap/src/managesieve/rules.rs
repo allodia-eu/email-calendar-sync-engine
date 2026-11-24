@@ -135,7 +135,8 @@ async fn write<T: AsyncRead + AsyncWrite + Unpin + Send>(
         }
         (None, _) => None,
     };
-    let text = compose(&state.text, &plan.written(), include).map_err(|err| {
+    let reply = state.server_reply.as_ref().map(|reply| reply.name.as_str());
+    let text = compose(&state.text, &plan.written(), reply, include.is_some()).map_err(|err| {
         ProviderError::item_unavailable(format!("the rules cannot be written as Sieve: {err}"))
     })?;
     let created = store(session, &state, &text).await?;
