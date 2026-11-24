@@ -9,8 +9,12 @@ use super::{
 };
 use crate::mail::MailboxRole;
 
+/// A text as a reader reads one that requires nothing, names no folder by id and runs no script.
 fn sieve_text(text: &str) -> RawRule {
-    RawRule::new(RuleSyntax::Sieve, text).requiring(Vec::new())
+    RawRule::new(RuleSyntax::Sieve, text)
+        .requiring(Vec::new())
+        .naming_no_folder_by_id()
+        .including_no_script()
 }
 
 #[test]

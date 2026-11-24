@@ -32,8 +32,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> RulesImporter for Manag
         forwarding: ForwardingRules,
         folders: &FolderMap,
     ) -> ProviderResult<RulesReceipt> {
-        // The Sieve dialect as the JMAP importer reads it too: facts of a rule carried whole from
-        // its text, and a rule as the account will read it back.
+        // The Sieve dialect: facts of a rule carried whole from its text, and a rule as the account
+        // will read it back. The JMAP importer (`provider-jmap`) builds the same pair; it is built
+        // twice because `ImportDialect` (`engine-provider`) and the two functions (`engine-sieve`)
+        // do not depend on each other, and neither adapter depends on the other.
         let dialect = ImportDialect::new(
             engine_sieve::dialect::facts_from_text,
             engine_sieve::dialect::read_back,

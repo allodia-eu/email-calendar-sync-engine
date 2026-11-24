@@ -21,6 +21,8 @@ pub enum RuleSyntax {
 /// - **Whether it may send mail** out of the account (a Sieve `redirect`, or `notify`), so an
 ///   import that arms no forwarding rule does not carry it: its text cannot be disabled. Assumed
 ///   until the reader says otherwise.
+/// - **Whether it may name a folder by id or run another script**, which are its own account's, so
+///   an import does not carry it. Assumed too, until the reader says otherwise.
 /// - **The name it carries**, as read, which its text holds and a write cannot change.
 /// - **Whether its strings hold `${`**, and whether the script it came from expanded them
 ///   ([`Expansion`]): such a rule means something else in a script that expands differently, and
@@ -59,8 +61,8 @@ impl RawRule {
             sends_mail: true,
             name: None,
             expansion: None,
-            folders_by_id: false,
-            includes: false,
+            folders_by_id: true,
+            includes: true,
         }
     }
 
@@ -99,30 +101,31 @@ impl RawRule {
         self
     }
 
-    /// Records that the text names a folder by its id (Sieve's `fileinto :mailboxid`), which is
-    /// its own account's (builder-style).
+    /// Records that the text names no folder by its id (builder-style). Until a reader says so,
+    /// it is assumed to (Sieve's `fileinto :mailboxid`), as sending mail is: an import does not
+    /// carry what it cannot vouch for.
     #[must_use]
-    pub fn naming_folders_by_id(mut self) -> Self {
-        self.folders_by_id = true;
+    pub fn naming_no_folder_by_id(mut self) -> Self {
+        self.folders_by_id = false;
         self
     }
 
-    /// Whether the text names a folder by its id: an import does not carry it, since the id is
-    /// the source's.
+    /// Whether the text may name a folder by its id, which is its own account's: an import does
+    /// not carry it.
     #[must_use]
     pub fn names_folders_by_id(&self) -> bool {
         self.folders_by_id
     }
 
-    /// Records that the text runs another script of its account (Sieve's `include`)
-    /// (builder-style).
+    /// Records that the text runs no other script of its account (builder-style). Until a reader
+    /// says so, it is assumed to (Sieve's `include`).
     #[must_use]
-    pub fn including_scripts(mut self) -> Self {
-        self.includes = true;
+    pub fn including_no_script(mut self) -> Self {
+        self.includes = false;
         self
     }
 
-    /// Whether the text runs another script of its account: an import does not carry it, since
+    /// Whether the text may run another script of its account: an import does not carry it, since
     /// the script is the source's.
     #[must_use]
     pub fn includes_scripts(&self) -> bool {

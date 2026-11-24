@@ -134,3 +134,50 @@ async fn a_reply_of_the_scripts_own_is_never_replaced() {
     assert!(err.is_item_unavailable(), "{err:?}");
     assert!(!sent(&sessions).contains("PUTSCRIPT"), "nothing written");
 }
+
+#[tokio::test]
+async fn a_host_built_rule_carried_whole_is_judged_by_its_text() {
+    use engine_core::rules::{RawRule, RuleSyntax};
+    // Texts that name a folder by id and run another script, built by a host that vouches for
+    // neither, and by one that wrongly vouches that they do neither.
+    let rules: Vec<MailRule> = [
+        (
+            "fileinto :mailboxid \"a\" \"INBOX\";",
+            vec!["fileinto", "mailboxid"],
+        ),
+        ("include :personal \"other\";", vec!["include"]),
+    ]
+    .iter()
+    .flat_map(|(text, needs)| {
+        let raw = RawRule::new(RuleSyntax::Sieve, *text)
+            .requiring(needs.iter().map(|need| (*need).to_owned()))
+            .sending_no_mail();
+        [
+            raw.clone(),
+            raw.naming_no_folder_by_id().including_no_script(),
+        ]
+    })
+    .map(MailRule::opaque)
+    .collect();
+    let extensions = "fileinto mailboxid include";
+    let (sieve, sessions) = scripted_sessions(&[
+        &[&capability(extensions), LOGOUT],
+        &[&listing(&[("mine", true)]), &script(OWN), LOGOUT],
+    ]);
+    let receipt = sieve
+        .import_rules(
+            &account(),
+            &rules,
+            ForwardingRules::Disabled,
+            &FolderMap::new(),
+        )
+        .await
+        .unwrap();
+    let kept: Vec<Kept> = receipt
+        .outcomes
+        .iter()
+        .map(|outcome| outcome.kept)
+        .collect();
+    assert_eq!(kept, [Kept::NotKept; 4], "{:?}", receipt.outcomes);
+    assert!(!sent(&sessions).contains("PUTSCRIPT"), "nothing written");
+}

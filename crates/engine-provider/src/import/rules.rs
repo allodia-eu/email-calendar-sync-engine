@@ -166,6 +166,11 @@ impl ImportDialect {
 
     /// A language that keeps every rule as it is handed in, and trusts a rule carried whole to say
     /// what it does.
+    ///
+    /// Only for a target whose rules are kept as given and that stores no rule carried whole in a
+    /// language of its own. A target with a rule language (Sieve) must never use it: a rule it
+    /// writes would not be known again on a second run, and a rule a host built would be carried
+    /// on the host's word, with what the text really does unchecked.
     #[must_use]
     pub fn as_given() -> Self {
         Self {

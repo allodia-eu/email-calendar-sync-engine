@@ -72,8 +72,12 @@ impl RulesImporter for JmapProvider {
 }
 
 /// The Sieve dialect as the import reads it: facts of a rule carried whole from its text, and a
-/// rule as the account will read it back (`engine_sieve::dialect`), as the ManageSieve importer
-/// reads it too.
+/// rule as the account will read it back (`engine_sieve::dialect`).
+///
+/// The ManageSieve importer (`provider-imap`) builds the same pair. It is built twice because
+/// neither place one constructor could live is reachable by both without a new crate edge:
+/// `ImportDialect` is `engine-provider`'s and the two functions are `engine-sieve`'s, which do not
+/// depend on each other, and neither adapter depends on the other.
 fn sieve_dialect() -> ImportDialect {
     ImportDialect::new(
         engine_sieve::dialect::facts_from_text,
@@ -192,3 +196,7 @@ async fn held_mailboxes(
 #[cfg(test)]
 #[path = "rules_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "rules_held_tests.rs"]
+mod held_tests;

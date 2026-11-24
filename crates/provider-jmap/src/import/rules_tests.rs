@@ -21,7 +21,7 @@ use crate::provider::provider_test_support::{FakeExecutor, account, fixture, sie
 
 /// A session for account `c` with Sieve (filing by folder id among its extensions), a reply,
 /// and the blob URLs.
-fn session(reply: bool) -> Value {
+pub(crate) fn session(reply: bool) -> Value {
     let sieve = json!({
         "sieveExtensions": ["fileinto", "imap4flags", "include", "copy", "mailboxid", "vacation"],
         "maxNumberRedirects": 1, "maxSizeScript": 102_400
@@ -47,7 +47,7 @@ fn session(reply: bool) -> Value {
     doc
 }
 
-fn over(responses: Vec<Value>, script: &str) -> (JmapProvider, Arc<FakeExecutor>) {
+pub(crate) fn over(responses: Vec<Value>, script: &str) -> (JmapProvider, Arc<FakeExecutor>) {
     let exec = Arc::new(
         FakeExecutor::from_session(&session(true), responses)
             .with_download_body(script.as_bytes())
@@ -57,7 +57,7 @@ fn over(responses: Vec<Value>, script: &str) -> (JmapProvider, Arc<FakeExecutor>
 }
 
 /// The account's own script: the reply included first, then one rule of the user's.
-const OWN: &str = "require [\"fileinto\",\"include\"];\r\ninclude :personal :optional \
+pub(crate) const OWN: &str = "require [\"fileinto\",\"include\"];\r\ninclude :personal :optional \
                    \"vacation\";\r\n# rule:[Mine]\r\nif header :contains \"subject\" \"mine\"\r\n\
                    {\r\n\tfileinto \"Mine\";\r\n}\r\n";
 
@@ -67,7 +67,7 @@ fn mailboxes() -> Value {
     fixture("mailbox_get_rule_folders_response.json")
 }
 
-fn named(name: &str, actions: Vec<Action>) -> MailRule {
+pub(crate) fn named(name: &str, actions: Vec<Action>) -> MailRule {
     let test = TextTest::new(TextOp::Contains, vec![name.to_owned()]).unwrap();
     let when = Match::all(vec![engine_core::rules::Condition::Header {
         field: engine_core::rules::HeaderField::Subject,
@@ -108,7 +108,7 @@ fn imported() -> Vec<MailRule> {
 }
 
 /// The host's map: `src-a` to the target's `a`, `src-gone` to a folder the target no longer has.
-fn folders() -> FolderMap {
+pub(crate) fn folders() -> FolderMap {
     let id = |value: &str| MailboxId::try_from(value).unwrap();
     FolderMap::new()
         .with(id("src-a"), id("a"))
@@ -408,66 +408,4 @@ async fn a_reply_import_that_would_switch_the_running_rules_off_is_refused() {
             .all(|request| request["methodCalls"][0][0] != "VacationResponse/set"),
         "nothing written"
     );
-}
-
-#[tokio::test]
-async fn an_include_of_a_reply_that_does_not_run_is_dropped_from_a_script_switched_off() {
-    // The rules script is stored but not active, and so is the reply's: the include runs nothing
-    // now, and an included script runs even where it is not the active one, so a write leaves it
-    // out, as an edit does, rather than keep a reply that is off running once the rules are on.
-    let mut idle = sieve_listing();
-    idle["methodResponses"][0][1]["list"][1]["isActive"] = json!(false);
-    let (provider, exec) = over(
-        vec![
-            idle.clone(),
-            idle,
-            fixture("sieve_set_update_rules_response.json"),
-        ],
-        OWN,
-    );
-    let receipt = provider
-        .import_rules(
-            &account(),
-            &[named("Added", vec![Action::Discard])],
-            ForwardingRules::Disabled,
-            &folders(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(receipt.activation, RulesActivation::Inactive);
-    let uploads = exec.uploads.lock().unwrap();
-    let text = String::from_utf8_lossy(&uploads[0].2);
-    assert!(!text.contains("include :personal"), "{text}");
-    let own_rule = &OWN[OWN.find("# rule:[Mine]").unwrap()..];
-    assert!(
-        text.contains(own_rule),
-        "the account's own rule, byte for byte: {text}"
-    );
-}
-
-#[tokio::test]
-async fn a_forward_an_earlier_import_wrote_is_known_as_held() {
-    // What a first import of a Graph `forwardTo` rule left: a redirect keeping a copy, disabled.
-    let held = "require [\"copy\"];\r\n# rule:[Forward]\r\nif false # header :contains \
-                \"subject\" \"Forward\"\r\n{\r\n\tredirect :copy \"away@example.com\";\r\n}\r\n";
-    let (provider, exec) = over(vec![sieve_listing()], held);
-    let forward = named(
-        "Forward",
-        vec![Action::Forward {
-            to: vec![RuleAddress::new("away@example.com").unwrap()],
-        }],
-    );
-    let receipt = provider
-        .import_rules(
-            &account(),
-            &[forward],
-            ForwardingRules::Disabled,
-            &folders(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(receipt.outcomes[0].kept, Kept::Disabled);
-    assert_eq!(receipt.already_held, [0]);
-    assert_eq!(receipt.stored, RulesStored::Unwritten);
-    assert_eq!(exec.uploads.lock().unwrap().len(), 0, "nothing written");
 }

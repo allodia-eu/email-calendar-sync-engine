@@ -116,7 +116,7 @@ fn an_import_carries_no_rule_whose_text_names_a_folder_by_id_or_another_script()
         RawRule::new(RuleSyntax::Sieve, "fileinto :mailboxid \"a\" \"INBOX\";")
             .requiring(["mailboxid".to_owned()])
             .sending_no_mail()
-            .naming_folders_by_id(),
+            .including_no_script(),
     );
     let (written, outcome) = one(&by_id, &target, enabled);
     assert_eq!(written, None);
@@ -127,7 +127,7 @@ fn an_import_carries_no_rule_whose_text_names_a_folder_by_id_or_another_script()
     let include = MailRule::opaque(
         RawRule::new(RuleSyntax::Sieve, "include :personal \"vacation\";")
             .requiring(["include".to_owned()])
-            .including_scripts(),
+            .naming_no_folder_by_id(),
     );
     let (written, outcome) = one(&include, &target, enabled);
     assert_eq!(written, None);
@@ -238,10 +238,42 @@ fn held_forwarding_lists_the_rules_the_switch_decides() {
     let shown: Vec<(usize, Kept)> = held.iter().map(|o| (o.source, o.kept)).collect();
     assert_eq!(shown, [(0, Kept::NotKept)]);
 
-    // A carried rule that may send mail cannot be disabled either.
-    let opaque = MailRule::opaque(RawRule::new(RuleSyntax::Sieve, "redirect \"a\";").requiring([]));
+    // A carried rule that may send mail cannot be disabled either: as a reader reads it, naming no
+    // folder by id and running no script.
+    let opaque = MailRule::opaque(
+        RawRule::new(RuleSyntax::Sieve, "redirect \"a\";")
+            .requiring([])
+            .naming_no_folder_by_id()
+            .including_no_script(),
+    );
     let target = rich().with_opaque(RuleSyntax::Sieve, []);
     let held = held_forwarding(std::slice::from_ref(&opaque), &target);
     assert_eq!(held.len(), 1);
     assert_eq!(held[0].kept, Kept::NotKept);
+}
+
+#[test]
+fn a_rule_carried_whole_no_reader_vouched_for_is_not_imported_and_is_still_edited() {
+    // Built with nothing said of what its text does: assumed to name a folder by id and run a
+    // script, as it is assumed to send mail.
+    let built = RawRule::new(RuleSyntax::Sieve, "keep;")
+        .requiring(Vec::new())
+        .sending_no_mail();
+    assert!(built.names_folders_by_id() && built.includes_scripts());
+    let target = rich().with_opaque(RuleSyntax::Sieve, Vec::new());
+    let enabled = PlanMode::Import {
+        forwarding: ForwardingRules::Enabled,
+    };
+    let (written, outcome) = one(&MailRule::opaque(built.clone()), &target, enabled);
+    assert_eq!(written, None);
+    assert_eq!(outcome.kept, Kept::NotKept);
+    // An edit of the account's own rules is not an import: the defaults change nothing there.
+    let edit = one(&MailRule::opaque(built.clone()), &target, PlanMode::Edit).1;
+    assert_eq!(edit.kept, Kept::Whole);
+    // Vouched for, it is carried.
+    let read = built.naming_no_folder_by_id().including_no_script();
+    assert_eq!(
+        one(&MailRule::opaque(read), &target, enabled).1.kept,
+        Kept::Whole
+    );
 }

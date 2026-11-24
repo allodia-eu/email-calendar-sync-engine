@@ -64,7 +64,9 @@ async fn a_rule_the_target_already_holds_is_not_written_again() {
 async fn a_rule_carried_whole_is_never_taken_as_already_held() {
     let raw = engine_core::rules::RawRule::new(engine_core::rules::RuleSyntax::Sieve, "keep;")
         .requiring(Vec::new())
-        .sending_no_mail();
+        .sending_no_mail()
+        .naming_no_folder_by_id()
+        .including_no_script();
     let mut target = Target::with_own(vec![MailRule::opaque(raw.clone())]);
     target.vocabulary = vocabulary().with_opaque(engine_core::rules::RuleSyntax::Sieve, Vec::new());
     let receipt = target
@@ -138,16 +140,25 @@ async fn a_rule_is_known_as_held_in_the_form_the_target_reads_it_back() {
 
 #[tokio::test]
 async fn a_rule_carried_whole_is_planned_with_the_facts_its_text_gives() {
-    // The host said nothing of what the text does; the language reads that it runs a script.
+    // The language reads that the text runs a script, whatever the host said.
+    // The host vouches that it runs no script.
     let raw = engine_core::rules::RawRule::new(engine_core::rules::RuleSyntax::Sieve, "include x;")
         .requiring(Vec::new())
-        .sending_no_mail();
+        .sending_no_mail()
+        .naming_no_folder_by_id()
+        .including_no_script();
     let mut target = Target::with_own(Vec::new());
     target.vocabulary = vocabulary().with_opaque(engine_core::rules::RuleSyntax::Sieve, Vec::new());
     target.dialect = ImportDialect::new(
         |mut rule| {
             if let RuleBody::Opaque(raw) = &rule.body {
-                rule.body = RuleBody::Opaque(raw.clone().including_scripts());
+                // Rebuilt from its text alone: what it does is not vouched for.
+                rule.body = RuleBody::Opaque(
+                    engine_core::rules::RawRule::new(raw.syntax(), raw.text())
+                        .requiring(Vec::new())
+                        .sending_no_mail()
+                        .naming_no_folder_by_id(),
+                );
             }
             rule
         },

@@ -103,11 +103,11 @@ fn raw(segment: &Segment<'_>, script: Option<&Script>, name: Option<RuleName>) -
     if !facts::sends_mail(tokens) {
         raw = raw.sending_no_mail();
     }
-    if facts::names_folders_by_id(tokens) {
-        raw = raw.naming_folders_by_id();
+    if !facts::names_folders_by_id(tokens) {
+        raw = raw.naming_no_folder_by_id();
     }
-    if facts::includes_scripts(tokens) {
-        raw = raw.including_scripts();
+    if !facts::includes_scripts(tokens) {
+        raw = raw.including_no_script();
     }
     match name {
         Some(name) => raw.named(name),
