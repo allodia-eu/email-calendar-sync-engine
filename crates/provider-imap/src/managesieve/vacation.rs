@@ -13,12 +13,19 @@
 //!   `crate::managesieve::rules`). An [`Unconditional`](VacationPrecondition::Unconditional) write
 //!   is the one that may replace a reply rule the reader does not read; a guarded one is refused
 //!   there.
+//! - **Only where the reply rule is the only reply.** A script that runs another through `include`,
+//!   or holds a `vacation` outside the reply rule, may answer from there: a JMAP server that runs
+//!   its own reply script (Stalwart's `vacation`, included by the rules or active itself) is one
+//!   such account. The engine cannot read that reply as the account's, and writing one beside it
+//!   could make two, so both the read and the write are refused ([`reply_elsewhere`]). The rules
+//!   stay readable and writable.
 //! - **Text only for now.** The rule holds a subject and a text body; an HTML body is refused
 //!   before sending, as a part the account cannot hold.
 
 use async_trait::async_trait;
 use engine_core::{
     ids::AccountId,
+    rules::RuleBody,
     vacation::{RulesEffect, VacationReceipt, VacationResponse, VacationVocabulary, WindowSupport},
     version::VacationVersion,
 };
@@ -28,7 +35,7 @@ use engine_provider::{
 };
 use engine_sieve::dialect::{
     DialectError, DialectErrorKind, read_rules,
-    reply::{ReplyRefusal, ScriptReply, read_reply, write_reply, write_reply_over},
+    reply::{ReplyRefusal, ScriptReply, includes, read_reply, write_reply, write_reply_over},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -91,6 +98,7 @@ fn vocabulary(capabilities: &Capabilities) -> VacationVocabulary {
 /// The reply `state`'s script holds: off where there is none, or where the script holding it does
 /// not run.
 fn read(state: &State) -> ProviderResult<VacationResponse> {
+    refuse_elsewhere(&state.text)?;
     let version = VacationVersion::new(state.version());
     match read_reply(&state.text) {
         ScriptReply::Read { reply, .. } => {
@@ -114,6 +122,7 @@ async fn write<T: AsyncRead + AsyncWrite + Unpin + Send>(
     new: &VacationResponse,
 ) -> ProviderResult<VacationReceipt> {
     let state = State::read(session).await?;
+    refuse_elsewhere(&state.text)?;
     if let VacationPrecondition::IfUnchanged(read) = precondition {
         refuse_stale(read.version.as_ref().map(VacationVersion::as_str), &state)?;
     }
@@ -142,6 +151,32 @@ async fn write<T: AsyncRead + AsyncWrite + Unpin + Send>(
         .ok()
         .map(|after| VacationVersion::new(after.version()));
     Ok(VacationReceipt::new(version, RulesEffect::Untouched))
+}
+
+/// Whether an automatic reply may run from somewhere other than `script`'s reply rule: another
+/// script it runs through `include` (which the dialect does not read), or a `vacation` in a rule of
+/// the user's, any branch, enabled or not (`read_rules` leaves the reply rule out). Stalwart's own
+/// reply script, as its JMAP `VacationResponse` writes it, is the second: nested `currentdate`
+/// tests around `vacation :mime`.
+pub(crate) fn reply_elsewhere(script: &str) -> bool {
+    includes(script)
+        || read_rules(script).iter().any(|rule| match &rule.body {
+            RuleBody::Opaque(raw) => engine_sieve::tokenize(raw.text()).map_or(true, |tokens| {
+                tokens.iter().any(|token| token.is_identifier("vacation"))
+            }),
+            _ => false,
+        })
+}
+
+/// Refuses to read or write the reply where it may run from elsewhere ([`reply_elsewhere`]).
+fn refuse_elsewhere(script: &str) -> ProviderResult<()> {
+    if reply_elsewhere(script) {
+        return Err(ProviderError::item_unavailable(
+            "an automatic reply may run from a script or rule other than the out-of-office reply's, \
+             which the engine does not read; it neither reads nor writes the reply here",
+        ));
+    }
+    Ok(())
 }
 
 /// Why the reply cannot be written as a rule, in the engine's words: never written, and never

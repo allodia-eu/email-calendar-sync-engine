@@ -84,3 +84,11 @@ pub(crate) fn script(text: &str) -> Vec<u8> {
 pub(crate) fn capability(extensions: &str) -> Vec<u8> {
     format!("\"SIEVE\" \"{extensions}\"\r\n\"MAXREDIRECTS\" \"4\"\r\nOK\r\n").into_bytes()
 }
+
+/// Stalwart's own reply script, as its JMAP `VacationResponse/set` wrote it and `GETSCRIPT`
+/// answered on the harness (2026-11-24).
+pub(crate) const STALWART_REPLY: &str = "require [\"vacation\", \"relational\", \"date\"];\r\n\r\nif \
+    currentdate :value \"ge\" \"iso8601\" \"2030-01-02T09:00:00Z\" {\r\nif currentdate :value \
+    \"le\" \"iso8601\" \"2030-01-09T17:30:00Z\" {\r\nvacation :mime :subject \"Away\" \
+    \"Content-Type: text/plain; charset=\\\"utf-8\\\"\r\nContent-Transfer-Encoding: 7bit\r\n\r\n\
+    I am away.\";\r\n}\r\n}\r\n";

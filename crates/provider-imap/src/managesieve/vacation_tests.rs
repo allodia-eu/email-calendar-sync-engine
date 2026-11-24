@@ -8,7 +8,9 @@ use engine_core::{
 };
 
 use super::*;
-use crate::managesieve::test_support::{capability, listing, script, scripted, sent};
+use crate::managesieve::test_support::{
+    STALWART_REPLY, capability, listing, script, scripted, sent,
+};
 
 const LOGOUT: &[u8] = b"OK\r\n";
 const EXTENSIONS: &str = "fileinto vacation date relational";
@@ -187,6 +189,37 @@ async fn a_guarded_write_is_refused_when_the_script_moved_or_its_reply_is_unread
         sent.contains("\tvacation \"Back soon.\";\r\n\tredirect \"x@example.com\";"),
         "the replaced rule keeps the action after `vacation`: {sent}"
     );
+}
+
+#[tokio::test]
+async fn a_reply_that_may_run_from_elsewhere_is_neither_read_nor_written() {
+    // A JMAP-managed account: Stalwart's reply script running, or the rules including it.
+    let including = format!("include :personal :optional \"vacation\";\r\n{RULE}");
+    for (name, text) in [
+        ("vacation", STALWART_REPLY.to_owned()),
+        ("rules", including),
+    ] {
+        assert!(super::reply_elsewhere(&text), "{name}");
+        let err = read_reply_of(&[&listing(&[(name, true)]), &script(&text), LOGOUT])
+            .await
+            .unwrap_err();
+        assert!(err.is_item_unavailable(), "{name}: {err:?}");
+        for reply in [away(), away().turned_off()] {
+            let (sieve, sessions) = scripted(&[
+                &capability(EXTENSIONS),
+                &listing(&[(name, true)]),
+                &script(&text),
+                LOGOUT,
+            ]);
+            let err = sieve
+                .set_vacation(&account(), VacationPrecondition::Unconditional, &reply)
+                .await
+                .unwrap_err();
+            assert!(err.is_item_unavailable(), "{name}: {err:?}");
+            assert!(!sent(&sessions).contains("PUTSCRIPT"), "{name}");
+        }
+    }
+    assert!(!super::reply_elsewhere(REPLY), "the reply rule alone");
 }
 
 #[tokio::test]

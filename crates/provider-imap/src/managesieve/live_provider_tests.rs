@@ -353,3 +353,117 @@ async fn an_endpoint_that_does_not_answer_leaves_the_mail_working_and_says_so() 
     .await;
     assert!(folders.is_ok(), "the mail works: {folders:?}");
 }
+
+/// One JMAP call as carol, answering its result's arguments.
+fn jmap(harness: &stalwart_harness::Harness, using: &str, call: &str) -> serde_json::Value {
+    let body = format!(
+        "{{\"using\":[\"urn:ietf:params:jmap:core\",\"{using}\"],\"methodCalls\":[{call}]}}"
+    );
+    let response = harness
+        .jmap_post_as(("carol@test.local", "harness-carol-pw"), body.as_bytes())
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&response.body_text()).unwrap();
+    value["methodResponses"][0][1].clone()
+}
+
+#[tokio::test]
+async fn a_reply_a_jmap_server_runs_from_its_own_script_is_neither_read_nor_written() {
+    let _alone = ONE_AT_A_TIME.lock().await;
+    let (Some(harness), Ok(imap), Ok(sieve)) = (
+        stalwart_harness::Harness::from_env(),
+        std::env::var("STALWART_IMAP_ADDR"),
+        std::env::var("STALWART_MANAGESIEVE_ADDR"),
+    ) else {
+        eprintln!("skipping a JMAP-shaped account: a Stalwart address is unset");
+        return;
+    };
+    let config = ImapConfig::new(
+        imap.as_str(),
+        "localhost",
+        Credential::password("carol@test.local", "harness-carol-pw"),
+    )
+    .with_managesieve(sieve.as_str(), "localhost");
+    let mut admin = dial::connect(&config, config.managesieve.as_ref().unwrap(), &connector())
+        .await
+        .unwrap();
+    assert!(
+        admin.list_scripts().await.unwrap().is_empty(),
+        "scripts already"
+    );
+    let session = harness
+        .jmap_session_as(("carol@test.local", "harness-carol-pw"))
+        .unwrap();
+    let vacation_using = "urn:ietf:params:jmap:vacationresponse";
+    let account = session["primaryAccounts"][vacation_using]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let set_reply = |update: &str| {
+        jmap(
+            &harness,
+            vacation_using,
+            &format!(
+                "[\"VacationResponse/set\",{{\"accountId\":\"{account}\",\
+                 \"update\":{{\"singleton\":{update}}}}},\"0\"]"
+            ),
+        )
+    };
+    // The reply switched on over JMAP: Stalwart writes and activates a `vacation` script of its
+    // own.
+    let on = set_reply(
+        "{\"isEnabled\":true,\"fromDate\":\"2030-01-02T09:00:00Z\",\"textBody\":\"Away.\"}",
+    );
+    assert!(on["updated"].is_object(), "{on}");
+    let reply = ScriptName::new("vacation").unwrap();
+    let rules = ScriptName::new("rules").unwrap();
+    let ours = admin.get_script(&reply).await.unwrap();
+    // ManageSieve may not write that script: it is the reply's (RFC 9661 §4).
+    let refused = admin.put_script(&reply, "keep;\r\n").await.unwrap_err();
+    assert_eq!(refused.code(), None);
+
+    let account_handle = ImapAccount::connect(&config, connector()).await.unwrap();
+    let provider = account_handle.provider(MailboxId::try_from("INBOX").unwrap());
+    let vacation = engine_provider::Provider::vacation(&provider).unwrap();
+    let id = AccountId::try_from("live-managesieve").unwrap();
+    let mut outcome = Vec::new();
+    // Its script running; then the shape the JMAP adapter leaves, the user's `rules` running and
+    // including it.
+    let including = "require [\"include\"];\r\ninclude :personal :optional \"vacation\";\r\n";
+    for step in 0..2 {
+        if step == 1 {
+            admin.put_script(&rules, including).await.unwrap();
+            admin.set_active(Some(&rules)).await.unwrap();
+        }
+        let read = vacation.read_vacation(&id).await;
+        let mut written = Vec::new();
+        for new in [
+            VacationResponse::default().turned_on(),
+            VacationResponse::default(),
+        ] {
+            let new = new.with_reply(AutoReply::default().with_text("Mine."));
+            written.push(
+                vacation
+                    .set_vacation(&id, VacationPrecondition::Unconditional, &new)
+                    .await
+                    .is_err_and(|err| err.is_item_unavailable()),
+            );
+        }
+        outcome.push((read.is_err_and(|err| err.is_item_unavailable()), written));
+    }
+    let after_reply = admin.get_script(&reply).await.unwrap();
+    let after_rules = admin.get_script(&rules).await.unwrap();
+
+    admin.set_active(None).await.unwrap();
+    admin.delete_script(&rules).await.unwrap();
+    let off = set_reply("{\"isEnabled\":false}");
+    assert!(off["updated"].is_object(), "{off}");
+    admin.delete_script(&reply).await.unwrap();
+    admin.logout().await;
+
+    assert_eq!(
+        outcome,
+        [(true, vec![true, true]), (true, vec![true, true])]
+    );
+    assert_eq!(after_reply, ours, "the server's reply script is untouched");
+    assert_eq!(after_rules, including, "nothing was written beside it");
+}

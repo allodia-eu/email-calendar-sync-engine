@@ -847,6 +847,17 @@ Pigeonhole (as `alice@`), by hand and then by `provider-imap/src/managesieve/liv
   harness (`engine-sieve/tests/fixtures/roundcube/reply_vacation_post.sieve`).
 - **An endpoint that does not answer leaves mail working**: `127.0.0.1:1` as the endpoint connects
   the account, reports `Unavailable` with `Retryable`, and offers neither trait.
+- **An account a JMAP client also manages may reply from elsewhere.** On Stalwart, a reply switched
+  on over JMAP is Stalwart's own `vacation` script (a `currentdate` test around `vacation :mime`,
+  nested for two ends), active; the JMAP adapter's rules script instead runs it through `include`.
+  ManageSieve may not write that script: `PUTSCRIPT "vacation"` is refused with no code. Over
+  ManageSieve the engine neither reads nor writes the reply where the script it would use runs
+  `include`, or holds a `vacation` outside the reply rule (`managesieve::vacation::reply_elsewhere`):
+  it cannot read that reply as the account's, and one written beside it would make two. Proven on
+  Stalwart with the reply set over JMAP, in both shapes, nothing written; the guard reverted, the
+  `include` shape read as off and took a write. The rules stay readable and writable; a host should
+  prefer JMAP for such an account. A write of the rules into Stalwart's own `vacation` script, where
+  that is the active one, is not refused yet: the next JMAP reply write would replace them.
 
 **Follow-ups from slice 3.**
 
