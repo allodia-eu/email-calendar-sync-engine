@@ -6,9 +6,12 @@ use core::{future::Future, time::Duration};
 use super::{Credential, CredentialRequest, CredentialSource};
 use crate::ProviderError;
 
-/// No credential was presented, and the server did not refuse one: the origin may not receive
-/// it (the source did not permit it, or an engine rule such as HTTP's plaintext rule refused
-/// it), the source had no credential to give, or it did not answer in time.
+/// The credential source failed, or the origin may not receive a credential, as opposed to the
+/// server refusing one: the source did not permit the origin, or an engine rule such as HTTP's
+/// plaintext rule refused it (nothing was sent); the source had no credential to give, or did
+/// not answer in time. Asked for a [replacement](super::CredentialSource::replace) after the
+/// server refused a credential, its failure is this too, and then a request was sent and
+/// refused: this failure takes the refusal's place.
 ///
 /// An adapter turns it into its own error with `From`, keeping the class the source gave. The
 /// class alone tells a host which failed and what to do: a broker that is down is
