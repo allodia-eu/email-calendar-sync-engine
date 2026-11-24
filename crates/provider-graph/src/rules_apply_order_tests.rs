@@ -124,7 +124,7 @@ async fn a_rule_left_out_is_deleted_and_the_rest_keep_their_numbers() {
 #[tokio::test]
 async fn a_rule_id_is_one_percent_encoded_path_segment() {
     let mut listing = json(CAPTURED);
-    listing["value"][0]["id"] = json!("AQ/A+AAAAAE=");
+    listing["value"][0]["id"] = json!("AQ+AAAAAAAE=");
     let fixture = listing.to_string();
     let (client, log) = client(&fixture, vec![]);
     let base = base(&client).await;
@@ -132,6 +132,6 @@ async fn a_rule_id_is_one_percent_encoded_path_segment() {
     assert_eq!(receipt.failures, Vec::new());
     assert_eq!(
         writes(&log),
-        vec![("DELETE", "messageRules/AQ%2FA%2BAAAAAE%3D".to_owned(), None)]
+        vec![("DELETE", "messageRules/AQ%2BAAAAAAAE%3D".to_owned(), None)]
     );
 }

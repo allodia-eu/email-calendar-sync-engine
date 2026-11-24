@@ -52,7 +52,14 @@ pub(crate) const RULES: &str = "/mailFolders/inbox/messageRules";
 ///
 /// Its limits ([`RuleLimit`]): one test per kind on each side, since Graph's predicates are keys
 /// of one object whose values are any-of; one move, one copy and one importance per rule; `To`
-/// and `Cc` only together; no system keyword but `$seen` (and `$flagged`, which it lacks anyway).
+/// and `Cc` only together; no system keyword but `$seen` (and `$flagged`, which it lacks anyway);
+/// a role filed into only where it is a folder Graph names (not all mail, flagged, important).
+///
+/// One case the plan cannot see: a provider's own predicate whose key a typed test also writes.
+/// The reader makes a `Native` part only of a predicate the model has no type for, or of one
+/// whose value is not as Graph documents it, so a set read from Graph never holds such a pair; a
+/// host that pairs one with a typed test of that key by hand meets the writer's refusal, and the
+/// server's rule stays as it was.
 #[must_use]
 pub(crate) fn vocabulary() -> RuleVocabulary {
     RuleVocabulary::new()
@@ -85,6 +92,7 @@ pub(crate) fn vocabulary() -> RuleVocabulary {
         .with_limit(RuleLimit::OneActionPerKind)
         .with_limit(RuleLimit::RecipientsTogether)
         .with_limit(RuleLimit::NoOtherSystemKeyword)
+        .with_limit(RuleLimit::RealFoldersOnly)
 }
 
 /// The account's rules as Graph listed them, in `sequence` order, and the text they are kept as.

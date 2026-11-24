@@ -177,6 +177,17 @@ impl Write<'_> {
             return;
         };
         let old = &self.now.rules[index];
+        // Graph names every rule and clears nothing on a `PATCH`: a name the rule no longer has
+        // is left as it was, and the outcome says so.
+        let mut wanted = rule.clone();
+        let mut name_kept = false;
+        if wanted.name.is_none()
+            && let Some(name) = self.now.rule(index).and_then(|read| read.name)
+        {
+            wanted.name = Some(name);
+            name_kept = true;
+        }
+        let rule = &wanted;
         let unchanged = self.now.rule(index).as_ref() == Some(rule);
         if read_only(old) {
             // Never sent. In its place where its position is already right.
@@ -190,6 +201,21 @@ impl Write<'_> {
             }
             return;
         }
+        if name_kept && !read_only(old) {
+            self.lost(source, RulePart::Name);
+        }
+        let Some(url) = self.rule_url(index) else {
+            // An id Graph would split into two path segments is not sent until proven live.
+            if !unchanged {
+                self.failed(source, Cost::Rule, refused(source));
+            } else if at != self.placed {
+                self.failed(source, Cost::Place, refused(source));
+            }
+            if at == self.placed {
+                self.placed += 1;
+            }
+            return;
+        };
         let mut patch = Map::new();
         if !unchanged {
             let Some(body) = self.body(source, rule, Some(old)).await else {
@@ -206,6 +232,9 @@ impl Write<'_> {
                     let at = at + 1;
                     if self.delete(FailedRule::Removed(index), index).await {
                         self.live.remove(at);
+                    } else {
+                        // The old rule stays beside the new one: the outcome says so too.
+                        self.lost(source, RulePart::Rule);
                     }
                 }
                 return;
@@ -220,7 +249,6 @@ impl Write<'_> {
             self.placed += 1;
             return;
         }
-        let url = self.rule_url(index);
         match self
             .client
             .patch(&url, "application/json", None, encode(&patch))
@@ -294,6 +322,16 @@ impl Write<'_> {
         };
     }
 
+    /// Records on a rule's outcome a part not written as asked though the rule was stored: its
+    /// name left as it was, or an old copy left beside it.
+    fn lost(&mut self, source: usize, part: RulePart) {
+        let outcome = &mut self.outcomes[source];
+        outcome.losses.push(Loss::new(part, LossReason::NotWritten));
+        if outcome.kept == Kept::Whole {
+            outcome.kept = Kept::Reduced;
+        }
+    }
+
     /// Removes a rule left out, unless it is read-only.
     async fn remove(&mut self, index: usize) {
         if read_only(&self.now.rules[index]) {
@@ -309,7 +347,12 @@ impl Write<'_> {
 
     /// `DELETE`s the rule at `index`; whether it is gone, one already gone included.
     async fn delete(&mut self, rule: FailedRule, index: usize) -> bool {
-        let url = self.rule_url(index);
+        let Some(url) = self.rule_url(index) else {
+            // Not sent, so never counted as gone.
+            self.failures
+                .push(RuleWriteFailure::new(rule, FailureClass::Permanent));
+            return false;
+        };
         match self.client.delete(&url, None).await {
             Err(err) if !is_not_found(&err) => {
                 let failed = with_outcome(RuleWriteFailure::new(rule, err.failure_class()), &err);
@@ -320,10 +363,11 @@ impl Write<'_> {
         }
     }
 
-    /// The rule's own URL, its id one percent-encoded path segment.
-    fn rule_url(&self, index: usize) -> String {
-        let id = opt_str(&self.now.rules[index], "id").unwrap_or_default();
-        self.client.url(&format!("{RULES}/{}", encode_id(id)))
+    /// The rule's own URL, its id one percent-encoded path segment; `None` for an id holding a
+    /// `/`, which Graph decodes and splits (`crate::principal`), until one is proven live.
+    fn rule_url(&self, index: usize) -> Option<String> {
+        let id = opt_str(&self.now.rules[index], "id").filter(|id| !id.contains('/'))?;
+        Some(self.client.url(&format!("{RULES}/{}", encode_id(id))))
     }
 
     /// `rule`'s body, or `None` where it is not written, the failure recorded: a folder it names
@@ -410,6 +454,9 @@ fn encode(body: &Map<String, Value>) -> Vec<u8> {
     serde_json::to_vec(body).unwrap_or_default()
 }
 
+#[cfg(test)]
+#[path = "rules_apply_list_tests.rs"]
+mod list_tests;
 #[cfg(test)]
 #[path = "rules_apply_order_tests.rs"]
 mod order_tests;

@@ -282,7 +282,7 @@ fn a_rule_that_drops_a_part_the_old_one_held_is_told_apart() {
     });
     let named = |rule: MailRule| rule.named(RuleName::new("Old").unwrap());
     let same = named(MailRule::typed(
-        Match::all(vec![subject("b")]),
+        Match::all(vec![subject("a")]),
         vec![
             Action::FileInto {
                 mailbox: RuleMailbox::Id(MailboxId::try_from("g").unwrap()),
@@ -291,7 +291,7 @@ fn a_rule_that_drops_a_part_the_old_one_held_is_told_apart() {
             read(),
         ],
     ));
-    // Values changed, nothing dropped; a part asking for nothing is no part.
+    // A folder changed, nothing dropped; a part asking for nothing is no part.
     assert!(!drops(&write(&same).unwrap(), &old));
     let fewer = named(MailRule::typed(
         Match::all(vec![subject("b")]),
@@ -299,7 +299,7 @@ fn a_rule_that_drops_a_part_the_old_one_held_is_told_apart() {
     ));
     assert!(drops(&write(&fewer).unwrap(), &old));
     let unnamed = MailRule::typed(
-        Match::all(vec![subject("b")]),
+        Match::all(vec![subject("a")]),
         vec![
             Action::FileInto {
                 mailbox: RuleMailbox::Id(MailboxId::try_from("g").unwrap()),
@@ -308,7 +308,31 @@ fn a_rule_that_drops_a_part_the_old_one_held_is_told_apart() {
             read(),
         ],
     );
-    assert!(drops(&write(&unnamed).unwrap(), &old));
+    // The name is no part: Graph names every rule, and an unnamed one keeps its old name.
+    assert!(!drops(&write(&unnamed).unwrap(), &old));
+    // A list sent shorter drops what it no longer holds; recipients compare by address.
+    let senders = json!({"conditions": {"fromAddresses": [
+        {"emailAddress": {"name": "A", "address": "a@example.com"}},
+        {"emailAddress": {"name": "B", "address": "b@example.com"}}
+    ]}});
+    let from = |addresses: &[&str]| {
+        MailRule::typed(
+            Match::all(vec![Condition::Address {
+                field: AddressField::From,
+                part: AddressPart::All,
+                test: TextTest::new(
+                    TextOp::Is,
+                    addresses.iter().map(|a| (*a).to_owned()).collect(),
+                )
+                .unwrap(),
+            }]),
+            vec![read()],
+        )
+    };
+    let both = write(&from(&["b@example.com", "a@example.com"])).unwrap();
+    assert!(!drops(&both, &senders));
+    let shrunk = write(&from(&["a@example.com"])).unwrap();
+    assert!(drops(&shrunk, &senders));
 }
 
 #[test]

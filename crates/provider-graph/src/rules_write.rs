@@ -134,20 +134,17 @@ pub(crate) fn keep_names(new: &mut Map<String, Value>, old: &Value) {
     }
 }
 
-/// Whether `new` drops a part `old` holds: a predicate or an action it asks for, or its name.
-/// Graph keeps such a part on a `PATCH` whatever is sent to clear it (`null` was observed to clear
-/// nothing), so a rule that drops one is written anew.
+/// Whether `new` drops a part `old` holds: a predicate or an action it asks for, or a value of a
+/// list it holds. Graph keeps such a part on a `PATCH` whatever is sent to clear it (`null` was
+/// observed to clear nothing), and whether it replaces a list it is sent shorter is not proven, so
+/// a rule that drops one is written anew. The name is not a part here: Graph names every rule, so
+/// one the edit leaves unnamed keeps its old name.
 pub(crate) fn drops(new: &Map<String, Value>, old: &Value) -> bool {
     let asks = |value: &Value| match value {
         Value::Null | Value::Bool(false) => false,
         Value::Array(items) => !items.is_empty(),
         _ => true,
     };
-    let named =
-        |value: Option<&Value>| value.and_then(Value::as_str).is_some_and(|n| !n.is_empty());
-    if named(old.get("displayName")) && !named(new.get("displayName")) {
-        return true;
-    }
     ["conditions", "exceptions", "actions"]
         .iter()
         .any(|section| {
@@ -156,8 +153,28 @@ pub(crate) fn drops(new: &Map<String, Value>, old: &Value) -> bool {
                 .and_then(Value::as_object)
                 .into_iter()
                 .flatten()
-                .any(|(key, value)| asks(value) && !kept.is_some_and(|kept| kept.contains_key(key)))
+                .filter(|(_, value)| asks(value))
+                .any(
+                    |(key, value)| match (value, kept.and_then(|kept| kept.get(key))) {
+                        (_, None) => true,
+                        (Value::Array(was), Some(Value::Array(now))) => was
+                            .iter()
+                            .any(|item| !now.iter().any(|kept| same_item(item, kept))),
+                        _ => false,
+                    },
+                )
         })
+}
+
+/// Whether two list items are one: recipients by address alone, anything else by value.
+fn same_item(a: &Value, b: &Value) -> bool {
+    match (
+        a.pointer("/emailAddress/address"),
+        b.pointer("/emailAddress/address"),
+    ) {
+        (Some(a), Some(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 /// Adds `value` under `key`: a list merges where any-of is meant (`merge`), and otherwise a key

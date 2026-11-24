@@ -79,6 +79,7 @@ fn the_vocabulary_is_the_graph_column() {
         RuleLimit::OneActionPerKind,
         RuleLimit::RecipientsTogether,
         RuleLimit::NoOtherSystemKeyword,
+        RuleLimit::RealFoldersOnly,
     ] {
         assert!(held.has_limit(limit), "{limit:?}");
     }

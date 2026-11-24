@@ -79,6 +79,8 @@ mod contact_fixture_tests;
 #[cfg(test)]
 mod contact_tests;
 #[cfg(test)]
+mod rules_fake;
+#[cfg(test)]
 mod test_support;
 #[cfg(test)]
 mod write_outcome_tests;
