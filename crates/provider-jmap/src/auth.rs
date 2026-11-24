@@ -14,6 +14,11 @@
 //! masks a wrong password, and only then is the account's credential source asked for a
 //! replacement (`engine_http::send_authenticated`). One `401` gets one of the two, never both.
 //!
+//! A challenge offering only schemes the credential cannot be framed under (Basic alone, to a
+//! token) is final: the source is not asked for a replacement, because another token would be
+//! refused the same way, and every request would refresh the token against a server that never
+//! takes Bearer.
+//!
 //! This is what lets one stored secret work against servers that disagree about the
 //! wire format: Stalwart challenges `Bearer` and `Basic`, in two headers (v1.0.2), so a wrong
 //! password presented as Basic is refused as it stands, while Fastmail challenges
@@ -85,6 +90,11 @@ impl NegotiatedScheme {
         self.0.store(scheme.as_u8(), Ordering::Relaxed);
     }
 
+    /// The scheme held, leaving none.
+    pub(crate) fn take(&self) -> Option<AuthScheme> {
+        AuthScheme::from_u8(self.0.swap(0, Ordering::Relaxed))
+    }
+
     /// The scheme to present `credential` under now: the latched one where the credential
     /// can be framed under it, else its natural one. `None` for a credential JMAP cannot
     /// present at all.
@@ -129,7 +139,11 @@ pub(crate) enum Challenge {
     /// The server offers the scheme used, or sent no challenge at all: the credential itself
     /// was refused.
     Refused,
-    /// The server offers only schemes this credential cannot be framed under.
+    /// The server offers only schemes this credential cannot be framed under. No replacement
+    /// is asked for, deliberately: a token refused with a challenge for Basic alone would be
+    /// replaced by another token, which the server refuses the same way, so every request
+    /// would refresh the token against a server that never takes Bearer. A replacement of the
+    /// same kind cannot answer it, so the `401` stands (`docs/agent-guidance/jmap.md`).
     Unusable,
 }
 

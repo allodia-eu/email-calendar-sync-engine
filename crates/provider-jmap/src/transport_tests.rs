@@ -124,6 +124,7 @@ pub(super) const EXPECTED_BEARER: &str = "Bearer s3cret";
 /// A transport presenting `credentials`, which never change.
 fn fixed(credentials: crate::Credentials) -> Transport {
     Transport::new(
+        &reqwest::Url::parse("http://127.0.0.1/").unwrap(),
         Arc::new(engine_provider::FixedCredential::unique(credentials.into())),
         tls(),
         &engine_http::RetryConfig::default(),

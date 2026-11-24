@@ -95,9 +95,13 @@ impl JmapConfig {
     /// discovery and rebasing advertised URLs onto the connection.
     ///
     /// The credential never changes and is never replaced: it is a
-    /// [`FixedCredential`] under a subject of its own. A host whose credential changes (an
-    /// OAuth token, a broker's grant) uses [`from_credential_source`](Self::from_credential_source)
-    /// instead of rebuilding the client.
+    /// [`FixedCredential`] under a subject of its own. It goes over plaintext HTTP only when
+    /// `base_url` and the request are both on loopback (`http://127.0.0.1:…`, `localhost`,
+    /// `::1`): a plaintext base anywhere else fails every request as `Permanent` before anything
+    /// is sent, and an `https` base never sends it over `http://`. Every request is checked as
+    /// [`from_credential_source`](Self::from_credential_source) describes. A host whose credential
+    /// changes (an OAuth token, a broker's grant) uses
+    /// [`from_credential_source`](Self::from_credential_source) instead of rebuilding the client.
     #[must_use]
     pub fn new(
         base_url: impl Into<String>,
@@ -115,8 +119,10 @@ impl JmapConfig {
     /// Asked under the request's deadline, for every origin a request goes to: the configured
     /// one, every well-known redirect target, and each URL the session advertises
     /// (`apiUrl`, `downloadUrl`, `uploadUrl`, `eventSourceUrl`). Each must be one the source
-    /// [permits](CredentialSource::permits) and, over plaintext HTTP, a loopback origin, or
-    /// the request fails before anything is sent. When the server refuses the credential
+    /// [permits](CredentialSource::permits) and, over plaintext HTTP, a loopback origin from
+    /// a `base_url` on plaintext loopback too, or the request fails before anything is sent.
+    /// A plaintext loopback base also gets a client that ignores the environment's proxies
+    /// (`engine_http::client_for`). When the server refuses the credential
     /// with a `401`, the source is asked once for a
     /// [replacement](CredentialSource::replace), and the request sent once more with it.
     ///

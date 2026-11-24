@@ -16,7 +16,7 @@ use std::sync::Arc;
 use engine_http::{Exchange, ObservedConnection, RetryConfig, Sent, Unauthorized};
 use engine_provider::{Credential, CredentialSource, HttpVersion, ProviderError, TlsVersion};
 use engine_tls::TlsClientConfig;
-use reqwest::{Client, RequestBuilder, header::WWW_AUTHENTICATE, redirect::Policy};
+use reqwest::{Client, RequestBuilder, Url, header::WWW_AUTHENTICATE, redirect::Policy};
 use serde_json::Value;
 
 use crate::{
@@ -27,6 +27,9 @@ use crate::{
 /// An authenticated HTTP transport.
 pub(crate) struct Transport {
     client: Client,
+    /// The origin the host configured the account at, which decides whether plaintext
+    /// loopback may carry its credential (`engine_http::send_authenticated`).
+    configured: Url,
     /// Asked for the credential on every request; never a credential held.
     source: Arc<dyn CredentialSource>,
     /// The scheme credentials are presented under once a server has said which. JMAP
@@ -49,19 +52,23 @@ pub(crate) struct Transport {
 }
 
 impl Transport {
-    /// Builds a transport with redirect-following disabled, trusting per `tls`
-    /// (`docs/agent-guidance/tls.md`), presenting what `source` answers.
+    /// Builds a transport for the account configured at `configured`, with
+    /// redirect-following disabled (the funnel checks each URL it is given, so a redirect is
+    /// followed as a request of its own), trusting per `tls` (`docs/agent-guidance/tls.md`),
+    /// presenting what `source` answers.
     pub(crate) fn new(
+        configured: &Url,
         source: Arc<dyn CredentialSource>,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
         user_agent: &engine_http::UserAgent,
     ) -> Result<Self, JmapError> {
-        let client = engine_http::client(tls, user_agent)
+        let client = engine_http::client_for(tls, user_agent, configured)
             .redirect(Policy::none())
             .build()?;
         Ok(Self {
             client,
+            configured: configured.clone(),
             source,
             scheme: NegotiatedScheme::default(),
             connection: ObservedConnection::default(),
@@ -87,16 +94,23 @@ impl Transport {
     }
 
     /// Frames `credential` on `builder` under the scheme it is presented under now, and
-    /// records that scheme in `used`, where the challenge of a `401` is read against it.
+    /// records that scheme in `framing`, where the challenge of a `401` is read against it.
+    ///
+    /// A re-framing `judge` proposed is latched here, when the funnel presents the credential
+    /// again, and only then: a proposal the funnel does not act on (a second re-framing, a body
+    /// that cannot be sent again) leaves the latch as it was.
     fn present(
         &self,
         builder: RequestBuilder,
         credential: &Credential,
-        used: &NegotiatedScheme,
+        framing: &Framing,
     ) -> Result<RequestBuilder, JmapError> {
+        if let Some(next) = framing.proposed.take() {
+            self.scheme.set(next);
+        }
         let scheme = self.scheme.scheme_for(credential);
         if let Some(scheme) = scheme {
-            used.set(scheme);
+            framing.used.set(scheme);
         }
         match (credential, scheme) {
             (Credential::Password { username, password }, Some(AuthScheme::Basic)) => {
@@ -113,25 +127,21 @@ impl Transport {
         }
     }
 
-    /// Reads a `401` to a request that carried `credential` under `used`: a challenge for
-    /// another scheme the credential can be framed under latches it and re-presents the same
-    /// credential; one for the scheme used, or none, is a refusal of the credential.
-    fn judge(
-        &self,
-        reply: &Sent,
-        credential: &Credential,
-        used: &NegotiatedScheme,
-    ) -> Unauthorized {
+    /// Reads a `401` to a request that carried `credential` as `framing` records: a challenge
+    /// for another scheme the credential can be framed under proposes it, and asks the funnel to
+    /// present the same credential again; one for the scheme used, or none, refuses the
+    /// credential; one for schemes it cannot be framed under at all is final ([`crate::auth`]).
+    fn judge(reply: &Sent, credential: &Credential, framing: &Framing) -> Unauthorized {
         let challenges = reply
             .headers()
             .get_all(WWW_AUTHENTICATE)
             .iter()
             .filter_map(|value| value.to_str().ok());
         // `present` always records a scheme before anything is sent.
-        let used = used.latched().unwrap_or(AuthScheme::Basic);
+        let used = framing.used.latched().unwrap_or(AuthScheme::Basic);
         match read_challenge(used, challenges, credential) {
             Challenge::Reframe(next) => {
-                self.scheme.set(next);
+                framing.proposed.set(next);
                 Unauthorized::Reframe
             }
             Challenge::Refused => Unauthorized::Refused,
@@ -155,14 +165,15 @@ impl Transport {
         builder: RequestBuilder,
         exchange: Exchange<'_>,
     ) -> Result<Sent, JmapError> {
-        let used = NegotiatedScheme::default();
+        let framing = Framing::default();
         let response = engine_http::send_authenticated(
             self.source.as_ref(),
+            &self.configured,
             builder,
             &self.retry,
             exchange,
-            |builder, credential| self.present(builder, credential, &used),
-            |reply, credential| self.judge(reply, credential, &used),
+            |builder, credential| self.present(builder, credential, &framing),
+            |reply, credential| Self::judge(reply, credential, &framing),
         )
         .await?;
         self.connection.record(&response);
@@ -270,9 +281,21 @@ pub(crate) async fn error_for_status(resp: engine_http::Sent) -> Result<Sent, Jm
 #[path = "transport_tests.rs"]
 mod transport_tests;
 
+/// How one request framed its credential: the scheme it went out under, and a re-framing
+/// `judge` proposed that the next presentation latches.
+#[derive(Debug, Default)]
+struct Framing {
+    used: NegotiatedScheme,
+    proposed: NegotiatedScheme,
+}
+
 #[cfg(test)]
 #[path = "credential_tests.rs"]
 mod credential_tests;
+
+#[cfg(test)]
+#[path = "credential_origin_tests.rs"]
+mod credential_origin_tests;
 
 #[cfg(test)]
 #[path = "deadline_tests.rs"]

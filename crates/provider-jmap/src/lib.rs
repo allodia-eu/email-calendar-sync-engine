@@ -154,10 +154,17 @@ impl JmapClient {
     /// Reports each step to [`JmapConfig::with_connect_observer`]'s observer, if one
     /// is configured.
     ///
+    /// Every request asks the config's credential source for its credential
+    /// ([`JmapConfig::from_credential_source`]): no credential goes over plaintext HTTP unless
+    /// the request and the configured base are both on loopback, and a `401` refusing the
+    /// credential is sent once more with the source's replacement, if it has one.
+    ///
     /// # Errors
     ///
     /// Returns [`JmapError`] on a bad base URL, a transport/HTTP failure, or a
-    /// malformed/incomplete session resource.
+    /// malformed/incomplete session resource; [`JmapError::Credential`] when the credential
+    /// could not be presented (an origin refused, the source failed or did not answer) or the
+    /// source failed to replace one the server refused.
     pub async fn connect(config: JmapConfig) -> Result<Self, JmapError> {
         let base = Url::parse(&config.base_url)
             .map_err(|e| JmapError::session(format!("bad base_url {:?}: {e}", config.base_url)))?;
@@ -166,6 +173,7 @@ impl JmapClient {
             .as_deref()
             .unwrap_or(&IgnoreConnectSteps);
         let transport = Transport::new(
+            &base,
             config.source,
             &config.tls,
             &config.retry,

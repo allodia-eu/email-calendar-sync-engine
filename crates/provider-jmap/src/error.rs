@@ -87,11 +87,14 @@ pub enum JmapError {
     #[error("invalid JMAP session: {0}")]
     Session(String),
 
-    /// No credential was presented, so nothing was sent: the account's
+    /// The credential could not be presented, or not replaced: the account's
     /// [`CredentialSource`](engine_provider::CredentialSource) did not permit the origin, had no
     /// credential to give, or did not answer within the request's deadline; the engine refused
-    /// the origin (plaintext HTTP to anything but loopback); or the credential is of a kind JMAP
-    /// cannot present. Classified as the source classified it, and `Permanent` for a refusal.
+    /// the origin (plaintext HTTP, except to loopback from an account configured there); or the
+    /// credential is of a kind JMAP cannot present. In each of those nothing was sent. When the
+    /// source fails as it is asked to replace a credential the server refused with a `401`, a
+    /// request was sent and refused, and this takes the `401`'s place. Classified as the source
+    /// classified it, and `Permanent` for a refusal.
     #[error("no credential to present: {0}")]
     Credential(ProviderError),
 

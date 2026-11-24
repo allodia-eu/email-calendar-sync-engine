@@ -187,9 +187,11 @@ async fn live_a_revoked_token_is_replaced_by_a_fresh_one() {
     oauth.revoke(&revoked).await;
     let challenge =
         stalwart_oauth::session_challenge(&harness.http_addr, &format!("Bearer {revoked}")).await;
+    // The 401 offers Bearer, the scheme the token went out under, so it refuses the token and
+    // the transport asks for a replacement; one offering only Basic would be final.
     assert!(
-        challenge.to_ascii_lowercase().starts_with("bearer "),
-        "the revoked token is refused as a bearer token: {challenge}"
+        challenge.to_ascii_lowercase().contains("bearer realm="),
+        "the 401 offers the scheme used: {challenge}"
     );
 
     let source = Replacing::new(Credential::bearer(revoked), Some(Credential::bearer(fresh)));

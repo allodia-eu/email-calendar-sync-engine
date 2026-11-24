@@ -28,12 +28,12 @@ use crate::{JmapClient, JmapConfig, JmapError, SessionUrlPolicy};
 /// A source that answers `first`, then each of `replacements` in turn when asked to replace,
 /// and counts what it was asked.
 #[derive(Debug)]
-struct Rotating {
+pub(super) struct Rotating {
     subject: CredentialSubject,
     first: Credential,
     replacements: Mutex<VecDeque<Credential>>,
     /// The origins it permits; every one when `None`.
-    permitted: Option<Vec<Origin>>,
+    pub(super) permitted: Option<Vec<Origin>>,
     /// What its asks fail with, if they fail.
     fails: Option<FailureClass>,
     asks: Mutex<Vec<Origin>>,
@@ -41,7 +41,7 @@ struct Rotating {
 }
 
 impl Rotating {
-    fn new(first: Credential, replacements: Vec<Credential>) -> Self {
+    pub(super) fn new(first: Credential, replacements: Vec<Credential>) -> Self {
         Self {
             subject: CredentialSubject::new("acct-1"),
             first,
@@ -53,7 +53,7 @@ impl Rotating {
         }
     }
 
-    fn tokens(first: &str, replacements: &[&str]) -> Self {
+    pub(super) fn tokens(first: &str, replacements: &[&str]) -> Self {
         Self::new(
             Credential::bearer(first),
             replacements
@@ -63,11 +63,11 @@ impl Rotating {
         )
     }
 
-    fn asks(&self) -> usize {
+    pub(super) fn asks(&self) -> usize {
         self.asks.lock().unwrap().len()
     }
 
-    fn replaced(&self) -> usize {
+    pub(super) fn replaced(&self) -> usize {
         *self.replaced.lock().unwrap()
     }
 }
@@ -105,8 +105,9 @@ impl CredentialSource for Rotating {
     }
 }
 
-fn transport(source: &Arc<Rotating>) -> Transport {
+pub(super) fn transport(source: &Arc<Rotating>) -> Transport {
     Transport::new(
+        &reqwest::Url::parse("http://127.0.0.1/").unwrap(),
         Arc::clone(source) as Arc<dyn CredentialSource>,
         tls(),
         &engine_http::RetryConfig::default(),
@@ -115,7 +116,7 @@ fn transport(source: &Arc<Rotating>) -> Transport {
     .unwrap()
 }
 
-fn authorizations(seen: &Mutex<Vec<super::transport_tests::Seen>>) -> Vec<String> {
+pub(super) fn authorizations(seen: &Mutex<Vec<super::transport_tests::Seen>>) -> Vec<String> {
     seen.lock()
         .unwrap()
         .iter()
@@ -123,8 +124,8 @@ fn authorizations(seen: &Mutex<Vec<super::transport_tests::Seen>>) -> Vec<String
         .collect()
 }
 
-const BEARER_CHALLENGE: &str = r#"Bearer realm="jmap""#;
-const BASIC_CHALLENGE: &str = r#"Basic realm="jmap""#;
+pub(super) const BEARER_CHALLENGE: &str = r#"Bearer realm="jmap""#;
+pub(super) const BASIC_CHALLENGE: &str = r#"Basic realm="jmap""#;
 
 #[tokio::test]
 async fn a_refused_token_is_replaced_once_and_the_api_call_replayed_with_the_replacement() {
@@ -248,7 +249,7 @@ async fn an_administrator_acting_as_another_account_is_sent_nowhere() {
     assert_eq!(seen.lock().unwrap().len(), 0);
 }
 
-fn config(base: &str, source: &Arc<Rotating>) -> JmapConfig {
+pub(super) fn config(base: &str, source: &Arc<Rotating>) -> JmapConfig {
     JmapConfig::from_credential_source(
         base,
         Arc::clone(source) as Arc<dyn CredentialSource>,
@@ -258,7 +259,7 @@ fn config(base: &str, source: &Arc<Rotating>) -> JmapConfig {
 }
 
 /// What `connect` failed with, as a host sees it.
-async fn connect_error(config: JmapConfig) -> ProviderError {
+pub(super) async fn connect_error(config: JmapConfig) -> ProviderError {
     match JmapClient::connect(config).await {
         Ok(_) => panic!("connect should fail"),
         Err(err) => err.into(),
@@ -288,7 +289,7 @@ async fn a_redirect_to_plaintext_off_loopback_is_not_followed_with_the_credentia
 }
 
 /// A session advertising every URL on a plaintext origin that is not loopback.
-const PLAINTEXT_SESSION: &str = r#"{"capabilities":{"urn:ietf:params:jmap:core":{},"urn:ietf:params:jmap:mail":{}},"primaryAccounts":{"urn:ietf:params:jmap:mail":"c"},"apiUrl":"http://jmap.example.com/jmap/","downloadUrl":"http://jmap.example.com/download/{accountId}/{blobId}/{name}?accept={type}","uploadUrl":"http://jmap.example.com/upload/{accountId}/","eventSourceUrl":"http://jmap.example.com/events/?types={types}&closeafter={closeafter}&ping={ping}"}"#;
+pub(super) const PLAINTEXT_SESSION: &str = r#"{"capabilities":{"urn:ietf:params:jmap:core":{},"urn:ietf:params:jmap:mail":{}},"primaryAccounts":{"urn:ietf:params:jmap:mail":"c"},"apiUrl":"http://jmap.example.com/jmap/","downloadUrl":"http://jmap.example.com/download/{accountId}/{blobId}/{name}?accept={type}","uploadUrl":"http://jmap.example.com/upload/{accountId}/","eventSourceUrl":"http://jmap.example.com/events/?types={types}&closeafter={closeafter}&ping={ping}"}"#;
 
 #[tokio::test]
 async fn origins_the_session_advertises_in_plaintext_off_loopback_are_sent_nothing() {
@@ -308,6 +309,10 @@ async fn origins_the_session_advertises_in_plaintext_off_loopback_are_sent_nothi
             .map(|_| ()),
         client
             .upload("http://jmap.example.com/upload/c/", "text/plain", b"x")
+            .await
+            .map(|_| ()),
+        client
+            .open_event_source(&[], core::time::Duration::from_secs(1))
             .await
             .map(|_| ()),
     ];
