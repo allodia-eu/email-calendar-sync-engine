@@ -28,7 +28,7 @@ async fn a_server_answering_a_byte_at_a_time_gives_the_slot_back_by_the_deadline
             }
         }
     });
-    let sieve = ManageSieve::new(dial, budget, &Capabilities::default());
+    let sieve = ManageSieve::new(dial, budget, true);
     let started = tokio::time::Instant::now();
     let err = sieve
         .with_session(async |session: &mut Session<tokio::io::DuplexStream>| {

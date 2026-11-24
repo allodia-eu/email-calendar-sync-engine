@@ -8,7 +8,6 @@ use std::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{
-    response::Capabilities,
     service::{ManageSieve, SieveDial},
     session::Session,
 };
@@ -48,12 +47,8 @@ pub(crate) fn scripted(answers: &[&[u8]]) -> (ManageSieve<MockStream>, Arc<Mutex
         record.lock().unwrap().push(recorded);
         Box::pin(Session::open(stream))
     });
-    let greeting = Capabilities {
-        sieve: vec!["vacation".into()],
-        ..Capabilities::default()
-    };
     let budget = Arc::new(OneSlot(Arc::new(Semaphore::new(1))));
-    (ManageSieve::new(dial, budget, &greeting), sessions)
+    (ManageSieve::new(dial, budget, true), sessions)
 }
 
 /// Everything the client sent, across its sessions.

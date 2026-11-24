@@ -199,12 +199,22 @@ impl ImapConfig {
     /// `OAUTHBEARER` sign-in. The session is upgraded with `STARTTLS`, the protocol's one
     /// transport, before anything is signed in; a server that does not offer it is not used.
     ///
-    /// Connecting the account reads the service's greeting. Where it answers, every provider of
-    /// the account offers [`mail_rules`](engine_provider::Provider::mail_rules) and
-    /// [`vacation`](engine_provider::Provider::vacation); where it does not, the account's mail
-    /// works without them, and the connect observer sees
+    /// Connecting the account reads the service's greeting, beside the mail and never delaying
+    /// it. Every provider of the account (not a shared store's) then offers
+    /// [`mail_rules`](engine_provider::Provider::mail_rules), and
+    /// [`vacation`](engine_provider::Provider::vacation) where the server lists `vacation`,
+    /// unless the greeting failed in a way that will not pass (no `STARTTLS`, not a ManageSieve
+    /// server). A failure that may pass leaves both offered, each call failing or succeeding on
+    /// its own. The connect observer sees
+    /// [`ConnectStep::Negotiated`](engine_provider::ConnectStep::Negotiated), or
     /// [`ConnectStep::Unavailable`](engine_provider::ConnectStep::Unavailable) with the class of
-    /// the failure. The credential is asked of the same source, over
+    /// the failure.
+    ///
+    /// The greeting signs nothing in, so an offer says the service answers, not that signing in
+    /// will work: a credential ManageSieve does not carry
+    /// ([`Credential::ActingAs`](engine_provider::Credential::ActingAs)), or a token where the
+    /// server offers only `PLAIN`, fails at the first call. The credential is asked of the same
+    /// source, over
     /// [`CredentialProtocol::ManageSieve`](engine_provider::CredentialProtocol::ManageSieve).
     #[must_use]
     pub fn with_managesieve(

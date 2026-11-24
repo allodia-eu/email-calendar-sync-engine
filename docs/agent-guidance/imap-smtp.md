@@ -909,11 +909,15 @@ connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "
 
 - **Configured, not discovered.** `ImapConfig::with_managesieve(addr, server_name)`; no SRV lookup.
   `STARTTLS` is the protocol's one transport and is required.
-- **Probed at connect, optional to the account.** `ImapAccount::connect` reads the greeting and the
-  capabilities over TLS (no credential). Success: `ConnectStep::Negotiated("ManageSieve", …)` and
-  every provider of the account (not a shared store's) answers `mail_rules()`, and `vacation()`
-  where `vacation` is listed. Failure: `ConnectStep::Unavailable { service: ManageSieve, class }`,
-  both answer `None`, and mail works.
+- **Probed at connect, beside the mail, optional to the account.** `ImapAccount::connect` reads
+  the greeting and the capabilities over TLS (no credential) concurrently with the first IMAP
+  connection, and drops the probe if the mail connects first. Success:
+  `ConnectStep::Negotiated("ManageSieve", …)` and every provider of the account (not a shared
+  store's) answers `mail_rules()`, and `vacation()` where `vacation` is listed. A failure:
+  `ConnectStep::Unavailable { service: ManageSieve, class }`; a `Retryable` one (or an unfinished
+  probe) still offers both, each call finding out on its own, and a permanent one (no `STARTTLS`,
+  not ManageSieve) offers neither. Mail works either way. An offer does not mean signing in works:
+  a `Credential::ActingAs`, or a token against a `PLAIN`-only server, fails at the first call.
 - **A session per call, in the budget.** `ImapPool::reserve_other` takes a permit (closing the
   longest-parked IMAP socket when the shelf and the slots in use would pass the ceiling); the
   session dials, signs in (`AUTHENTICATE "PLAIN"` with `sasl::plain_response`, or

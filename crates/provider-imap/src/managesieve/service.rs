@@ -17,7 +17,6 @@ use tokio_rustls::{TlsConnector, client::TlsStream};
 use super::{
     dial::{self, SieveEndpoint},
     error::{SieveError, SieveResult},
-    response::Capabilities,
     session::Session,
 };
 use crate::{config::ImapConfig, pool::other::Budget};
@@ -48,20 +47,17 @@ impl<T> core::fmt::Debug for ManageSieve<T> {
 }
 
 impl<T> ManageSieve<T> {
-    /// The service `dial` signs in to, spending from `budget`, as `greeting` described it.
-    pub(crate) fn new(
-        dial: SieveDial<T>,
-        budget: Arc<dyn Budget>,
-        greeting: &Capabilities,
-    ) -> Self {
+    /// The service `dial` signs in to, spending from `budget`; `replies`: whether to offer the
+    /// out-of-office reply (the server listed `vacation`, or is not yet known not to).
+    pub(crate) fn new(dial: SieveDial<T>, budget: Arc<dyn Budget>, replies: bool) -> Self {
         Self {
             dial,
             budget,
-            replies: greeting.lists("vacation"),
+            replies,
         }
     }
 
-    /// Whether the account's server listed `vacation`.
+    /// Whether the out-of-office reply is offered.
     pub(crate) fn lists_vacation(&self) -> bool {
         self.replies
     }

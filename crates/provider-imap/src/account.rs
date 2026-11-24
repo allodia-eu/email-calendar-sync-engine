@@ -109,11 +109,26 @@ impl ImapAccount<TlsStream<TcpStream>> {
             .map(|settings| resolve_smtp(settings, &connector, config));
         // One identity for every connection the account opens, the first included.
         let presented = Arc::new(PresentedIdentity::default());
-        let (connection, tls_version) = connect_session(config, &presented, &connector).await?;
+        // ManageSieve is probed beside the mail, and never delays it (`crate::managesieve::reach`).
+        let (mail, probed) = {
+            let mut mail = std::pin::pin!(connect_session(config, &presented, &connector));
+            match &config.managesieve {
+                None => (mail.await, None),
+                Some(endpoint) => {
+                    let mut probe = std::pin::pin!(crate::managesieve::probe(endpoint, &connector));
+                    tokio::select! {
+                        biased;
+                        mail = &mut mail => (mail, None),
+                        probed = &mut probe => (mail.await, Some(probed)),
+                    }
+                }
+            }
+        };
+        let (connection, tls_version) = mail?;
         let dial = dial_tls(config.clone(), presented, connector.clone());
         let mut account = Self::build(connection, dial, smtp, config.since, tls_version);
         let budget = Arc::clone(&account.pool) as Arc<dyn Budget>;
-        account.sieve = crate::managesieve::reach(config, &connector, budget).await;
+        account.sieve = crate::managesieve::reach(config, &connector, budget, probed);
         Ok(account)
     }
 }

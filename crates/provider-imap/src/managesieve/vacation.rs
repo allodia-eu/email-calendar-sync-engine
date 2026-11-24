@@ -51,6 +51,7 @@ use super::{
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Vacation for ManageSieve<T> {
     async fn vocabulary(&self, _account: &AccountId) -> ProviderResult<VacationVocabulary> {
         self.with_session(async |session: &mut Session<T>| {
+            refuse_unlisted(session)?;
             Ok(vocabulary(session.refresh_capabilities().await?))
         })
         .await
@@ -64,8 +65,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Vacation for ManageSiev
     }
 
     async fn read_vacation(&self, _account: &AccountId) -> ProviderResult<VacationResponse> {
-        self.with_session(async |session: &mut Session<T>| read(&State::read(session).await?))
-            .await
+        self.with_session(async |session: &mut Session<T>| {
+            refuse_unlisted(session)?;
+            read(&State::read(session).await?)
+        })
+        .await
     }
 
     async fn set_vacation(
@@ -75,11 +79,25 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Vacation for ManageSiev
         new: &VacationResponse,
     ) -> ProviderResult<VacationReceipt> {
         self.with_session(async |session: &mut Session<T>| {
+            refuse_unlisted(session)?;
             refuse_unheld_vacation(&vocabulary(session.refresh_capabilities().await?), new)?;
             write(session, precondition, new).await
         })
         .await
     }
+}
+
+/// Refuses where the server lists no `vacation`: the reply is offered before that is known when the
+/// probe at connect did not finish (`crate::managesieve::reach`), so each call checks.
+fn refuse_unlisted<T: AsyncRead + AsyncWrite + Unpin + Send>(
+    session: &Session<T>,
+) -> ProviderResult<()> {
+    if session.capabilities().lists("vacation") {
+        return Ok(());
+    }
+    Err(ProviderError::item_unavailable(
+        "this account's Sieve server lists no vacation extension, so it keeps no reply",
+    ))
 }
 
 /// What the rule can hold: a subject and one text body, to everyone, and a window where the server

@@ -243,3 +243,24 @@ async fn a_reply_the_account_cannot_hold_is_refused_before_anything_is_stored() 
         assert!(!sent(&sessions).contains("PUTSCRIPT"));
     }
 }
+
+#[tokio::test]
+async fn a_server_that_lists_no_vacation_keeps_no_reply() {
+    use std::sync::Arc;
+
+    use tokio::sync::Semaphore;
+
+    use crate::managesieve::{
+        service::{ManageSieve, SieveDial},
+        test_support::OneSlot,
+    };
+    // Offered because the probe at connect had not finished: each call checks the server's list.
+    let dial: SieveDial<crate::mock::MockStream> = Arc::new(|| {
+        let (stream, _) =
+            crate::mock::MockStream::new(b"\"SIEVE\" \"fileinto\"\r\nOK\r\nOK\r\n".to_vec());
+        Box::pin(Session::open(stream))
+    });
+    let sieve = ManageSieve::new(dial, Arc::new(OneSlot(Arc::new(Semaphore::new(1)))), true);
+    let err = sieve.read_vacation(&account()).await.unwrap_err();
+    assert!(err.is_item_unavailable(), "{err:?}");
+}

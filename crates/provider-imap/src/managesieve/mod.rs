@@ -34,7 +34,7 @@ mod state;
 mod vacation;
 
 use engine_provider::{MailRules, Vacation};
-pub(crate) use reach::reach;
+pub(crate) use reach::{probe, reach};
 
 /// The rules and the reply of an account, as its providers hand them out: one object, since on
 /// ManageSieve they are one script with one version.

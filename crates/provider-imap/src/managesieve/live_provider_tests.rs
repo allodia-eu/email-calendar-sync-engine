@@ -106,7 +106,7 @@ async fn rules_and_the_reply_round_trip_guarded_on_both_servers() {
             .into_iter()
             .find(|script| script.active)
             .map(|script| script.name);
-        let outcome = AssertUnwindSafe(run(label, &imap, &sieve, user, password))
+        let outcome = AssertUnwindSafe(Box::pin(run(label, &imap, &sieve, user, password)))
             .catch_unwind()
             .await;
         admin.set_active(ran.as_ref()).await.unwrap();
@@ -317,11 +317,20 @@ async fn a_script_over_stalwart_s_size_limit_is_refused_by_the_store() {
 }
 
 #[tokio::test]
-async fn an_endpoint_that_does_not_answer_leaves_the_mail_working_and_says_so() {
+async fn an_endpoint_that_does_not_answer_neither_delays_the_mail_nor_hides_the_rules() {
     let Ok(imap) = std::env::var("STALWART_IMAP_ADDR") else {
-        eprintln!("skipping an unreachable ManageSieve: STALWART_IMAP_ADDR unset");
+        eprintln!("skipping an unanswering ManageSieve: STALWART_IMAP_ADDR unset");
         return;
     };
+    // A service that takes the connection and never greets: the probe would wait out its reply
+    // bound, a minute, if the mail waited for it.
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = silent.local_addr().unwrap().to_string();
+    let held = tokio::spawn(async move {
+        let accepted = silent.accept().await;
+        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        drop(accepted);
+    });
     let steps: Arc<Mutex<Vec<(ConnectService, FailureClass)>>> = Arc::default();
     let seen = Arc::clone(&steps);
     let config = ImapConfig::new(
@@ -329,29 +338,46 @@ async fn an_endpoint_that_does_not_answer_leaves_the_mail_working_and_says_so() 
         "localhost",
         Credential::password("carol@test.local", "harness-carol-pw"),
     )
-    .with_managesieve("127.0.0.1:1", "localhost")
+    .with_managesieve(addr, "localhost")
     .with_connect_observer(Arc::new(move |step: &ConnectStep<'_>| {
         if let ConnectStep::Unavailable { service, class, .. } = step {
             seen.lock().unwrap().push((*service, *class));
         }
     }));
+    let started = std::time::Instant::now();
     let account = ImapAccount::connect(&config, connector())
         .await
         .expect("mail connects whatever Sieve does");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        started.elapsed()
+    );
     assert_eq!(
         *steps.lock().unwrap(),
         [(ConnectService::ManageSieve, FailureClass::Retryable)]
     );
+    // Not known to fail for good: offered, and the call fails on its own, as one that may pass.
     let provider = account.provider(MailboxId::try_from("INBOX").unwrap());
-    assert!(engine_provider::Provider::mail_rules(&provider).is_none());
-    assert!(engine_provider::Provider::vacation(&provider).is_none());
-    let folders = engine_provider::Provider::sync_mailboxes(
-        &provider,
-        &AccountId::try_from("live-managesieve").unwrap(),
-        None,
-    )
-    .await;
+    let rules = engine_provider::Provider::mail_rules(&provider).expect("still offered");
+    let id = AccountId::try_from("live-managesieve").unwrap();
+    let folders = engine_provider::Provider::sync_mailboxes(&provider, &id, None).await;
     assert!(folders.is_ok(), "the mail works: {folders:?}");
+    held.abort();
+    let unreachable = ImapConfig::new(
+        imap.as_str(),
+        "localhost",
+        Credential::password("carol@test.local", "harness-carol-pw"),
+    )
+    .with_managesieve("127.0.0.1:1", "localhost");
+    let account = ImapAccount::connect(&unreachable, connector())
+        .await
+        .unwrap();
+    let provider = account.provider(MailboxId::try_from("INBOX").unwrap());
+    let rules_unreachable = engine_provider::Provider::mail_rules(&provider).unwrap();
+    let err = rules_unreachable.read_rules(&id).await.unwrap_err();
+    assert_eq!(err.class(), FailureClass::Retryable, "{err:?}");
+    let _ = rules;
 }
 
 /// One JMAP call as carol, answering its result's arguments.
