@@ -149,9 +149,16 @@ async fn write<T: AsyncRead + AsyncWrite + Unpin + Send>(
     } else {
         RulesStored::InPlace
     };
+    // Written where they were, running or not as they were; a script the write created runs.
+    let activation = if state.running() {
+        RulesActivation::Running
+    } else {
+        RulesActivation::Inactive
+    };
     Ok(RulesReceipt::new(version, plan.outcomes)
         .with_stored(stored)
-        .with_reply(ReplyEffect::Untouched))
+        .with_reply(ReplyEffect::Untouched)
+        .with_activation(activation))
 }
 
 /// Refuses a write built on `read`, a version the script no longer has, or on none at all: a base

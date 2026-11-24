@@ -106,6 +106,27 @@ async fn a_rule_changed_is_stored_in_place_over_the_script_read() {
 }
 
 #[tokio::test]
+async fn rules_written_into_a_script_switched_off_stay_off_and_the_receipt_says_so() {
+    let base = read_set(&[&listing(&[("mine", false)]), &script(RULE), LOGOUT]).await;
+    let (sieve, sessions) = scripted(&[
+        &capability("fileinto"),
+        &listing(&[("mine", false)]),
+        &script(RULE),
+        b"OK\r\n",
+        &listing(&[("mine", false)]),
+        &script(RULE),
+        LOGOUT,
+    ]);
+    let receipt = sieve
+        .replace_rules(&account(), &base, &base.rules)
+        .await
+        .unwrap();
+    assert_eq!(receipt.stored, RulesStored::InPlace);
+    assert_eq!(receipt.activation, RulesActivation::Inactive);
+    assert!(!sent(&sessions).contains("SETACTIVE"), "never switched on");
+}
+
+#[tokio::test]
 async fn an_account_with_no_script_gets_rules_created_and_switched_on() {
     let empty = read_set(&[&listing(&[]), LOGOUT]).await;
     let rules = base(RULE).await.rules;
@@ -123,6 +144,7 @@ async fn an_account_with_no_script_gets_rules_created_and_switched_on() {
         .await
         .unwrap();
     assert_eq!(receipt.stored, RulesStored::CreatedRunning);
+    assert_eq!(receipt.activation, RulesActivation::Running);
     let sent = sent(&sessions);
     assert!(sent.contains("PUTSCRIPT \"rules\" {"), "{sent}");
     assert!(sent.contains("SETACTIVE \"rules\"\r\n"), "{sent}");

@@ -292,6 +292,11 @@ async fn rules_kept_in_an_idle_script_read_as_inactive_and_are_written_there_sti
         .unwrap();
     assert_eq!(receipt.stored, RulesStored::InPlace);
     assert_eq!(
+        receipt.activation,
+        RulesActivation::Inactive,
+        "the receipt says the rules written do not run"
+    );
+    assert_eq!(
         receipt.reply,
         ReplyEffect::Untouched,
         "the reply's own script still runs"
@@ -328,6 +333,7 @@ async fn an_account_with_no_rules_to_edit_gets_a_running_rules_script_that_keeps
         .await
         .unwrap();
     assert_eq!(receipt.stored, RulesStored::CreatedRunning);
+    assert_eq!(receipt.activation, RulesActivation::Running);
     assert_eq!(receipt.reply, ReplyEffect::Untouched);
     let uploaded = String::from_utf8(exec.uploads.lock().unwrap()[0].2.clone()).unwrap();
     assert!(uploaded.contains("include :personal :optional \"vacation\";"));

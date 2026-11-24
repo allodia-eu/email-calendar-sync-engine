@@ -260,9 +260,16 @@ async fn write(
     } else {
         RulesStored::CreatedRunning
     };
+    // Written where they were, running or not as they were; a script the write created runs.
+    let activation = if target.is_none_or(|script| script.active) {
+        RulesActivation::Running
+    } else {
+        RulesActivation::Inactive
+    };
     Ok(RulesReceipt::new(version, plan.outcomes)
         .with_stored(stored)
-        .with_reply(reply))
+        .with_reply(reply)
+        .with_activation(activation))
 }
 
 /// A refused script. Invalid Sieve (`invalidSieve`, RFC 9661 §2.4; Stalwart answers
