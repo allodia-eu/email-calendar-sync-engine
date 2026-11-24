@@ -418,7 +418,7 @@ jobs:
           cargo test -p provider-imap --test live_imap_shared_contract -- --nocapture
           cargo test -p provider-imap --features import --test live_imap_import -- --nocapture
           cargo test -p provider-imap --test live_imap_acting_as -- --nocapture
-          cargo test -p provider-imap --lib managesieve::live -- --nocapture
+          cargo test -p provider-imap --features import --lib managesieve::live -- --nocapture
 
       - name: Dump Dovecot logs on failure
         if: failure()

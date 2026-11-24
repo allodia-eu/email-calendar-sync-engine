@@ -37,7 +37,7 @@ use super::{
 use crate::{ImapAccount, ImapConfig};
 
 /// A harness server: label, IMAP and ManageSieve address variables, account, password.
-const SERVERS: [(&str, &str, &str, &str, &str); 2] = [
+pub(super) const SERVERS: [(&str, &str, &str, &str, &str); 2] = [
     (
         "stalwart",
         "STALWART_IMAP_ADDR",
