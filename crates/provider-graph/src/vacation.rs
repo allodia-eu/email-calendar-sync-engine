@@ -34,17 +34,12 @@ use engine_core::{
     version::VacationVersion,
 };
 use engine_provider::{
-    ProviderError, ProviderResult, Vacation, VacationPrecondition, WriteGuard,
+    ProviderError, ProviderResult, Vacation, VacationPrecondition, WriteGuard, digest_hex,
     refuse_unheld_vacation,
 };
 use serde_json::{Map, Value, json};
 
-use crate::{
-    error::GraphError,
-    json::{digest_hex, opt_str},
-    provider::GraphProvider,
-    transport::GraphClient,
-};
+use crate::{error::GraphError, json::opt_str, provider::GraphProvider, transport::GraphClient};
 
 const SETTING: &str = "/mailboxSettings/automaticRepliesSetting";
 

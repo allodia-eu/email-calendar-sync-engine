@@ -2,15 +2,16 @@
 //! (`filters-and-out-of-office.md`, §4: "Graph and Gmail adapters diff `base` against `rules`").
 //!
 //! 1. **Planned** by `plan_rules` in edit mode against [`vocabulary`], whose features and limits
-//!    say everything the writer (`crate::rules_write`) cannot place. The set written is the set
-//!    planned, as on every transport: a rule the plan does not keep is not there afterwards, so the
-//!    rule it was read as is removed with the others left out.
+//!    say everything the writer (`crate::rules_write`) cannot place. A rule the plan does not keep
+//!    is not written, and the rule it was read as stays where it is, as it was: the edit did not
+//!    apply, and the receipt names it ([`RulesReceipt::left_as_read`]), as it does every rule not
+//!    kept whose read rule the write left in place.
 //! 2. **Refused before sending** where `base` was not read (no version, or a raw form that is not
 //!    the one its version names: `Permanent`), or where the listing moved since (`Conflict`).
 //!    Graph's listing can lag a write it has just answered (observed: a rule `POST`ed a moment
 //!    earlier was not yet listed), so the check narrows the race and does not close it.
-//! 3. **Removed first**: every rule of `base` no written rule names is `DELETE`d (one already gone
-//!    is the state asked for), so the positions below are those of the rules that stay.
+//! 3. **Removed first**: every rule of `base` no rule handed in names is `DELETE`d (one already
+//!    gone is the state asked for), so the positions below are those of the rules that stay.
 //! 4. **Written in order, by position.** Graph keeps the rules as a list: `sequence` is a rule's
 //!    position, renumbered on every change, and a number past the end is clamped to it (observed).
 //!    So the writer keeps the server's list as it goes and sends only what moves it: a new rule is
@@ -38,11 +39,11 @@ use engine_core::{
     ids::MailboxId,
     mail::MailboxRole,
     rules::{
-        FailedRule, MailRule, PlanMode, RuleOrigin, RuleOutcome, RulePart, RuleSet,
-        RuleWriteFailure, RulesReceipt, plan_rules,
+        FailedRule, Kept, MailRule, PlanMode, RuleOutcome, RulePart, RuleSet, RuleWriteFailure,
+        RulesReceipt, plan_rules,
     },
 };
-use engine_provider::{ProviderError, ProviderResult};
+use engine_provider::{ProviderError, ProviderResult, RuleListing};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -61,18 +62,38 @@ pub(crate) async fn replace(
     rules: &[MailRule],
 ) -> ProviderResult<RulesReceipt> {
     let plan = plan_rules(rules, &vocabulary(), PlanMode::Edit);
-    let read = refuse_unread(base)?;
+    let read = RuleListing::base_raw(base)?;
+    Listing::from_raw(read).ok_or_else(RuleListing::unread)?;
     let now = Listing::read(client).await?;
-    if now.version() != read.version() {
+    if now.listing.version() != RuleListing::new(read.as_str()).version() {
         return Err(ProviderError::conflict(
             "the mail rules changed since they were read; read them again",
         ));
     }
+    let len = now.rules.len();
     let mut keep = BTreeSet::new();
+    let mut claimed = BTreeMap::new();
     let mut order = Vec::with_capacity(plan.rules.len());
     for planned in &plan.rules {
-        let existing = existing(&now, &planned.rule).filter(|index| keep.insert(*index));
+        let existing = now
+            .listing
+            .index_of(&planned.rule, len)
+            .filter(|index| keep.insert(*index));
+        if let Some(index) = existing {
+            claimed.insert(index, planned.source);
+        }
         order.push((planned.source, &planned.rule, existing));
+    }
+    // A rule the plan does not keep leaves the rule it was read as where it is: the edit did not
+    // apply, and nothing is removed for it.
+    let mut left = BTreeSet::new();
+    for outcome in plan.outcomes.iter().filter(|o| o.kept == Kept::NotKept) {
+        if let Some(index) = now.listing.index_of(&rules[outcome.source], len)
+            && !keep.contains(&index)
+            && left.insert(index)
+        {
+            claimed.insert(index, outcome.source);
+        }
     }
     let mut write = Write {
         client,
@@ -84,46 +105,24 @@ pub(crate) async fn replace(
         placed: 0,
         pending: keep.clone(),
     };
-    for index in (0..now.rules.len()).filter(|index| !keep.contains(index)) {
+    for index in (0..len).filter(|index| !keep.contains(index) && !left.contains(index)) {
         write.remove(index).await;
     }
     for (source, rule, existing) in order {
         write.one(source, rule, existing).await;
     }
+    // A rule not kept, whether the plan left it out or its write failed, leaves the rule it
+    // claimed as it was read.
+    let left_as_read = now
+        .listing
+        .left_as_read(rules, &write.outcomes, len, |source, index| {
+            claimed.get(&index) == Some(&source)
+        });
     // The listing can lag the writes just answered (observed), so a read now names no version a
     // later write could trust: the receipt carries none, and the next write reads first.
-    Ok(RulesReceipt::new(None, write.outcomes).with_failures(write.failures))
-}
-
-/// The listing `base` was read from, or a refusal where it was not read: without its version and
-/// raw form a write could not tell which rules to keep, and would remove every rule unseen.
-fn refuse_unread(base: &RuleSet) -> ProviderResult<Listing> {
-    let refuse = || {
-        ProviderError::permanent(
-            "a write of the mail rules needs them as they were read, version and raw form; \
-             read them first",
-        )
-    };
-    let version = base.version.as_ref().ok_or_else(refuse)?;
-    let listing = base
-        .raw
-        .as_ref()
-        .and_then(Listing::from_raw)
-        .ok_or_else(refuse)?;
-    if listing.version() != version.as_str() {
-        return Err(refuse());
-    }
-    Ok(listing)
-}
-
-/// The index in `now` of the rule `rule` was read as, where it was read from this listing.
-fn existing(now: &Listing, rule: &MailRule) -> Option<usize> {
-    match rule.origin {
-        Some(RuleOrigin::Listed { set, index }) if set == now.set() && index < now.rules.len() => {
-            Some(index)
-        }
-        _ => None,
-    }
+    Ok(RulesReceipt::new(None, write.outcomes)
+        .with_failures(write.failures)
+        .with_left_as_read(left_as_read))
 }
 
 struct Write<'a> {
@@ -234,7 +233,7 @@ impl Write<'_> {
                         self.live.remove(at);
                     } else {
                         // The old rule stays beside the new one: the outcome says so too.
-                        self.lost(source, RulePart::Rule);
+                        self.outcomes[source].left_beside();
                     }
                 }
                 return;

@@ -378,9 +378,11 @@ async fn an_existing_rule_the_writer_cannot_place_stays_as_it_was() {
     assert_eq!(writes(&log).len(), 0);
 }
 
+/// The edit is not kept, so it does not apply: the rule as read stays where it is, nothing is
+/// sent for it, and the receipt names it (proven offline only: Graph writes are not run live for
+/// this).
 #[tokio::test]
-async fn a_rule_changed_into_one_graph_cannot_hold_is_not_kept_and_goes() {
-    // As on every transport, the set written is the set planned: a rule not kept is not there.
+async fn a_rule_changed_into_one_graph_cannot_hold_leaves_the_rule_as_read() {
     let (client, log) = client(CAPTURED, vec![]);
     let base = base(&client).await;
     let mut rules = base.rules.clone();
@@ -389,12 +391,28 @@ async fn a_rule_changed_into_one_graph_cannot_hold_is_not_kept_and_goes() {
     }
     let receipt = replace(&client, &base, &rules).await.unwrap();
     assert_eq!(receipt.outcomes[8].kept, Kept::NotKept);
-    let sent = writes(&log);
-    assert_eq!(sent.len(), 1);
-    assert_eq!(
-        (sent[0].0, sent[0].1.as_str()),
-        ("DELETE", "messageRules/AQAAAAAAAAk%3D")
-    );
+    assert_eq!(writes(&log).len(), 0);
+    assert_eq!(receipt.left_as_read, [8]);
+    assert_eq!(receipt.failures, Vec::new());
+}
+
+/// A rule whose write failed leaves the rule it was read as too, and the receipt says so beside
+/// the failure.
+#[tokio::test]
+async fn a_rule_whose_write_failed_is_left_as_read() {
+    let (client, _log) = client(SHAPES, vec![]);
+    let base = base(&client).await;
+    let mut rules = base.rules.clone();
+    // Read-only rules are never sent: a change to one is refused, and it stays.
+    let index = base
+        .rules
+        .iter()
+        .position(|rule| rule.read_only)
+        .expect("the shapes hold a read-only rule");
+    rules[index].name = Some(RuleName::new("Renamed").unwrap());
+    let receipt = replace(&client, &base, &rules).await.unwrap();
+    assert_eq!(receipt.outcomes[index].kept, Kept::NotKept);
+    assert_eq!(receipt.left_as_read, [index]);
 }
 
 #[tokio::test]

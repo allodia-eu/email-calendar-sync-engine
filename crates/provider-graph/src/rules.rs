@@ -27,11 +27,9 @@ use engine_core::{
         MailRule, NativeKind, RuleFeature, RuleLimit, RuleSet, RuleVocabulary, RulesReceipt,
         Support, TextOp,
     },
-    version::RuleSetVersion,
 };
-use engine_provider::{MailRules, ProviderResult, WriteGuard};
+use engine_provider::{MailRules, ProviderResult, RuleListing, WriteGuard};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::{
     error::GraphError, json::opt_str, provider::GraphProvider, rules_read, transport::GraphClient,
@@ -98,7 +96,7 @@ pub(crate) fn vocabulary() -> RuleVocabulary {
 /// The account's rules as Graph listed them, in `sequence` order, and the text they are kept as.
 pub(crate) struct Listing {
     pub(crate) rules: Vec<Value>,
-    text: String,
+    pub(crate) listing: RuleListing,
 }
 
 impl Listing {
@@ -134,8 +132,8 @@ impl Listing {
             };
             key(a).cmp(&key(b))
         });
-        let text = Value::Array(rules.clone()).to_string();
-        Self { rules, text }
+        let listing = RuleListing::new(Value::Array(rules.clone()).to_string());
+        Self { rules, listing }
     }
 
     /// The listing kept in `raw`, as a read stored it.
@@ -146,28 +144,11 @@ impl Listing {
         }
     }
 
-    fn digest(&self) -> [u8; 32] {
-        Sha256::digest(self.text.as_bytes()).into()
-    }
-
-    /// The version a write names: the SHA-256 of the listing, in hex.
-    pub(crate) fn version(&self) -> String {
-        crate::json::digest_hex(&self.text)
-    }
-
-    /// The fingerprint a rule's origin carries.
-    pub(crate) fn set(&self) -> u64 {
-        let digest = self.digest();
-        let mut first = [0; 8];
-        first.copy_from_slice(&digest[..8]);
-        u64::from_be_bytes(first)
-    }
-
     /// The rule at `index`, as the model reads it.
     pub(crate) fn rule(&self, index: usize) -> Option<MailRule> {
         self.rules
             .get(index)
-            .map(|value| rules_read::rule(value, self.set(), index))
+            .map(|value| rules_read::rule(value, self.listing.fingerprint(), index))
     }
 
     pub(crate) fn rule_set(&self) -> RuleSet {
@@ -175,8 +156,8 @@ impl Listing {
             .filter_map(|index| self.rule(index))
             .collect();
         RuleSet::new(rules)
-            .with_version(RuleSetVersion::new(self.version()))
-            .with_raw(RawRules::new(self.text.clone()))
+            .with_version(self.listing.version())
+            .with_raw(self.listing.raw())
     }
 }
 

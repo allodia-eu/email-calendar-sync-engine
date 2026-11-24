@@ -31,6 +31,9 @@ time = { workspace = true, optional = true }
 # The one buffer a credential's secret lives in is zeroed when its last clone drops
 # (`credential::Secret`).
 zeroize = { workspace = true }
+# The version of a rule listing a transport keeps as separate objects (`RuleListing`): a
+# SHA-256 of what was read.
+sha2 = { workspace = true }
 # Only the timer: an ask to a host's `CredentialSource` runs under the deadline of the step it
 # belongs to, so a hung token endpoint or broker cannot hang a dial or a request
 # (`credential::with_credential`). Not the workspace entry, whose `macros`, `rt` and

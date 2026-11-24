@@ -201,3 +201,28 @@ fn a_vocabulary_without_listed_extensions_or_limits_holds_base_sieve_alone() {
             .is_none()
     );
 }
+
+/// A word match (a search's, Gmail's) has no Sieve test: the vocabulary does not hold it, so the
+/// plan drops a rule with one wherever the dialect is written, and the writer refuses it too.
+#[test]
+fn a_word_match_is_held_by_no_sieve_vocabulary_and_written_by_no_script() {
+    use engine_core::rules::{AddressField, AddressPart, Kept, PlanMode, plan_rules};
+    let words = TextTest::new(TextOp::Words, vec!["invoice".to_owned()]).unwrap();
+    let all = vocabulary(["regex", "body", "fileinto", "imap4flags", "copy"], Some(5));
+    for condition in [
+        Condition::Header {
+            field: HeaderField::Subject,
+            test: words.clone(),
+        },
+        Condition::Address {
+            field: AddressField::From,
+            part: AddressPart::WithName,
+            test: TextTest::new(TextOp::Contains, vec!["a".to_owned()]).unwrap(),
+        },
+    ] {
+        let rule = MailRule::typed(Match::all(vec![condition]), vec![Action::Discard]);
+        let plan = plan_rules(std::slice::from_ref(&rule), &all, PlanMode::Edit);
+        assert_eq!(plan.outcomes[0].kept, Kept::NotKept);
+        assert!(write_rules("", &[rule]).is_err());
+    }
+}
