@@ -124,6 +124,10 @@ pub enum RuleLimit {
     /// The only roles filed into are Trash, Junk and the archive, and only by a move: the target
     /// keeps roles as its own labels and adds no other.
     TrashJunkArchiveOnly,
+    /// A word match ([`TextOp::Words`]) on an address is held only on the sender with its display
+    /// name: a search over the sender matches the name too, and one over the recipients matches
+    /// every one of them (Gmail's `from:` and `to:`).
+    WordsOnSubjectAndSender,
 }
 
 /// How a target holds a feature it has.

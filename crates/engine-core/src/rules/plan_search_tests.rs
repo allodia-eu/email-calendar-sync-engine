@@ -277,3 +277,38 @@ fn a_native_action_that_sends_mail_counts_as_one_address() {
     );
     assert_eq!(one(&quiet, &target, EDIT).1.losses.len(), 1); // the approximated subject
 }
+
+/// Where a word match is the target's only on the subject and on the sender with its name, a word
+/// match on any other address is not held, though the target holds word matches.
+#[test]
+fn a_word_match_is_held_only_on_the_subject_and_the_sender_with_its_name() {
+    let target = search().with_limit(RuleLimit::WordsOnSubjectAndSender);
+    let address = |field, part| Condition::Address {
+        field,
+        part,
+        test: words("a"),
+    };
+    let held = discard(Match::all(vec![address(
+        AddressField::From,
+        AddressPart::WithName,
+    )]));
+    assert_eq!(one(&held, &target, EDIT).1.kept, Kept::Whole);
+    for (field, part) in [
+        (AddressField::From, AddressPart::All),
+        (AddressField::ToOrCc, AddressPart::WithName),
+        (AddressField::To, AddressPart::All),
+        (AddressField::Cc, AddressPart::WithName),
+    ] {
+        let rule = discard(Match::all(vec![address(field, part)]));
+        assert_eq!(
+            one(&rule, &target, EDIT).1.kept,
+            Kept::NotKept,
+            "{field:?} {part:?}"
+        );
+        assert_eq!(
+            one(&rule, &search(), EDIT).1.kept,
+            Kept::Whole,
+            "{field:?} {part:?}"
+        );
+    }
+}

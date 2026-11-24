@@ -137,6 +137,13 @@ fn text_test(condition: &Condition) -> Option<&super::TextTest> {
 
 /// How `target` holds `condition`.
 pub(super) fn condition_support(condition: &Condition, target: &RuleVocabulary) -> Option<Support> {
+    if target.has_limit(RuleLimit::WordsOnSubjectAndSender)
+        && matches!(condition, Condition::Address { field, part, test }
+            if test.op() == super::TextOp::Words
+                && (*field != AddressField::From || *part != AddressPart::WithName))
+    {
+        return None;
+    }
     if target.has_limit(RuleLimit::PhraseValues)
         && text_test(condition).is_some_and(|test| !test.values().iter().all(|v| is_phrase(v)))
     {
