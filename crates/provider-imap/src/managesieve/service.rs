@@ -5,7 +5,7 @@
 //! before the dial and held until the session is done (`crate::pool::other`), so the account's
 //! IMAP connections and its Sieve session never together go over the ceiling.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use futures_util::future::BoxFuture;
 use tokio::{
@@ -21,6 +21,10 @@ use super::{
     session::Session,
 };
 use crate::{config::ImapConfig, pool::other::Budget};
+
+/// How long one call's session may take, dial, work and `LOGOUT` together: a rule edit is a handful
+/// of round trips, each bounded by the engine's reply deadline on its own.
+pub(crate) const SESSION_DEADLINE: Duration = Duration::from_mins(2);
 
 /// Opens a signed-in session: the live TLS dial, or a scripted one offline.
 pub(crate) type SieveDial<T> =
@@ -65,16 +69,33 @@ impl<T> ManageSieve<T> {
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> ManageSieve<T> {
     /// Runs `work` over a signed-in session, holding a slot of the account's budget throughout,
-    /// and logs out after it whatever it answered.
+    /// and logs out after it whatever it answered, unless the stream failed under it.
+    ///
+    /// The dial, the work and the `LOGOUT` together get [`SESSION_DEADLINE`]: each wait on the
+    /// server is bounded on its own, but a server that answers a byte at a time inside each bound
+    /// could hold the slot indefinitely. Past the deadline the session is dropped unannounced, the
+    /// slot is given back, and the call fails as a timeout, which is retryable.
     pub(crate) async fn with_session<R, E: From<SieveError>>(
         &self,
         work: impl AsyncFnOnce(&mut Session<T>) -> Result<R, E>,
     ) -> Result<R, E> {
         let _slot = self.budget.reserve().await;
-        let mut session = (self.dial)().await.map_err(E::from)?;
-        let outcome = work(&mut session).await;
-        session.logout().await;
-        outcome
+        let session = async {
+            let mut session = (self.dial)().await.map_err(E::from)?;
+            let outcome = work(&mut session).await;
+            if !session.broken() {
+                session.logout().await;
+            }
+            outcome
+        };
+        tokio::time::timeout(SESSION_DEADLINE, session)
+            .await
+            .unwrap_or_else(|_| {
+                Err(E::from(SieveError::from(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "the ManageSieve session did not finish in time",
+                ))))
+            })
     }
 }
 
@@ -93,3 +114,7 @@ pub(crate) fn dial_tls(
         })
     })
 }
+
+#[cfg(test)]
+#[path = "service_tests.rs"]
+mod tests;

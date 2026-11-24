@@ -43,7 +43,7 @@ async fn greet<T: AsyncRead + AsyncWrite + Unpin + Send>(
     open: impl Future<Output = SieveResult<Session<T>>>,
 ) -> SieveResult<Capabilities> {
     let _slot = budget.reserve().await;
-    let session = open.await?;
+    let mut session = open.await?;
     let capabilities = session.capabilities().clone();
     session.logout().await;
     Ok(capabilities)

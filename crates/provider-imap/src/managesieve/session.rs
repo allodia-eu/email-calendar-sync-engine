@@ -51,6 +51,8 @@ pub(crate) struct Session<S> {
     capabilities: Capabilities,
     /// The bytes the response being read has held so far ([`MAX_RESPONSE`]).
     received: usize,
+    /// Whether the stream failed under the session ([`broken`](Self::broken)).
+    broken: bool,
 }
 
 impl<S> core::fmt::Debug for Session<S> {
@@ -75,6 +77,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
             inner: BufReader::new(stream),
             capabilities: Capabilities::default(),
             received: 0,
+            broken: false,
         };
         let lines = session.read_ok("the greeting").await?;
         session.capabilities = Capabilities::from_lines(&lines)?;
@@ -257,7 +260,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
     }
 
     /// Ends the session politely. The work is done by then, so a failure here changes nothing.
-    pub(crate) async fn logout(mut self) {
+    pub(crate) async fn logout(&mut self) {
         let _ = self.command(b"LOGOUT", "LOGOUT").await;
     }
 
@@ -274,20 +277,31 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
     pub(super) async fn send(&mut self, bytes: &[u8]) -> SieveResult<()> {
         // Whatever is read next answers what is sent now: its count starts again.
         self.received = 0;
-        Ok(deadline::write(&mut self.inner, bytes).await?)
+        let sent = deadline::write(&mut self.inner, bytes).await;
+        self.broken |= sent.is_err();
+        Ok(sent?)
+    }
+
+    /// Whether the stream failed under the session (I/O, a timeout, an answer it could not
+    /// frame or read): nothing more is sent on it, `LOGOUT` included.
+    pub(crate) fn broken(&self) -> bool {
+        self.broken
     }
 
     /// Reads one logical line, its literals inlined, under the reply bound.
     pub(super) async fn read_line(&mut self) -> SieveResult<Line> {
-        let line = read_framed_line(&mut self.inner, Some(BOUNDS.reply()), LIMITS).await?;
+        let line = read_framed_line(&mut self.inner, Some(BOUNDS.reply()), LIMITS)
+            .await
+            .inspect_err(|_| self.broken = true)?;
         self.received = self.received.saturating_add(line.len());
         if self.received > MAX_RESPONSE {
+            self.broken = true;
             return Err(ImapError::protocol(format!(
                 "a ManageSieve response exceeding the {MAX_RESPONSE}-byte cap"
             ))
             .into());
         }
-        Ok(parse_line(&line)?)
+        Ok(parse_line(&line).inspect_err(|_| self.broken = true)?)
     }
 
     /// Reads a response's data lines up to its completion: `OK` answers them, `NO` is a refusal
