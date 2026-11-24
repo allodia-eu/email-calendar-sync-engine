@@ -106,10 +106,16 @@ are what this replaces.
   client once and never rebuilds it to present a new token (`docs/design/credential-source.md`).
   Two behaviours came with it:
   - **No credential over plaintext HTTP except to loopback** (`localhost`, `127.0.0.0/8`,
-    `::1`), and none to an origin the source does not `permits`: whether configured, reached by
-    a well-known redirect, or advertised by the session (`apiUrl`, `downloadUrl`, `uploadUrl`,
-    `eventSourceUrl`), the request fails as `Permanent` (`JmapError::Credential`) before
-    anything is sent. The harness serves on `127.0.0.1`, so nothing there changed.
+    `::1`) **from an account configured on loopback**, and none to an origin the source does not
+    `permits`: whether configured, reached by a well-known redirect, or advertised by the session
+    (`apiUrl`, `downloadUrl`, `uploadUrl`, `eventSourceUrl`), the request fails as `Permanent`
+    (`JmapError::Credential`) before anything is sent. An account configured over `https` never
+    sends its credential to `http://127.0.0.1:…`, even where its session names one, since
+    whatever listens on the machine's loopback would read it. The harness is configured on
+    `127.0.0.1`, so nothing there changed. Such an account's client also ignores the
+    environment's proxies (`engine_http::client_for`): reqwest applies `HTTP_PROXY` to loopback
+    unless `NO_PROXY` names it, and a proxy would see the credential in cleartext. Every other
+    account keeps the environment's proxies.
   - **A `401` the source can answer is replayed once.** The Basic/Bearer re-framing below runs
     first; only a `401` whose challenge offers the scheme used, or offers none, refuses the
     credential, and then the source is asked once to `replace` it and the request goes once more
@@ -122,7 +128,11 @@ are what this replaces.
     (`tests/live_credential_source.rs`).
 
   A credential JMAP cannot present (`Credential::ActingAs`: HTTP carries no authorization
-  identity) is refused before anything is sent. A source's own failure reaches the host with
+  identity) is refused before anything is sent. **A `401` whose challenge offers only schemes
+  the credential cannot be framed under (Basic alone, to a token) asks for no replacement,
+  deliberately**: another token would be refused the same way, and every request would refresh
+  the token against a server that never takes Bearer. A re-framing is latched only when it is
+  sent: a second one, which the funnel does not send, leaves the latch alone. A source's own failure reaches the host with
   the class the source gave it.
 - **`blob::download_url` and `blob::upload_url`** fill the templates in, percent-encoding every
   substitution. Before this, a draft's upload URL substituted the account id raw; both now go

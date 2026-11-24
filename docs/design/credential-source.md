@@ -242,6 +242,27 @@ There are two layers, and the source can only narrow:
    JMAP session, gets no credential, and the request fails as `Permanent` before anything is sent.
    This is an engine rule rather than a `permits` default, so no host can forget it. Every live
    harness serves on `127.0.0.1`, so none of them is affected.
+
+   **The loopback exception holds only for an account configured on plaintext loopback**
+   (`engine_http::send_authenticated` is given the configured origin). This narrows decision 5
+   below, which allowed any loopback origin. An account configured over `https` never sends its
+   credential over `http://`, loopback included: a session served over `https` may advertise an
+   `http://127.0.0.1:…` `eventSourceUrl`, `downloadUrl` or `uploadUrl` (kept verbatim where its
+   origin differs from the API's, and always under `TrustAdvertised`), and whatever listens on
+   the worker's own loopback, which a multi-tenant host shares with every other process, would
+   read the credential in cleartext. It is the rule `redirect_target` already applies to a hop
+   off TLS. The exception exists for harnesses and servers on the same machine, and those are
+   configured on loopback themselves.
+
+   **No proxy sees a plaintext credential.** reqwest reads `HTTP_PROXY` and `ALL_PROXY` from the
+   environment when a client is built and applies them to loopback too, unless `NO_PROXY` lists
+   it (reqwest 0.13.5, `async_impl/client.rs`, `auto_sys_proxy`; the matcher is hyper-util
+   0.1.20's `client/proxy/matcher.rs`, whose `intercept` skips only what `NO_PROXY` names). So
+   `engine_http::client_for(tls, user_agent, configured)` builds the client with `no_proxy()`
+   when the configured origin is plaintext loopback, the one case where a credential goes in
+   cleartext and a case that never needs a proxy, and keeps the environment's proxies for every
+   other account, so a host behind a corporate proxy still reaches its servers over `https`.
+   `engine_http::client` is unchanged; `client_for` delegates to it.
 2. **`CredentialSource::permits(origin)`, the host's policy.** It is checked for the configured
    origin before anything is sent, and for every origin discovery adds. A refusal fails the
    connect, and nothing is sent. It replaces `provider_caldav::CredentialHosts`, which keeps
@@ -368,7 +389,8 @@ These live in `mail-calendar/crates/mailcal-account`, read-only here:
   `UnsupportedAuthentication`. A subject is unique within the process, which an `AccountId` is not:
   a store-less multi-tenant host may reuse account ids.
 - **TLS.** There is one `TlsPolicy` (`tls.md`), unchanged. Credentials never go over a hop that
-  left TLS, and never over plaintext HTTP except to a loopback origin, which the live harnesses
+  left TLS, and never over plaintext HTTP except to a loopback origin from an account configured
+  on loopback, which the live harnesses
   and the offline fakes need. That is an engine rule, not a `permits` default ("Host binding"),
   so a host cannot loosen it and need not remember it. A host can still refuse plaintext on
   loopback through `permits`.
@@ -408,7 +430,7 @@ These live in `mail-calendar/crates/mailcal-account`, read-only here:
    that is pinned with its control. See "Types" for the hazard this leaves to the host.
 3. **JMAP**, together with `engine-http::send_authenticated` and the plaintext rule. This is the
    first per-request HTTP ask, and it deletes `RefreshingJmapProvider`. *Landed.* As built:
-   `send_authenticated(source, request, retry, exchange, present, judge)`. The design's `build`
+   `send_authenticated(source, configured, request, retry, exchange, present, judge)`, where `configured` is the account's configured origin, which the plaintext rule reads. The design's `build`
    is split in two: the funnel keeps the unauthenticated request and clones it for each
    presentation, and `present` only adds the credential (and may refuse a kind it cannot send,
    which ends the request before anything goes out: JMAP refuses `ActingAs`, since HTTP has no
@@ -516,7 +538,8 @@ record.
    gone: `Authentication`) from "the server refused". No extra variant ("The trait", "Error
    classes").
 5. **The engine refuses credentials over plaintext HTTP except to loopback origins.** It is an
-   engine rule, not left to `permits`. The harnesses all run on loopback, so nothing breaks
+   engine rule, not left to `permits`. Narrowed when step 3 landed: only for an account whose
+   configured origin is itself plaintext loopback ("Host binding"). The harnesses all run on loopback, so nothing breaks
    ("Host binding", "Security review").
 6. **Eviction of the per-subject caches and the IMAP pool registry has engine defaults, which the
    host can override** ("Direct host").

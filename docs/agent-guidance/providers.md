@@ -538,7 +538,7 @@ byte fetch, and the client picks between them by origin.
 discovery to is the opposite case: it is that server saying where its resources live.
 `provider-jmap`'s `fetch_session` adopts the new origin and the credential follows, through
 the same checks as every JMAP request (`engine_http::send_authenticated`): no credential over
-plaintext HTTP except to a loopback origin, and none to an origin the account's
+plaintext HTTP except to loopback from an account configured on loopback, and none to an origin the account's
 `CredentialSource` does not permit (`docs/design/credential-source.md`, "Host binding");
 `provider-caldav` trusts it and sends the credential once it asks with a `401` challenge
 (`DavExecutor::trust_origin`, RFC 9110 §11.5). Both adapters resolve a `Location`
