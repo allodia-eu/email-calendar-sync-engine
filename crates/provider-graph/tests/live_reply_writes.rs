@@ -21,6 +21,9 @@ use engine_provider::{Provider, VacationPrecondition};
 use live_writes_support::{account, failed, provider, send, settled_by, token};
 use serde_json::{Value, json};
 
+/// This suite's own gate: the rules' gate never writes the reply.
+const GATE: &str = "GRAPH_REPLY_WRITES";
+
 const SETTING: &str = "/me/mailboxSettings/automaticRepliesSetting";
 
 /// The reply's setting as Graph answers it, without the context that names the mailbox.
@@ -54,8 +57,8 @@ async fn settled_setting(token: &str, what: &str, holds: impl Fn(&Value) -> bool
 
 #[tokio::test]
 async fn live_a_reply_scheduled_for_2099_is_written_settled_and_the_setting_restored_exactly() {
-    let Some(token) = token() else {
-        eprintln!("skipping: GRAPH_RULES_WRITES=1 and GRAPH_ACCESS_TOKEN not both set");
+    let Some(token) = token(GATE) else {
+        eprintln!("skipping: GRAPH_REPLY_WRITES=1 and GRAPH_ACCESS_TOKEN not both set");
         return;
     };
     let kept = setting(&token).await;
@@ -77,7 +80,7 @@ async fn live_a_reply_scheduled_for_2099_is_written_settled_and_the_setting_rest
         &token,
         reqwest::Method::PATCH,
         "/me/mailboxSettings",
-        Some(json!({ "automaticRepliesSetting": kept })),
+        Some(json!({ "automaticRepliesSetting": restore_body(&kept) })),
     )
     .await;
     settled_setting(&token, "the restored setting", |now| {
@@ -131,4 +134,52 @@ async fn reply_cycle(token: String, before: engine_core::vacation::VacationRespo
         .err()
         .unwrap_or_else(|| panic!("a stale write was taken"));
     assert_eq!(stale.class(), FailureClass::Conflict);
+}
+
+/// The setting to `PATCH` back: as read, but without the two schedule fields while the reply is not
+/// scheduled, which Graph reports as a rolling window of its own and the model does not hold.
+fn restore_body(kept: &Value) -> Value {
+    let mut body = kept.clone();
+    if kept["status"] != "scheduled"
+        && let Some(fields) = body.as_object_mut()
+    {
+        fields.remove("scheduledStartDateTime");
+        fields.remove("scheduledEndDateTime");
+    }
+    body
+}
+
+#[test]
+fn the_rules_gate_never_opens_the_replys() {
+    let only_rules = |name: &str| (name == "GRAPH_RULES_WRITES").then(|| "1".to_owned());
+    assert_eq!(
+        live_writes_support::allowed(GATE, &only_rules, Some("t".into())),
+        None
+    );
+    let reply = |name: &str| (name == GATE).then(|| "1".to_owned());
+    assert_eq!(
+        live_writes_support::allowed(GATE, &reply, Some("t".into())),
+        Some("t".to_owned())
+    );
+    assert_eq!(
+        live_writes_support::allowed(GATE, &reply, Some(String::new())),
+        None
+    );
+}
+
+#[test]
+fn a_restore_of_an_unscheduled_reply_leaves_graphs_rolling_schedule_alone() {
+    let kept = json!({
+        "status": "disabled",
+        "externalAudience": "all",
+        "scheduledStartDateTime": {"dateTime": "2026-01-01T09:00:00.0000000", "timeZone": "UTC"},
+        "scheduledEndDateTime": {"dateTime": "2026-01-02T09:00:00.0000000", "timeZone": "UTC"}
+    });
+    assert_eq!(
+        restore_body(&kept),
+        json!({"status": "disabled", "externalAudience": "all"})
+    );
+    let mut scheduled = kept.clone();
+    scheduled["status"] = json!("scheduled");
+    assert_eq!(restore_body(&scheduled), scheduled);
 }

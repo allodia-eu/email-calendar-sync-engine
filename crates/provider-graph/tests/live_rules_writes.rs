@@ -1,33 +1,28 @@
-//! Gated live **writes** of the inbox rules and the automatic replies. Not run by default, nor by
-//! a token alone: it changes the mailbox, so it needs `GRAPH_RULES_WRITES=1` beside a delegated
-//! `GRAPH_ACCESS_TOKEN` with `MailboxSettings.ReadWrite`.
+//! Gated live **writes** of the inbox rules. Not run by default, nor by a token alone: it changes
+//! the mailbox, so it needs `GRAPH_RULES_WRITES=1`, its own gate, beside a delegated
+//! `GRAPH_ACCESS_TOKEN` with `MailboxSettings.ReadWrite`. The reply has a suite and a gate of its
+//! own (`live_reply_writes.rs`); this one never writes it.
 //!
 //! What it may touch, and how it leaves the mailbox:
 //!
 //! - **Only rules it creates.** Every rule it makes holds a marker no other rule holds and sits
-//!   after every existing rule; it marks mail read or sets an importance, nothing that sends, moves
-//!   or deletes mail. No request of any kind goes to a rule it did not create: before writing it
-//!   checks that the existing rules' numbers rise strictly from 1, so the engine has none to move,
-//!   and it stops otherwise.
-//! - **One write at a time, each settled.** Graph answers a write before it applies it, a read
-//!   straight after can show a state a later read does not, and two quick `mailboxSettings` writes
-//!   have landed in the wrong order (observed). So after every write the test reads until the
-//!   expected state holds for several reads over a settle period ([`settled`]) before it writes
-//!   again, and it never writes and restores in quick succession.
+//!   after every existing rule; it marks mail read, nothing that sends, moves or deletes mail. No
+//!   request of any kind goes to a rule it did not create, and three guards make that a guarantee
+//!   before anything is written: the existing rules are numbered 1 to n, so the engine has none to
+//!   move; every one of them plans whole against Graph's own vocabulary, so the engine has none to
+//!   rewrite; and every rule an edit names is found by its marker and tag, never by its index.
+//! - **One write at a time, each settled.** Graph answers a write before it applies it (observed),
+//!   so after every write the test reads until the expected state holds for three reads ten seconds
+//!   apart before it writes again.
 //! - **A byte-exact snapshot** of the listing is taken first; afterwards, settled, the rules it did
 //!   not create must be that snapshot exactly (ids, order, numbers, content), and the count of
 //!   differences is all it prints. Whatever happens, the rules holding the marker are removed.
-//! - **The reply** is written only where it is off (`status: disabled`), kept exactly as read,
-//!   written once as a reply scheduled for 2099, and only once that has settled (five matching
-//!   reads a minute apart) `PATCH`ed back verbatim; the setting must then settle on the snapshot
-//!   the same way and still match it five minutes later.
-//! - **Nothing of the mailbox is printed**, on success or failure: comparisons report counts of
-//!   differing rules or fields, never their values.
+//! - **Nothing of the mailbox is printed**, on success or failure: comparisons report counts,
+//!   classes and the engine's redacted `Debug`, never a value.
 //!
-//! Settled by its first run (`graph.md`): a stale `If-Match` on a rule is ignored, `sequence` is a
-//! dense position, clamped to the end, a `PATCH` of `sequence` alone works, a `POST` without a
-//! name is accepted and named by Graph, an id with `=` goes as `%3D`, and `null` clears nothing.
-//! It prints only statuses, counts and numbers.
+//! It proves the engine's writes by position (a rotation of three), a list sent shorter (by hand,
+//! to ask whether a `PATCH` replaces it, and by the engine, written anew), a rename in place, and a
+//! stale base refused once the listing has settled.
 
 mod live_writes_support;
 
@@ -37,13 +32,16 @@ use engine_core::{
     error::FailureClass,
     mail::{Keyword, SystemKeyword},
     rules::{
-        Action, AddressField, AddressPart, Condition, HeaderField, MailRule, Match, RuleBody,
-        RuleName, TextOp, TextTest,
+        Action, AddressField, AddressPart, Condition, HeaderField, Kept, MailRule, Match, PlanMode,
+        RuleBody, RuleFeature, RuleName, RuleVocabulary, TextOp, TextTest, plan_rules,
     },
 };
 use engine_provider::Provider;
 use live_writes_support::{account, failed, provider, send, settled_by, token};
 use serde_json::{Value, json};
+/// This suite's own gate.
+const GATE: &str = "GRAPH_RULES_WRITES";
+
 const RULES: &str = "/me/mailFolders/inbox/messageRules";
 
 /// A marker no other rule holds, and none of this test's runs holds inside another's.
@@ -169,16 +167,45 @@ fn same(a: &MailRule, b: &MailRule) -> bool {
     let (RuleBody::Typed(x), RuleBody::Typed(y)) = (&a.body, &b.body) else {
         return a == b;
     };
-    let alike =
-        |p: &[Condition], q: &[Condition]| p.len() == q.len() && p.iter().all(|c| q.contains(c));
     a.name == b.name
         && a.enabled == b.enabled
         && x.stop == y.stop
         && x.when.mode == y.when.mode
-        && alike(&x.when.conditions, &y.when.conditions)
-        && alike(&x.when.except, &y.when.except)
-        && x.actions.len() == y.actions.len()
-        && x.actions.iter().all(|action| y.actions.contains(action))
+        && multiset(&x.when.conditions, &y.when.conditions)
+        && multiset(&x.when.except, &y.when.except)
+        && multiset(&x.actions, &y.actions)
+}
+
+/// Whether two lists hold the same items as often each, in any order.
+fn multiset<T: PartialEq>(p: &[T], q: &[T]) -> bool {
+    let count = |list: &[T], item: &T| list.iter().filter(|other| *other == item).count();
+    p.len() == q.len() && p.iter().all(|item| count(p, item) == count(q, item))
+}
+
+/// How many of `rules` the engine would not write back whole against `vocabulary`.
+fn not_whole(rules: &[MailRule], vocabulary: &RuleVocabulary) -> usize {
+    plan_rules(rules, vocabulary, PlanMode::Edit)
+        .outcomes
+        .iter()
+        .filter(|outcome| outcome.kept != Kept::Whole)
+        .count()
+}
+
+/// The index of this run's rule tagged `tag`, or a stop: an edit never names a rule by its index.
+fn index_of(rules: &[MailRule], marker: &str, tag: &str) -> usize {
+    let wanted = format!("{marker}-{tag}");
+    rules
+        .iter()
+        .position(|rule| {
+            let RuleBody::Typed(typed) = &rule.body else {
+                return false;
+            };
+            typed.when.conditions.iter().any(|condition| {
+                matches!(condition, Condition::Header { test, .. }
+                    if test.values().contains(&wanted))
+            })
+        })
+        .unwrap_or_else(|| panic!("no rule of this run is tagged {tag}; stopping"))
 }
 
 /// The addresses of a rule's `fromAddresses` condition.
@@ -196,7 +223,7 @@ fn find<'a>(listed: &'a [Value], marker: &str, wanted: &str) -> Option<&'a Value
 
 #[tokio::test]
 async fn live_rules_are_written_and_every_rule_the_test_did_not_create_stays_byte_for_byte() {
-    let Some(token) = token() else {
+    let Some(token) = token(GATE) else {
         eprintln!("skipping: GRAPH_RULES_WRITES=1 and GRAPH_ACCESS_TOKEN not both set");
         return;
     };
@@ -211,6 +238,23 @@ async fn live_rules_are_written_and_every_rule_the_test_did_not_create_stays_byt
     assert!(
         numbers == dense,
         "unexpected state: the rules are not numbered 1 to n; nothing was written"
+    );
+    // Every existing rule plans whole against Graph's own vocabulary, or the engine might rewrite
+    // one (a rule holding both `delete` and `moveToFolder`, say).
+    let graph = provider(&token);
+    let rules = graph.mail_rules().unwrap();
+    let theirs_read = rules
+        .read_rules(&account())
+        .await
+        .unwrap_or_else(|err| failed("read", &err));
+    let vocabulary = rules
+        .rule_vocabulary(&account())
+        .await
+        .unwrap_or_else(|err| failed("vocabulary", &err));
+    let unheld = not_whole(&theirs_read.rules, &vocabulary);
+    assert!(
+        unheld == 0,
+        "unexpected state: {unheld} existing rules do not plan whole; nothing was written"
     );
     let run = tokio::spawn(rule_cycle(token.clone(), marker.clone(), before.len())).await;
     remove_marked(&token, &marker).await;
@@ -300,7 +344,14 @@ async fn rule_cycle(token: String, marker: String, count: usize) {
 
     // A rotation of three: a b c to b c a, by the engine.
     let mut rotated = created.rules.clone();
-    rotated[count..count + 3].rotate_left(1);
+    let a = index_of(&rotated, &marker, "a");
+    assert!(
+        a == count
+            && index_of(&rotated, &marker, "b") == a + 1
+            && index_of(&rotated, &marker, "c") == a + 2,
+        "the rules to rotate are not ours in order"
+    );
+    rotated[a..a + 3].rotate_left(1);
     let receipt = rules
         .replace_rules(&account(), &created, &rotated)
         .await
@@ -348,7 +399,7 @@ async fn rule_cycle(token: String, marker: String, count: usize) {
         .await
         .unwrap_or_else(|err| failed("read", &err));
     let mut shortened = now.rules.clone();
-    let e = shortened.len() - 1;
+    let e = index_of(&shortened, &marker, "e");
     shortened[e] = with_senders("e", &two[..1]);
     shortened[e].origin = now.rules[e].origin;
     let receipt = rules
@@ -373,7 +424,8 @@ async fn rule_cycle(token: String, marker: String, count: usize) {
         .await
         .unwrap_or_else(|err| failed("read", &err));
     let mut renamed = before_rename.rules.clone();
-    renamed[count].name = Some(RuleName::new(format!("Engine test renamed {marker}")).unwrap());
+    let b = index_of(&renamed, &marker, "b");
+    renamed[b].name = Some(RuleName::new(format!("Engine test renamed {marker}")).unwrap());
     let receipt = rules
         .replace_rules(&account(), &before_rename, &renamed)
         .await
@@ -437,4 +489,52 @@ async fn remove_marked(token: &str, marker: &str) {
             let _ = send(token, reqwest::Method::DELETE, &path, None).await;
         }
     }
+}
+
+#[test]
+fn rules_compare_as_multisets_in_any_order() {
+    let rule = |actions: Vec<Action>| subject_rule("m", "t", actions);
+    let read = mark_read();
+    let flag = Action::AddKeywords([Keyword::system(SystemKeyword::Flagged)].into());
+    assert!(same(
+        &rule(vec![read.clone(), flag.clone()]),
+        &rule(vec![flag.clone(), read.clone()])
+    ));
+    assert!(!same(
+        &rule(vec![read.clone(), read.clone(), flag.clone()]),
+        &rule(vec![read.clone(), flag.clone(), flag.clone()])
+    ));
+}
+
+#[test]
+fn the_guard_counts_existing_rules_graph_would_not_write_back_whole() {
+    let vocabulary = RuleVocabulary::new().with_exact([
+        RuleFeature::SubjectText(TextOp::Contains),
+        RuleFeature::MarkRead,
+        RuleFeature::Name,
+        RuleFeature::Order,
+    ]);
+    let held = subject_rule("m", "a", vec![mark_read()]);
+    let mut moved_too = held.clone();
+    if let RuleBody::Typed(typed) = &mut moved_too.body {
+        typed.actions.push(Action::Discard);
+    }
+    assert_eq!(not_whole(std::slice::from_ref(&held), &vocabulary), 0);
+    assert_eq!(not_whole(&[held, moved_too], &vocabulary), 1);
+}
+
+#[test]
+#[should_panic(expected = "no rule of this run is tagged")]
+fn an_edit_never_names_a_rule_that_is_not_this_runs() {
+    let theirs = subject_rule("someone-else", "e", vec![mark_read()]);
+    index_of(&[theirs], "m", "e");
+}
+
+#[test]
+fn an_edit_finds_this_runs_rule_by_its_tag() {
+    let rules = [
+        subject_rule("m", "a", vec![mark_read()]),
+        subject_rule("m", "b", vec![mark_read()]),
+    ];
+    assert_eq!(index_of(&rules, "m", "b"), 1);
 }

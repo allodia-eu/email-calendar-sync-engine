@@ -642,7 +642,11 @@ column of `docs/design/filters-and-out-of-office.md` §5; what follows is what t
   rule out of place gets a `PATCH` of `sequence` alone, a rule in place is not sent. Inserting or
   moving one rule sends nothing to the others. Removing first keeps the positions those of the
   rules that stay; the cost is that a rule left out is gone even where a later write of the set
-  fails, which is what the caller asked for of that rule. The offline tests run against a fake that
+  fails, which is what the caller asked for of that rule. It matters where a host replaces a rule
+  with one it built (no origin) rather than editing the one it read: the old rule is removed
+  before the new one is created, so a create that fails leaves neither, and the receipt lists the
+  new rule as not written. A host that wants the old rule kept until its successor exists edits the
+  rule it read, which writes it anew in place, new first. The offline tests run against a fake that
   keeps such a list (`rules_fake.rs`), and check the list each write leaves.
 - **A `PATCH` clears nothing.** A predicate, an action or `displayName` sent as `null` stays as it
   was, with a `200` (observed). A changed rule that drops none is `PATCH`ed whole, its recipients'

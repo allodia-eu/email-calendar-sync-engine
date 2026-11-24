@@ -283,3 +283,66 @@ async fn a_rule_whose_id_holds_a_slash_is_never_written_to() {
     assert_eq!(state.writes.len(), 0);
     assert_eq!(state.names(), ["a", "b"]);
 }
+
+#[tokio::test]
+async fn a_randomised_sweep_with_read_only_rules_changes_and_failures_keeps_its_promises() {
+    // Whatever happens: no request reaches a read-only rule, and a write that reports no failure
+    // leaves the list exactly as asked.
+    const NAMES: [&str; 6] = ["a", "b", "c", "d", "e", "f"];
+    let mut random = Random(0xfa11);
+    for round in 0..200 {
+        let initial = &NAMES[..=random.below(NAMES.len())];
+        let mut listed = rules_fake::named(initial);
+        let read_only: Vec<String> = listed
+            .iter_mut()
+            .filter(|_| random.below(5) == 0)
+            .map(|rule| {
+                rule["isReadOnly"] = serde_json::json!(true);
+                rule["id"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        let (client, state) = rules_fake::client(&listed);
+        let base = Listing::read(&client).await.unwrap().rule_set();
+        let mut rules: Vec<MailRule> = base
+            .rules
+            .iter()
+            .filter(|_| random.below(4) != 0)
+            .cloned()
+            .collect();
+        for i in (1..rules.len()).rev() {
+            rules.swap(i, random.below(i + 1));
+        }
+        for rule in &mut rules {
+            if random.below(4) == 0 {
+                let name = format!("{}2", rule.name.as_ref().unwrap().as_str());
+                rule.name = Some(RuleName::new(name).unwrap());
+            }
+        }
+        if random.below(2) == 0 {
+            let at = random.below(rules.len() + 1);
+            rules.insert(at, new_rule("x"));
+        }
+        if random.below(3) == 0 {
+            let method = ["POST", "PATCH", "DELETE"][random.below(3)];
+            let target = if method == "POST" {
+                "x".to_owned()
+            } else {
+                format!("id-{}", initial[random.below(initial.len())])
+            };
+            state.lock().unwrap().failing.insert((method, target), 503);
+        }
+        let receipt = replace(&client, &base, &rules).await.unwrap();
+        let state = state.lock().unwrap();
+        assert!(
+            !state.writes.iter().any(|(_, id)| read_only.contains(id)),
+            "round {round}: a read-only rule was sent"
+        );
+        if receipt.failures.is_empty() {
+            let asked: Vec<String> = rules
+                .iter()
+                .map(|rule| rule.name.as_ref().unwrap().as_str().to_owned())
+                .collect();
+            assert_eq!(state.names(), asked, "round {round}");
+        }
+    }
+}

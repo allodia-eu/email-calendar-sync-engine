@@ -23,12 +23,21 @@ pub(crate) fn account() -> AccountId {
 }
 
 /// The delegated token, where writes were asked for.
-pub(crate) fn token() -> Option<String> {
-    let allowed = std::env::var("GRAPH_RULES_WRITES").is_ok_and(|v| v == "1");
-    let token = std::env::var("GRAPH_ACCESS_TOKEN")
-        .ok()
-        .filter(|t| !t.is_empty());
-    allowed.then_some(token).flatten()
+/// The delegated token, where `gate` asks for writes: each suite has its own, so asking for the
+/// rules' writes never writes the reply.
+pub(crate) fn token(gate: &str) -> Option<String> {
+    let token = std::env::var("GRAPH_ACCESS_TOKEN").ok();
+    allowed(gate, &|name| std::env::var(name).ok(), token)
+}
+
+/// The token, where the variable `gate` reads `1` through `lookup` and the token is not empty.
+pub(crate) fn allowed(
+    gate: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+    token: Option<String>,
+) -> Option<String> {
+    let open = lookup(gate).is_some_and(|value| value == "1");
+    token.filter(|token| open && !token.is_empty())
 }
 
 pub(crate) fn provider(token: &str) -> GraphProvider {
