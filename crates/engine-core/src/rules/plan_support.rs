@@ -98,9 +98,9 @@ pub(super) fn action_support(action: &Action, target: &RuleVocabulary) -> Option
         Action::Redirect { to, .. } | Action::Forward { to } if to.is_empty() => None,
         Action::AddKeywords(keywords) if keywords.is_empty() => None,
         Action::Redirect { copy: false, .. } => worst(target, &[RuleFeature::Redirect]),
-        Action::Redirect { copy: true, .. } => {
-            worst(target, &[RuleFeature::Redirect, RuleFeature::RedirectCopy])
-        }
+        // Sending on while keeping it is a feature of its own: Graph's `redirectTo` always keeps
+        // the message, so it holds this and not a redirect that does not.
+        Action::Redirect { copy: true, .. } => worst(target, &[RuleFeature::RedirectCopy]),
         Action::Forward { .. } => worst(target, &[RuleFeature::Forward]),
         Action::AddKeywords(keywords) => {
             let features: Vec<RuleFeature> = keywords.iter().map(keyword_feature).collect();

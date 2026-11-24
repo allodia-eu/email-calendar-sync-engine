@@ -56,6 +56,8 @@ mod import_plan_tests;
 #[cfg(test)]
 mod plan_review_tests;
 #[cfg(test)]
+mod plan_source_tests;
+#[cfg(test)]
 mod plan_tests;
 #[cfg(test)]
 mod tests;

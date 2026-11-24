@@ -87,8 +87,9 @@ pub enum Kept {
     Whole,
     /// Without an action, its stop, its name or its order: it does less, never more.
     Reduced,
-    /// Stored disabled for review: an imported rule that sends mail out of the account. What
-    /// else it lost is in its [`losses`](RuleOutcome::losses), as for any rule.
+    /// Stored disabled for review: an imported rule that sends mail out of the account, or one
+    /// its source marks in error. What else it lost is in its [`losses`](RuleOutcome::losses),
+    /// as for any rule.
     Disabled,
     /// None of it: what was lost would have widened what it matches, or left it nothing to do.
     NotKept,
@@ -145,7 +146,10 @@ pub enum LossReason {
     ForwardNotAllowed,
     /// Over a limit of the target: the rule count, the script size.
     LimitExceeded,
-    /// The source itself marks the rule as in error (Graph `hasError`).
+    /// The source itself marks the rule as in error (Graph `hasError`), on the whole rule. An
+    /// edit writes it as given; an import stores it disabled, or not at all where the target
+    /// cannot store a disabled rule. Not a loss of the target's, so it alone leaves the rule
+    /// [`Whole`](Kept::Whole).
     SourceInError,
     /// A rule the engine could not read, going to another kind of transport.
     OpaqueSource,
@@ -167,6 +171,10 @@ pub enum LossReason {
 ///   ([`Kept::Disabled`]) unless the import says [`ForwardingRules::Enabled`], and not kept where
 ///   the target cannot store a disabled rule. A user's own edit ([`PlanMode::Edit`]) is written as
 ///   given.
+///
+/// A rule its source marks in error ([`MailRule::in_error`]) says so
+/// ([`LossReason::SourceInError`]); an import stores it disabled as well, since what it does on
+/// its source is not known, and an edit writes it as given.
 ///
 /// A rule carried whole keeps its text, so it keeps the name its text holds and stays enabled:
 /// renaming it is a lost name, and disabling it is not expressible. It goes only to a target that
@@ -202,7 +210,8 @@ pub fn plan_rules(rules: &[MailRule], target: &RuleVocabulary, mode: PlanMode) -
 struct Planned {
     losses: Vec<Loss>,
     fatal: bool,
-    disabled_for_review: bool,
+    /// Why an import stores the rule disabled for review, where it does.
+    review: Option<LossReason>,
 }
 
 impl Planned {
@@ -281,6 +290,13 @@ impl Planned {
         if !written.enabled && matches!(written.body, RuleBody::Typed(_)) {
             self.require(RulePart::Enabled, target.support(RuleFeature::Disabled));
         }
+        if rule.in_error {
+            // What a rule in error does on its source is unknown; an import does not arm it.
+            self.lose(RulePart::Rule, LossReason::SourceInError);
+            if written.enabled && matches!(mode, PlanMode::Import { .. }) {
+                self.disable_for_review(&mut written, target, LossReason::SourceInError);
+            }
+        }
         let arming = mode
             == (PlanMode::Import {
                 forwarding: ForwardingRules::Disabled,
@@ -297,23 +313,13 @@ impl Planned {
         let forwards =
             matches!(&written.body, RuleBody::Typed(typed) if typed.actions.iter().any(sends_out));
         if written.enabled && forwards && arming {
-            if target.support(RuleFeature::Disabled).is_some() {
-                written.enabled = false;
-                self.disabled_for_review = true;
-            } else {
-                self.lose(RulePart::Enabled, LossReason::ForwardNotAllowed);
-                self.fatal = true;
-            }
+            self.disable_for_review(&mut written, target, LossReason::ForwardNotAllowed);
         }
         if !written.enabled
             && matches!(&written.body, RuleBody::Typed(typed) if spans_lines(&typed.when))
             && target.support(RuleFeature::DisabledMultiLine).is_none()
         {
-            let reason = if self.disabled_for_review {
-                LossReason::ForwardNotAllowed
-            } else {
-                LossReason::NotExpressible
-            };
+            let reason = self.review.unwrap_or(LossReason::NotExpressible);
             self.lose(RulePart::Enabled, reason);
             self.fatal = true;
         }
@@ -331,6 +337,24 @@ impl Planned {
         }
         if raw.names_folders_by_id() {
             self.lose(RulePart::Rule, LossReason::MissingMailbox);
+            self.fatal = true;
+        }
+    }
+
+    /// Stores `written` disabled for review, for `reason`; where the target cannot store a
+    /// disabled rule, or the rule is carried whole (its text runs it), it is not kept.
+    fn disable_for_review(
+        &mut self,
+        written: &mut MailRule,
+        target: &RuleVocabulary,
+        reason: LossReason,
+    ) {
+        let typed = matches!(written.body, RuleBody::Typed(_));
+        if typed && target.support(RuleFeature::Disabled).is_some() {
+            written.enabled = false;
+            self.review = Some(reason);
+        } else {
+            self.lose(RulePart::Enabled, reason);
             self.fatal = true;
         }
     }
@@ -408,13 +432,15 @@ impl Planned {
     fn outcome(self, source: usize) -> RuleOutcome {
         let kept = if self.fatal {
             Kept::NotKept
-        } else if self.disabled_for_review {
+        } else if self.review.is_some() {
             Kept::Disabled
-        } else if self
-            .losses
-            .iter()
-            .any(|loss| loss.reason != LossReason::Approximated)
-        {
+        } else if self.losses.iter().any(|loss| {
+            // Neither an approximation nor the source's own error is something the target lost.
+            !matches!(
+                loss.reason,
+                LossReason::Approximated | LossReason::SourceInError
+            )
+        }) {
             Kept::Reduced
         } else {
             Kept::Whole
