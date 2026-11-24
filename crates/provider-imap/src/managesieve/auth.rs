@@ -114,6 +114,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
                 Line::Data(tokens) if matches!(tokens.as_slice(), [Token::Str(_)]) => {
                     self.send(format!("\"{}\"\r\n", chosen.answer()).as_bytes())
                         .await?;
+                    if let Chosen::Plain = chosen {
+                        // `PLAIN` takes no challenge: the client cancelled, so the `NO` that
+                        // follows judges no credential, and no replacement is asked for.
+                        let _ = self.read_line().await?;
+                        return Err(ImapError::protocol(
+                            "the ManageSieve server challenged PLAIN, which takes none; the \
+                             sign-in was cancelled",
+                        )
+                        .into());
+                    }
                 }
                 Line::Data(_) => {
                     return Err(ImapError::protocol(
@@ -133,13 +143,36 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
     }
 }
 
-/// The server offers no mechanism the credential can use: which one was needed, and which were
-/// offered (mechanism names are protocol atoms, not content).
+/// SASL mechanisms registered with IANA that a server may offer: the only names an error repeats.
+const KNOWN_MECHANISMS: [&str; 13] = [
+    "PLAIN",
+    "LOGIN",
+    "OAUTHBEARER",
+    "XOAUTH2",
+    "CRAM-MD5",
+    "DIGEST-MD5",
+    "SCRAM-SHA-1",
+    "SCRAM-SHA-1-PLUS",
+    "SCRAM-SHA-256",
+    "SCRAM-SHA-256-PLUS",
+    "EXTERNAL",
+    "GSSAPI",
+    "ANONYMOUS",
+];
+
+/// The server offers no mechanism the credential can use: which one was needed, and which known
+/// mechanisms were offered. Any other string the server listed is counted, never repeated.
 fn unsupported(needed: &str, offered: &[String]) -> SieveError {
-    let offered = if offered.is_empty() {
-        "none".to_owned()
-    } else {
-        offered.join(" ")
+    let known: Vec<&str> = KNOWN_MECHANISMS
+        .into_iter()
+        .filter(|name| offered.iter().any(|atom| atom.eq_ignore_ascii_case(name)))
+        .collect();
+    let others = offered.len() - known.len();
+    let offered = match (known.is_empty(), others) {
+        (true, 0) => "none".to_owned(),
+        (_, 0) => known.join(" "),
+        (true, others) => format!("{others} other"),
+        (false, others) => format!("{} and {others} other", known.join(" ")),
     };
     ImapError::auth_unsupported(format!(
         "the ManageSieve server offers no {needed} (it offers: {offered})"

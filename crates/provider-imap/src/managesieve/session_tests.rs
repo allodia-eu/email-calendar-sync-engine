@@ -136,7 +136,10 @@ async fn an_answer_of_the_wrong_shape_is_refused() {
             b"\"a\" \"b\"\r\nOK\r\n".as_slice(),
             "a listing with two names",
         ),
-        (b"\"a\tb\"\r\nOK\r\n", "a name with a control character"),
+        (
+            b"\"a\tb\" ACTIVE\r\nOK\r\n",
+            "an active script whose name holds a control character",
+        ),
     ] {
         let (mut session, _) = greeted(&[answer]).await;
         let err = session.list_scripts().await.unwrap_err();
@@ -200,4 +203,17 @@ async fn capabilities_asked_again_are_kept() {
     assert_eq!(session.capabilities().max_redirects, Some(4));
     assert_eq!(written(&recorded), "CAPABILITY\r\n");
     assert!(format!("{session:?}").contains("Session"));
+}
+
+#[tokio::test]
+async fn an_inactive_script_with_a_name_rfc_5804_forbids_is_left_out_not_fatal() {
+    let (mut session, _) =
+        greeted(&["\"a\u{2028}b\"\r\n\"rules\" ACTIVE\r\nOK\r\n".as_bytes()]).await;
+    assert_eq!(
+        session.list_scripts().await.unwrap(),
+        [ListedScript {
+            name: name("rules"),
+            active: true
+        }]
+    );
 }

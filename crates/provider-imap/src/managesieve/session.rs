@@ -126,12 +126,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
 
     /// Every script of the account, and which is active.
     ///
+    /// A script whose name RFC 5804 §1.6 does not allow (a control character, U+2028, U+2029) is
+    /// left out, so one such name does not hide the rest; where it is the active one, the listing
+    /// is refused instead, because the rules that run would be missing from it.
+    ///
     /// # Errors
     ///
-    /// The command's failure; [`ImapError::Protocol`] for a line that is not a script name.
+    /// The command's failure; [`ImapError::Protocol`] for a line that is not a script name, or an
+    /// active script whose name is not allowed.
     pub(crate) async fn list_scripts(&mut self) -> SieveResult<Vec<ListedScript>> {
         let lines = self.command(b"LISTSCRIPTS", "LISTSCRIPTS").await?;
-        lines
+        let listed = lines
             .into_iter()
             .map(|line| {
                 let (name, active) = match line.as_slice() {
@@ -148,12 +153,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
                         .into());
                     }
                 };
-                Ok(ListedScript {
-                    name: ScriptName::new(name)?,
-                    active,
-                })
+                Ok((ScriptName::new(name), active))
             })
-            .collect()
+            .collect::<SieveResult<Vec<_>>>()?;
+        let mut scripts = Vec::with_capacity(listed.len());
+        for (name, active) in listed {
+            match name {
+                Ok(name) => scripts.push(ListedScript { name, active }),
+                Err(err) if active => return Err(err.into()),
+                Err(_) => {}
+            }
+        }
+        Ok(scripts)
     }
 
     /// The text of the script `name`.

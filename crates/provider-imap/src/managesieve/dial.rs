@@ -98,7 +98,11 @@ where
             async move {
                 let mut session = opening.await?;
                 session
-                    .authenticate(&credential, &endpoint.server_name, endpoint.port())
+                    .authenticate(
+                        &credential,
+                        &endpoint.server_name,
+                        Some(endpoint.port().unwrap_or(DEFAULT_PORT)),
+                    )
                     .await?;
                 Ok(session)
             }

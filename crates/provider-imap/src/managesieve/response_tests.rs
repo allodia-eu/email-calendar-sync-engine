@@ -243,3 +243,19 @@ fn a_capability_that_is_not_a_string_or_a_count_that_is_not_a_number_is_refused(
     .unwrap();
     assert_eq!(unknown, Capabilities::default());
 }
+
+#[tokio::test]
+async fn only_a_crlf_announces_a_literal_in_both_readers() {
+    // `{3}` then a bare LF is no literal to the framed reader, and none to the tokenizer either.
+    let mut reader = BufReader::new(b"{3}\nabc\r\n".as_slice());
+    let line = read_framed_line(&mut reader, None, 1 << 20).await.unwrap();
+    assert_eq!(line, b"{3}\n");
+    assert!(parse_line(&line).is_err());
+    let mut reader = BufReader::new(b"{3}\r\nabc\r\n".as_slice());
+    let line = read_framed_line(&mut reader, None, 1 << 20).await.unwrap();
+    assert_eq!(line, b"{3}\r\nabc\r\n");
+    assert_eq!(
+        parse_line(&line).unwrap(),
+        Line::Data(vec![Token::Str("abc".into())])
+    );
+}

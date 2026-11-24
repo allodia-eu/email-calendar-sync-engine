@@ -98,7 +98,15 @@ async fn a_credential_with_no_mechanism_on_offer_sends_nothing() {
     let (mut session, recorded_token) = greeted(fixture!("dovecot_greeting_tls"), b"").await;
     let token = Credential::bearer_for("alice@example.com", "ya29.secret");
     let err = session.authenticate(&token, HOST, None).await.unwrap_err();
-    assert!(err.to_string().contains("it offers: PLAIN"), "{err}");
+    assert!(err.to_string().contains("it offers: PLAIN)"), "{err}");
+    // A string the server lists that names no known mechanism is counted, never repeated.
+    let (mut session, _) = greeted(b"\"SASL\" \"PLAIN X-SECRET-THING\"\r\nOK\r\n", b"").await;
+    let err = session.authenticate(&token, HOST, None).await.unwrap_err();
+    assert!(
+        err.to_string().contains("it offers: PLAIN and 1 other"),
+        "{err}"
+    );
+    assert!(!err.to_string().contains("SECRET"), "{err}");
     assert_eq!(written(&recorded), "");
     assert_eq!(written(&recorded_token), "");
 }
@@ -181,14 +189,12 @@ async fn a_server_that_will_not_stop_challenging_is_abandoned() {
         answers.extend_from_slice(b"\"\"\r\n");
     }
     let (mut session, recorded) = greeted(fixture!("stalwart_greeting_tls"), &answers).await;
-    let err = session
-        .authenticate(&password(), HOST, None)
-        .await
-        .unwrap_err();
+    let token = Credential::bearer_for("alice@example.com", "ya29.secret");
+    let err = session.authenticate(&token, HOST, None).await.unwrap_err();
     assert!(matches!(err, SieveError::Imap(ImapError::Protocol(_))));
-    // `PLAIN` takes no challenge, so each is cancelled.
+    // A token's challenge is acknowledged, each time, up to the cap.
     assert_eq!(
-        written(&recorded).matches("\"*\"\r\n").count(),
+        written(&recorded).matches("\"AQ==\"\r\n").count(),
         MAX_CHALLENGES
     );
 
@@ -198,6 +204,27 @@ async fn a_server_that_will_not_stop_challenging_is_abandoned() {
         .await
         .unwrap_err();
     assert!(matches!(err, SieveError::Imap(ImapError::Protocol(_))));
+}
+
+#[tokio::test]
+async fn a_challenge_to_plain_is_cancelled_and_judges_no_credential() {
+    // `PLAIN` takes no challenge: the client cancels with `"*"`, and the `NO` that follows is no
+    // verdict on the credential, so no replacement is asked for.
+    let (mut session, recorded) = greeted(
+        fixture!("stalwart_greeting_tls"),
+        b"\"\"\r\nNO \"cancelled\"\r\n",
+    )
+    .await;
+    let err = session
+        .authenticate(&password(), HOST, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SieveError::Imap(ImapError::Protocol(_))),
+        "{err:?}"
+    );
+    assert!(!err.is_sign_in_refusal());
+    assert_eq!(written(&recorded).matches("\"*\"\r\n").count(), 1);
 }
 
 #[tokio::test]

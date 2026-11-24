@@ -103,10 +103,11 @@ fn closed_mid_response() -> ImapError {
     ))
 }
 
-/// The literal length a line announces (`…{n}` or `…{n+}` before its CRLF), if any.
+/// The literal length a line announces (`…{n}` or `…{n+}` and then CRLF), if any. Only a CRLF
+/// ends a literal's announcement, as RFC 9051 §4.3 and RFC 5804 §4 write it, so this reader and
+/// ManageSieve's tokenizer (`crate::managesieve::response`) agree on what is a literal.
 fn trailing_literal_len(line: &[u8]) -> Option<usize> {
-    let trimmed = line.strip_suffix(b"\n")?;
-    let trimmed = trimmed.strip_suffix(b"\r").unwrap_or(trimmed);
+    let trimmed = line.strip_suffix(b"\r\n")?;
     let inside = trimmed.strip_suffix(b"}")?;
     let inside = inside.strip_suffix(b"+").unwrap_or(inside);
     let open = inside.iter().rposition(|&b| b == b'{')?;

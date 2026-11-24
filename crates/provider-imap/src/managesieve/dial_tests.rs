@@ -153,3 +153,23 @@ async fn a_server_name_that_is_no_tls_name_dials_nothing() {
         "{err:?}"
     );
 }
+
+#[tokio::test]
+async fn an_oauthbearer_response_names_the_port_rfc_5804_assigns_where_the_address_names_none() {
+    let config = ImapConfig::new(
+        "h:993",
+        "h",
+        Credential::bearer_for("alice@example.com", "ya29.secret"),
+    );
+    let (opened, open) = servers(vec![b"OK\r\n"]);
+    dial_with(&config, &endpoint("sieve.example.com"), open)
+        .await
+        .unwrap();
+    let sent = written(&opened.lock().unwrap()[0]);
+    let blob = sent
+        .strip_prefix("AUTHENTICATE \"OAUTHBEARER\" \"")
+        .and_then(|rest| rest.split('"').next())
+        .unwrap();
+    let decoded = String::from_utf8(crate::base64::decode(blob).unwrap()).unwrap();
+    assert!(decoded.contains("\u{1}port=4190\u{1}"), "{decoded:?}");
+}
