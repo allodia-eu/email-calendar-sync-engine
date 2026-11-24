@@ -128,6 +128,24 @@ async fn an_account_with_no_script_gets_rules_created_and_switched_on() {
 }
 
 #[tokio::test]
+async fn a_base_built_rather_than_read_is_refused_and_nothing_is_stored() {
+    // `RuleSet::new(rules)` carries no version: written, it would delete every stored rule unseen.
+    let (sieve, sessions) = scripted(&[
+        &capability("fileinto"),
+        &listing(&[("zfixture", true)]),
+        &script(RULE),
+        LOGOUT,
+    ]);
+    let err = sieve
+        .replace_rules(&account(), &RuleSet::new(Vec::new()), &[])
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), FailureClass::Permanent);
+    assert!(!err.is_item_unavailable());
+    assert!(!sent(&sessions).contains("PUTSCRIPT"));
+}
+
+#[tokio::test]
 async fn a_base_read_before_the_script_moved_is_refused_and_nothing_is_stored() {
     let base = base(RULE).await;
     let moved = RULE.replace("Archive", "Elsewhere");

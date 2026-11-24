@@ -138,14 +138,19 @@ async fn write<T: AsyncRead + AsyncWrite + Unpin + Send>(
         .with_reply(ReplyEffect::Untouched))
 }
 
-/// Refuses a write built on `read`, a version the script no longer has. `None`: a base built
-/// rather than read, written as it stands (the guard is `Absent`).
+/// Refuses a write built on `read`, a version the script no longer has, or on none at all: a base
+/// built rather than read would replace whatever the script holds unseen (`RuleSet::new(rules)`
+/// would delete every stored rule), so it is refused as `Permanent`, as JMAP's
+/// [`guard_version`](engine_provider::guard_version) refuses it, though the guard is `Absent`.
 pub(crate) fn refuse_stale(read: Option<&str>, state: &State) -> ProviderResult<()> {
     match read {
+        None => Err(ProviderError::permanent(
+            "a write over the Sieve script needs the version it was read at; read it first",
+        )),
         Some(read) if read != state.version() => Err(ProviderError::conflict(
             "the Sieve script changed since it was read; read it again",
         )),
-        _ => Ok(()),
+        Some(_) => Ok(()),
     }
 }
 

@@ -170,7 +170,8 @@ async fn a_guarded_write_is_refused_when_the_script_moved_or_its_reply_is_unread
         )
         .await
         .unwrap_err();
-    assert!(err.is_item_unavailable(), "{err:?}");
+    // A reply built, not read, has no version to guard by: refused, never written unseen.
+    assert_eq!(err.class(), FailureClass::Permanent, "{err:?}");
     let (sieve, sessions) = scripted(&[
         &capability(EXTENSIONS),
         &listing(&[("rules", true)]),
