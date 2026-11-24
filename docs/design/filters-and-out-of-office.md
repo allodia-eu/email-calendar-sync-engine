@@ -9,10 +9,11 @@ pattern (#378). Slice 1 landed `engine_core::vacation`, the `Vacation` trait and
 questions it was to settle live ("Settled by live tests"). Slice 2 has landed `engine-sieve` (the
 segmenter, and the dialect reader, writer and vocabulary), `engine_core::rules` with
 `plan_rules`, the `MailRules` trait and `Provider::mail_rules`, and `provider-jmap`'s rules over
-JMAP Sieve, with the reply kept running beside them, and settled live how the two coexist. Slice 3 has landed the reply as a rule of the script
-(`engine_sieve::dialect::reply`) and a `managesieve` module of `provider-imap` with both traits,
-proven live on Stalwart and Dovecot ("Settled in slice 3"). Where the code differs from a sketch below, the sketch has been brought up to date
-and says why.
+JMAP Sieve, with the reply kept running beside them, and settled live how the two coexist.
+Slice 3 has landed the reply as a rule of the script (`engine_sieve::dialect::reply`) and a
+`managesieve` module of `provider-imap` with both traits, proven live on Stalwart and Dovecot
+("Settled in slice 3"). Where the code differs from a sketch below, the sketch has been brought up
+to date and says why.
 
 Marks used below: **live** = observed against a harness server on 2026-11-23; **docs** = read from
 the RFC or vendor reference cited; **unverified** = believed, not yet checked, and must be proven
@@ -672,8 +673,8 @@ Each slice is proven live before the next starts (`AGENTS.md`).
    `SieveScript/set` refuses an invalid script whole (proven live both ways), so validating first
    adds a round trip and no safety, and Stalwart's validate cannot see a blob uploaded in the
    same request. Live on Stalwart, which also settled how the rules and the reply coexist.
-3. **ManageSieve. Implemented.** The harness publishes 4190 (Stalwart) and 34190 (Dovecot); a `managesieve`
-   module of `provider-imap` over the adapter's TLS, SASL and connection budget, at a
+3. **ManageSieve. Implemented.** The harness publishes 4190 (Stalwart) and 34190 (Dovecot); a
+   `managesieve` module of `provider-imap` over the adapter's TLS, SASL and connection budget, at a
    host-configured endpoint; vacation and rules in one script. Live on both, which exercises two
    vocabularies.
 4. **Import from Graph.** Read `messageRules` and `automaticRepliesSetting` into the model;
@@ -852,8 +853,9 @@ Pigeonhole (as `alice@`), by hand and then by `provider-imap/src/managesieve/liv
   nested for two ends), active; the JMAP adapter's rules script instead runs it through `include`.
   ManageSieve may not write that script: `PUTSCRIPT "vacation"` is refused with no code. Over
   ManageSieve the engine neither reads nor writes the reply where the script it would use runs
-  `include`, or holds a `vacation` outside the reply rule (`managesieve::vacation::reply_elsewhere`):
-  it cannot read that reply as the account's, and one written beside it would make two. Proven on
+  `include`, or holds a `vacation` outside the reply rule
+  (`managesieve::vacation::reply_elsewhere`): it cannot read that reply as the account's, and one
+  written beside it would make two. Proven on
   Stalwart with the reply set over JMAP, in both shapes, nothing written; the guard reverted, the
   `include` shape read as off and took a write. The rules stay readable and writable, except into a
   script that holds a `vacation` in a command no `# rule:[…]` name marks (Stalwart's own reply
