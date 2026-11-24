@@ -9,7 +9,8 @@ use crate::ProviderError;
 /// The credential source failed, or the origin may not receive a credential, as opposed to the
 /// server refusing one: the source did not permit the origin, or an engine rule such as HTTP's
 /// plaintext rule refused it (nothing was sent); the source had no credential to give, or did
-/// not answer in time. Asked for a [replacement](super::CredentialSource::replace) after the
+/// not answer in time; the credential is of a kind the adapter cannot present (nothing was
+/// sent). Asked for a [replacement](super::CredentialSource::replace) after the
 /// server refused a credential, its failure is this too, and then a request was sent and
 /// refused: this failure takes the refusal's place.
 ///
@@ -28,6 +29,16 @@ impl CredentialFailure {
     /// [`Permanent`]: engine_core::error::FailureClass::Permanent
     #[must_use]
     pub fn refused_origin(reason: &'static str) -> Self {
+        Self(ProviderError::permanent(reason))
+    }
+
+    /// The adapter refusing to present a kind of credential its protocol cannot carry, such as
+    /// a password to an API that signs in only with a token: [`Permanent`], with `reason`.
+    /// Nothing is sent, and asking again gives the same kind.
+    ///
+    /// [`Permanent`]: engine_core::error::FailureClass::Permanent
+    #[must_use]
+    pub fn unpresentable(reason: &'static str) -> Self {
         Self(ProviderError::permanent(reason))
     }
 
