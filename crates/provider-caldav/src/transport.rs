@@ -142,8 +142,10 @@ pub(crate) trait DavExecutor: Send + Sync {
     /// server led discovery there, by a redirect or by naming the principal or the home
     /// ([`crate::credential_scope`]).
     ///
-    /// Returns `false` when the origin is **refused**: a plaintext origin on a connection
-    /// that started on TLS, or a host the [`CredentialHosts`] policy does not permit. The
+    /// Returns `false` when the origin is **refused**: plaintext HTTP, unless both it and the
+    /// configured server are loopback; an origin the account's source does not
+    /// [permit](engine_provider::CredentialSource::permits); or a host the deprecated
+    /// [`CredentialHosts`] policy, where one is set, does not permit. The
     /// caller fails discovery rather than going on without the credential. A relative `url`
     /// names no origin and is accepted. The default, for a fake, accepts everything.
     fn trust_origin(&self, _url: &str) -> bool {

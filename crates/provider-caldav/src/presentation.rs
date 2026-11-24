@@ -6,12 +6,9 @@
 //! adapter: how a credential goes on a request ([`present`]), and what a `401` to a request that
 //! carried it says ([`judge`]). Both are WebDAV-neutral, so one answer serves all three.
 
-use engine_http::{Sent, Unauthorized, challenge_schemes};
+use engine_http::{Sent, Unauthorized, asks_for, credential_scheme, offered_schemes};
 use engine_provider::{Credential, ProviderError};
-use reqwest::{
-    RequestBuilder,
-    header::{HeaderMap, WWW_AUTHENTICATE},
-};
+use reqwest::RequestBuilder;
 
 use crate::{error::CalDavError, transport::Credentials};
 
@@ -25,18 +22,7 @@ impl From<Credentials> for Credential {
     }
 }
 
-/// The authentication scheme (RFC 9110 §11.1) `credential` is presented under: Basic for a
-/// password (RFC 7617), Bearer for a token (RFC 6750). `None` for a kind HTTP cannot carry: an
-/// administrator acting as another account has no authorization identity to send it in.
-pub(crate) fn scheme_of(credential: &Credential) -> Option<&'static str> {
-    match credential {
-        Credential::Password { .. } => Some("basic"),
-        Credential::Bearer { .. } => Some("bearer"),
-        _ => None,
-    }
-}
-
-/// `credential` on `builder`, in the scheme [`scheme_of`] names.
+/// `credential` on `builder`, in the scheme [`credential_scheme`] names.
 ///
 /// # Errors
 ///
@@ -67,43 +53,17 @@ pub(crate) fn unpresentable() -> CalDavError {
 /// and the source may replace it; a challenge only for other schemes is final, because another
 /// credential of the same kind would be refused the same way.
 pub(crate) fn judge(reply: &Sent, credential: &Credential) -> Unauthorized {
-    match scheme_of(credential) {
-        Some(scheme) if offers(reply.headers(), scheme) => Unauthorized::Refused,
+    match credential_scheme(credential) {
+        Some(scheme) if asks_for(&offered_schemes(reply.headers()), scheme) => {
+            Unauthorized::Refused
+        }
         _ => Unauthorized::Final,
     }
 }
 
-/// Whether a `401` carrying `headers` asks for a credential of `scheme`: one of its
-/// `WWW-Authenticate` challenges names the scheme, or it carries no challenge at all.
-///
-/// RFC 9110 §15.5.2 says a `401` MUST carry a challenge, and Yahoo's, Google's and AOL's calendar
-/// servers send none (`docs/spec-deviations.md`, YAHOO-1). A bare `401` is still that server
-/// asking for credentials; a `401` whose challenges all name another scheme is not, since that
-/// server has said what it wants and it is not this credential.
-pub(crate) fn offers(headers: &HeaderMap, scheme: &str) -> bool {
-    let offered = offered(headers);
-    offered.is_empty()
-        || offered
-            .iter()
-            .any(|token| token.eq_ignore_ascii_case(scheme))
+/// Whether a `401` offering `offered` can be answered by no credential HTTP carries at all:
+/// it names schemes, and Basic and Bearer are not among them (`Digest`, `Negotiate`, `NTLM`).
+/// Decided before the source is asked, so a server no account can sign in to costs no token.
+pub(crate) fn unanswerable_by_any(offered: &[String]) -> bool {
+    !offered.is_empty() && !asks_for(offered, "basic") && !asks_for(offered, "bearer")
 }
-
-/// The authentication schemes the `WWW-Authenticate` challenges in `headers` name, in order
-/// and as the server spelled them. A response may carry several fields (RFC 9110 §5.3), and
-/// Fastmail and Stalwart send more than one.
-pub(crate) fn offered(headers: &HeaderMap) -> Vec<String> {
-    headers
-        .get_all(WWW_AUTHENTICATE)
-        .iter()
-        .flat_map(|value| {
-            challenge_schemes(&String::from_utf8_lossy(value.as_bytes()))
-                .into_iter()
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .collect()
-}
-
-#[cfg(test)]
-#[path = "presentation_tests.rs"]
-mod tests;

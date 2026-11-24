@@ -208,7 +208,8 @@ impl DavClient {
     /// An origin the scope already answers is sent the credential with the request. Any other
     /// gets the request without it, and a `401` from a trusted one is answered: the credential is
     /// asked for then, and sent if the challenge offers its scheme. A challenge only for schemes
-    /// it cannot answer is [`CalDavError::UnsupportedAuthentication`], with nothing sent.
+    /// it cannot answer is [`CalDavError::UnsupportedAuthentication`], with nothing sent, and
+    /// without asking the source when no credential HTTP carries could answer it.
     async fn exchange_at(
         &self,
         method: DavMethod,
@@ -242,16 +243,23 @@ impl DavClient {
         // free for the answer.
         let challenge = response.headers().clone();
         drop(response);
+        // A method no credential HTTP carries can answer (`Digest`, `Negotiate`) is said before
+        // the source is asked: no token is fetched for a server no account signs in to, and a
+        // source that is down cannot turn that verdict into a retry.
+        let offered = engine_http::offered_schemes(&challenge);
+        if presentation::unanswerable_by_any(&offered) {
+            return Err(CalDavError::UnsupportedAuthentication(offered.join(", ")));
+        }
         self.http
             .send(
                 build()?,
                 Exchange::Ordinary,
                 |builder, credential| {
-                    let scheme = presentation::scheme_of(credential)
+                    let scheme = engine_http::credential_scheme(credential)
                         .ok_or_else(presentation::unpresentable)?;
-                    // A trusted origin that asked only for a method this credential cannot
-                    // answer: say so, rather than leave a `401` that reads as the credential
-                    // being refused.
+                    // A trusted origin that asked only for the method this kind of credential
+                    // is not (Basic, for a token): say so, rather than leave a `401` that reads
+                    // as the credential being refused.
                     if let Some(offered) = self.scope.unanswerable(url, &challenge, scheme) {
                         return Err(CalDavError::UnsupportedAuthentication(offered));
                     }

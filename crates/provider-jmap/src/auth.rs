@@ -110,9 +110,9 @@ impl NegotiatedScheme {
 /// seen; `None` for a kind JMAP cannot present (an administrator acting as another account:
 /// HTTP has no authorization identity to carry it).
 pub(crate) fn natural_scheme(credential: &Credential) -> Option<AuthScheme> {
-    match credential {
-        Credential::Password { .. } => Some(AuthScheme::Basic),
-        Credential::Bearer { .. } => Some(AuthScheme::Bearer),
+    match engine_http::credential_scheme(credential)? {
+        "basic" => Some(AuthScheme::Basic),
+        "bearer" => Some(AuthScheme::Bearer),
         _ => None,
     }
 }
@@ -162,12 +162,16 @@ pub(crate) fn read_challenge<'a>(
     let offered: Vec<String> = challenges
         .into_iter()
         .flat_map(engine_http::challenge_schemes)
-        .map(str::to_ascii_lowercase)
+        .map(str::to_owned)
         .collect();
-    let offers = |scheme: AuthScheme| offered.iter().any(|s| s == scheme.token());
-    if offered.is_empty() || offers(used) {
+    if engine_http::asks_for(&offered, used.token()) {
         return Challenge::Refused;
     }
+    let offers = |scheme: AuthScheme| {
+        offered
+            .iter()
+            .any(|token| token.eq_ignore_ascii_case(scheme.token()))
+    };
     [AuthScheme::Bearer, AuthScheme::Basic]
         .into_iter()
         .find(|&scheme| offers(scheme) && can_present(credential, scheme))

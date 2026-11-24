@@ -25,15 +25,15 @@
 //! fetched without the credential even when it asks for one.
 //!
 //! A scope belongs to one connection, and a connection to one
-//! [`CredentialSource`](engine_provider::CredentialSource) for its whole life, so it is keyed by
-//! that source's subject: no origin one account's server answered is ever sent another
-//! account's credential (`docs/design/credential-source.md`, "Direct host").
+//! [`CredentialSource`](engine_provider::CredentialSource) for its whole life, so a scope only
+//! ever serves one subject: no origin one account's server answered is ever sent another
+//! account's credential. Nothing here is keyed by subject explicitly; the shared endpoints of
+//! `docs/design/credential-source.md` ("Direct host") will key it so.
 
 use std::{collections::HashSet, sync::RwLock};
 
+use engine_http::{asks_for, offered_schemes};
 use reqwest::{Url, header::HeaderMap};
-
-use crate::presentation::{offered, offers};
 
 /// The origins a connection may send its credential to, and the ones it does.
 #[derive(Debug)]
@@ -43,6 +43,14 @@ pub(crate) struct CredentialScope {
 }
 
 impl CredentialScope {
+    /// A scope that trusts nothing yet.
+    pub(crate) fn empty() -> Self {
+        Self {
+            trusted: RwLock::new(HashSet::new()),
+            answered: RwLock::new(HashSet::new()),
+        }
+    }
+
     /// A scope in which the configured server is trusted and nothing is answered yet.
     pub(crate) fn new(configured: &Url) -> Self {
         Self {
@@ -96,17 +104,18 @@ impl CredentialScope {
         headers: &HeaderMap,
         scheme: &str,
     ) -> Option<String> {
-        if !self.trusts(url) || offers(headers, scheme) {
+        let offered = offered_schemes(headers);
+        if !self.trusts(url) || asks_for(&offered, scheme) {
             return None;
         }
-        Some(offered(headers).join(", "))
+        Some(offered.join(", "))
     }
 
     /// Whether a `401` from `url` carrying `headers` is a challenge a credential presented under
     /// `scheme` should answer: the origin is trusted and offers the scheme. An origin that
     /// qualifies is answered from then on.
     pub(crate) fn answers(&self, url: &Url, headers: &HeaderMap, scheme: &str) -> bool {
-        if !self.trusts(url) || !offers(headers, scheme) {
+        if !self.trusts(url) || !asks_for(&offered_schemes(headers), scheme) {
             return false;
         }
         self.answered

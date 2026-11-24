@@ -1,7 +1,7 @@
 //! A host's credential policy over the live transport: discovery may lead the connection to
 //! another origin, and the credential goes there only when the policy permits that host. The
-//! policy is deprecated in favour of `CredentialSource::permits` (`permits_tests.rs`), and these
-//! keep it working while hosts move.
+//! policy is deprecated in favour of `CredentialSource::permits` (`credential_source_tests.rs`),
+//! and these keep it working while hosts move.
 #![allow(deprecated)]
 
 use std::sync::Arc;

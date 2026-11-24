@@ -182,7 +182,8 @@ pub(crate) fn trusted_start(
 /// # Errors
 ///
 /// Returns [`CalDavError`] when `href` cannot be resolved, or names an origin the credential
-/// may not go to (a plaintext one after TLS, or a host the credential policy refuses): going
+/// may not go to (plaintext off loopback, or one the source or the deprecated host policy
+/// refuses): going
 /// on without it would read the refusal of an unauthenticated request as the server's answer
 /// about the account.
 pub(crate) fn follow(exec: &dyn DavExecutor, at: &str, href: &str) -> Result<String, CalDavError> {

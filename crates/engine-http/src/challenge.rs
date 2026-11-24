@@ -2,7 +2,56 @@
 //!
 //! A `401` names the schemes it accepts in `WWW-Authenticate`. Every adapter that presents a
 //! credential over HTTP has to read them, to tell a refused credential from a refused framing or
-//! a scheme it cannot answer at all, so the parsing lives here once.
+//! a scheme it cannot answer at all, so the reading, the scheme a credential goes under, and the
+//! rule for "this `401` asks for that scheme" live here once.
+
+use engine_provider::Credential;
+use reqwest::header::{HeaderMap, WWW_AUTHENTICATE};
+
+/// The lowercase scheme token a credential is naturally presented under: `basic` for a
+/// password (RFC 7617), `bearer` for a token (RFC 6750). `None` for a kind HTTP cannot carry:
+/// an administrator acting as another account has no authorization identity to send it in.
+#[must_use]
+pub fn credential_scheme(credential: &Credential) -> Option<&'static str> {
+    match credential {
+        Credential::Password { .. } => Some("basic"),
+        Credential::Bearer { .. } => Some("bearer"),
+        _ => None,
+    }
+}
+
+/// The authentication schemes the `WWW-Authenticate` fields in `headers` offer, in order and as
+/// the server spelled them. A response may carry several fields, which RFC 9110 §5.3 reads as
+/// one list (Stalwart sends `Bearer` and `Basic` in two). A field that is not valid UTF-8 is
+/// read lossily rather than dropped, so a realm with a non-ASCII name does not hide the schemes
+/// beside it.
+#[must_use]
+pub fn offered_schemes(headers: &HeaderMap) -> Vec<String> {
+    headers
+        .get_all(WWW_AUTHENTICATE)
+        .iter()
+        .flat_map(|value| {
+            challenge_schemes(&String::from_utf8_lossy(value.as_bytes()))
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Whether a `401` whose challenges offer `offered` asks for a credential under `scheme`: one
+/// of them names it (case-insensitively), or there is no challenge at all.
+///
+/// RFC 9110 §15.5.2 says a `401` MUST carry a challenge, and some servers send none (YAHOO-1 in
+/// `docs/spec-deviations.md`). A bare `401` has still judged the credential; a `401` whose
+/// challenges all name other schemes has not, since that server has said what it wants.
+#[must_use]
+pub fn asks_for(offered: &[String], scheme: &str) -> bool {
+    offered.is_empty()
+        || offered
+            .iter()
+            .any(|token| token.eq_ignore_ascii_case(scheme))
+}
 
 /// The authentication schemes one `WWW-Authenticate` field value offers, in order and as the
 /// server spelled them (schemes are case-insensitive, so compare with
@@ -48,3 +97,7 @@ fn unquoted_elements(value: &str) -> Vec<&str> {
 #[cfg(test)]
 #[path = "challenge_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "challenge_header_tests.rs"]
+mod header_tests;

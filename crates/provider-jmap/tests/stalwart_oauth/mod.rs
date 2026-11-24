@@ -18,7 +18,9 @@ use sha2::{Digest, Sha256};
 const MAIL_SCOPE: &str = "urn:ietf:params:oauth:scope:mail";
 
 /// The scope a token for calendars is minted with. A mail token signs in to CalDAV discovery,
-/// but the calendar home answers it `403`.
+/// but the calendar home answers it `403`. Used by `provider-caldav`'s live suite, which
+/// includes this file.
+#[allow(dead_code)]
 pub(crate) const CALENDARS_SCOPE: &str = "urn:ietf:params:oauth:scope:calendars";
 
 /// Where the code would be sent back to. Nothing dereferences it: the code is read out of the
@@ -70,6 +72,7 @@ impl Client {
 
     /// Registers a public client, as [`register`](Self::register) does, whose tokens are for
     /// `scope`.
+    #[allow(dead_code)] // Called directly by `provider-caldav`'s live suite only.
     pub(crate) async fn register_for(addr: &str, scope: &'static str) -> Self {
         let http = http();
         let base = format!("http://{addr}");

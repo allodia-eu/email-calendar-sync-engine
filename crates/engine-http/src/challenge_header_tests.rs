@@ -1,8 +1,14 @@
+//! Reading a `401`'s challenge headers: which schemes it offers, whether it asks for a
+//! credential under a given one, and which scheme a credential goes under.
+
 use engine_provider::Credential;
 use reqwest::header::{HeaderMap, HeaderValue, WWW_AUTHENTICATE};
 
-use super::{offered, offers, scheme_of};
-use crate::transport::Credentials;
+use super::{asks_for, credential_scheme as scheme_of, offered_schemes as offered};
+
+fn offers(headers: &HeaderMap, scheme: &str) -> bool {
+    asks_for(&offered(headers), scheme)
+}
 
 fn challenges(values: &[&str]) -> HeaderMap {
     let mut headers = HeaderMap::new();
@@ -75,12 +81,8 @@ fn the_offered_schemes_keep_the_servers_spelling_across_fields() {
 
 #[test]
 fn a_password_is_basic_a_token_bearer_and_an_acting_as_nothing() {
-    let password: Credential = Credentials::Basic {
-        username: "alice".to_owned(),
-        password: "pw".to_owned(),
-    }
-    .into();
-    let token: Credential = Credentials::Bearer("token".to_owned()).into();
+    let password = Credential::password("alice", "pw");
+    let token = Credential::bearer("token");
     assert_eq!(scheme_of(&password), Some("basic"));
     assert_eq!(scheme_of(&token), Some("bearer"));
     assert_eq!(

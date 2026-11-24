@@ -18,7 +18,7 @@ use engine_provider::{
 use crate::{
     CalDavConfig, CalDavError, CalDavProvider,
     test_support::{mock_server_capturing, multistatus},
-    transport::{DavClient, DavExecutor, DavMethod},
+    transport::{DavClient, DavExecutor, DavMethod, Precondition, WriteRequest},
 };
 
 /// A source that answers `first`, then each of `replacements` when asked to replace, permits
@@ -134,13 +134,13 @@ fn presented(seen: &Mutex<Vec<String>>) -> Vec<Option<String>> {
 }
 
 /// The Basic header for `alice` with `password`: `old` or `new`.
-fn basic(password: &str) -> Option<String> {
+fn basic(password: &str) -> String {
     let encoded = match password {
         "old" => "YWxpY2U6b2xk", // alice:old
         "new" => "YWxpY2U6bmV3", // alice:new
         other => panic!("no header written down for {other}"),
     };
-    Some(format!("Basic {encoded}"))
+    format!("Basic {encoded}")
 }
 
 async fn propfind(client: &DavClient) -> Result<u16, CalDavError> {
@@ -168,7 +168,12 @@ async fn each_request_asks_the_source_and_a_refused_credential_is_replaced_once(
 
     assert_eq!(
         presented(&seen),
-        [None, basic("old"), basic("old"), basic("new")],
+        [
+            None,
+            Some(basic("old")),
+            Some(basic("old")),
+            Some(basic("new"))
+        ],
         "anonymous, answered, refused, replaced"
     );
     assert_eq!(source.asks(), 2, "one ask per request that carried it");
@@ -186,7 +191,10 @@ async fn a_refused_answer_to_the_first_challenge_is_replaced_too() {
     let client = client(&base, &source);
 
     assert_eq!(propfind(&client).await.expect("replaced"), 207);
-    assert_eq!(presented(&seen), [None, basic("old"), basic("new")]);
+    assert_eq!(
+        presented(&seen),
+        [None, Some(basic("old")), Some(basic("new"))]
+    );
     assert_eq!((source.asks(), source.replaced()), (1, 1));
 }
 
@@ -210,7 +218,7 @@ async fn a_403_or_a_challenge_for_another_scheme_asks_for_no_replacement() {
     let (base, seen) = mock_server_capturing(vec![challenge("Basic"), status("403 Forbidden", "")]);
     let source = Arc::new(Rotating::passwords("old", &["new"]));
     assert_eq!(propfind(&client(&base, &source)).await.expect("sent"), 403);
-    assert_eq!(presented(&seen), [None, basic("old")]);
+    assert_eq!(presented(&seen), [None, Some(basic("old"))]);
 
     let (base, _) = mock_server_capturing(vec![challenge("Basic"), challenge("Digest")]);
     assert_eq!(propfind(&client(&base, &source)).await.expect("sent"), 401);
@@ -307,4 +315,100 @@ async fn a_plaintext_server_off_loopback_fails_the_connect_before_anything_is_se
 
     let err = CalDavProvider::connect(config).await.expect_err("refused");
     assert_eq!(err.failure_class(), FailureClass::Permanent);
+}
+
+#[tokio::test]
+async fn a_method_no_credential_answers_is_said_without_asking_the_source() {
+    let (base, seen) = mock_server_capturing(vec![status(
+        "401 Unauthorized",
+        "WWW-Authenticate: Digest realm=\"dav\", qop=\"auth\"\r\nWWW-Authenticate: Negotiate\r\n",
+    )]);
+    // A source that is down must not turn the verdict into a retry.
+    let source = Arc::new(Rotating {
+        fails: Some(FailureClass::Retryable),
+        ..Rotating::passwords("old", &[])
+    });
+
+    let err = propfind(&client(&base, &source))
+        .await
+        .expect_err("no credential answers it");
+    assert!(
+        matches!(&err, CalDavError::UnsupportedAuthentication(offered) if offered == "Digest, Negotiate"),
+        "{err:?}"
+    );
+    assert_eq!(source.asks(), 0, "no token is fetched for it");
+    assert_eq!(presented(&seen), [None]);
+}
+
+#[tokio::test]
+async fn a_configured_server_the_source_does_not_permit_is_not_answered_however_it_asks() {
+    let (base, seen) = mock_server_capturing(vec![challenge("Basic")]);
+    let source = Arc::new(Rotating {
+        hosts: vec!["localhost"],
+        ..Rotating::passwords("old", &[])
+    });
+
+    assert_eq!(propfind(&client(&base, &source)).await.expect("sent"), 401);
+    assert_eq!(presented(&seen), [None]);
+    assert_eq!(source.asks(), 0);
+}
+
+#[tokio::test]
+async fn a_source_that_failed_leaves_the_origin_unanswered() {
+    let (base, seen) = mock_server_capturing(vec![challenge("Basic"), challenge("Basic")]);
+    let source = Arc::new(Rotating {
+        fails: Some(FailureClass::Retryable),
+        ..Rotating::passwords("old", &[])
+    });
+    let client = client(&base, &source);
+
+    propfind(&client).await.expect_err("the source failed");
+    propfind(&client).await.expect_err("and again");
+    assert_eq!(
+        presented(&seen),
+        [None, None],
+        "the next request asks again"
+    );
+}
+
+#[tokio::test]
+async fn a_guarded_write_refused_with_a_401_is_sent_again_whole_with_the_replacement() {
+    let (base, seen) = mock_server_capturing(vec![
+        challenge("Basic"),
+        multistatus(EMPTY),
+        challenge("Basic"),
+        status("204 No Content", "ETag: \"2\"\r\n"),
+    ]);
+    let source = Arc::new(Rotating::passwords("old", &["new"]));
+    let client = client(&base, &source);
+    propfind(&client).await.expect("the origin answers");
+
+    let reply = client
+        .send_write(WriteRequest {
+            method: DavMethod::Put,
+            href: "/cal/event.ics".to_owned(),
+            content_type: Some("text/calendar"),
+            precondition: Precondition::IfMatch("\"1\"".to_owned()),
+            body: "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n".to_owned(),
+        })
+        .await
+        .expect("replaced and applied");
+
+    assert_eq!(reply.status, 204);
+    assert_eq!(
+        presented(&seen)[2..],
+        [Some(basic("old")), Some(basic("new"))]
+    );
+    let seen = seen.lock().unwrap();
+    for put in &seen[2..] {
+        assert!(put.starts_with("PUT /cal/event.ics"), "{put}");
+        assert!(
+            put.to_lowercase().contains("if-match: \"1\""),
+            "the guard rides along: {put}"
+        );
+        assert!(
+            put.ends_with("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"),
+            "and the body: {put}"
+        );
+    }
 }

@@ -351,3 +351,38 @@ async fn an_administrator_acting_as_another_account_is_refused_before_anything_i
         "HTTP has no authorization identity"
     );
 }
+
+#[tokio::test]
+async fn a_refused_post_is_sent_again_once_and_makes_one_conversation() {
+    // The capabilities `GET` passes; the token is refused on the `POST` that makes the room.
+    let (server, seen) = mock_server_capturing(vec![
+        http("200 OK", CAPABILITIES),
+        "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
+        http("201 Created", CREATED),
+    ]);
+    let source = Arc::new(Revoked {
+        subject: engine_provider::CredentialSubject::new("acct-1"),
+        replaced: std::sync::Mutex::new(0),
+    });
+    let talk = TalkMeetings::from_credential_source(
+        &server,
+        Arc::clone(&source) as Arc<dyn CredentialSource>,
+        &TlsClientConfig::default(),
+        &RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
+    )
+    .unwrap();
+
+    talk.create_meeting(&request()).await.expect("made");
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 3, "one replay, no more");
+    assert!(seen[1].starts_with("POST ") && seen[1].contains("Bearer revoked"));
+    assert!(seen[2].starts_with("POST ") && seen[2].contains("Bearer fresh"));
+    assert_eq!(
+        body(&seen[1]),
+        body(&seen[2]),
+        "the same conversation asked for"
+    );
+    assert_eq!(*source.replaced.lock().unwrap(), 1);
+}

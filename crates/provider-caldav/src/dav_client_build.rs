@@ -56,9 +56,16 @@ impl DavClient {
             // Stalwart refuses a request over its concurrency cap with a `400`, which the
             // shared status rule reads as a request defect. See `DavThrottles`.
             .classifying(Arc::new(crate::throttle::DavThrottles));
+        let http = AuthenticatedClient::new(tls, user_agent, base.clone(), source, retry.clone())?;
         Ok(Self {
-            http: AuthenticatedClient::new(tls, user_agent, base.clone(), source, retry.clone())?,
-            scope: CredentialScope::new(&base),
+            // The configured server is trusted only once admitted, like every origin discovery
+            // reaches: a scope never holds an origin the credential may not go to.
+            scope: if http.admits(&base) {
+                CredentialScope::new(&base)
+            } else {
+                CredentialScope::empty()
+            },
+            http,
             base: std::sync::RwLock::new(base),
             credential_hosts: None,
             connection: ObservedConnection::default(),
@@ -76,6 +83,9 @@ impl DavClient {
         policy: Option<Arc<dyn CredentialHosts>>,
     ) -> Self {
         self.credential_hosts = policy;
+        if !self.admits(&self.base()) {
+            self.scope = CredentialScope::empty();
+        }
         self
     }
 

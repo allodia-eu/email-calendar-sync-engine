@@ -68,7 +68,7 @@ pub mod test_server;
 mod user_agent;
 
 pub use authenticated::{AuthenticatedClient, Unauthorized};
-pub use challenge::challenge_schemes;
+pub use challenge::{asks_for, challenge_schemes, credential_scheme, offered_schemes};
 pub use classify::{StatusAlone, Throttle, ThrottleClassifier};
 pub use deadline::{Exchange, chunk_within, client};
 pub use error::{SendError, gateway_without_answer};
