@@ -1,8 +1,8 @@
 # Filters and out-of-office: design note
 
 Status: **design settled; slice 1 (the reply over JMAP), slice 2 (rules over JMAP Sieve),
-slice 3 (rules and the reply over ManageSieve) and the target half of slice 4 (importing rules and
-the reply into JMAP and ManageSieve) implemented; slice 4's Graph read is still to come.** Written
+slice 3 (rules and the reply over ManageSieve) and slice 4 (importing rules and the reply into
+JMAP and ManageSieve, and reading them from Graph) implemented, with slice 5's Graph writes.** Written
 2026-11-23, when the owner moved message rules and automatic replies into scope; every question it
 raised was decided the same day (section 7). `north-star.md` records the scope and the accessor
 pattern (#378). Slice 1 landed `engine_core::vacation`, the `Vacation` trait and
@@ -17,8 +17,10 @@ Slice 3 has landed the reply as a rule of the script (`engine_sieve::dialect::re
 `Provider::rules_importer`, one import over every target's own `MailRules` and `Vacation`
 (`engine_provider::import::append_rules`, `import_reply`), the preflight list
 (`engine_core::rules::held_forwarding`), and both Sieve targets, proven live ("Settled in slice
-4"). Where the code differs from a sketch below, the sketch has been brought up to date and says
-why.
+4"). Graph's rules and reply are read and written by `provider-graph` (the
+source half of slice 4, with slice 5's Graph writes): reads proven live, writes offline only so far
+("Settled for Graph"). Where the code differs from a sketch below, the sketch has been brought up
+to date and says why.
 
 Marks used below: **live** = observed against a harness server on 2026-11-23; **docs** = read from
 the RFC or vendor reference cited; **unverified** = believed, not yet checked, and must be proven
@@ -53,13 +55,13 @@ is only the call pattern, which the traits below already cover.
 | Read | `SieveScript/get` + blob download (§2.3, §2.2) | `LISTSCRIPTS`, `GETSCRIPT` | `GET …/inbox/messageRules` | `filters.list` | n/a |
 | Write | Upload blob, `SieveScript/set` with `onSuccessActivateScript` (§2.4); `SieveScript/validate` checks without storing (§2.6) | `PUTSCRIPT`, `SETACTIVE`, `CHECKSCRIPT`, `HAVESPACE` | `POST` / `PATCH` / `DELETE` per rule | `create` / `delete` only: **no update** (docs) | n/a |
 | Atomic over the set | Yes: the set is one script | Yes: one `PUTSCRIPT` | No: one request per rule | No: one request per filter | n/a |
-| Version / guard | `state` + `ifInState` (RFC 8620 §5.3) on the `SieveScript` type. Here the type state is the right grain, because the rule set *is* a script (contrast `WriteGuard::Absent` for events) | None. A client can compare `GETSCRIPT` bytes before `PUTSCRIPT`, which narrows the race and does not close it | None documented on `messageRule` (**unverified**: whether `@odata.etag` + `If-Match` is honoured) | None; filters are immutable | n/a |
+| Version / guard | `state` + `ifInState` (RFC 8620 §5.3) on the `SieveScript` type. Here the type state is the right grain, because the rule set *is* a script (contrast `WriteGuard::Absent` for events) | None. A client can compare `GETSCRIPT` bytes before `PUTSCRIPT`, which narrows the race and does not close it | None: a `messageRule` carries no `@odata.etag`, listed or read alone (**live**), so there is nothing to send; whether a stale `If-Match` is refused anyway is still to be asked (a write) | None; filters are immutable | n/a |
 | Order | Script order | Script order | `sequence` (Int32) | **None**: every matching filter applies | n/a |
 | Enable / name | Dialect convention only (Sieve has neither) | Same | `isEnabled`, `displayName`; read-only `hasError`, `isReadOnly` | **Neither** | n/a |
 | Stop | `stop` (RFC 5228 §3.3) | Same | `stopProcessingRules` | **None** | n/a |
 | Language | Full Sieve: `anyof`/`allof`/`not`, header/address/envelope/size/body/date tests, many extensions | Same, per server | Fixed predicate set (30 fields) ANDed, plus `exceptions` of the same shape; 11 actions (docs) | `from`, `to`, `subject`, `hasAttachment`, `size`, and free Gmail-search `query`/`negatedQuery`; add/remove label ids, `forward` | n/a |
 | Limits | Per account: `maxNumberScripts`, `maxSizeScript`, `maxNumberRedirects` | Server config | Exchange rules quota (**unverified**: 64 KB default per mailbox) | 1,000 filters (docs); one user label per filter (docs) | n/a |
-| Known gaps | VacationResponse may be a script of its own (RFC 9661 §4, below) | Port 4190 is a separate service; discovery is SRV (RFC 5804 §1.8) or host config | Inbox only; `/users/{shared}/mailboxSettings` is `403` on a delegated credential (`graph.md`), rules on a shared mailbox untested; a personal account answered `403` on `messageRules` (`graph.md`, likely the missing scope) | `forward` needs an address already verified through `forwardingAddresses` (docs, **unverified** live) | n/a |
+| Known gaps | VacationResponse may be a script of its own (RFC 9661 §4, below) | Port 4190 is a separate service; discovery is SRV (RFC 5804 §1.8) or host config | Inbox only; `/users/{shared}/mailboxSettings` is `403` on a delegated credential (`graph.md`), an application token with `MailboxSettings.Read` reads a shared mailbox's rules and reply (**live**); a personal account answered `403` on `messageRules`, its token lacking `MailboxSettings.*` (**live**) | `forward` needs an address already verified through `forwardingAddresses` (docs, **unverified** live) | n/a |
 
 An IMAP server without ManageSieve, and Gmail or Outlook.com over IMAP, offer no rules surface. A
 JMAP account shared read-only lists neither `sieve` nor `vacationresponse` (captured,
@@ -109,9 +111,10 @@ to name Trash, `mailboxid` to survive a rename, `editheader` for importance) and
 redirects one message may cause. The vocabulary must therefore be read per account, never
 assumed per protocol.
 
-Graph and Gmail are surveyed from their references only (learn.microsoft.com `messageRule`,
+Graph and Gmail were surveyed from their references (learn.microsoft.com `messageRule`,
 `messageRulePredicates`, `messageRuleActions`, `automaticRepliesSetting`; developers.google.com
-`users.settings.filters`, `VacationSettings`). Nothing about them here is live.
+`users.settings.filters`, `VacationSettings`). Graph's reads have since been observed live on a work
+account ("Settled for Graph"); nothing about Gmail here is live.
 
 ## 3. The neutral model
 
@@ -241,6 +244,18 @@ Implemented as sketched, with these differences, each for a reason the code met:
   and never hold a CR, LF or NUL: what no transport writes cannot be built. The plan answers
   `NotExpressible` for what can still be built and not written (a role no transport names, a
   redirect to nobody, no keyword to add).
+- A rule a provider lists as an object of its own (Graph) has `RuleOrigin::Listed { set, index }`:
+  its index in the listing kept as the set's raw form, `set` a fingerprint of that listing. The
+  provider's id stays in the raw form, so the origin stays `Copy` and names a position.
+- `MailRule::in_error` and `read_only` carry Graph's `hasError` and `isReadOnly`. The plan records
+  `SourceInError` for a rule in error; an import stores it disabled for review (`Kept::Disabled`),
+  or does not keep it where the target cannot store a disabled rule, and an edit writes it as given.
+  A write never sends a read-only rule.
+- `RulesReceipt::failures` lists each rule a rule-by-rule write did not store or remove
+  (`RuleWriteFailure`: `FailedRule::Written` or `Removed`, its class, whether it may have landed);
+  the rest of the write goes ahead. A transport that stores the set at once fails whole instead.
+- A redirect that keeps the message needs only `RuleFeature::RedirectCopy`: Graph's `redirectTo`
+  always keeps it, so Graph lists that and not `Redirect`.
 - The action order is not semantic. The writer adds keywords and an importance before it files,
   redirects or discards, because a flag set after a `fileinto` does not reach the filed copy (RFC
   5232 §3); a script in another order reads as carried whole.
@@ -514,6 +529,16 @@ set as one script. Graph and Gmail adapters diff `base` against `rules` and issu
 Gmail's "update" is create-then-delete, new first, as `put_draft` orders its two calls. Each
 per-rule failure lands in the receipt rather than failing the call.
 
+As built for Graph (`provider-graph`, `graph.md` → "Mail rules and the out-of-office reply"): no
+ETag exists on a rule or on the reply, so both guards are `Absent`, with a SHA-256 of what was read
+as the version, read again before writing and refused as `Conflict` where it moved. A write plans,
+then walks the planned rules in order: new ones `POST`ed with their place as `sequence`, changed
+ones `PATCH`ed whole with every dropped predicate and action cleared, moved ones (and every one
+after a move) given their place again, so the order holds whether Exchange renumbers or not; then
+it deletes the rules left out. A read-only rule is never sent. A rule the writer finds finer than
+the vocabulary's grain cannot place (two tests on one predicate key, which Graph would read as
+either; `To` or `Cc` alone) is `NotKept` with its part named, and goes like any rule not kept.
+
 ### The pure core: plan, then render
 
 What a target keeps is decided before anything is sent, by one pure function in `engine-core`:
@@ -771,18 +796,18 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 
 | Neutral | Sieve | Graph | Gmail |
 |---|---|---|---|
-| `Match` All / Any | ✓ `allof` / `anyof` | All ✓ (predicates ANDed; values in one predicate ORed, **unverified**); Any ✗ | All ✓; Any ≈ (`query` with `OR`) |
+| `Match` All / Any | ✓ `allof` / `anyof` | All ✓ (predicates ANDed; values in one predicate ORed, **unverified**; two conditions on one predicate ✗, they would read as either); Any ✗ | All ✓; Any ≈ (`query` with `OR`) |
 | `except` | ✓ `not e`, or `allof (c1, …, not e1, …)`; with any-of conditions `allof (anyof (c1, …), not e1, …)`; an `anyof` holding a `not`, or nested lists, read as carried whole | ✓ `exceptions` (same predicates only) | ≈ `negatedQuery` |
 | Subject contains | ✓ `header :contains "subject"` | ✓ `subjectContains` | ≈ `subject` (word match, not substring) |
 | Subject is / glob / regex | ✓ `:is` / `:matches` / `:regex` (ext `regex`) | ✗ | ✗ |
-| Named header contains | ✓ `header :contains "X-…"` | ≈ `headerContains` (any header) | ✗ |
+| Named header contains | ✓ `header :contains "X-…"` | ✗ (`headerContains` searches every header, which would widen the rule; read as `Native`) | ✗ |
 | From is / contains | ✓ `address :is` / `:contains "from"` | ✓ `fromAddresses` / `senderContains` | ≈ `from` (search semantics) |
-| From domain | ✓ `address :domain` | ≈ `senderContains "@example.com"` | ≈ `from:(@example.com)` |
-| To / Cc / to-or-cc | ✓ `address ["to","cc"]` | ✓ `recipientContains`, `sentToAddresses` | ≈ `to` (also matches Bcc) |
+| From domain | ✓ `address :domain` | ≈ `senderContains "@example.com"`, by equality only | ≈ `from:(@example.com)` |
+| To / Cc / to-or-cc | ✓ `address ["to","cc"]` | to-or-cc ✓ `recipientContains`, `sentToAddresses`; `To` or `Cc` alone ✗ | ≈ `to` (also matches Bcc) |
 | Sent to me (to, cc, only, not) | ✗ for now (≈ address tests over the account's addresses, which the writer does not have) | ✓ `sentToMe`, `sentCcMe`, `sentOnlyToMe`, `notSentToMe`, `sentToOrCcMe` | ≈ `to:me` in `query` (only `to`) |
 | Body contains | ✓ `body :text :contains` (ext `body`) | ✓ `bodyContains` | ≈ `query` |
-| Subject or body | ✓ `anyof(header…, body…)` | ✓ `bodyOrSubjectContains` | ≈ `query` |
-| Size over / under | ✓ `size :over` / `:under` | ≈ `withinSizeRange` (KB, a range) | ✓ `size` + `sizeComparison` |
+| Subject or body | ✓ `anyof(header…, body…)` | ≈ `bodyOrSubjectContains`, read as `Native` (the model has no subject-or-body condition yet) and written back as it came | ≈ `query` |
+| Size over / under | ✓ `size :over` / `:under` | ✗ for now: `withinSizeRange` (KB, a range) is read as `Native` until its bounds are proven live | ✓ `size` + `sizeComparison` |
 | Has attachment | ≈ `header :mime :anychild :contains "Content-Disposition" "attachment"` (ext `mime`) | ✓ `hasAttachments` | ✓ `hasAttachment` |
 | Importance | ✗ for now (≈ header tests over `Importance::HEADERS`, not yet written) | ✓ `importance` | ✗ (Gmail's `important` is its own classifier) |
 | `Native`: Exchange class (`isMeetingRequest`, `isAutomaticReply`, `sensitivity`, `categories`, `messageActionFlag`, …) | ✗ (a few ≈ through headers, not attempted) | ✓ | ✗ |
@@ -794,12 +819,12 @@ On Stalwart the same plan keeps rule 0 `Whole` (it has `editheader`, rendered as
 |---|---|---|---|
 | `FileInto` (move) | ✓ `fileinto`; by name, or `:mailboxid` (RFC 9042, survives a rename) where listed | ✓ `moveToFolder` | ✓ add label + remove `INBOX` (one user label per filter) |
 | `FileInto { copy }` | ✓ `fileinto :copy` (ext `copy`, RFC 3894) | ✓ `copyToFolder` | ✓ add label, keep `INBOX` |
-| `FileInto { Role(Trash / Junk) }` | ✓ `:specialuse "\\Trash" "Trash"` (RFC 8579), the attribute's name as the fallback folder, for every role but the inbox (`"INBOX"`); ✗ where `special-use` is not listed (no fallback to a name alone) | ✓ `delete` / move to Junk | ✓ `TRASH` / `SPAM` |
+| `FileInto { Role(Trash / Junk) }` | ✓ `:specialuse "\\Trash" "Trash"` (RFC 8579), the attribute's name as the fallback folder, for every role but the inbox (`"INBOX"`); ✗ where `special-use` is not listed (no fallback to a name alone) | ✓ `delete` for Trash; the well-known folder's id for Junk, Archive, Sent, Drafts | ✓ `TRASH` / `SPAM` |
 | `Discard` | ✓ `discard` | ✓ `permanentDelete` | ≈ `TRASH` (recoverable) |
-| `Redirect` | ✓ `redirect` (`:copy` keeps it), one per address; a rule's addresses together bounded by `maxNumberRedirects` (two rules that each fit can exceed it for one message; the server enforces that on delivery) | ✓ `redirectTo` (keeps a copy) | ≈ `forward`: one verified address, original sender kept |
+| `Redirect` | ✓ `redirect` (`:copy` keeps it), one per address; a rule's addresses together bounded by `maxNumberRedirects` (two rules that each fit can exceed it for one message; the server enforces that on delivery) | ✓ `redirectTo`, which keeps a copy (`RedirectCopy`); without the copy ✗ | ≈ `forward`: one verified address, original sender kept |
 | `Forward` (as the account) | ≈ `redirect :copy` (From differs) | ✓ `forwardTo` | ≈ `forward` |
 | `AddKeywords` `$seen` / `$flagged` | ✓ `addflag "\\Seen"` / `"\\Flagged"` (ext `imap4flags`, RFC 5232) | ✓ `markAsRead` / ✗ (no flag action) | ✓ remove `UNREAD` / add `STARRED` |
-| `AddKeywords` named | ✓ `addflag "name"` | ≈ `assignCategories` | ≈ hidden named label (counts as the one user label) |
+| `AddKeywords` named | ✓ `addflag "name"` | ≈ `assignCategories`; a category reads typed only where it is a keyword as written (lowercase, no space), else `Native` | ≈ hidden named label (counts as the one user label) |
 | Mark importance (`Action::MarkImportance`) | ≈ `addheader "Importance"` (ext `editheader`) | ✓ `markImportance` | ≈ `IMPORTANT` |
 | `Native`: forward as attachment | ✗ | ✓ `forwardAsAttachmentTo` | ✗ |
 | `stop` | ✓ `stop` | ✓ `stopProcessingRules` | ✗ (every filter applies) |
@@ -850,9 +875,12 @@ Each slice is proven live before the next starts (`AGENTS.md`).
    forwarding rules. **The target half is implemented**: `RulesImporter` and
    `Provider::rules_importer`, the receipts, `held_forwarding`, and both Sieve targets, proven
    live on Stalwart (JMAP and ManageSieve) and Dovecot with a rule set built in the model as Graph
-   reads it ("Settled in slice 4"). **The Graph read is still to come**, live against a
-   work/school test tenant with application permissions (the personal account answered `403`).
-5. **Gmail read**, then Graph and Gmail writes for the sync and direct hosts.
+   reads it ("Settled in slice 4"). **The Graph read is implemented** too (`provider-graph`),
+   proven live on a work/school tenant, delegated and with application permissions ("Settled for
+   Graph").
+5. **Gmail read**, then Graph and Gmail writes for the sync and direct hosts. Graph's writes are
+   **implemented** with Graph's read (`provider-graph`), proven against fakes that log each request;
+   their live run awaits the test tenant owner's OK ("Settled for Graph"). Gmail is next.
 
 ### Tests
 
@@ -1052,6 +1080,35 @@ Captured, scrubbed, as `provider-jmap/tests/fixtures/mailbox_get_rule_folders_re
   three; on JMAP through the include beside the running rules script, on ManageSieve as the reply
   rule of the same script.
 
+**Settled for Graph**, live against a Microsoft 365 work account and one of its shared mailboxes
+(2026-11-24), read-only, by hand and then by `provider-graph/tests/live_rules.rs`. Captured,
+scrubbed, as `provider-graph/tests/fixtures/rules/`.
+
+- **No ETag.** Neither the rules' listing nor a rule read alone carries `@odata.etag`, and the
+  reply's setting has none: both guards are `Absent`, with a version read again before writing.
+- **Who may read.** A delegated token needs `MailboxSettings.Read`: a personal account's token
+  without it answered `403 ErrorAccessDenied` on both. An application token holding only
+  `MailboxSettings.Read` reads a user's rules and reply and a shared mailbox's at
+  `/users/{address}`, where a delegated token is refused the shared mailbox's settings
+  (`graph.md`); its reading of the user's rules was the delegated one byte for byte.
+- **What Graph-read rules are.** Nine rules of a real mailbox (subject, body, sender and
+  attachment tests, an exception, moves, read marks, a forward, a redirect, categories, disabled
+  rules) all plan `Whole` against Graph's own vocabulary, so a write of the rules as read sends
+  nothing; with the old redirect rule (a copy needing `Redirect` too) the redirecting rule would
+  not have.
+- **`$top` is ignored** on the listing: asked for two, it answered nine and no next link. The
+  adapter follows a next link all the same.
+- **The schedule is in UTC** on both mailboxes read; another zone is resolved through the tzdb.
+
+**Follow-ups for Graph.**
+
+- **The live writes** (`live_rules_writes.rs`), once the owner allows writes to the tenant: the
+  request shapes, clearing on `PATCH`, `sequence` numbering, the `If-Match` probe, a reply written
+  and read back.
+- **A typed subject-or-body condition**, so `bodyOrSubjectContains` (a common Outlook condition)
+  carries to Sieve as `anyof (header, body)` instead of staying `Native`.
+- **Size ranges** typed, once a one-sided `withinSizeRange` and its kilobyte rounding are proven.
+
 **Follow-ups from slice 3.**
 
 - **An HTML reply over Sieve**, as `vacation :mime` with a `multipart/alternative` body (what
@@ -1073,6 +1130,8 @@ Captured, scrubbed, as `provider-jmap/tests/fixtures/mailbox_get_rule_folders_re
 
 **Still to settle:**
 
-- **The Graph and Gmail items marked unverified** (slices 4 and 5): `@odata.etag` with `If-Match`
-  on `messageRule`, the Exchange rules quota, OR within one predicate, rules on a shared mailbox,
-  and Gmail's verified-forwarding-address requirement.
+- **The Graph and Gmail items marked unverified** (slices 4 and 5): whether a stale `If-Match` on a
+  `messageRule` is refused (it carries no ETag), the Exchange rules quota, OR within one predicate,
+  how Exchange numbers `sequence` after a change, whether a rule `PATCH` clears with `null` and
+  `false`, and Gmail's verified-forwarding-address requirement. The Graph ones are what
+  `provider-graph/tests/live_rules_writes.rs` settles once writes to the test tenant are allowed.

@@ -49,6 +49,8 @@ each over its own `GraphClient` on the same token. The mail layers:
   message.
 - **`provider`** — `GraphProvider`, bound to one folder for email; submission and
   writes are account-level, so every bound provider advertises them.
+- **`rules`/`rules_read`/`rules_write`/`rules_apply`, `vacation`** — the inbox rules and the
+  automatic replies (see **Mail rules and the out-of-office reply** below).
 
 ## Graph specifics implemented
 
@@ -581,10 +583,76 @@ with the identical symptom in
 has no mailbox *kind* and cannot have one on this credential model; that would need an
 application permission, a different credential model and a separate decision.
 
+An **application** token is another matter (observed 2026-11-24, client credentials with the one
+application permission `MailboxSettings.Read`): `/users/{address}/mailboxSettings` answers `200`
+for a user's mailbox and for a shared one, `userPurpose` reading `user` and `shared`. That is the
+transfer host's path ("Mail rules and the out-of-office reply" below).
+
 Graph grants Full Access all-or-nothing per mailbox and reports no folder rights, so a Graph
 folder is `MailboxAccess::owner()` (`modeling.md`). Folder-level Outlook delegation (one
 shared Inbox rather than the whole mailbox) is not reported by Graph at all — a documented
 limitation, not a silent one.
+
+## Mail rules and the out-of-office reply
+
+`GraphProvider` implements `MailRules` (`rules`, `rules_read`, `rules_write`, `rules_apply`) and
+`Vacation` (`vacation`), and answers `Some` from `mail_rules()` and `vacation()` on every
+mailbox: whether the credential may read them is known only by asking. The mapping is the Graph
+column of `docs/design/filters-and-out-of-office.md` §5; what follows is what the adapter adds.
+
+- **Where.** Rules are `{root}/mailFolders/inbox/messageRules`, the reply
+  `{root}/mailboxSettings/automaticRepliesSetting`, written with a `PATCH` of
+  `{root}/mailboxSettings`. `{root}` is the client's principal, so `/me` and `/users/{address}`
+  read alike. Graph also takes `/users/{object id}` (observed, delegated, for the signed-in user's
+  own id), but `MailboxPrincipal` takes an address, so a host names a mailbox by its UPN or SMTP
+  address.
+- **Permissions.** Reading needs `MailboxSettings.Read`, writing `MailboxSettings.ReadWrite`. A
+  delegated token without it answers `403 ErrorAccessDenied` (observed on a personal account
+  whose token carried neither; `tools/graph-oauth` now asks for `MailboxSettings.ReadWrite`). A
+  `403` is `Permanent`, as every Graph `403`: the credential's grant falls short, and signing in
+  again with the scope is the way out. An **application** token with `MailboxSettings.Read` reads
+  the rules and the reply of a user's mailbox and of a shared mailbox at `/users/{address}`
+  (observed 2026-11-24; the listing it read was byte for byte the one the user's own delegated
+  token read), which is what a transfer host holding application permissions uses; `/me` means
+  nothing to such a token and is refused.
+- **Reading.** The listing is followed through `@odata.nextLink` and sorted by `sequence`;
+  `$top` is ignored on it (asked for two, got nine, no next link). Each predicate and action the
+  model types is read typed; every other one (an Exchange message class, `headerContains`,
+  `bodyOrSubjectContains`, `withinSizeRange`, a category list that is not lowercase keywords,
+  `forwardAsAttachmentTo`) is one `Native` part holding that key alone, so it goes back as it
+  came. `hasError` and `isReadOnly` are `MailRule::in_error` and `read_only`; the rule's id stays
+  in the raw listing and its origin is `RuleOrigin::Listed`, its index there.
+- **No ETag on either.** A `messageRule` carries no `@odata.etag`, in the listing or read alone
+  (observed), and neither does the reply, so there is nothing to send as `If-Match` and both
+  guards are `WriteGuard::Absent`. The version is a SHA-256 of what was read (the listing in
+  order; the reply's setting without `@odata.context`, which names the mailbox), and a write
+  reads again first and refuses a moved base as `Conflict`: a change landing in the time the write
+  takes is still lost.
+- **Writing the rules, one by one.** `plan_rules` first; a rule the writer finds finer than the
+  vocabulary's grain (two conditions on one predicate key, which Graph would read as either; `To`
+  or `Cc` alone; a domain by anything but equality; two folders) is `NotKept` with the part named.
+  Then in order: a new rule is `POST`ed with its place as `sequence`; a changed one is `PATCH`ed
+  whole, every predicate and action it dropped sent as `false` or `null`; one whose place moved,
+  or that follows one that moved, has its `sequence` `PATCH`ed, so the order holds whether
+  Exchange renumbers the others or keeps the numbers given; then every rule left out is
+  `DELETE`d (one already gone is fine). An `isReadOnly` rule is never sent: changing, moving or
+  removing it is a `Permanent` entry in the receipt's `failures`, as is every request that fails,
+  and the rest go ahead. An id holding a `/` is never put in a path (Graph decodes `%2F` into a
+  separator, `principal.rs`).
+- **The reply** is canonical on read (`vacation.rs`): `disabled` is off with no window, even where
+  Graph keeps a schedule beside it; `scheduled` is on within its two ends, each
+  `dateTimeTimeZone` read as the instant it names (the zone kept in the raw form); one HTML
+  string per message; an external message equal to the internal one, or one nobody outside gets
+  (`externalAudience: none`), is no outside reply. Written, a text body is escaped into HTML, and
+  an off reply keeps its window. Both accounts read so far store their schedule in `UTC`.
+
+**Live status.** Reads are proven live: delegated at `/me`, application-only for a user's and a
+shared mailbox (`tests/live_rules.rs`). **Writes are proven offline only**, against fakes that log
+each request; writes to the test tenant await the owner's OK. `tests/live_rules_writes.rs` (gated on
+`GRAPH_RULES_WRITES=1`) is ready and settles, once run: the `POST`/`PATCH`/`DELETE` request shapes,
+whether a `PATCH` clears with `null` and `false`, how Exchange numbers `sequence` after a change,
+whether a stale `If-Match` on a rule is refused or ignored, and a scheduled reply written in UTC
+and read back.
 
 ## Known limitations (documented, not bugs)
 
@@ -1098,7 +1166,8 @@ Two more, both load-bearing:
   the same external sender, six subsequent messages from it landed in the Inbox. Its
   deprecated predecessor `markAsJunk` explicitly *did* block. Caveat this honestly: the
   blocked-senders list has no Graph surface (`/me/mailboxSettings` and
-  `.../messageRules` both `403` on a personal account), so this is behavioural evidence,
+  `.../messageRules` both `403` on a personal account, whose token lacked `MailboxSettings.*`;
+  neither lists blocked senders anyway), so this is behavioural evidence,
   not the list read back.
 - **The immutable id survives the move**, so the receipt carries the unchanged target —
   but only because every request sends `Prefer: IdType="ImmutableId"`. A probe without
