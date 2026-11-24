@@ -1,7 +1,8 @@
 //! What a target keeps of a rule set, decided before anything is sent.
 
 use super::{
-    Action, MailRule, MatchMode, RuleBody, RuleFeature, RuleVocabulary, Support, TypedRule,
+    Action, MailRule, MatchMode, RuleBody, RuleFeature, RuleMailbox, RuleVocabulary, Support,
+    TypedRule,
     plan_support::{action_support, both, condition_support, sends_out, spans_lines},
 };
 
@@ -135,7 +136,8 @@ pub enum LossReason {
     NotExpressible,
     /// Carried with a stated difference.
     Approximated,
-    /// The folder it names has no counterpart on the target.
+    /// The folder it names has no counterpart on the target: an id the host could not map to one
+    /// of the target's folders ([`RuleVocabulary::with_mailboxes`]).
     MissingMailbox,
     /// The target refuses to send mail on there: too many addresses, an address it has not
     /// verified, or a forwarding rule an import arms only on request.
@@ -345,7 +347,14 @@ impl Planned {
                 Action::Redirect { to, .. } | Action::Forward { to } => to.len(),
                 _ => 0,
             };
-            if target
+            if let Action::FileInto {
+                mailbox: RuleMailbox::Id(id),
+                ..
+            } = action
+                && !target.has_mailbox(id)
+            {
+                self.lose(RulePart::Action(i), LossReason::MissingMailbox);
+            } else if target
                 .max_redirects()
                 .is_some_and(|max| redirects + addresses > max)
             {
