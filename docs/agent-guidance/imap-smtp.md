@@ -918,7 +918,9 @@ connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "
   longest-parked IMAP socket when the shelf and the slots in use would pass the ceiling); the
   session dials, signs in (`AUTHENTICATE "PLAIN"` with `sasl::plain_response`, or
   `OAUTHBEARER`/`XOAUTH2`), works and logs out. The credential is asked as
-  `CredentialProtocol::ManageSieve` for `sieve://<server name>:<port>`.
+  `CredentialProtocol::ManageSieve` for `sieve://<server name>:<port>`. A `Credential::ActingAs` is refused
+  before sending (`ImapError::Bad`), as SMTP refuses it: `PLAIN` with an authorization identity
+  over ManageSieve has not been proven on a harness server yet.
 - **The wire.** No tags: one command at a time, its response ends at `OK`, `NO` or `BYE`. Strings
   are quoted where they can be, else sent as `{n+}` literals (a script always is). A refusal keeps
   its response code (`NONEXISTENT`, `ACTIVE`, `QUOTA/…`, `TRYLATER`) and never the prose, which

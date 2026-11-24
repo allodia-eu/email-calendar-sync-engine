@@ -206,6 +206,9 @@ async fn a_credential_no_mechanism_can_carry_is_refused_before_sending() {
     let nul = Credential::password("alice@example.com", "a\0b");
     let err = session.authenticate(&nul, HOST, None).await.unwrap_err();
     assert!(matches!(err, SieveError::Imap(ImapError::Bad(_))));
+    let acting = Credential::acting_as("admin@example.com", "hunter2", "alice@example.com");
+    let err = session.authenticate(&acting, HOST, None).await.unwrap_err();
+    assert!(matches!(err, SieveError::Imap(ImapError::Bad(_))));
     let anonymous = Credential::bearer("ya29.secret");
     let err = session
         .authenticate(&anonymous, HOST, None)

@@ -84,6 +84,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
                     sasl::plain_response(None, username, password)?,
                 )
             }
+            // Not over ManageSieve yet: `AUTHENTICATE "PLAIN"` with an authorization identity is a
+            // request shape no harness server has answered here.
+            SignIn::ActingAs { .. } => {
+                return Err(ImapError::bad(
+                    "a credential acting as another account is presented over IMAP only",
+                )
+                .into());
+            }
             SignIn::Token { username, token } => {
                 let mechanism = sasl::select(offered.iter().map(String::as_str))
                     .ok_or_else(|| unsupported("OAuth mechanism", &offered))?;
