@@ -21,7 +21,8 @@ In <https://entra.microsoft.com> → **App registrations** → **New registratio
 3. **API permissions → Microsoft Graph → Delegated**: `offline_access`, `openid`,
    `profile`, `User.Read`, `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`,
    and (for shared-mailbox delegate access) `Mail.ReadWrite.Shared`,
-   `Mail.Send.Shared`, `Calendars.ReadWrite.Shared`. For contacts, add
+   `Mail.Send.Shared`, `Calendars.ReadWrite.Shared`. For mail rules and automatic
+   replies, add `MailboxSettings.ReadWrite`. For contacts, add
    `Contacts.ReadWrite`; for the independently optional tenant sources add
    `OrgContact.Read.All`, `User.ReadBasic.All`, and `ProfilePhoto.Read.All`.
    Tenant directory permissions may require administrator consent.
@@ -52,6 +53,16 @@ cargo run --manifest-path tools/graph-oauth/Cargo.toml -- get /me
 cargo run --manifest-path tools/graph-oauth/Cargo.toml -- get /me/mailFolders mailfolders.json
 cargo run --manifest-path tools/graph-oauth/Cargo.toml -- get /me/contacts contacts.json
 cargo run --manifest-path tools/graph-oauth/Cargo.toml -- get /contacts org-contacts.json
+```
+
+For **application** permissions (a host reading other users' or shared mailboxes, as a transfer
+host does), `app-token` mints an app-only token by OAuth client credentials from
+`.local/app-only.json` (`{"tenant_id", "client_id", "client_secret"}`, gitignored, or the path in
+`GRAPH_APP_CONFIG`) and prints it alone. The registration needs a client secret and the
+application permissions granted with admin consent (`MailboxSettings.Read` for rules and replies).
+
+```sh
+GRAPH_APP_ACCESS_TOKEN="$(cargo run -q --manifest-path tools/graph-oauth/Cargo.toml -- app-token)"
 ```
 
 Tokens are written to `tools/graph-oauth/.local/tokens.json` (gitignored). The

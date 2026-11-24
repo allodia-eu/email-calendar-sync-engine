@@ -49,6 +49,8 @@ each over its own `GraphClient` on the same token. The mail layers:
   message.
 - **`provider`** — `GraphProvider`, bound to one folder for email; submission and
   writes are account-level, so every bound provider advertises them.
+- **`rules`/`rules_read`/`rules_write`/`rules_apply`, `vacation`** — the inbox rules and the
+  automatic replies (see **Mail rules and the out-of-office reply** below).
 
 ## Graph specifics implemented
 
@@ -581,10 +583,135 @@ with the identical symptom in
 has no mailbox *kind* and cannot have one on this credential model; that would need an
 application permission, a different credential model and a separate decision.
 
+An **application** token is another matter (observed 2026-11-24, client credentials with the one
+application permission `MailboxSettings.Read`): `/users/{address}/mailboxSettings` answers `200`
+for a user's mailbox and for a shared one, `userPurpose` reading `user` and `shared`. That is the
+transfer host's path ("Mail rules and the out-of-office reply" below).
+
 Graph grants Full Access all-or-nothing per mailbox and reports no folder rights, so a Graph
 folder is `MailboxAccess::owner()` (`modeling.md`). Folder-level Outlook delegation (one
 shared Inbox rather than the whole mailbox) is not reported by Graph at all — a documented
 limitation, not a silent one.
+
+## Mail rules and the out-of-office reply
+
+`GraphProvider` implements `MailRules` (`rules`, `rules_read`, `rules_write`, `rules_apply`) and
+`Vacation` (`vacation`), and answers `Some` from `mail_rules()` and `vacation()` on every
+mailbox: whether the credential may read them is known only by asking. The mapping is the Graph
+column of `docs/design/filters-and-out-of-office.md` §5; what follows is what the adapter adds.
+
+- **Where.** Rules are `{root}/mailFolders/inbox/messageRules`, the reply
+  `{root}/mailboxSettings/automaticRepliesSetting`, written with a `PATCH` of
+  `{root}/mailboxSettings`. `{root}` is the client's principal, so `/me` and `/users/{address}`
+  read alike. Graph also takes `/users/{object id}` (observed, delegated, for the signed-in user's
+  own id), but `MailboxPrincipal` takes an address, so a host names a mailbox by its UPN or SMTP
+  address.
+- **Permissions.** Reading needs `MailboxSettings.Read`, writing `MailboxSettings.ReadWrite`. A
+  delegated token without it answers `403 ErrorAccessDenied` (observed on a personal account
+  whose token carried neither; `tools/graph-oauth` now asks for `MailboxSettings.ReadWrite`). A
+  `403` is `Permanent`, as every Graph `403`: the credential's grant falls short, and signing in
+  again with the scope is the way out. An **application** token with `MailboxSettings.Read` reads
+  the rules and the reply of a user's mailbox and of a shared mailbox at `/users/{address}`
+  (observed 2026-11-24; the listing it read was byte for byte the one the user's own delegated
+  token read), which is what a transfer host holding application permissions uses; `/me` means
+  nothing to such a token and is refused.
+- **Reading.** The listing is followed through `@odata.nextLink` and sorted by `sequence`, ties
+  by id; `$top` is ignored on it (asked for two, got nine, no next link). Each predicate and
+  action the model types is read typed; every other one (an Exchange message class,
+  `headerContains`, `bodyOrSubjectContains`, `withinSizeRange`, a category list that is not
+  lowercase keywords, `forwardAsAttachmentTo`) is one `Native` part holding that key alone, so it
+  goes back as it came. `hasError` and `isReadOnly` are `MailRule::in_error` and `read_only`; the
+  rule's id stays in the raw listing and its origin is `RuleOrigin::Listed`, its index there. No
+  `fromAddresses` entry of the mailbox read was an X.500 address (checked, 0 of 4).
+- **What Graph holds** is a constant vocabulary with `RuleLimit`s, so `plan_rules` sees every
+  limit before anything is written: one test per kind among the conditions (Graph's predicates are
+  keys of one object, any-of within a key) and, among the exceptions, one only of a kind with a
+  single value (an importance), since tests with values merge there; one move, copy and importance
+  per rule; `To` and `Cc` only together; no system keyword but `$seen`; filing only into folders,
+  never a virtual collection. The one pair the plan cannot see is a `Native` predicate under a key
+  a typed test also writes: the reader makes none (it reads natively only keys the model has no
+  type for, or values Graph does not document), and a host-built pair meets the writer's refusal,
+  the server's rule left as it was. A domain is not offered: `senderContains
+  "@example.com"` also matches `example.com.evil.test`, which would widen the condition. A rule the
+  writer still cannot place (a role whose folder the account lacks) keeps the server's rule as it
+  was and is a `Permanent` failure.
+- **Graph keeps the rules as a list** (observed on a work account, 2026-11-24): `sequence` is a
+  rule's position, renumbered on every change; a number past the end is clamped to it; a `PATCH`
+  of `sequence` alone moves the rule. So the writer removes left-out rules first, then walks the
+  planned rules keeping the server's list as it goes: a new rule is `POST`ed at its position, a
+  rule out of place gets a `PATCH` of `sequence` alone, a rule in place is not sent. Inserting or
+  moving one rule sends nothing to the others. Removing first keeps the positions those of the
+  rules that stay; the cost is that a rule left out is gone even where a later write of the set
+  fails, which is what the caller asked for of that rule. It matters where a host replaces a rule
+  with one it built (no origin) rather than editing the one it read: the old rule is removed
+  before the new one is created, so a create that fails leaves neither, and the receipt lists the
+  new rule as not written. A host that wants the old rule kept until its successor exists edits the
+  rule it read, which writes it anew in place, new first. The offline tests run against a fake that
+  keeps such a list (`rules_fake.rs`), and check the list each write leaves.
+- **A `PATCH` clears nothing.** A predicate, an action or `displayName` sent as `null` stays as it
+  was, with a `200` (observed). A changed rule that drops none is `PATCH`ed whole, its recipients'
+  display names kept; one that drops a part, or sends a list shorter (whether a `PATCH` replaces a
+  list is what the second live run asks), is written as a new rule in its place, `POST`ed first,
+  and the old one `DELETE`d after. Where the `POST` fails the old rule stays and nothing is
+  deleted; where the `DELETE` fails both stay, the new one first, and the rule's outcome says so
+  beside the receipt's failure. A host that meets either re-reads the rules and edits from what it
+  reads, never replays its old edit, which would write the rule a third time.
+- **Every rule has a name.** A `POST` without `displayName` is accepted and Graph names the rule
+  itself (observed). An edit that removes a rule's name leaves the old name, and the outcome reports
+  the name as not written.
+- **No ETag, and no read to trust straight after a write.** A `messageRule` carries no
+  `@odata.etag`, in the listing or read alone, and a `PATCH` with a stale `If-Match` lands
+  (observed), so both guards are `WriteGuard::Absent`. The version is a SHA-256 of what was read
+  (the listing in order; the reply's setting without `@odata.context`, which names the mailbox),
+  and a write reads again first and refuses a moved base as `Conflict`. That narrows the race and
+  no more, because **Graph answers a write before it applies it** (observed): the rules' listing
+  did not yet show a rule `POST`ed a moment earlier, so a base read before it passed the check;
+  and of two `mailboxSettings` writes a few seconds apart, the reads straight after the second
+  showed it while reads minutes later showed the first. So neither receipt carries a version: the
+  next write reads first, and a host that needs to know a write landed reads until it holds. After a
+  rule written anew, a read soon after may still list the old rule beside the new one, or neither;
+  a removal retried then may meet a `404`, which counts as done.
+- **Ids are percent-encoded path segments**: every byte outside RFC 3986's unreserved set, so a
+  base64 `=` goes as `%3D` (observed to work) and a `+` as `%2B`. An id holding a `/` is never
+  written to, and a `404` for one is never counted as done: Graph re-parses a decoded `%2F`
+  (`principal.rs`), none has been seen (0 of 9 ids read, 0 of the test's own), so it is unproven.
+- **Every failure lands in the receipt and on the rule's outcome.** An `isReadOnly` rule is never
+  sent: changing it, moving it out of place or removing it is a `Permanent` entry in `failures`, as
+  is every request that fails, and the rest go ahead. The rule's outcome then says
+  `LossReason::NotWritten`, not kept where the rule itself was not stored and reduced where only
+  its place was not.
+- **The reply** is canonical on read (`vacation.rs`): `disabled` is off with no window, even where
+  Graph keeps a schedule beside it; `scheduled` is on within its two ends, each
+  `dateTimeTimeZone` read as the instant it names; one HTML string per message; an external
+  message equal to the internal one, or one nobody outside gets (`externalAudience: none`), is no
+  outside reply. A wall time the zone skips or repeats names two instants: the start takes the
+  later and the end the earlier, so the window never widens; a zone the engine cannot resolve is
+  `item_unavailable`, never a guess. Written, a text body is escaped into HTML, an off reply keeps
+  its window, and a message the model does not hold is not sent: with no outside reply and an
+  audience of the organization, `externalReplyMessage` is left out. Both accounts read so far store
+  their schedule in `UTC`. For a reply that is not scheduled, Graph reports a schedule of its own:
+  from the top of the current hour to exactly a day later, moving every hour (observed on the work
+  account, confirmed with an app-only token). The raw form keeps it; the version leaves it out
+  unless `status` is `scheduled`, or a guarded write would meet a conflict nothing caused.
+
+**Live status.** Reads are proven live: delegated at `/me`, application-only for a user's and a
+shared mailbox (`tests/live_rules.rs`). Writes are proven live on the delegated work mailbox, only
+on rules each test created, every other rule byte for byte as before after every run:
+
+- the first run settled the facts above, and showed a reply write and its restore landing out of
+  order (restored by hand with one verbatim `PATCH`, read back unchanged for fifteen minutes);
+- `tests/live_reply_writes.rs` (gate `GRAPH_REPLY_WRITES=1`) wrote a reply scheduled for 2099,
+  settled it over five minutes, restored the setting and settled that, and found 0 fields differing
+  five minutes later;
+- `tests/live_rules_writes.rs` (gate `GRAPH_RULES_WRITES=1`) created five rules after the user's,
+  rotated three of them, shortened a list by hand and by the engine (written anew in place), renamed
+  one in place, saw a stale base refused once the listing had settled, and removed them, each write
+  settled by three reads ten seconds apart. It refuses to start unless the user's rules are numbered
+  1 to n and every one plans whole, and finds every rule it edits by its marker and tag.
+
+A `PATCH` replaces a list it is sent shorter (observed: two addresses sent as one read back as
+one), where it keeps a part sent as `null`. The writer still writes a shortened list anew, which is
+proven too; sending it as a `PATCH` instead is a follow-up.
 
 ## Known limitations (documented, not bugs)
 
@@ -1098,7 +1225,8 @@ Two more, both load-bearing:
   the same external sender, six subsequent messages from it landed in the Inbox. Its
   deprecated predecessor `markAsJunk` explicitly *did* block. Caveat this honestly: the
   blocked-senders list has no Graph surface (`/me/mailboxSettings` and
-  `.../messageRules` both `403` on a personal account), so this is behavioural evidence,
+  `.../messageRules` both `403` on a personal account, whose token lacked `MailboxSettings.*`;
+  neither lists blocked senders anyway), so this is behavioural evidence,
   not the list read back.
 - **The immutable id survives the move**, so the receipt carries the unchanged target —
   but only because every request sends `Prefer: IdType="ImmutableId"`. A probe without

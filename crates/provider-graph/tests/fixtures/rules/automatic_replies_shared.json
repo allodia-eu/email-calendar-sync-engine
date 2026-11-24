@@ -1,0 +1,15 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('user%40example.test')/mailboxSettings/automaticRepliesSetting",
+  "status": "disabled",
+  "externalAudience": "all",
+  "internalReplyMessage": "",
+  "externalReplyMessage": "",
+  "scheduledStartDateTime": {
+    "dateTime": "2026-01-01T09:00:00.0000000",
+    "timeZone": "UTC"
+  },
+  "scheduledEndDateTime": {
+    "dateTime": "2026-01-02T09:00:00.0000000",
+    "timeZone": "UTC"
+  }
+}

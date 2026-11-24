@@ -33,6 +33,8 @@
 //! Run from the repo root, e.g.:
 //!   cargo run --manifest-path tools/graph-oauth/Cargo.toml -- login --client-id <APP_ID>
 
+mod app_only;
+
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -68,7 +70,7 @@ const DEFAULT_AUTHORITY: &str = "https://login.microsoftonline.com/common";
 const DEFAULT_SCOPES: &str = "offline_access openid profile User.Read \
     Mail.ReadWrite Mail.ReadWrite.Shared Mail.Send Mail.Send.Shared \
     Calendars.ReadWrite Calendars.ReadWrite.Shared Contacts.ReadWrite \
-    User.ReadBasic.All";
+    MailboxSettings.ReadWrite User.ReadBasic.All";
 /// Loopback port the redirect server listens on. The Microsoft identity platform
 /// ignores the port when matching a registered `http://localhost` redirect, so the
 /// app only needs `http://localhost` registered (RFC 8252 §7.3).
@@ -102,9 +104,10 @@ fn run() -> Res<()> {
         }
         Some("get") => cmd_get(&args[1..]),
         Some("req") => cmd_req(&args[1..]),
+        Some("app-token") => app_only::cmd_app_token(),
         _ => {
             eprintln!(
-                "usage (every command takes [--profile <name>]):\n  graph-oauth login --client-id <APP_ID> [--authority <URL>] [--port <N>] [--scopes \"<s1 s2 ...>\"]\n  graph-oauth refresh\n  graph-oauth token\n  graph-oauth get <graph-url-or-path> [outfile.json]\n  graph-oauth req <METHOD> <graph-url-or-path> [body-json|@file|-] [outfile.json]"
+                "usage (every command takes [--profile <name>]):\n  graph-oauth login --client-id <APP_ID> [--authority <URL>] [--port <N>] [--scopes \"<s1 s2 ...>\"]\n  graph-oauth refresh\n  graph-oauth token\n  graph-oauth app-token  (client credentials, from .local/app-only.json)\n  graph-oauth get <graph-url-or-path> [outfile.json]\n  graph-oauth req <METHOD> <graph-url-or-path> [body-json|@file|-] [outfile.json]"
             );
             std::process::exit(2);
         }

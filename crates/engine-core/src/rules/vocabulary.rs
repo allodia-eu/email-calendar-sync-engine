@@ -75,6 +75,32 @@ pub enum RuleFeature {
     Order,
 }
 
+/// A limit on how parts a target holds one by one can be combined in one rule.
+///
+/// Where a target keeps a rule's tests as keys of one object (Graph's `messageRulePredicates`),
+/// two tests of one kind cannot both be kept, and an action that names one thing cannot be
+/// there twice. A target with no limits combines freely, as a Sieve script does; a limit added
+/// later is an addition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum RuleLimit {
+    /// At most one test of each kind among the conditions, where all must hold: the target keeps
+    /// one test per kind, its values any-of, so two would read as either. Among the exceptions,
+    /// where any one vetoes, tests of a kind with values merge into one, and only a kind with a
+    /// single value (an importance, a size bound) is held once. A kind is the condition with its
+    /// field, part and operation: a subject that contains, a sender that is, an importance.
+    OneTestPerKind,
+    /// At most one action of each kind that names one thing: one move, one copy, one importance.
+    OneActionPerKind,
+    /// `To` and `Cc` are tested only together, as to-or-cc.
+    RecipientsTogether,
+    /// No system keyword is added but `$seen` and `$flagged`.
+    NoOtherSystemKeyword,
+    /// Files only into folders: a role naming a virtual collection (all mail, flagged, important)
+    /// is no folder to file into.
+    RealFoldersOnly,
+}
+
 /// How a target holds a feature it has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -87,8 +113,8 @@ pub enum Support {
 }
 
 /// What an account's rule language can express: which [`RuleFeature`]s it holds and how, how
-/// many addresses one rule may send a message to, and which kinds of carried rule it can store
-/// back.
+/// many addresses one rule may send a message to, which kinds of carried rule it can store back,
+/// and the limits on combining them ([`RuleLimit`]).
 ///
 /// Read per account, because two servers speaking one protocol list different extensions
 /// (`filters-and-out-of-office.md`, "Observed on the harness"); a constant for a transport whose
@@ -101,6 +127,7 @@ pub struct RuleVocabulary {
     opaque: Option<(RuleSyntax, BTreeSet<String>)>,
     native: Option<NativeKind>,
     folders: Option<FolderMap>,
+    limits: BTreeSet<RuleLimit>,
 }
 
 impl RuleVocabulary {
@@ -177,6 +204,19 @@ impl RuleVocabulary {
     #[must_use]
     pub fn folders(&self) -> Option<&FolderMap> {
         self.folders.as_ref()
+    }
+
+    /// Holds parts only within `limit` (builder-style).
+    #[must_use]
+    pub fn with_limit(mut self, limit: RuleLimit) -> Self {
+        self.limits.insert(limit);
+        self
+    }
+
+    /// Whether parts combine only within `limit`.
+    #[must_use]
+    pub fn has_limit(&self, limit: RuleLimit) -> bool {
+        self.limits.contains(&limit)
     }
 
     /// How the language holds `feature`, or `None` where it cannot.

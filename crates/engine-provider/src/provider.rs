@@ -440,13 +440,19 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
     ///
     /// Reached as [`mail_importer`](Self::mail_importer) is: the answer is the capability, and an
     /// adapter answers per account, so a read-only share without the setting answers `None`.
+    ///
+    /// `Some` says the transport has the setting, not that the credential may use it. Where an
+    /// adapter can learn that only by asking (Graph, whose permission is a token scope), it
+    /// answers `Some`, and a credential without the permission shows as a `Permanent` refusal of
+    /// the first read: the host asks the user to grant it, as for any refused scope.
     fn vacation(&self) -> Option<&dyn crate::Vacation> {
         None
     }
 
     /// This adapter as [`MailRules`](crate::MailRules), the account's mail rules, or `None` where
     /// the account has none the adapter can reach (the default), as for
-    /// [`vacation`](Self::vacation).
+    /// [`vacation`](Self::vacation): on Graph `Some`, a missing permission showing as a
+    /// `Permanent` refusal of the first read.
     fn mail_rules(&self) -> Option<&dyn crate::MailRules> {
         None
     }

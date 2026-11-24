@@ -192,11 +192,19 @@ fn not_held(
         rule.origin = None;
         rule
     };
+    // What a rule does, without what its source says of it: where it was read, and whether that
+    // source marks it in error or read-only. A target reads its rules back without those marks.
+    let compared = |rule: &MailRule| {
+        let mut rule = unplaced(rule);
+        rule.in_error = false;
+        rule.read_only = false;
+        rule
+    };
     let mut held: Vec<MailRule> = base
         .rules
         .iter()
         .filter(|rule| matches!(rule.body, RuleBody::Typed(_)))
-        .map(unplaced)
+        .map(compared)
         .collect();
     let mut added = Vec::new();
     let mut already = Vec::new();
@@ -204,7 +212,7 @@ fn not_held(
         let rule = unplaced(&planned.rule);
         // As the target will read it back once written, so a rule its writer and reader change on
         // the way (a forward written as a redirect keeping a copy) is known again.
-        let back = (dialect.read_back)(&rule).unwrap_or_else(|| rule.clone());
+        let back = compared(&(dialect.read_back)(&rule).unwrap_or_else(|| rule.clone()));
         let found = matches!(rule.body, RuleBody::Typed(_))
             .then(|| held.iter().position(|held| *held == back))
             .flatten();

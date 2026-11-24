@@ -1,0 +1,73 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('user%40example.test')/mailFolders('inbox')/messageRules",
+  "value": [
+    {
+      "id": "AQAAAAAAAQE=",
+      "displayName": "Typed predicates",
+      "sequence": 1,
+      "isEnabled": true,
+      "hasError": false,
+      "isReadOnly": false,
+      "conditions": {
+        "bodyContains": ["marker-body"],
+        "importance": "high",
+        "recipientContains": ["marker-recipient"],
+        "sentToAddresses": [{"emailAddress": {"name": "Person 2", "address": "person2@example.com"}}],
+        "sentToMe": true,
+        "sentCcMe": true,
+        "sentToOrCcMe": true,
+        "sentOnlyToMe": true,
+        "notSentToMe": true,
+        "isAutomaticReply": false
+      },
+      "exceptions": {
+        "senderContains": ["@sender.example.com"],
+        "hasAttachments": true
+      },
+      "actions": {
+        "copyToFolder": "AAMkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfolder9=",
+        "markImportance": "low",
+        "delete": false
+      }
+    },
+    {
+      "id": "AQAAAAAAAQI=",
+      "displayName": "Exchange predicates",
+      "sequence": 2,
+      "isEnabled": true,
+      "hasError": true,
+      "isReadOnly": true,
+      "conditions": {
+        "bodyOrSubjectContains": ["marker-either"],
+        "categories": ["Example Category 9"],
+        "headerContains": ["marker-header"],
+        "isAutomaticReply": true,
+        "isMeetingRequest": true,
+        "messageActionFlag": "followUp",
+        "sensitivity": "confidential",
+        "withinSizeRange": {"minimumSize": 10, "maximumSize": 2048}
+      },
+      "exceptions": {
+        "isAutomaticForward": true
+      },
+      "actions": {
+        "delete": true,
+        "forwardAsAttachmentTo": [{"emailAddress": {"name": "Person 3", "address": "person3@example.com"}}]
+      }
+    },
+    {
+      "id": "AQAAAAAAAQM=",
+      "displayName": "Discard and lower-case categories",
+      "sequence": 3,
+      "isEnabled": false,
+      "hasError": false,
+      "isReadOnly": false,
+      "conditions": {},
+      "actions": {
+        "permanentDelete": true,
+        "assignCategories": ["alpha", "beta"],
+        "stopProcessingRules": false
+      }
+    }
+  ]
+}

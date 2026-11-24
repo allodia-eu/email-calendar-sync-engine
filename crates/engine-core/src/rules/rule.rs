@@ -83,6 +83,13 @@ pub struct MailRule {
     /// Where the rule came from in what was read, so a write can copy an unchanged rule as it
     /// was; `None` on a rule built rather than read.
     pub origin: Option<RuleOrigin>,
+    /// Whether the server marks the rule as in error (Graph's `hasError`): it may not run as
+    /// written, for example because the folder it files into is gone. An import stores such a
+    /// rule disabled ([`plan_rules`](super::plan_rules)).
+    pub in_error: bool,
+    /// Whether the server refuses to let the rule be changed or removed (Graph's `isReadOnly`).
+    /// A write leaves such a rule as it is on the server.
+    pub read_only: bool,
 }
 
 impl MailRule {
@@ -108,6 +115,8 @@ impl MailRule {
             enabled: true,
             body,
             origin: None,
+            in_error: false,
+            read_only: false,
         }
     }
 
@@ -139,6 +148,20 @@ impl MailRule {
     #[must_use]
     pub fn with_origin(mut self, origin: RuleOrigin) -> Self {
         self.origin = Some(origin);
+        self
+    }
+
+    /// Records that the server marks the rule as in error (builder-style).
+    #[must_use]
+    pub fn marked_in_error(mut self) -> Self {
+        self.in_error = true;
+        self
+    }
+
+    /// Records that the server does not let the rule be changed or removed (builder-style).
+    #[must_use]
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
         self
     }
 }

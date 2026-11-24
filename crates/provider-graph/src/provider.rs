@@ -142,6 +142,11 @@ impl GraphProvider {
         self.categories = Categories::new(names);
         self
     }
+
+    /// The client every request goes through.
+    pub(crate) fn client(&self) -> &GraphClient {
+        &self.client
+    }
 }
 
 /// How many `$value` fetches a caller may keep in flight against one mailbox.
@@ -406,6 +411,17 @@ impl Provider for GraphProvider {
     /// default.
     async fn resolve_shared_account(&self, address: &str) -> ProviderResult<SharedAccount> {
         crate::shared::resolve(&self.client, address).await
+    }
+
+    /// The inbox rules (`crate::rules`), on every Graph mailbox: whether the credential may read
+    /// them is known only by asking, and a `403` says it may not.
+    fn mail_rules(&self) -> Option<&dyn engine_provider::MailRules> {
+        Some(self)
+    }
+
+    /// The automatic replies (`crate::vacation`), as for the rules.
+    fn vacation(&self) -> Option<&dyn engine_provider::Vacation> {
+        Some(self)
     }
 }
 

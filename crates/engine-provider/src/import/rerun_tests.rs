@@ -176,3 +176,23 @@ async fn a_rule_carried_whole_is_planned_with_the_facts_its_text_gives() {
     assert_eq!(receipt.outcomes[0].kept, Kept::NotKept);
     assert!(target.replaced().is_empty(), "nothing written");
 }
+
+#[tokio::test]
+async fn the_sources_marks_on_a_rule_neither_hide_nor_fake_one_the_target_holds() {
+    // As a first import of a Graph rule in error left it: stored disabled, and read back by the
+    // target without the source's marks, which are no part of what the rule does.
+    let own = vec![rule("graph", vec![into("x")]).disabled()];
+    let target = Target::with_own(own);
+    let imported = vec![
+        rule("graph", vec![into("x")]).marked_in_error().read_only(),
+        // Marked the same, but another rule: never taken as held.
+        rule("other", vec![into("x")]).marked_in_error().read_only(),
+    ];
+    let receipt = target
+        .import_rules(&account(), &imported, ForwardingRules::Disabled, &folders())
+        .await
+        .unwrap();
+    assert_eq!(receipt.already_held, [0]);
+    let written = &target.replaced()[0].1;
+    assert_eq!(written.len(), 2, "the other rule is written");
+}

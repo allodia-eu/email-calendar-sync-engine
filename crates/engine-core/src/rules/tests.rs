@@ -165,6 +165,22 @@ fn a_receipt_carries_its_version_and_outcomes() {
 }
 
 #[test]
+fn a_receipt_lists_each_rule_a_rule_by_rule_write_did_not_store() {
+    use crate::error::FailureClass;
+
+    let receipt = RulesReceipt::new(None, Vec::new());
+    assert_eq!(receipt.failures.len(), 0);
+    let failed = receipt.with_failures(vec![
+        RuleWriteFailure::new(FailedRule::Written(2), FailureClass::Permanent),
+        RuleWriteFailure::new(FailedRule::Removed(0), FailureClass::Retryable).outcome_unknown(),
+    ]);
+    assert_eq!(failed.failures[0].rule, FailedRule::Written(2));
+    assert!(!failed.failures[0].outcome_unknown);
+    assert_eq!(failed.failures[1].class, FailureClass::Retryable);
+    assert!(failed.failures[1].outcome_unknown);
+}
+
+#[test]
 fn debug_of_each_action_names_it_and_counts_its_values() {
     let shown = format!(
         "{:?}",

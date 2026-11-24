@@ -19,6 +19,10 @@ engine-rfc5322 = { workspace = true }
 # `reqwest` enables the preconfigured-client builder this HTTP transport uses.
 # One throttling answer for every HTTP provider (docs/agent-guidance/http-throttling.md).
 engine-http = { workspace = true }
+# The out-of-office schedule is a zoned `dateTimeTimeZone`, read as the instant it names
+# (`vacation`), through the engine's bundled tzdb; a wall time a zone skips or repeats names two
+# instants, and the read chooses between them so the window never widens.
+jiff = { workspace = true }
 engine-tls = { workspace = true, features = ["reqwest"] }
 # reqwest + rustls (pure-Rust TLS, mobile cross-compile) on the engine's standard
 # HTTP stack, mirroring provider-jmap.
@@ -26,6 +30,9 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
+# The version of the mail rules and the out-of-office reply: a SHA-256 of each as read, since
+# Graph keeps no ETag on either (`rules`, `vacation`).
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 # `async-stream` builds the `stream_email` chunk stream with `try_stream!`.
 async-stream = { workspace = true }
