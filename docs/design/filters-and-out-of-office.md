@@ -168,8 +168,9 @@ reads it into the neutral `VacationResponse` and writes one over a script, in pl
 `:from`) and any action after it, every other rule copied byte for byte. The reply rule is the
 reply's alone: `read_rules` leaves it out of the user's rules, and `write_rules` copies it where it
 was, so a host that hides it and writes the rules back keeps the reply, and a migration does not
-carry the `vacation` twice; `write_rules` keeps it before the first written rule it ran before, so
-a rule a host inserts or moves cannot come between it and a rule it answered ahead of. A reply rule
+carry the `vacation` twice; `write_rules` puts it after the last written rule that ran before it
+(else before the first that ran after it), so every rule that ran ahead of it, a `discard; stop`
+among them, still does however a host inserts or moves rules. A reply rule
 holding more than the model says (another action, an `elsif` or `else`, a `:mime` body, a date in
 the server's own zone, a `${` the script would expand) is read as a reply the engine cannot show,
 never as a narrower one; it belongs to neither the reply nor the rules, so a host shows it, and
@@ -178,10 +179,11 @@ when the caller names it (`write_reply_over`): that keeps its name, every comman
 and any `elsif` or `else`, and `vacation`'s unmodelled arguments where `vacation` could be read,
 and discards the rest. A reply that is on is refused where any enabled rule of the user's runs
 `vacation` in any branch (it may match the same message, RFC 5230 §4.7 makes two an error, and
-Dovecot then sends neither), and beside an `include`, which the dialect does not follow. The window is written to the second and
-never wider than asked; one that holds no whole second is refused. Text only for now: a `:mime`
-body holding HTML is a follow-up. The bytes are pinned from the plugin's own output, one script
-saved through its settings page (`tests/fixtures/roundcube/README.md`).
+Dovecot then sends neither), and beside an `include`, which the dialect does not follow. The
+window is written to the second and never wider than asked; one that holds no whole second is
+refused. Text only for now: a `:mime` body holding HTML is a follow-up. The bytes are pinned from
+the plugin's own output, one script saved through its settings page
+(`tests/fixtures/roundcube/README.md`).
 
 ### Types (`engine-core::rules`, implemented in slice 2)
 
