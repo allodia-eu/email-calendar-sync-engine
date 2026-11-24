@@ -212,3 +212,11 @@ fn a_named_header_shows_its_length_not_its_name() {
     );
     assert!(!raw.contains("secret"), "{raw}");
 }
+
+#[test]
+fn a_receipt_says_whether_the_rules_it_wrote_run() {
+    let receipt = RulesReceipt::new(None, Vec::new());
+    assert_eq!(receipt.activation, RulesActivation::Running);
+    let receipt = receipt.with_activation(RulesActivation::Inactive);
+    assert_eq!(receipt.activation, RulesActivation::Inactive);
+}

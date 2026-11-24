@@ -1,6 +1,6 @@
 //! What a write of the rules answers.
 
-use super::RuleOutcome;
+use super::{RuleOutcome, RulesActivation};
 use crate::version::RuleSetVersion;
 
 /// What replacing an account's rules answers once the server has stored them.
@@ -17,18 +17,30 @@ pub struct RulesReceipt {
     pub stored: RulesStored,
     /// What the write did to the account's out-of-office reply.
     pub reply: ReplyEffect,
+    /// Whether the rules run now. A write never changes it
+    /// ([`RuleSet::activation`](super::RuleSet::activation)): rules written into a script stored
+    /// but switched off are stored, and do not run until the user switches it on. Said here so a
+    /// transfer host's record of an import says it without a second read.
+    pub activation: RulesActivation,
 }
 
 impl RulesReceipt {
     /// A receipt for rules written in place at `version`, each handed-in rule having had
-    /// `outcomes`, the reply untouched.
+    /// `outcomes`, the reply untouched, the rules running.
     pub fn new(version: Option<RuleSetVersion>, outcomes: Vec<RuleOutcome>) -> Self {
         Self {
             version,
             outcomes,
             stored: RulesStored::InPlace,
             reply: ReplyEffect::Untouched,
+            activation: RulesActivation::Running,
         }
+    }
+
+    /// Records whether the rules run now (builder-style).
+    pub fn with_activation(mut self, activation: RulesActivation) -> Self {
+        self.activation = activation;
+        self
     }
 
     /// Records where the rules were stored (builder-style).
