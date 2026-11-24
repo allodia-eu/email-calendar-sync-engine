@@ -74,16 +74,17 @@ pub fn client(
         .user_agent(user_agent.as_str())
 }
 
-/// [`client`] for an account configured at `configured`, the URL the host gave the adapter.
+/// [`client`] for an account configured at `configured`, the URL the host gave the adapter:
+/// what [`AuthenticatedClient`](crate::AuthenticatedClient) is built on.
 ///
 /// It is [`client`], with one difference: an account whose configured origin is plaintext
 /// HTTP on loopback gets a client that ignores proxies (`HTTP_PROXY`, `ALL_PROXY`, which
 /// reqwest otherwise reads from the environment and applies to loopback too, unless `NO_PROXY`
 /// lists it). Such an account is the only one whose credential ever goes over plaintext
-/// ([`send_authenticated`](crate::send_authenticated)), and a proxy would see it in cleartext; a
+/// ([`AuthenticatedClient`](crate::AuthenticatedClient)), and a proxy would see it in cleartext; a
 /// server on the same machine never needs one. Every other account keeps the environment's
 /// proxies, so a host behind a corporate proxy still reaches its servers over `https`.
-pub fn client_for(
+pub(crate) fn client_for(
     tls: &engine_tls::TlsClientConfig,
     user_agent: &crate::UserAgent,
     configured: &reqwest::Url,

@@ -1,4 +1,4 @@
-//! [`send_authenticated`] against a server that records what each request carried: one ask,
+//! [`AuthenticatedClient::send`] against a server that records what each request carried: one ask,
 //! one replacement and one replay on a refusal, and nothing sent where a rule says no.
 
 use std::{
@@ -17,7 +17,7 @@ use engine_provider::{
 };
 use reqwest::{RequestBuilder, Url};
 
-use super::{Unauthorized, is_loopback, send_authenticated};
+use super::{AuthenticatedClient, Unauthorized, is_loopback};
 use crate::{Exchange, RetryConfig, SendError, Sent};
 
 /// What a test request fails with.
@@ -48,7 +48,7 @@ pub(super) struct Tokens {
     never: bool,
     first: &'static str,
     /// `replace` fails as retryable, as a token endpoint that is down does.
-    pub(super) replace_fails: bool,
+    replace_fails: bool,
     replacements: Mutex<VecDeque<&'static str>>,
     asks: Mutex<Vec<CredentialProtocol>>,
     replaced: Mutex<Vec<String>>,
@@ -69,6 +69,12 @@ impl Tokens {
             replaced: Mutex::new(Vec::new()),
             checked: Mutex::new(Vec::new()),
         }
+    }
+
+    /// This source, failing when asked to replace, as a token endpoint that is down does.
+    pub(super) fn failing_replace(mut self) -> Self {
+        self.replace_fails = true;
+        self
     }
 
     fn asks(&self) -> usize {
@@ -120,7 +126,7 @@ impl CredentialSource for Tokens {
     }
 }
 
-fn token(credential: &Credential) -> String {
+pub(super) fn token(credential: &Credential) -> String {
     match credential {
         Credential::Bearer { token, .. } => token.expose().to_owned(),
         _ => String::from("?"),
@@ -175,7 +181,7 @@ const REFRAME: &str = "401 Unauthorized\r\nWWW-Authenticate: Reframe";
 const FINAL: &str = "401 Unauthorized\r\nWWW-Authenticate: Final";
 
 /// Reads this suite's challenges, which name the verdict outright.
-fn judge(sent: &Sent, _credential: &Credential) -> Unauthorized {
+pub(super) fn judge(sent: &Sent, _credential: &Credential) -> Unauthorized {
     match sent
         .headers()
         .get(reqwest::header::WWW_AUTHENTICATE)
@@ -187,7 +193,7 @@ fn judge(sent: &Sent, _credential: &Credential) -> Unauthorized {
     }
 }
 
-fn client() -> reqwest::Client {
+pub(super) fn client() -> reqwest::Client {
     crate::client(
         &engine_tls::TlsClientConfig::bundled(),
         &crate::test_server::user_agent(),
@@ -196,30 +202,44 @@ fn client() -> reqwest::Client {
     .expect("client")
 }
 
+/// The authenticated client of an account configured at `configured`, asking `source`.
+pub(super) fn account(source: &Arc<Tokens>, configured: &str) -> AuthenticatedClient {
+    AuthenticatedClient::new(
+        &engine_tls::TlsClientConfig::bundled(),
+        &crate::test_server::user_agent(),
+        Url::parse(configured).expect("a URL"),
+        Arc::clone(source) as Arc<dyn CredentialSource>,
+        RetryConfig::default(),
+    )
+    .expect("a client")
+}
+
 /// A GET to `url`, from an account configured at `url` itself.
-pub(super) async fn get(source: &Tokens, url: &str) -> Result<u16, Failure> {
+pub(super) async fn get(source: &Arc<Tokens>, url: &str) -> Result<u16, Failure> {
     send(source, url, client().get(url)).await
 }
 
-async fn send(source: &Tokens, configured: &str, request: RequestBuilder) -> Result<u16, Failure> {
-    let configured = Url::parse(configured).expect("a URL");
-    let sent = send_authenticated(
-        source,
-        &configured,
-        request,
-        &RetryConfig::default(),
-        Exchange::Ordinary,
-        |builder, credential| Ok::<_, Failure>(builder.bearer_auth(token(credential))),
-        judge,
-    )
-    .await?;
+/// Sends `request`, built by another client, from an account configured at `configured`.
+pub(super) async fn send(
+    source: &Arc<Tokens>,
+    configured: &str,
+    request: RequestBuilder,
+) -> Result<u16, Failure> {
+    let sent = account(source, configured)
+        .send(
+            request,
+            Exchange::Ordinary,
+            |builder, credential| Ok::<_, Failure>(builder.bearer_auth(token(credential))),
+            judge,
+        )
+        .await?;
     Ok(sent.status().as_u16())
 }
 
 #[tokio::test]
 async fn a_refused_token_is_replaced_once_and_the_request_replayed_with_the_replacement() {
     let (url, seen) = server(vec![REFUSED, OK]);
-    let source = Tokens::new("A", &["B"]);
+    let source = Arc::new(Tokens::new("A", &["B"]));
     assert_eq!(get(&source, &url).await.expect("sent"), 200);
     assert_eq!(*seen.lock().unwrap(), ["Bearer A", "Bearer B"]);
     assert_eq!(source.asks(), 1, "one ask");
@@ -234,7 +254,7 @@ async fn a_refused_token_is_replaced_once_and_the_request_replayed_with_the_repl
 #[tokio::test]
 async fn a_replacement_refused_again_comes_back_as_the_401_it_is() {
     let (url, seen) = server(vec![REFUSED, REFUSED, OK]);
-    let source = Tokens::new("A", &["B", "C"]);
+    let source = Arc::new(Tokens::new("A", &["B", "C"]));
     assert_eq!(get(&source, &url).await.expect("sent"), 401);
     assert_eq!(*seen.lock().unwrap(), ["Bearer A", "Bearer B"]);
     assert_eq!(source.replaced(), ["A"], "never a second replacement");
@@ -243,7 +263,7 @@ async fn a_replacement_refused_again_comes_back_as_the_401_it_is() {
 #[tokio::test]
 async fn without_a_replacement_the_401_comes_back_after_one_request() {
     let (url, seen) = server(vec![REFUSED, OK]);
-    let source = Tokens::new("A", &[]);
+    let source = Arc::new(Tokens::new("A", &[]));
     assert_eq!(get(&source, &url).await.expect("sent"), 401);
     assert_eq!(seen.lock().unwrap().len(), 1);
     assert_eq!(source.replaced(), ["A"]);
@@ -252,7 +272,7 @@ async fn without_a_replacement_the_401_comes_back_after_one_request() {
 #[tokio::test]
 async fn a_403_is_never_a_refusal() {
     let (url, seen) = server(vec!["403 Forbidden", OK]);
-    let source = Tokens::new("A", &["B"]);
+    let source = Arc::new(Tokens::new("A", &["B"]));
     assert_eq!(get(&source, &url).await.expect("sent"), 403);
     assert_eq!(seen.lock().unwrap().len(), 1);
     assert_eq!(source.replaced(), NONE);
@@ -261,7 +281,7 @@ async fn a_403_is_never_a_refusal() {
 #[tokio::test]
 async fn a_failed_exchange_asks_for_no_replacement_and_is_not_replayed() {
     let (url, seen) = server(vec!["", OK]);
-    let source = Tokens::new("A", &["B"]);
+    let source = Arc::new(Tokens::new("A", &["B"]));
     let failure = get(&source, &url).await.expect_err("the server hung up");
     assert!(
         matches!(&failure, Failure::Send(err) if !err.is_timeout()),
@@ -274,7 +294,7 @@ async fn a_failed_exchange_asks_for_no_replacement_and_is_not_replayed() {
 #[tokio::test]
 async fn a_body_that_cannot_be_cloned_is_not_replayed_and_no_replacement_is_asked() {
     let (url, seen) = server(vec![REFUSED, OK]);
-    let source = Tokens::new("A", &["B"]);
+    let source = Arc::new(Tokens::new("A", &["B"]));
     let streamed = reqwest::Body::wrap(Streamed(Some(bytes::Bytes::from_static(b"not cloneable"))));
     let status = send(&source, &url, client().post(&url).body(streamed))
         .await
@@ -291,7 +311,7 @@ async fn a_body_that_cannot_be_cloned_is_not_replayed_and_no_replacement_is_aske
 #[tokio::test]
 async fn a_reframe_presents_the_same_credential_again_and_asks_for_no_replacement() {
     let (url, seen) = server(vec![REFRAME, OK]);
-    let source = Tokens::new("A", &["B"]);
+    let source = Arc::new(Tokens::new("A", &["B"]));
     assert_eq!(get(&source, &url).await.expect("sent"), 200);
     assert_eq!(*seen.lock().unwrap(), ["Bearer A", "Bearer A"]);
     assert_eq!(source.replaced(), NONE, "a reframe is not a refusal");
@@ -300,7 +320,7 @@ async fn a_reframe_presents_the_same_credential_again_and_asks_for_no_replacemen
 #[tokio::test]
 async fn a_refusal_that_survives_the_reframe_is_replaced_once() {
     let (url, seen) = server(vec![REFRAME, REFUSED, OK]);
-    let source = Tokens::new("A", &["B"]);
+    let source = Arc::new(Tokens::new("A", &["B"]));
     assert_eq!(get(&source, &url).await.expect("sent"), 200);
     assert_eq!(*seen.lock().unwrap(), ["Bearer A", "Bearer A", "Bearer B"]);
     assert_eq!(source.replaced(), ["A"]);
@@ -309,7 +329,7 @@ async fn a_refusal_that_survives_the_reframe_is_replaced_once() {
 #[tokio::test]
 async fn a_credential_is_reframed_at_most_once() {
     let (url, seen) = server(vec![REFRAME, REFRAME, OK]);
-    let source = Tokens::new("A", &["B"]);
+    let source = Arc::new(Tokens::new("A", &["B"]));
     assert_eq!(get(&source, &url).await.expect("sent"), 401);
     assert_eq!(seen.lock().unwrap().len(), 2);
     assert_eq!(source.replaced(), NONE);
@@ -318,7 +338,7 @@ async fn a_credential_is_reframed_at_most_once() {
 #[tokio::test]
 async fn a_final_401_comes_back_without_a_replacement() {
     let (url, seen) = server(vec![FINAL, OK]);
-    let source = Tokens::new("A", &["B"]);
+    let source = Arc::new(Tokens::new("A", &["B"]));
     assert_eq!(get(&source, &url).await.expect("sent"), 401);
     assert_eq!(seen.lock().unwrap().len(), 1);
     assert_eq!(source.replaced(), NONE);
@@ -327,8 +347,10 @@ async fn a_final_401_comes_back_without_a_replacement() {
 #[tokio::test]
 async fn an_origin_the_source_does_not_permit_receives_nothing() {
     let (url, seen) = server(vec![OK]);
-    let mut source = Tokens::new("A", &[]);
-    source.permits = false;
+    let source = Arc::new(Tokens {
+        permits: false,
+        ..Tokens::new("A", &[])
+    });
     let failure = get(&source, &url).await.expect_err("refused");
     assert!(
         matches!(&failure, Failure::Source(err) if err.class() == FailureClass::Permanent),
@@ -340,7 +362,7 @@ async fn an_origin_the_source_does_not_permit_receives_nothing() {
 
 #[tokio::test]
 async fn plaintext_to_a_remote_origin_carries_no_credential_and_fails_permanent() {
-    let source = Tokens::new("A", &[]);
+    let source = Arc::new(Tokens::new("A", &[]));
     for url in [
         "http://jmap.example.com/session",
         "http://192.0.2.1:8080/",
@@ -360,7 +382,7 @@ async fn plaintext_to_a_remote_origin_carries_no_credential_and_fails_permanent(
 #[tokio::test]
 async fn plaintext_to_loopback_still_carries_the_credential() {
     let (url, seen) = server(vec![OK]);
-    let source = Tokens::new("A", &[]);
+    let source = Arc::new(Tokens::new("A", &[]));
     assert_eq!(get(&source, &url).await.expect("sent"), 200);
     assert_eq!(*seen.lock().unwrap(), ["Bearer A"]);
 }
@@ -385,25 +407,25 @@ fn loopback_is_the_name_localhost_and_the_loopback_addresses() {
 #[tokio::test]
 async fn an_error_presenting_the_credential_sends_nothing() {
     let (url, seen) = server(vec![OK]);
-    let source = Tokens::new("A", &[]);
-    let failed = send_authenticated(
-        &source,
-        &Url::parse(&url).unwrap(),
-        client().get(&url),
-        &RetryConfig::default(),
-        Exchange::Ordinary,
-        |_, _| Err(Failure::Present),
-        judge,
-    )
-    .await;
+    let source = Arc::new(Tokens::new("A", &[]));
+    let failed = account(&source, &url)
+        .send(
+            client().get(&url),
+            Exchange::Ordinary,
+            |_, _| Err(Failure::Present),
+            judge,
+        )
+        .await;
     assert!(matches!(failed, Err(Failure::Present)), "{failed:?}");
     assert_eq!(*seen.lock().unwrap(), NONE);
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_source_that_never_answers_fails_retryable_at_the_requests_deadline() {
-    let mut source = Tokens::new("A", &[]);
-    source.never = true;
+    let source = Arc::new(Tokens {
+        never: true,
+        ..Tokens::new("A", &[])
+    });
     let started = tokio::time::Instant::now();
     let failure = get(&source, "http://127.0.0.1:9/")
         .await
@@ -445,7 +467,7 @@ async fn an_account_configured_over_https_sends_nothing_over_plaintext_loopback(
     // A session or a redirect may name `http://127.0.0.1:…`; the credential would go in
     // cleartext to whatever listens on this machine's loopback.
     let (url, seen) = server(vec![OK]);
-    let source = Tokens::new("A", &[]);
+    let source = Arc::new(Tokens::new("A", &[]));
     let failure = send(&source, "https://jmap.example.com/", client().get(&url))
         .await
         .expect_err("refused before sending");
@@ -459,8 +481,10 @@ async fn an_account_configured_over_https_sends_nothing_over_plaintext_loopback(
 
 #[tokio::test]
 async fn an_ipv6_host_reaches_the_source_without_brackets() {
-    let mut source = Tokens::new("A", &[]);
-    source.permits = false;
+    let source = Arc::new(Tokens {
+        permits: false,
+        ..Tokens::new("A", &[])
+    });
     let _ = get(&source, "http://[::1]:9/").await;
     assert_eq!(
         *source.checked.lock().unwrap(),

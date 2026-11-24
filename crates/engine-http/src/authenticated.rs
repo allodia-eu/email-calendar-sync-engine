@@ -1,11 +1,18 @@
-//! [`send_authenticated`]: the one funnel every HTTP request that carries an account's
-//! credential goes through (`docs/design/credential-source.md`).
+//! [`AuthenticatedClient`]: the one way an HTTP request that carries an account's credential
+//! goes out (`docs/design/credential-source.md`).
 //!
-//! The adapter holds the account's [`CredentialSource`], never the credential, and this asks
-//! it each time a request is about to go out, so a token the host refreshed is the one
-//! presented and no adapter has to be rebuilt for it. On the way it applies the rules that no
-//! source can loosen and no adapter can forget, because there is no other way to send:
+//! The adapter holds the account's [`CredentialSource`], never the credential, and the client
+//! asks it each time a request is about to go out, so a token the host refreshed is the one
+//! presented and no adapter has to be rebuilt for it. The client is built here, for the account's
+//! configured origin, and every request goes out on it whatever client built the request, so
+//! the rules below hold for every adapter without one having to remember them:
 //!
+//! - **No redirect is followed.** The origin is checked on each request's own URL; a followed
+//!   redirect would carry the credential past every rule here. An adapter follows a redirect, where
+//!   its protocol has one, as a request of its own.
+//! - **No proxy sees a plaintext credential.** An account configured on plaintext loopback gets a
+//!   client that ignores the environment's proxies (built with `deadline::client_for`); every other
+//!   account keeps them.
 //! - **No credential over plaintext HTTP, except to loopback from an account that lives there.** An
 //!   `http://` origin receives nothing, and the request fails as `Permanent`, unless it is the name
 //!   `localhost` or a loopback address (`127.0.0.0/8`, `::1`) **and** the account's configured origin
@@ -28,16 +35,24 @@
 
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
-    sync::{Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
 };
 
 use engine_provider::{
     Credential, CredentialFailure, CredentialProtocol, CredentialRequest, CredentialSource,
     Deadlines, Origin, with_credential,
 };
-use reqwest::{Client, Request, RequestBuilder, StatusCode, Url};
+use reqwest::{Client, Method, Request, RequestBuilder, StatusCode, Url, redirect::Policy};
 
 use crate::{Exchange, RetryConfig, SendError, Sent, send_retrying};
+
+/// How much of a refused reply's body is read before the source is asked for a replacement.
+/// The body is a diagnostic, nothing depends on it, and a refusal is no place for a large one.
+const REFUSAL_BODY: usize = 64 * 1024;
+
+/// How long that read may take, all of it: a trickling refusal must not hold the request.
+const REFUSAL_READ: Duration = Duration::from_secs(5);
 
 /// What a `401` to a request that carried the credential says, as the adapter reads the
 /// server's challenge (`WWW-Authenticate`, RFC 9110 §11.6.1).
@@ -59,93 +74,168 @@ pub enum Unauthorized {
     Final,
 }
 
-/// Sends `request` with a credential from `source`, presented by `present`, and once more with
-/// a replacement if the server refuses it. `configured` is the account's configured origin (the
-/// URL the host gave the adapter), which decides whether plaintext loopback may carry it.
+/// An account's HTTP client for requests that carry its credential: the account's configured
+/// origin, its [`CredentialSource`], its [`RetryConfig`], and a `reqwest` client built for them
+/// that follows no redirect.
 ///
-/// 1. The request's origin must be `https`, or `http` to loopback from an account whose
-///    `configured` origin is plaintext loopback too, and the source must permit it. Otherwise
-///    nothing is sent, and the result is a `Permanent` [`CredentialFailure`].
-/// 2. The source is asked for a credential under [`Deadlines::reply`]; a source that does not
-///    answer in time fails as `Retryable`.
-/// 3. `present` adds the credential to the request, and it goes through [`send_retrying`], so a
-///    throttle is waited out and a silent server bounded exactly as an anonymous request is. An
-///    error from `present` (a kind of credential the adapter cannot send) ends the request before
-///    anything is sent.
-/// 4. A `401` is handed to `judge` with the credential it refused. On
-///    [`Reframe`](Unauthorized::Reframe) the same credential is presented again, once. On
-///    [`Refused`](Unauthorized::Refused) the source is asked to
-///    [replace](CredentialSource::replace) it, under the same deadline, and the request goes once
-///    more with the replacement. A second refusal, a source with no replacement, and a request
-///    whose body cannot be cloned all hand the `401` back, which the adapter reads as the
-///    authentication failure it is. The refused reply's body is read before `replace` is asked, so
-///    its connection is free while the source refreshes. A source that fails or does not answer
-///    when asked to replace ends the request with its own failure, in place of the `401`: a request
-///    was sent then, and refused.
-///
-/// # The client must not follow redirects
-///
-/// The origin is checked once, on the request's own URL, before anything is sent. A client
-/// that followed a redirect would carry the credential to wherever the server pointed, past
-/// both the plaintext rule and `permits`. Build it with `redirect::Policy::none()` and follow
-/// a redirect, where the protocol has one, as a new request through this funnel.
-///
-/// No other reply is judged and nothing else is replayed: a `403` is the server's answer
-/// about the request, and a failed exchange may have been received.
-///
-/// # Errors
-///
-/// `E` from a [`SendError`] (the exchange failed, or the request could not be built), from a
-/// [`CredentialFailure`] (the origin was refused, or the source failed, with its class, whether
-/// asked before the first request or for a replacement after a `401`), or from `present`.
-///
-/// # Panics
-///
-/// Outside a tokio runtime with the timer enabled, as [`send_retrying`] does.
-pub async fn send_authenticated<E>(
-    source: &dyn CredentialSource,
-    configured: &Url,
-    request: RequestBuilder,
-    retry: &RetryConfig,
-    exchange: Exchange<'_>,
-    present: impl Fn(RequestBuilder, &Credential) -> Result<RequestBuilder, E>,
-    judge: impl Fn(&Sent, &Credential) -> Unauthorized,
-) -> Result<Sent, E>
-where
-    E: From<SendError> + From<CredentialFailure>,
-{
-    let (client, built) = request.build_split();
-    let request = built.map_err(SendError::from)?;
-    let origin = credential_origin(request.url(), configured)?;
-    let ask = CredentialRequest::new(CredentialProtocol::Http, &origin);
-    let presentation = Presentation {
-        client: &client,
-        stash: Mutex::new(Some(request)),
-        retry,
-        exchange,
-        present: &present,
-        judge: &judge,
-    };
-    let outcome = with_credential(
-        source,
-        &ask,
-        Deadlines::STANDARD.reply(),
-        |attempt: &Attempt<E>| {
-            matches!(
-                attempt,
-                Attempt::Refused {
-                    replayable: true,
-                    ..
-                }
-            )
-        },
-        |credential| presentation.attempt(credential),
-    )
-    .await;
-    match outcome {
-        Ok(sent) => Ok(sent),
-        Err(Attempt::Refused { sent, .. }) => Ok(*sent),
-        Err(Attempt::Failed(err)) => Err(err),
+/// Build requests with [`request`](Self::request) (or [`get`](Self::get),
+/// [`post`](Self::post)) and send them with [`send`](Self::send). A request built by any other
+/// client goes out on this one all the same, so its redirect and proxy settings never apply.
+pub struct AuthenticatedClient {
+    client: Client,
+    configured: Url,
+    source: Arc<dyn CredentialSource>,
+    retry: RetryConfig,
+}
+
+/// Names the configured origin, which is the host's own configuration; never the credential.
+impl core::fmt::Debug for AuthenticatedClient {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AuthenticatedClient")
+            .field("configured", &self.configured.as_str())
+            .field("retry", &self.retry)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AuthenticatedClient {
+    /// The client for the account configured at `configured` (the URL the host gave the
+    /// adapter), trusting per `tls`, naming `user_agent`, asking `source`, and waiting out
+    /// throttles as `retry` says.
+    ///
+    /// # Errors
+    ///
+    /// [`SendError`] when the HTTP client cannot be built (a TLS backend that cannot start).
+    pub fn new(
+        tls: &engine_tls::TlsClientConfig,
+        user_agent: &crate::UserAgent,
+        configured: Url,
+        source: Arc<dyn CredentialSource>,
+        retry: RetryConfig,
+    ) -> Result<Self, SendError> {
+        let client = crate::deadline::client_for(tls, user_agent, &configured)
+            .redirect(Policy::none())
+            .build()?;
+        Ok(Self {
+            client,
+            configured,
+            source,
+            retry,
+        })
+    }
+
+    /// A request to `url`, to fill in and [`send`](Self::send).
+    pub fn request(&self, method: Method, url: &str) -> RequestBuilder {
+        self.client.request(method, url)
+    }
+
+    /// A `GET` of `url`.
+    pub fn get(&self, url: &str) -> RequestBuilder {
+        self.request(Method::GET, url)
+    }
+
+    /// A `POST` to `url`.
+    pub fn post(&self, url: &str) -> RequestBuilder {
+        self.request(Method::POST, url)
+    }
+
+    /// The origin the host configured the account at.
+    #[must_use]
+    pub fn configured(&self) -> &Url {
+        &self.configured
+    }
+
+    /// Sends `request` on this client with a credential from the source, presented by
+    /// `present`, and once more with a replacement if the server refuses it.
+    ///
+    /// 1. The request's origin must be `https`, or `http` to loopback from an account configured on
+    ///    plaintext loopback too, and the source must permit it. Otherwise nothing is sent, and the
+    ///    result is a `Permanent` [`CredentialFailure`].
+    /// 2. The source is asked for a credential under [`Deadlines::reply`]; a source that does not
+    ///    answer in time fails as `Retryable`.
+    /// 3. `present` adds the credential to the request, and it goes through [`send_retrying`], so a
+    ///    throttle is waited out and a silent server bounded exactly as an anonymous request is. An
+    ///    error from `present` (a kind of credential the adapter cannot send) ends the request
+    ///    before anything is sent.
+    /// 4. A `401` is handed to `judge` with the credential it refused. On
+    ///    [`Reframe`](Unauthorized::Reframe) the same credential is presented again, once. On
+    ///    [`Refused`](Unauthorized::Refused) the source is asked to
+    ///    [replace](CredentialSource::replace) it, under the same deadline, and the request goes
+    ///    once more with the replacement. A second refusal, a source with no replacement, and a
+    ///    request whose body cannot be cloned all hand the `401` back, which the adapter reads as
+    ///    the authentication failure it is.
+    ///
+    /// Before `replace` is asked, up to 64 KiB of the refused reply's body is read, for no
+    /// longer than five seconds, so its connection is free while the source refreshes. That read
+    /// is best effort: a body cut off, too large or trickling leaves the reply a refusal as it
+    /// stands, never a failed exchange, because a `401` says the request was not processed (a
+    /// submission's included). A source that fails or does not answer when asked to replace ends
+    /// the request with its own failure, in place of the `401`: a request was sent then, and
+    /// refused.
+    ///
+    /// No other reply is judged and nothing else is replayed: a `403` is the server's answer
+    /// about the request, and a failed exchange may have been received.
+    ///
+    /// # Errors
+    ///
+    /// `E` from a [`SendError`] (the exchange failed, or the request could not be built), from a
+    /// [`CredentialFailure`] (the origin was refused, or the source failed, with its class,
+    /// whether asked before the first request or for a replacement after a `401`), or from
+    /// `present`.
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime with the timer enabled, as [`send_retrying`] does.
+    pub async fn send<E>(
+        &self,
+        request: RequestBuilder,
+        exchange: Exchange<'_>,
+        present: impl Fn(RequestBuilder, &Credential) -> Result<RequestBuilder, E>,
+        judge: impl Fn(&Sent, &Credential) -> Unauthorized,
+    ) -> Result<Sent, E>
+    where
+        E: From<SendError> + From<CredentialFailure>,
+    {
+        // Only the request is kept: it goes out on this client, whichever built it.
+        let (_, built) = request.build_split();
+        let request = built.map_err(SendError::from)?;
+        let (client, source, configured, retry) = (
+            &self.client,
+            self.source.as_ref(),
+            &self.configured,
+            &self.retry,
+        );
+        let origin = credential_origin(request.url(), configured)?;
+        let ask = CredentialRequest::new(CredentialProtocol::Http, &origin);
+        let presentation = Presentation {
+            client,
+            stash: Mutex::new(Some(request)),
+            retry,
+            exchange,
+            present: &present,
+            judge: &judge,
+        };
+        let outcome = with_credential(
+            source,
+            &ask,
+            Deadlines::STANDARD.reply(),
+            |attempt: &Attempt<E>| {
+                matches!(
+                    attempt,
+                    Attempt::Refused {
+                        replayable: true,
+                        ..
+                    }
+                )
+            },
+            |credential| presentation.attempt(credential),
+        )
+        .await;
+        match outcome {
+            Ok(sent) => Ok(sent),
+            Err(Attempt::Refused { sent, .. }) => Ok(*sent),
+            Err(Attempt::Failed(err)) => Err(err),
+        }
     }
 }
 
@@ -245,11 +335,10 @@ impl<P, J> Presentation<'_, P, J> {
                 Unauthorized::Reframe if replayable && !reframed => reframed = true,
                 Unauthorized::Refused => {
                     // Read now, so the connection is free while the source refreshes; the
-                    // reply comes back as it came if there is no replacement.
+                    // reply comes back as it came if there is no replacement. Best effort: a
+                    // body that breaks off leaves a refusal, never a failed exchange.
                     let sent = if replayable {
-                        sent.into_read()
-                            .await
-                            .map_err(|err| Attempt::Failed(err.into()))?
+                        sent.read_refusal(REFUSAL_BODY, REFUSAL_READ).await
                     } else {
                         sent
                     };
@@ -286,3 +375,7 @@ mod tests;
 #[cfg(test)]
 #[path = "authenticated_reply_tests.rs"]
 mod reply_tests;
+
+#[cfg(test)]
+#[path = "authenticated_wire_tests.rs"]
+mod wire_tests;
