@@ -62,8 +62,9 @@ impl core::fmt::Debug for CredentialSubject {
 /// The scheme says how the connection is secured as well as what it speaks, so a source can
 /// tell a nonstandard port or plaintext from the rest. An HTTP origin's scheme is `https` or
 /// `http`. IMAP and SMTP use the IANA service names of RFC 8314 §7: `imaps` (TLS from the first
-/// byte) and `imap` (`STARTTLS`), `submissions` and `submission` (`STARTTLS`). Neither IMAP
-/// nor SMTP ever presents a credential before TLS is up, on either.
+/// byte) and `imap` (`STARTTLS`), `submissions` and `submission` (`STARTTLS`). ManageSieve uses
+/// `sieve`, its URI scheme (RFC 5804 §3), whose only transport is `STARTTLS`. None of them ever
+/// presents a credential before TLS is up.
 ///
 /// Scheme and host are kept in ASCII lowercase, so origins compare as the URL standard
 /// compares them.
@@ -115,6 +116,9 @@ pub enum CredentialProtocol {
     Imap,
     /// SMTP submission: `AUTH`.
     Smtp,
+    /// ManageSieve (RFC 5804), where an IMAP account's mail rules and out-of-office reply are
+    /// kept: `AUTHENTICATE`.
+    ManageSieve,
     /// An HTTP request's `Authorization` header: JMAP, CalDAV, CardDAV, Graph, Google.
     Http,
 }

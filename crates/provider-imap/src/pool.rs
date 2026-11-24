@@ -463,3 +463,6 @@ mod spare;
 
 #[path = "pool_watch.rs"]
 mod watch;
+
+#[path = "pool_other.rs"]
+pub(crate) mod other;

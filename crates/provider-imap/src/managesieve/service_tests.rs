@@ -1,0 +1,139 @@
+//! A session's slot is held for one deadline at most, however slowly the server answers.
+
+use std::sync::Arc;
+
+use engine_core::error::FailureClass;
+use engine_provider::ProviderError;
+use tokio::{io::AsyncWriteExt, sync::Semaphore};
+
+use super::*;
+use crate::managesieve::test_support::{GREETING, OneSlot};
+
+#[tokio::test(start_paused = true)]
+async fn a_server_answering_a_byte_at_a_time_gives_the_slot_back_by_the_deadline() {
+    let slots = Arc::new(Semaphore::new(1));
+    let budget = Arc::new(OneSlot(Arc::clone(&slots)));
+    let (client, mut server) = tokio::io::duplex(64);
+    let client = std::sync::Mutex::new(Some(client));
+    let dial: SieveDial<tokio::io::DuplexStream> = Arc::new(move || {
+        let stream = client.lock().unwrap().take().expect("one dial");
+        Box::pin(Session::open(stream))
+    });
+    // Each byte well inside the reply bound, so no single wait ever times out.
+    tokio::spawn(async move {
+        for byte in GREETING.iter().cycle() {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            if server.write_all(&[*byte]).await.is_err() {
+                return;
+            }
+        }
+    });
+    let sieve = ManageSieve::new(dial, budget, true);
+    let started = tokio::time::Instant::now();
+    let err = sieve
+        .with_session(async |session: &mut Session<tokio::io::DuplexStream>| {
+            session.refresh_capabilities().await.map(|_| ())
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(started.elapsed(), SESSION_DEADLINE);
+    assert_eq!(ProviderError::from(err).class(), FailureClass::Retryable);
+    assert_eq!(slots.available_permits(), 1, "the slot is given back");
+}
+
+#[tokio::test]
+async fn no_logout_is_sent_on_a_stream_that_failed_and_one_is_on_a_sound_one() {
+    let (sieve, sessions) = crate::managesieve::test_support::scripted(&[b"\"a\"\r\n"]);
+    let err = sieve
+        .with_session(async |session: &mut Session<crate::mock::MockStream>| {
+            session.list_scripts().await
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SieveError::Imap(_)));
+    let sent = crate::managesieve::test_support::sent(&sessions);
+    assert_eq!(
+        sent, "LISTSCRIPTS\r\n",
+        "the connection closed under it: no LOGOUT"
+    );
+
+    let (sieve, sessions) = crate::managesieve::test_support::scripted(&[b"OK\r\n", b"OK\r\n"]);
+    let _ = sieve
+        .with_session(async |session: &mut Session<crate::mock::MockStream>| {
+            session.list_scripts().await
+        })
+        .await
+        .unwrap();
+    let sent = crate::managesieve::test_support::sent(&sessions);
+    assert_eq!(sent, "LISTSCRIPTS\r\nLOGOUT\r\n");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_deadline_after_the_script_was_stored_and_before_it_was_switched_on_needs_confirmation() {
+    // PUTSCRIPT stored at once; the answer to SETACTIVE a byte at a time.
+    let (written, slots) = write_then_trickle(b"OK\r\n").await;
+    assert!(written.unwrap_err().requires_confirmation());
+    assert_eq!(slots.available_permits(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_logout_answered_slowly_does_not_put_a_finished_write_in_doubt() {
+    use crate::managesieve::test_support::{listing, script};
+
+    // PUTSCRIPT, SETACTIVE and the read after them answered at once; only LOGOUT's answer
+    // trickles.
+    let mut answered = b"OK\r\nOK\r\n".to_vec();
+    answered.extend_from_slice(&listing(&[("rules", true)]));
+    answered.extend_from_slice(&script(""));
+    let (written, slots) = write_then_trickle(&answered).await;
+    assert!(written.is_ok(), "{written:?}");
+    assert_eq!(slots.available_permits(), 1);
+}
+
+/// A write of no rules to an empty account whose server answers the greeting, `CAPABILITY`,
+/// `LISTSCRIPTS` and then `answered` at once, and anything after a byte every 20 seconds, past
+/// the session's deadline.
+async fn write_then_trickle(
+    answered: &[u8],
+) -> (
+    Result<engine_core::rules::RulesReceipt, engine_provider::ProviderError>,
+    Arc<Semaphore>,
+) {
+    use engine_core::{ids::AccountId, rules::RuleSet, version::RuleSetVersion};
+    use engine_provider::MailRules;
+
+    use crate::managesieve::test_support::{capability, listing};
+
+    let slots = Arc::new(Semaphore::new(1));
+    let budget = Arc::new(OneSlot(Arc::clone(&slots)));
+    let (client, mut server) = tokio::io::duplex(1 << 20);
+    let client = std::sync::Mutex::new(Some(client));
+    let dial: SieveDial<tokio::io::DuplexStream> = Arc::new(move || {
+        let stream = client.lock().unwrap().take().expect("one dial");
+        Box::pin(Session::open(stream))
+    });
+    let mut quick = GREETING.to_vec();
+    quick.extend_from_slice(&capability("fileinto"));
+    quick.extend_from_slice(&listing(&[]));
+    quick.extend_from_slice(answered);
+    tokio::spawn(async move {
+        server.write_all(&quick).await.unwrap();
+        loop {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            if server.write_all(b"O").await.is_err() {
+                return;
+            }
+        }
+    });
+    let sieve = ManageSieve::new(dial, budget, true);
+    let account = AccountId::try_from("sieve").unwrap();
+    // The version an empty account reads at: no script, no text.
+    let empty = crate::managesieve::state::State {
+        listed: Vec::new(),
+        script: None,
+        text: String::new(),
+        server_reply: None,
+    };
+    let base = RuleSet::new(Vec::new()).with_version(RuleSetVersion::new(empty.version()));
+    (sieve.replace_rules(&account, &base, &[]).await, slots)
+}

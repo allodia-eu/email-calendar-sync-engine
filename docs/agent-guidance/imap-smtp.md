@@ -899,6 +899,54 @@ credential.
   caller re-syncs instead. A UID the folder simply no longer holds is a `UID STORE`
   no-op, so a repeated delete settles rather than parking the op that drives it.
 
+## Rules and the reply over ManageSieve
+
+An IMAP account's mail rules and out-of-office reply live on a ManageSieve service (RFC 5804) beside
+the mailbox, as one Sieve script. `src/managesieve/` is that client, a module of this crate because
+it serves the same account: the account's TLS connector, credential source, SASL mechanisms and
+connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "As built in slice
+3" there).
+
+- **Configured, not discovered.** `ImapConfig::with_managesieve(addr, server_name)`; no SRV lookup.
+  `STARTTLS` is the protocol's one transport and is required.
+- **Probed at connect, beside the mail, optional to the account.** `ImapAccount::connect` reads
+  the greeting and the capabilities over TLS (no credential) alongside the first IMAP connection
+  (`join`, so the outcome never depends on which finishes first), under the probe's own deadline
+  (`reach::PROBE_DEADLINE`, 10 s: a blackholed endpoint costs the connect that and no more), and
+  sends `LOGOUT` without waiting for its answer. Success: `ConnectStep::Negotiated("ManageSieve",
+  …)` and every provider of the account (not a shared store's) answers `mail_rules()`, and
+  `vacation()` where `vacation` is listed. A failure or a timeout:
+  `ConnectStep::Unavailable { service: ManageSieve, class }`, and neither is offered. A `Retryable`
+  one is probed again beside a later dial, as is any after `invalidate()`; a permanent one (no
+  `STARTTLS`, not ManageSieve) waits for `invalidate()`. After any failure no dial probes for
+  `PROBE_BACKOFF` (5 min), so a blackholed endpoint costs a dial at most one probe deadline per
+  backoff; a probe whose dial is dropped is wanted again. The accessors answer what the last probe
+  found, read in one load of the state byte (`probe_state::ProbeState`). Mail works either way. An offer does not mean signing in works:
+  a `Credential::ActingAs`, or a token against a `PLAIN`-only server, fails at the first call.
+- **A session per call, in the budget.** `ImapPool::reserve_other` takes a permit (closing the
+  longest-parked IMAP socket when the shelf and the slots in use would pass the ceiling); the
+  session dials, signs in (`AUTHENTICATE "PLAIN"` with `sasl::plain_response`, or
+  `OAUTHBEARER`/`XOAUTH2`) and works, within `SESSION_DEADLINE` (2 min); past it, after a write
+  went out, the call answers needs-confirmation. `LOGOUT` then goes out outside the deadline,
+  unawaited, so a slow answer to it never puts a finished write in doubt. The credential is asked as
+  `CredentialProtocol::ManageSieve` for `sieve://<server name>:<port>`. A `Credential::ActingAs` is refused
+  before sending (`ImapError::Bad`), as SMTP refuses it: `PLAIN` with an authorization identity
+  over ManageSieve has not been proven on a harness server yet.
+- **The wire.** No tags: one command at a time, its response ends at `OK`, `NO` or `BYE`. Strings
+  are quoted where they can be, else sent as `{n+}` literals (a script always is). A refusal keeps
+  its response code (`NONEXISTENT`, `ACTIVE`, `QUOTA/…`, `TRYLATER`) and never the prose, which
+  quotes the script. A `NO` to `AUTHENTICATE` is a refused credential (one replacement asked),
+  except `TRYLATER` (retryable) and `TRANSITION-NEEDED`/`AUTH-TOO-WEAK`/`ENCRYPT-NEEDED`
+  (authentication, no replacement).
+- **Rules and reply.** `managesieve::state` picks the script (as JMAP does) and hashes the list and
+  the script into the version; `rules` and `vacation` implement the traits over
+  `engine_sieve::dialect`, the reply as Roundcube's reply rule (`dialect::reply`). The guard is
+  `Absent`; a stale base is refused in the write's own session.
+- **Proven live** on both harness servers (`managesieve/live_tests.rs`,
+  `live_provider_tests.rs`); offline over the captured responses in
+  `tests/fixtures/managesieve/`. Stalwart's `HAVESPACE` says yes to any size (STALWART-10), so
+  nothing asks it before storing.
+
 ## Mail mutations
 
 - **`edit_mail`** applies a provider-neutral `MailEdit` to the bound mailbox over the

@@ -1,0 +1,7 @@
+"IMPLEMENTATION" "Stalwart ManageSieve"
+"VERSION" "1.0"
+"SASL" "PLAIN OAUTHBEARER XOAUTH2"
+"SIEVE" "body comparator-elbonia comparator-i;ascii-casemap comparator-i;ascii-numeric comparator-i;octet convert copy date duplicate editheader enclose encoded-character enotify envelope envelope-deliverby envelope-dsn environment ereject extlists extracttext fcc fileinto foreverypart ihave imap4flags include index mailbox mailboxid mboxmetadata mime redirect-deliverby redirect-dsn regex reject relational replace servermetadata spamtest spamtestplus special-use subaddress vacation vacation-seconds variables virustest"
+"NOTIFY" "mailto"
+"MAXREDIRECTS" "1"
+OK "Stalwart ManageSieve at your service."

@@ -361,7 +361,7 @@ adapter can reach.
 | Adapter | Reply | Guard | Vocabulary | Rules effect |
 |---|---|---|---|---|
 | JMAP (`VacationResponse`, RFC 8621 §8) | **Implemented** (`jmap.md` → "Out-of-office") | `Enforced` (`ifInState`) | either end, subject, text and HTML; everyone; one reply | observed through JMAP Sieve, else `Unknown` |
-| IMAP + ManageSieve | Planned (slice 3): the `vacation` action in the active script | the script's | per server (`date`, `vacation-seconds`) | `Untouched`: one script holds both |
+| IMAP + ManageSieve | **Implemented** (`imap-smtp.md` → "Rules and the reply over ManageSieve"): Roundcube's reply rule in the rules' script | `Absent`, with a stale read refused in the write's session | either end where `date` and `relational` are listed, subject, text only; everyone; one reply | `Untouched`: one script holds both |
 | Graph (`automaticRepliesSetting`) | Planned (slices 4, 5) | `Absent` | both ends, no subject, one body; organization, organization and contacts; outside reply | `Untouched` |
 | Gmail (`VacationSettings`) | Planned (slice 5) | `Absent` | either end, subject, text and HTML; contacts, organization, contacts in organization (Workspace) | `Untouched` |
 | CalDAV / CardDAV | n/a | | | |
@@ -395,7 +395,7 @@ An account's rules are a setting too, written whole and directly, guarded by the
 | Adapter | Rules | Guard | Vocabulary |
 |---|---|---|---|
 | JMAP (Sieve, RFC 9661) | **Implemented** (`jmap.md` → "Mail rules") | `Enforced` (`ifInState` on `SieveScript`) | the dialect's, from the account's `sieveExtensions` and `maxNumberRedirects` |
-| IMAP + ManageSieve | Planned (slice 3): the same dialect, one script with the reply | none (compare the script) | per server's greeting |
+| IMAP + ManageSieve | **Implemented** (`imap-smtp.md` → "Rules and the reply over ManageSieve"): the same dialect, one script with the reply | `Absent`; a stale read (a SHA-256 of the script list and the script) is refused in the write's own session | the dialect's, from the `SIEVE` and `MAXREDIRECTS` the server lists once signed in |
 | Graph (`messageRule`) | Planned (slices 4, 5) | **unverified** (`@odata.etag`) | fixed |
 | Gmail (filters) | Planned (slice 5) | `Absent` | fixed: no stop, no order, no disabled rule |
 | CalDAV / CardDAV | n/a | | |

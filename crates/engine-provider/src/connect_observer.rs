@@ -33,13 +33,15 @@
 //!
 //! | Adapter | Steps |
 //! |---|---|
-//! | `provider-imap` | [`TlsEstablished`](ConnectStep::TlsEstablished) after the handshake, [`Authenticated`](ConnectStep::Authenticated) after `LOGIN`, [`Negotiated`](ConnectStep::Negotiated) after `CAPABILITY`/`ENABLE` |
+//! | `provider-imap` | [`TlsEstablished`](ConnectStep::TlsEstablished) after the handshake, [`Authenticated`](ConnectStep::Authenticated) after `LOGIN`, [`Negotiated`](ConnectStep::Negotiated) after `CAPABILITY`/`ENABLE`; where the host configured ManageSieve, [`Negotiated`](ConnectStep::Negotiated) with its Sieve extensions, or [`Unavailable`](ConnectStep::Unavailable) when it could not be reached |
 //! | `provider-jmap` | [`Redirected`](ConnectStep::Redirected) per well-known hop, [`Authenticated`](ConnectStep::Authenticated) on the session `2xx`, [`Discovered`](ConnectStep::Discovered) with the `apiUrl` |
 //! | `provider-caldav` | [`Redirected`](ConnectStep::Redirected) per hop, [`Discovered`](ConnectStep::Discovered) with the calendar-home href |
 //! | `provider-caldav` (CardDAV) | [`Redirected`](ConnectStep::Redirected) per hop, [`Discovered`](ConnectStep::Discovered) with the address-book-home href, [`Negotiated`](ConnectStep::Negotiated) with the home's `DAV:` classes |
 //! | `provider-graph` | nothing — `GraphClient::connect` performs no I/O |
 
 use std::borrow::Cow;
+
+use engine_core::error::FailureClass;
 
 use crate::TlsVersion;
 
@@ -118,9 +120,41 @@ pub enum ConnectStep<'a> {
         /// and ordered stably, so two logs can be compared.
         features: &'a [&'a str],
     },
+    /// An optional service beside the account could not be reached at connect, so what it
+    /// serves is not offered, and the account works without it: a ManageSieve endpoint whose
+    /// greeting failed leaves the account's mail working and its rules unreachable.
+    ///
+    /// Reported once, because the absence alone (`mail_rules()` answering `None`) does not
+    /// tell a host that an endpoint it configured is wrong. It carries the
+    /// [`FailureClass`] and nothing else: no address, no server text.
+    ///
+    /// Build with [`ConnectStep::unavailable`].
+    #[non_exhaustive]
+    Unavailable {
+        /// The service that could not be reached.
+        service: ConnectService,
+        /// How it failed.
+        class: FailureClass,
+    },
+}
+
+/// An optional service an adapter reaches beside the account's own protocol, named for a
+/// [`ConnectStep::Unavailable`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ConnectService {
+    /// ManageSieve (RFC 5804), where an IMAP account keeps its mail rules and out-of-office
+    /// reply.
+    ManageSieve,
 }
 
 impl<'a> ConnectStep<'a> {
+    /// An optional service that could not be reached at connect, and how it failed.
+    #[must_use]
+    pub fn unavailable(service: ConnectService, class: FailureClass) -> Self {
+        Self::Unavailable { service, class }
+    }
+
     /// The dialect and optional features a session negotiated.
     #[must_use]
     pub fn negotiated(dialect: &'a str, features: &'a [&'a str]) -> Self {
@@ -223,6 +257,9 @@ mod tests {
             ConnectStep::Negotiated {
                 dialect, features, ..
             } => format!("negotiated {dialect} [{}]", features.join(" ")),
+            ConnectStep::Unavailable { service, class, .. } => {
+                format!("unavailable {service:?} {class:?}")
+            }
         }
     }
 
@@ -256,6 +293,23 @@ mod tests {
         IgnoreConnectSteps.step(&ConnectStep::TlsEstablished(TlsVersion::Tls1_2));
         IgnoreConnectSteps.step(&ConnectStep::redirected("https://a/", "https://b/"));
         IgnoreConnectSteps.step(&ConnectStep::discovered("https://b/api"));
+    }
+
+    #[test]
+    fn a_service_that_could_not_be_reached_is_named_by_type_and_class_alone() {
+        // What a host logs when an optional service beside the account failed at connect:
+        // which service, as a value no caller can misspell, and the class of the failure,
+        // never the server's words.
+        let step = ConnectStep::unavailable(ConnectService::ManageSieve, FailureClass::Retryable);
+        assert_eq!(render(&step), "unavailable ManageSieve Retryable");
+        assert!(matches!(
+            step,
+            ConnectStep::Unavailable {
+                service: ConnectService::ManageSieve,
+                class: FailureClass::Retryable,
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -11,8 +11,8 @@ use engine_sieve::{
     dialect::{
         DialectError, DialectErrorKind, read_rules,
         reply::{
-            ReplyRefusal, ScriptReply, UnreadReply, includes, read_reply, write_reply,
-            write_reply_over,
+            ReplyRefusal, ScriptReply, UnreadReply, includes, read_reply, unnamed_vacation,
+            write_reply, write_reply_over,
         },
         write_rules,
     },
@@ -279,4 +279,23 @@ fn the_plugin_s_received_header_window_is_the_reply_unread() {
     );
     assert_ne!(mixed, RECEIVED);
     assert_eq!(read_reply(&mixed), ScriptReply::Absent);
+}
+
+#[test]
+fn a_vacation_the_dialect_did_not_name_is_told_apart_from_a_named_rule_s() {
+    // A server's own reply script (Stalwart's, as its JMAP reply writes it) names no rule.
+    let server = "require [\"vacation\", \"relational\", \"date\"];\r\n\r\nif currentdate \
+                  :value \"ge\" \"iso8601\" \"2030-01-02T09:00:00Z\" {\r\nvacation :mime \"x\";\r\n}\r\n";
+    assert!(unnamed_vacation(server));
+    // A Roundcube-named rule of the user's, and Roundcube's own reply, are named.
+    assert!(!unnamed_vacation(&script(&[&rule(
+        "Boss",
+        "vacation \"In a meeting.\""
+    )])));
+    assert!(!unnamed_vacation(&script(&[REPLY, &rule("A", "keep")])));
+    assert!(!unnamed_vacation(&script(&[&rule("A", "keep")])));
+    // An unnamed reply-shaped rule counts too: no Roundcube wrote it.
+    assert!(unnamed_vacation(
+        "if true\r\n{\r\n\tvacation \"x\";\r\n}\r\n"
+    ));
 }

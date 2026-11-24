@@ -1,7 +1,7 @@
 # Filters and out-of-office: design note
 
-Status: **design settled; slice 1 (the reply over JMAP) and slice 2 (rules over JMAP Sieve)
-implemented.** Written
+Status: **design settled; slice 1 (the reply over JMAP), slice 2 (rules over JMAP Sieve) and
+slice 3 (rules and the reply over ManageSieve) implemented.** Written
 2026-11-23, when the owner moved message rules and automatic replies into scope; every question it
 raised was decided the same day (section 7). `north-star.md` records the scope and the accessor
 pattern (#378). Slice 1 landed `engine_core::vacation`, the `Vacation` trait and
@@ -9,8 +9,11 @@ pattern (#378). Slice 1 landed `engine_core::vacation`, the `Vacation` trait and
 questions it was to settle live ("Settled by live tests"). Slice 2 has landed `engine-sieve` (the
 segmenter, and the dialect reader, writer and vocabulary), `engine_core::rules` with
 `plan_rules`, the `MailRules` trait and `Provider::mail_rules`, and `provider-jmap`'s rules over
-JMAP Sieve, with the reply kept running beside them, and settled live how the two coexist. Where the code differs from a sketch below, the sketch has been brought up to date
-and says why.
+JMAP Sieve, with the reply kept running beside them, and settled live how the two coexist.
+Slice 3 has landed the reply as a rule of the script (`engine_sieve::dialect::reply`) and a
+`managesieve` module of `provider-imap` with both traits, proven live on Stalwart and Dovecot
+("Settled in slice 3"). Where the code differs from a sketch below, the sketch has been brought up
+to date and says why.
 
 Marks used below: **live** = observed against a harness server on 2026-11-23; **docs** = read from
 the RFC or vendor reference cited; **unverified** = believed, not yet checked, and must be proven
@@ -83,11 +86,12 @@ JMAP account shared read-only lists neither `sieve` nor `vacationresponse` (capt
   `VacationResponse/get` answers the singleton `{isEnabled: false, fromDate: null, toDate: null,
   subject: null, textBody: null, htmlBody: null}`. Both answer `state: "n"`, and they are one
   counter (**live**, slice 1): a write of either moves both ("Settled by live tests").
-- **Stalwart v1.0.2, ManageSieve.** Listening on 4190 inside the container, **not published** by
-  `docker/stalwart/docker-compose.yml`. Greeting: `VERSION "1.0"`, `STARTTLS`, `SASL ""` before
+- **Stalwart v1.0.2, ManageSieve.** Listening on 4190 inside the container, published on
+  `127.0.0.1:14190` since slice 3. Greeting: `VERSION "1.0"`, `STARTTLS`, `SASL ""` before
   TLS (mechanisms come after `STARTTLS`, RFC 5804 §1.7), `MAXREDIRECTS "1"`, the same extension
   list as JMAP.
-- **Dovecot 2.4.4 + Pigeonhole** (the IMAP harness). ManageSieve on 34190, not published.
+- **Dovecot 2.4.4 + Pigeonhole** (the IMAP harness). ManageSieve on 34190, published from the rev1
+  service on `127.0.0.1:14191` since slice 3; `MAXREDIRECTS "4"` is listed only once signed in.
   Greeting: `SASL "PLAIN"`, `STARTTLS`, `VERSION "1.0"`, and a **smaller** set: `fileinto reject
   envelope encoded-character vacation subaddress comparator-i;ascii-numeric relational regex
   imap4flags copy include body variables enotify environment mailbox date index ihave duplicate
@@ -434,6 +438,56 @@ comes from host configuration, with no SRV discovery (RFC 5804 §1.8) for now. A
 answers `Some` only when the host gave it that endpoint and the greeting succeeded. On ManageSieve,
 rules and vacation are one script, so both traits are one object and share its version.
 
+As built in slice 3 (`provider-imap/src/managesieve/`): `ImapConfig::with_managesieve(addr,
+server_name)` names the endpoint; `STARTTLS`, the protocol's one transport, is required. When the
+account connects it reads the greeting and what the server offers over TLS, with no credential,
+alongside the mail connect (joined, so the outcome never depends on which finishes first), under
+its own 10-second deadline, and leaves without waiting for `LOGOUT`'s answer.
+Where that succeeds the connect observer sees `ConnectStep::Negotiated("ManageSieve", extensions)`
+and `mail_rules()` answers `Some` (`vacation()` too where `vacation` is listed). Where it fails the
+observer sees `ConnectStep::Unavailable { service: ConnectService::ManageSieve, class }`, the class
+alone, and both answer `None`; mail works without them. The accessors answer what the last probe
+found: a failure that may pass (`Retryable`, a timeout) is probed again beside a later dial, and
+`invalidate()` asks for a probe whatever the last one found, so a blip at connect does not hide the
+rules for the account's lifetime. One that will not pass (no `STARTTLS`, not ManageSieve) waits for
+`invalidate()`. After any failure no dial probes for five minutes, so a blackholed endpoint costs a
+dial at most one probe deadline in that time, and a probe whose dial is dropped is wanted again.
+`Some` says the service answers, not that signing in works: nothing is signed in at connect. Each call opens a session of its own in a
+slot of the account's connection budget (closing a parked IMAP socket when the shelf is full),
+with two minutes for the dial and the work, and then sends `LOGOUT` without waiting for its
+answer, so a slow `LOGOUT` never puts a finished write in doubt. The credential is asked as `CredentialProtocol::ManageSieve` for the origin
+`sieve://<server name>:<port>` (RFC 5804 §3); a password goes as `AUTHENTICATE "PLAIN"`, a token as
+`OAUTHBEARER` or `XOAUTH2`. The version is a SHA-256 of the script list (names and the active flag)
+and the rules script's text; ManageSieve has no conditional `PUTSCRIPT`, so the guard is
+`WriteGuard::Absent`, but a write lists and reads again in its own session and refuses a stale base
+as `Conflict`, which narrows the race to one round trip and does not close it. The script is chosen
+as JMAP chooses it, by one function (`engine_sieve::dialect::scripts::rules_script`: the active
+one, else `rules`, else the only one, never a server's own reply script); a new one is `rules`,
+stored with `PUTSCRIPT` and switched on with `SETACTIVE`. JMAP knows the server's reply script by
+its name (`vacation`), ManageSieve by its text, in exactly the shape Stalwart writes
+(`scripts::plainly_server_reply`, pinned by live captures of every window shape in
+`engine-sieve/tests/fixtures/stalwart/`): a `require` of exactly `vacation`, `relational` and
+`date`, then up to two nested `if currentdate :value "ge"|"le" "iso8601"` around one unnamed
+`vacation :mime`, and nothing else. `:mime` and that `require` are what a user's own script does
+not write. Any other script with an unnamed `vacation` (SOGo's, or a user's plain
+`vacation :days 7 "Away";`) is someone's rules, refused rather than rewritten or routed around.
+ManageSieve reads only the scripts the choice asks about: the active one, `rules`, every
+candidate left where several are (so a server's inactive reply beside one user script leaves
+that script, as JMAP chooses), and one the chosen script includes. One removed in between is a
+`Conflict`, and a script whose name RFC 5804 forbids still counts but is never read. So the two
+can choose differently only for a user's script named `vacation` or a server's reply script under
+another name; on Stalwart they agree, which the live suite pins (the reply's script active, and
+inactive beside a user's `myrules`). Where a
+server's reply script runs, as the active one or through the rules' `include`, ManageSieve writes
+the rules as JMAP does: the include is kept first, and a new `rules` script includes the running
+reply's and is made the active one, so the reply runs on; a server that lists no `include` is
+refused before anything is sent. The include is no rule of the user's on either protocol
+(`engine_sieve::dialect::include`). `PUTSCRIPT` checks the script itself, so neither
+`CHECKSCRIPT` nor `HAVESPACE` is sent first. The vocabulary is what the server lists once signed in.
+The reply is on where its rule is on and the script runs; turning it on where the script is stored
+but off switches the script on only where that switches on no enabled rule of the user's, and is
+refused otherwise. Text replies only: an HTML body is refused before sending.
+
 Rules and the reply are account settings, edited online in every client surveyed, so every host
 kind writes them directly, guarded by the version it read; they never go through the outbox and
 have no store tables. A sync host reads them on demand, as a direct host does.
@@ -648,8 +702,8 @@ Each slice is proven live before the next starts (`AGENTS.md`).
    `SieveScript/set` refuses an invalid script whole (proven live both ways), so validating first
    adds a round trip and no safety, and Stalwart's validate cannot see a blob uploaded in the
    same request. Live on Stalwart, which also settled how the rules and the reply coexist.
-3. **ManageSieve.** The harness publishes 4190 (Stalwart) and 34190 (Dovecot); a `managesieve`
-   module of `provider-imap` over the adapter's TLS, SASL and connection budget, at a
+3. **ManageSieve. Implemented.** The harness publishes 4190 (Stalwart) and 34190 (Dovecot); a
+   `managesieve` module of `provider-imap` over the adapter's TLS, SASL and connection budget, at a
    host-configured endpoint; vacation and rules in one script. Live on both, which exercises two
    vocabularies.
 4. **Import from Graph.** Read `messageRules` and `automaticRepliesSetting` into the model;
@@ -797,6 +851,56 @@ then by `provider-jmap/tests/live_vacation.rs` (2026-11-23). Captured, scrubbed,
   which it knows and refuses.
 - **A flag after `fileinto` misses the filed copy** (RFC 5232 §3, delivered): the writer puts marks
   first, and reads only that order typed.
+
+**Settled in slice 3**, live against Stalwart v1.0.2 (as `carol@`) and Dovecot 2.4.4 with
+Pigeonhole (as `alice@`), by hand and then by `provider-imap/src/managesieve/live_tests.rs` and
+`live_provider_tests.rs`. Captured, scrubbed, as `provider-imap/tests/fixtures/managesieve/`.
+
+- **Mechanisms come with TLS.** Both greet with `SASL ""` and offer mechanisms only once `STARTTLS`
+  is done: Stalwart `PLAIN OAUTHBEARER XOAUTH2`, Dovecot `PLAIN`. Both take `AUTHENTICATE "PLAIN"`
+  with the initial response inline.
+- **Dovecot lists `MAXREDIRECTS` only once signed in**, so the vocabulary is read after signing in.
+- **A rule written is read back typed, and a stale version is refused**, on both; a reply written is
+  read back with its window, subject and text, and a write of the rules keeps it. Reverting the
+  version check turned the live suite red.
+- **Each refuses an extension it does not list**: Dovecot refuses `editheader` at `CHECKSCRIPT`,
+  and the plan keeps no rule that needs it; Stalwart, which lists it, takes it. Stalwart refuses
+  `imapsieve` and, as over JMAP, takes an unknown name in `require` (STALWART-8).
+- **Refusals carry prose, sometimes a code.** Dovecot answers an invalid script with a literal
+  naming its own temporary file and the script's lines; Stalwart with a quoted line and column.
+  Neither gives a code there; `NONEXISTENT`, `ACTIVE` and `QUOTA/MAXSIZE` were seen elsewhere. The
+  engine keeps the code alone.
+- **Stalwart answers `HAVESPACE` yes for any size, and refuses the store**: a 175 KB `PUTSCRIPT`
+  is `NO (QUOTA/MAXSIZE)` (STALWART-10). Dovecot answers `HAVESPACE` with the code.
+- **A reply rule written over an unread one keeps its blocks and `else`** in a form both servers'
+  `CHECKSCRIPT` accept; the bytes Roundcube's settings page stores were captured from the Dovecot
+  harness (`engine-sieve/tests/fixtures/roundcube/reply_vacation_post.sieve`).
+- **An endpoint that does not answer leaves mail working**: `127.0.0.1:1` as the endpoint connects
+  the account, reports `Unavailable` with `Retryable`, and offers neither trait.
+- **An account a JMAP client also manages may reply from elsewhere.** On Stalwart, a reply switched
+  on over JMAP is Stalwart's own `vacation` script (a `currentdate` test around `vacation :mime`,
+  nested for two ends), active; the JMAP adapter's rules script instead runs it through `include`.
+  ManageSieve may not write that script: `PUTSCRIPT "vacation"` is refused with no code. Over
+  ManageSieve the engine neither reads nor writes the reply where the script it would use runs
+  `include`, or holds a `vacation` outside the reply rule
+  (`managesieve::vacation::reply_elsewhere`): it cannot read that reply as the account's, and one
+  written beside it would make two. Proven on
+  Stalwart with the reply set over JMAP, in both shapes, nothing written; the guard reverted, the
+  `include` shape read as off and took a write. The rules stay readable and writable: Stalwart's reply
+  script is never the rules' script, so they go in a `rules` script that includes it first and
+  runs, and JMAP reads them back from there (live). A script that is chosen and still holds a
+  `vacation` no `# rule:[…]` name marks, one written by hand, is refused rather than rewritten
+  (`engine_sieve::dialect::reply::unnamed_vacation`). Stalwart refuses `PUTSCRIPT "vacation"`
+  itself.
+
+**Follow-ups from slice 3.**
+
+- **An HTML reply over Sieve**, as `vacation :mime` with a `multipart/alternative` body (what
+  Stalwart's own JMAP rendering writes); Roundcube reads such a reply as raw MIME, so it is not
+  written yet, and a `:mime` reply reads as one the engine cannot show.
+- **SRV discovery of the endpoint** (RFC 5804 §1.8).
+- **An authorization identity over ManageSieve** (`Credential::ActingAs`, a Dovecot master user),
+  proven live: refused before sending for now, as SMTP refuses it.
 
 **Follow-ups from slice 2.**
 

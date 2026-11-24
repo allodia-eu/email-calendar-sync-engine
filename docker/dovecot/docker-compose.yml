@@ -68,6 +68,10 @@ services:
       # interfaces. The container ports are the image's rootless defaults.
       - "127.0.0.1:11994:31993" # IMAP (implicit TLS)
       - "127.0.0.1:11144:31143" # IMAP (STARTTLS)
+      # ManageSieve (RFC 5804, STARTTLS), the image's own `managesieve-login` listener. On the
+      # rev1 service only: Sieve has nothing to do with the IMAP revision, so one listener
+      # proves it, as with STARTTLS below.
+      - "127.0.0.1:14191:34190" # ManageSieve (STARTTLS)
 
   dovecot-rev2:
     <<: *dovecot

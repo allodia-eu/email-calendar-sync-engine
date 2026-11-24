@@ -1,0 +1,5 @@
+NO {308}
+1795470103.M114588P610.8d3931933021.tmp: line 1: error: require command: unknown Sieve capability 'editheader'.
+1795470103.M114588P610.8d3931933021.tmp: line 2: error: unknown command 'addheader' (only reported once at first occurrence).
+1795470103.M114588P610.8d3931933021.tmp: error: validation failed.
+

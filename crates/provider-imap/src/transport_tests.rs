@@ -374,3 +374,13 @@ async fn append_tolerates_an_untagged_response_before_the_continuation() {
         .unwrap();
     assert_eq!(uid, Some((99, 7)));
 }
+
+#[tokio::test]
+async fn a_literal_announced_with_a_bare_lf_is_still_read_as_one() {
+    // IMAP has always taken `{n}` and a bare LF as a literal; ManageSieve's stricter reading must
+    // not change that.
+    let (stream, _) = crate::mock::MockStream::new(b"* 1 FETCH (BODY[] {3}\nabc)\r\n".to_vec());
+    let mut connection = Connection::resume(stream);
+    let line = connection.read_line().await.unwrap();
+    assert_eq!(line, b"* 1 FETCH (BODY[] {3}\nabc)\r\n");
+}
