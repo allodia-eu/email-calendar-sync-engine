@@ -84,17 +84,21 @@ pub trait RulesImporter: Send + Sync {
 /// Appends `rules` after `target`'s own and answers what each kept: the one import every
 /// [`RulesImporter`] runs.
 ///
-/// 1. Reads the target's rules and plans `rules` against its vocabulary in
-///    [`Import`](PlanMode::Import) mode, filing by id through `folders`
+/// `dialect` is how the target's rule language reads what it is handed ([`ImportDialect`]).
+///
+/// 1. Reads the target's rules and plans `rules`, each rule carried whole with its facts read by
+///    `dialect` from its own text, against the target's vocabulary in [`Import`](PlanMode::Import)
+///    mode, filing by id through `folders`
 ///    ([`RuleVocabulary::with_folders`](engine_core::rules::RuleVocabulary::with_folders)). An
 ///    importer that can see which target folders exist hands in only those.
 /// 2. Refuses before writing where the target's own edit would not write its own rules back as they
 ///    are: an import never changes them.
-/// 3. Leaves out each planned rule the target already holds an equal typed rule for, one held rule
-///    for each (so two equal rules handed in need two held), and says so
-///    ([`RulesReceipt::already_held`]). A rule equal to one the user wrote themselves counts as
-///    imported too: written again, it would do nothing the held one does not already do, since
-///    rules apply in order and the first copy acts on the message first.
+/// 3. Leaves out each planned rule the target already holds an equal typed rule for, compared as
+///    the target would read the planned rule back (`dialect`), one held rule for each (so two equal
+///    rules handed in need two held), and says so ([`RulesReceipt::already_held`]). A rule equal to
+///    one the user wrote themselves counts as imported too: written again, it would do nothing the
+///    held one does not already do, since rules apply in order and the first copy acts on the
+///    message first.
 /// 4. Writes the target's rules, unchanged, then the rules left, through
 ///    [`MailRules::replace_rules`] built on that read, so it is guarded as an edit is. Each is
 ///    written as a rule of no script ([`MailRule::origin`] cleared): what it was read from is the
@@ -110,13 +114,15 @@ pub async fn append_rules(
     rules: &[MailRule],
     forwarding: ForwardingRules,
     folders: &FolderMap,
+    dialect: ImportDialect,
 ) -> ProviderResult<RulesReceipt> {
     let vocabulary = target.rule_vocabulary(account).await?;
     let base = target.read_rules(account).await?;
     refuse_changed_own(&base, &plan_rules(&base.rules, &vocabulary, PlanMode::Edit))?;
     let into = vocabulary.with_folders(folders.clone());
-    let plan = plan_rules(rules, &into, PlanMode::Import { forwarding });
-    let (added, already_held) = not_held(&base, &plan);
+    let rules: Vec<MailRule> = rules.iter().cloned().map(dialect.facts).collect();
+    let plan = plan_rules(&rules, &into, PlanMode::Import { forwarding });
+    let (added, already_held) = not_held(&base, &plan, dialect);
     if added.is_empty() {
         let receipt = RulesReceipt::new(base.version.clone(), plan.outcomes)
             .with_stored(RulesStored::Unwritten)
@@ -131,9 +137,51 @@ pub async fn append_rules(
     Ok(receipt.with_already_held(already_held))
 }
 
+/// How a target's rule language reads what an import hands it: the one thing about the language
+/// the engine's import needs and cannot know, so a target speaking one passes its own.
+///
+/// - `facts`: a rule carried whole, with what it requires and does read from its own text, so the
+///   import's checks rest on the text and not on whoever built the rule.
+/// - `read_back`: a typed rule as the target would read it back once written, so a rule the target
+///   already holds is known whatever its writer and reader make of it on the way. `None` where it
+///   cannot say; the rule is then compared as it is.
+///
+/// A Sieve target passes `engine_sieve::dialect`'s `facts_from_text` and `read_back`.
+#[derive(Debug, Clone, Copy)]
+pub struct ImportDialect {
+    facts: fn(MailRule) -> MailRule,
+    read_back: fn(&MailRule) -> Option<MailRule>,
+}
+
+impl ImportDialect {
+    /// A language whose facts about a rule carried whole are read by `facts`, and which reads a
+    /// rule written back as `read_back` says.
+    #[must_use]
+    pub fn new(
+        facts: fn(MailRule) -> MailRule,
+        read_back: fn(&MailRule) -> Option<MailRule>,
+    ) -> Self {
+        Self { facts, read_back }
+    }
+
+    /// A language that keeps every rule as it is handed in, and trusts a rule carried whole to say
+    /// what it does.
+    #[must_use]
+    pub fn as_given() -> Self {
+        Self {
+            facts: |rule| rule,
+            read_back: |rule| Some(rule.clone()),
+        }
+    }
+}
+
 /// The planned rules `base` does not already hold, each as a rule of no script, and the indices of
 /// those it does: an equal typed rule held counts for one planned rule only.
-fn not_held(base: &RuleSet, plan: &RulesPlan) -> (Vec<MailRule>, Vec<usize>) {
+fn not_held(
+    base: &RuleSet,
+    plan: &RulesPlan,
+    dialect: ImportDialect,
+) -> (Vec<MailRule>, Vec<usize>) {
     let unplaced = |rule: &MailRule| {
         let mut rule = rule.clone();
         rule.origin = None;
@@ -149,8 +197,11 @@ fn not_held(base: &RuleSet, plan: &RulesPlan) -> (Vec<MailRule>, Vec<usize>) {
     let mut already = Vec::new();
     for planned in &plan.rules {
         let rule = unplaced(&planned.rule);
+        // As the target will read it back once written, so a rule its writer and reader change on
+        // the way (a forward written as a redirect keeping a copy) is known again.
+        let back = (dialect.read_back)(&rule).unwrap_or_else(|| rule.clone());
         let found = matches!(rule.body, RuleBody::Typed(_))
-            .then(|| held.iter().position(|held| same(held, &rule)))
+            .then(|| held.iter().position(|held| *held == back))
             .flatten();
         match found {
             Some(at) => {
@@ -161,27 +212,6 @@ fn not_held(base: &RuleSet, plan: &RulesPlan) -> (Vec<MailRule>, Vec<usize>) {
         }
     }
     (added, already)
-}
-
-/// Whether two typed rules are the same rule: equal in every part, their actions in any order,
-/// since the order of a rule's actions means nothing (a Sieve writer puts marks before filing,
-/// and the rule reads back so).
-fn same(a: &MailRule, b: &MailRule) -> bool {
-    let (mut a, mut b) = (a.clone(), b.clone());
-    let (RuleBody::Typed(left), RuleBody::Typed(right)) = (&mut a.body, &mut b.body) else {
-        return false;
-    };
-    let mut right_actions = std::mem::take(&mut right.actions);
-    let left_actions = std::mem::take(&mut left.actions);
-    let all_matched = left_actions.len() == right_actions.len()
-        && left_actions.iter().all(|action| {
-            right_actions
-                .iter()
-                .position(|other| other == action)
-                .map(|at| right_actions.swap_remove(at))
-                .is_some()
-        });
-    all_matched && a == b
 }
 
 /// Refuses an import where the target's own edit, planning `base`'s rules as `own`, would write

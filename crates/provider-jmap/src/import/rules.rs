@@ -21,7 +21,7 @@ use engine_core::{
 };
 use engine_provider::{
     MailRules, Provider, ProviderError, ProviderResult, Vacation, VacationPrecondition, WriteGuard,
-    import::{RulesImporter, append_rules, import_reply},
+    import::{ImportDialect, RulesImporter, append_rules, import_reply},
 };
 use serde_json::{Value, json};
 
@@ -46,7 +46,15 @@ impl RulesImporter for JmapProvider {
         let held = held_mailboxes(self.executor(), &wanted).await?;
         let mut folders = folders.clone();
         folders.retain(|_, target| held.contains(target));
-        append_rules(&ImportTarget(self), account, rules, forwarding, &folders).await
+        append_rules(
+            &ImportTarget(self),
+            account,
+            rules,
+            forwarding,
+            &folders,
+            sieve_dialect(),
+        )
+        .await
     }
 
     async fn import_vacation(
@@ -61,6 +69,16 @@ impl RulesImporter for JmapProvider {
         }
         import_reply(&ImportTarget(self), account, reply).await
     }
+}
+
+/// The Sieve dialect as the import reads it: facts of a rule carried whole from its text, and a
+/// rule as the account will read it back (`engine_sieve::dialect`), as the ManageSieve importer
+/// reads it too.
+fn sieve_dialect() -> ImportDialect {
+    ImportDialect::new(
+        engine_sieve::dialect::facts_from_text,
+        engine_sieve::dialect::read_back,
+    )
 }
 
 /// This adapter's rules and reply as an import writes them: read as ever, written by the same

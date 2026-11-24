@@ -82,6 +82,7 @@ pub(crate) struct Target {
     pub(crate) refuse_replace: Option<FailureClass>,
     pub(crate) reply: VacationResponse,
     pub(crate) replies: Mutex<Vec<(Option<VacationVersion>, VacationResponse)>>,
+    pub(crate) dialect: ImportDialect,
 }
 
 impl Target {
@@ -93,6 +94,7 @@ impl Target {
             refuse_replace: None,
             reply: VacationResponse::default().with_version(VacationVersion::new("v1")),
             replies: Mutex::new(Vec::new()),
+            dialect: ImportDialect::as_given(),
         }
     }
 
@@ -176,7 +178,7 @@ impl RulesImporter for Target {
         forwarding: ForwardingRules,
         folders: &FolderMap,
     ) -> ProviderResult<RulesReceipt> {
-        append_rules(self, account, rules, forwarding, folders).await
+        append_rules(self, account, rules, forwarding, folders, self.dialect).await
     }
 
     async fn import_vacation(
@@ -356,12 +358,11 @@ async fn imported_rules_are_written_as_rules_of_no_script() {
 async fn a_rule_the_target_already_holds_is_not_written_again() {
     let disabled_forward = rule("forward", vec![redirect()]).disabled();
     let own = vec![
-        rule("same", vec![into("z"), into("x")]),
+        rule("same", vec![into("x"), into("z")]),
         // As a first import left it: disabled for review.
         disabled_forward,
     ];
     let target = Target::with_own(own.clone());
-    // The same actions in another order are the same rule: a Sieve writer puts marks first.
     let imported = vec![
         rule("same", vec![into("x"), into("z")]),
         rule("same", vec![into("x"), into("z")]),
@@ -420,6 +421,92 @@ async fn a_rule_carried_whole_is_never_taken_as_already_held() {
         .unwrap();
     assert!(receipt.already_held.is_empty(), "text is never compared");
     assert_eq!(target.replaced()[0].1.len(), 2);
+}
+
+#[tokio::test]
+async fn a_rule_is_known_as_held_in_the_form_the_target_reads_it_back() {
+    // A language that reads a forward back as a redirect keeping a copy, as Sieve does.
+    fn read_back(rule: &MailRule) -> Option<MailRule> {
+        let mut back = rule.clone();
+        back.origin = None;
+        if let RuleBody::Typed(typed) = &mut back.body {
+            for action in &mut typed.actions {
+                if let Action::Forward { to } = action {
+                    *action = Action::Redirect {
+                        to: to.clone(),
+                        copy: true,
+                    };
+                }
+            }
+        }
+        Some(back)
+    }
+    let forward = rule(
+        "forward",
+        vec![Action::Forward {
+            to: vec![RuleAddress::new("away@example.com").unwrap()],
+        }],
+    );
+    let mut target = Target::with_own(vec![read_back(&forward).unwrap().disabled()]);
+    target.vocabulary = vocabulary().with_exact([RuleFeature::RedirectCopy]).with(
+        RuleFeature::Forward,
+        engine_core::rules::Support::Approximated,
+    );
+    target.dialect = ImportDialect::new(|rule| rule, read_back);
+    let receipt = target
+        .import_rules(
+            &account(),
+            std::slice::from_ref(&forward),
+            ForwardingRules::Disabled,
+            &folders(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.already_held, [0]);
+    assert!(target.replaced().is_empty(), "nothing written");
+
+    // Compared as handed in, it would be written again.
+    target.dialect = ImportDialect::as_given();
+    let receipt = target
+        .import_rules(
+            &account(),
+            &[forward],
+            ForwardingRules::Disabled,
+            &folders(),
+        )
+        .await
+        .unwrap();
+    assert!(receipt.already_held.is_empty(), "compared as given");
+}
+
+#[tokio::test]
+async fn a_rule_carried_whole_is_planned_with_the_facts_its_text_gives() {
+    // The host said nothing of what the text does; the language reads that it runs a script.
+    let raw = engine_core::rules::RawRule::new(engine_core::rules::RuleSyntax::Sieve, "include x;")
+        .requiring(Vec::new())
+        .sending_no_mail();
+    let mut target = Target::with_own(Vec::new());
+    target.vocabulary = vocabulary().with_opaque(engine_core::rules::RuleSyntax::Sieve, Vec::new());
+    target.dialect = ImportDialect::new(
+        |mut rule| {
+            if let RuleBody::Opaque(raw) = &rule.body {
+                rule.body = RuleBody::Opaque(raw.clone().including_scripts());
+            }
+            rule
+        },
+        |rule| Some(rule.clone()),
+    );
+    let receipt = target
+        .import_rules(
+            &account(),
+            &[MailRule::opaque(raw)],
+            ForwardingRules::Disabled,
+            &folders(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.outcomes[0].kept, Kept::NotKept);
+    assert!(target.replaced().is_empty());
 }
 
 /// Reaches the accessor as a host generic over `P: Provider` does, through the `Box` impl.

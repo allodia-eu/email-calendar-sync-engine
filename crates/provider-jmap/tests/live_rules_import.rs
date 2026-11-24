@@ -102,6 +102,14 @@ fn graph_rules(marker: &str) -> Vec<MailRule> {
             vec![into("AAMkunmapped")],
         )
         .named(RuleName::new("Lost folder").unwrap()),
+        // Graph's `forwardTo`: written as a redirect that keeps a copy, and read back as one.
+        MailRule::typed(
+            Match::all(vec![subject(&format!("{marker}-forwardto"))]),
+            vec![Action::Forward {
+                to: vec![RuleAddress::new("away@example.com").unwrap()],
+            }],
+        )
+        .named(RuleName::new("Forward to").unwrap()),
     ]
 }
 
@@ -192,7 +200,13 @@ async fn import_rules(
         .collect();
     assert_eq!(
         kept,
-        [Kept::Whole, Kept::NotKept, Kept::Disabled, Kept::NotKept],
+        [
+            Kept::Whole,
+            Kept::NotKept,
+            Kept::Disabled,
+            Kept::NotKept,
+            Kept::Disabled
+        ],
         "{:?}",
         receipt.outcomes
     );
@@ -219,7 +233,7 @@ async fn import_rules(
     );
     assert_eq!(
         preflight,
-        [receipt.outcomes[2].clone()],
+        [receipt.outcomes[2].clone(), receipt.outcomes[4].clone()],
         "the preflight list"
     );
     assert_eq!(receipt.stored, RulesStored::InPlace);
@@ -249,7 +263,7 @@ async fn import_rules(
         .iter()
         .map(|rule| rule.name.as_ref().map_or("", RuleName::as_str))
         .collect();
-    assert_eq!(names, ["Own", "Invoices", "Forward"]);
+    assert_eq!(names, ["Own", "Invoices", "Forward", "Forward to"]);
     let forward = &read.rules[2];
     assert!(!forward.enabled, "the redirect arrives disabled");
     assert!(
@@ -271,7 +285,8 @@ async fn import_rules(
         .import_rules(&account(), &wanted, ForwardingRules::Disabled, &folders)
         .await
         .expect("imported again");
-    assert_eq!(again.already_held, [0, 2]);
+    // The forward among them, though it reads back as a redirect keeping a copy.
+    assert_eq!(again.already_held, [0, 2, 4]);
     assert_eq!(again.stored, RulesStored::Unwritten);
     assert_eq!(script_text(raw).await, after_text, "nothing written");
     own

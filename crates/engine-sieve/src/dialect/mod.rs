@@ -36,6 +36,7 @@
 mod actions;
 mod cursor;
 mod facts;
+mod import;
 pub mod include;
 mod matching;
 mod read;
@@ -50,6 +51,7 @@ mod write;
 use core::fmt;
 
 use engine_core::rules::{MailRule, RawRule, RuleSyntax};
+pub use import::{facts_from_text, read_back};
 pub use vocabulary::vocabulary;
 
 use crate::{SieveError, SieveErrorKind, require, segment::Segment};

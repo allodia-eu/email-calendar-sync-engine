@@ -103,6 +103,13 @@ fn graph_rules(marker: &str) -> Vec<MailRule> {
                 copy: false,
             }],
         ),
+        // Graph's `forwardTo`: written as a redirect that keeps a copy, and read back as one.
+        subject_rule(
+            &format!("{marker}-forwardto"),
+            vec![Action::Forward {
+                to: vec![RuleAddress::new("away@example.com").unwrap()],
+            }],
+        ),
     ]
 }
 
@@ -164,7 +171,13 @@ async fn run(label: &str, imap: &str, sieve: &str, user: &str, password: &str) {
     };
     assert_eq!(
         kept,
-        [invoice, Kept::NotKept, Kept::Disabled, Kept::NotKept],
+        [
+            invoice,
+            Kept::NotKept,
+            Kept::Disabled,
+            Kept::NotKept,
+            Kept::Disabled
+        ],
         "{label}: {:?}",
         receipt.outcomes
     );
@@ -179,7 +192,11 @@ async fn run(label: &str, imap: &str, sieve: &str, user: &str, password: &str) {
         [(RulePart::Action(0), LossReason::MissingMailbox)],
         "{label}: no folder is known by id over ManageSieve"
     );
-    assert_eq!(preflight, [receipt.outcomes[2].clone()], "{label}");
+    assert_eq!(
+        preflight,
+        [receipt.outcomes[2].clone(), receipt.outcomes[4].clone()],
+        "{label}"
+    );
     assert_eq!(receipt.stored, RulesStored::InPlace, "{label}");
     assert_eq!(receipt.activation, RulesActivation::Running, "{label}");
 
@@ -204,7 +221,7 @@ async fn run(label: &str, imap: &str, sieve: &str, user: &str, password: &str) {
         unplaced(&before.rules[0]),
         "{label}"
     );
-    assert_eq!(read.rules.len(), 3, "{label}");
+    assert_eq!(read.rules.len(), 4, "{label}");
     let forward = &read.rules[2];
     assert!(!forward.enabled, "{label}: the redirect arrives disabled");
     assert!(
@@ -218,7 +235,8 @@ async fn run(label: &str, imap: &str, sieve: &str, user: &str, password: &str) {
         .import_rules(&id, &wanted, ForwardingRules::Disabled, &FolderMap::new())
         .await
         .unwrap();
-    assert_eq!(again.already_held, [0, 2], "{label}");
+    // The forward among them, though it reads back as a redirect keeping a copy.
+    assert_eq!(again.already_held, [0, 2, 4], "{label}");
     assert_eq!(again.stored, RulesStored::Unwritten, "{label}");
     assert_eq!(
         admin.get_script(&rules_script).await.unwrap(),

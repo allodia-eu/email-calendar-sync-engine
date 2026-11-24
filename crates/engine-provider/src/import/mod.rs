@@ -37,7 +37,7 @@ use engine_core::{
 };
 pub use message::{ImportedMessage, MailImportLimits, MessageImport};
 pub use reply::import_reply;
-pub use rules::{RulesImporter, append_rules};
+pub use rules::{ImportDialect, RulesImporter, append_rules};
 
 use crate::{ProviderError, ProviderResult};
 

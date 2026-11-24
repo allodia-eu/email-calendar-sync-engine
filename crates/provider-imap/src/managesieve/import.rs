@@ -17,7 +17,7 @@ use engine_core::{
 };
 use engine_provider::{
     ProviderResult,
-    import::{RulesImporter, append_rules, import_reply},
+    import::{ImportDialect, RulesImporter, append_rules, import_reply},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -32,7 +32,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> RulesImporter for Manag
         forwarding: ForwardingRules,
         folders: &FolderMap,
     ) -> ProviderResult<RulesReceipt> {
-        append_rules(self, account, rules, forwarding, folders).await
+        // The Sieve dialect as the JMAP importer reads it too: facts of a rule carried whole from
+        // its text, and a rule as the account will read it back.
+        let dialect = ImportDialect::new(
+            engine_sieve::dialect::facts_from_text,
+            engine_sieve::dialect::read_back,
+        );
+        append_rules(self, account, rules, forwarding, folders, dialect).await
     }
 
     /// Refused, as [`Vacation`](engine_provider::Vacation) refuses, where the server lists no

@@ -24,6 +24,14 @@ use crate::{
 /// - Any other reply, on or off, is the target's own: refused, never replaced. A host that means to
 ///   replace it writes through [`Vacation::set_vacation`] itself.
 ///
+/// One race stays open. A target may refuse a write that would switch the account's running rules
+/// off (the JMAP importer does), but it decides that from what it lists before it writes. On a
+/// server that keeps the rules' and the reply's versions apart, a script of the user's switched on
+/// between that listing and the write is switched off by a reply going on by the server's flag.
+/// Nothing guards against it; the receipt says it happened
+/// ([`RulesEffect::Deactivated`](engine_core::vacation::RulesEffect::Deactivated)), which is how
+/// the host learns of it and can offer to switch the rules back on.
+///
 /// # Errors
 ///
 /// [`RulesImporter::import_vacation`](super::RulesImporter::import_vacation)'s.

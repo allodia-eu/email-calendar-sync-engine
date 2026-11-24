@@ -444,3 +444,30 @@ async fn an_include_of_a_reply_that_does_not_run_is_dropped_from_a_script_switch
         "the account's own rule, byte for byte: {text}"
     );
 }
+
+#[tokio::test]
+async fn a_forward_an_earlier_import_wrote_is_known_as_held() {
+    // What a first import of a Graph `forwardTo` rule left: a redirect keeping a copy, disabled.
+    let held = "require [\"copy\"];\r\n# rule:[Forward]\r\nif false # header :contains \
+                \"subject\" \"Forward\"\r\n{\r\n\tredirect :copy \"away@example.com\";\r\n}\r\n";
+    let (provider, exec) = over(vec![sieve_listing()], held);
+    let forward = named(
+        "Forward",
+        vec![Action::Forward {
+            to: vec![RuleAddress::new("away@example.com").unwrap()],
+        }],
+    );
+    let receipt = provider
+        .import_rules(
+            &account(),
+            &[forward],
+            ForwardingRules::Disabled,
+            &folders(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.outcomes[0].kept, Kept::Disabled);
+    assert_eq!(receipt.already_held, [0]);
+    assert_eq!(receipt.stored, RulesStored::Unwritten);
+    assert_eq!(exec.uploads.lock().unwrap().len(), 0, "nothing written");
+}
