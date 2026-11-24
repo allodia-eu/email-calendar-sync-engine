@@ -11,10 +11,9 @@ impl RuleOutcome {
     /// once per part). On the whole rule the rule is not kept as given
     /// ([`Kept::NotKept`]); on any other part (its place in the order) it is reduced.
     pub fn not_written(&mut self, part: RulePart) {
-        if self.holds_not_written(part) {
-            return;
+        if !self.holds_not_written(part) {
+            self.losses.push(Loss::new(part, LossReason::NotWritten));
         }
-        self.losses.push(Loss::new(part, LossReason::NotWritten));
         self.kept = match (part, self.kept) {
             (RulePart::Rule, _) => Kept::NotKept,
             (_, Kept::Whole) => Kept::Reduced,
@@ -22,12 +21,24 @@ impl RuleOutcome {
         };
     }
 
-    /// The rule was stored, and `part` was left otherwise than asked: a name the server kept, or
-    /// the old copy of a rule written anew that could not be removed (`RulePart::Rule`). The
+    /// The rule was stored, and `part` was left otherwise than asked: a name the server kept. The
     /// rule asked for is there, so it is reduced, never dropped.
     pub fn written_short(&mut self, part: RulePart) {
         if !self.holds_not_written(part) {
             self.losses.push(Loss::new(part, LossReason::NotWritten));
+        }
+        if self.kept == Kept::Whole {
+            self.kept = Kept::Reduced;
+        }
+    }
+
+    /// The rule was stored as a new one, and the rule it was read as could not be removed: both
+    /// run until it is ([`LossReason::LeftBeside`], recorded once), and the receipt's
+    /// [`failures`](RulesReceipt::failures) name the one left.
+    pub fn left_beside(&mut self) {
+        let beside = Loss::new(RulePart::Rule, LossReason::LeftBeside);
+        if !self.losses.contains(&beside) {
+            self.losses.push(beside);
         }
         if self.kept == Kept::Whole {
             self.kept = Kept::Reduced;
@@ -69,6 +80,11 @@ pub struct RulesReceipt {
     /// remove: the rest of the write went ahead, so these are reported here rather than failing
     /// it. Always empty where the set is stored at once (a Sieve script), which fails whole.
     pub failures: Vec<RuleWriteFailure>,
+    /// The rules handed in, by index, that were read from the account, not
+    /// [kept](super::Kept::NotKept) as edited, and are still there as they were read: the edit
+    /// did not apply, and nothing was removed for it. Where the set is stored at once (a Sieve
+    /// script) it is empty for now: a rule not kept there is left out of the script.
+    pub left_as_read: Vec<usize>,
 }
 
 impl RulesReceipt {
@@ -83,6 +99,7 @@ impl RulesReceipt {
             activation: RulesActivation::Running,
             already_held: Vec::new(),
             failures: Vec::new(),
+            left_as_read: Vec::new(),
         }
     }
 
@@ -95,6 +112,13 @@ impl RulesReceipt {
     /// Records whether the rules run now (builder-style).
     pub fn with_activation(mut self, activation: RulesActivation) -> Self {
         self.activation = activation;
+        self
+    }
+
+    /// Names the rules handed in whose edit did not apply, each still there as read
+    /// (builder-style).
+    pub fn with_left_as_read(mut self, left_as_read: Vec<usize>) -> Self {
+        self.left_as_read = left_as_read;
         self
     }
 

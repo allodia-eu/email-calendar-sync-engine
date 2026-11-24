@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{FolderMap, NativeKind, RawRule, RuleSyntax, TextOp};
+use crate::mail::Keyword;
 
 /// One thing a rule can say, as a target either can or cannot hold it.
 ///
@@ -26,6 +27,8 @@ pub enum RuleFeature {
     AddressLocalPart,
     /// The domain of an address tested.
     AddressDomain,
+    /// An address tested with the display name beside it.
+    AddressWithName,
     /// The account's own address among the recipients.
     SentToMe,
     /// The text body tested by an operation.
@@ -106,6 +109,21 @@ pub enum RuleLimit {
     /// A rule tests something: one with neither conditions nor exceptions, which matches every
     /// message, is not held (Gmail stores no filter without a criterion).
     SomeTest,
+    /// An exception the target holds only approximately is lost. An approximation narrows what a
+    /// test matches, which makes a condition do less and an exception veto less: the rule would
+    /// do more.
+    ExactExceptions,
+    /// An importance is marked high or low, not normal.
+    ImportanceHighOrLow,
+    /// A provider's own condition holds only among conditions that must all hold: not in an
+    /// any-of rule, nor as an exception.
+    NativeConditionsAllOf,
+    /// Every text value is a phrase ([`is_phrase`](super::is_phrase)): the target matches values
+    /// as a search does, so a value it cannot quote, or one it reads as the account, is not held.
+    PhraseValues,
+    /// The only roles filed into are Trash, Junk and the archive, and only by a move: the target
+    /// keeps roles as its own labels and adds no other.
+    TrashJunkArchiveOnly,
 }
 
 /// How a target holds a feature it has.
@@ -135,6 +153,7 @@ pub struct RuleVocabulary {
     native: Option<NativeKind>,
     folders: Option<FolderMap>,
     limits: BTreeSet<RuleLimit>,
+    keywords: Option<BTreeSet<Keyword>>,
 }
 
 impl RuleVocabulary {
@@ -186,6 +205,22 @@ impl RuleVocabulary {
     ) -> Self {
         self.opaque = Some((syntax, extensions.into_iter().collect()));
         self
+    }
+
+    /// Adds, of the keywords other than `$seen` and `$flagged`, only `keywords` (builder-style):
+    /// a target that keeps a keyword under a name it was given holds only those it has a name
+    /// for. Without it, every keyword [`NamedKeyword`](RuleFeature::NamedKeyword) allows.
+    #[must_use]
+    pub fn with_keywords(mut self, keywords: impl IntoIterator<Item = Keyword>) -> Self {
+        self.keywords = Some(keywords.into_iter().collect());
+        self
+    }
+
+    /// The only named keywords the target adds, where it adds only some
+    /// ([`with_keywords`](Self::with_keywords)).
+    #[must_use]
+    pub fn keywords(&self) -> Option<&BTreeSet<Keyword>> {
+        self.keywords.as_ref()
     }
 
     /// Stores `kind`'s own conditions and actions (builder-style).

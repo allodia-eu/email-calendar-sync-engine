@@ -40,6 +40,7 @@ mod vocabulary;
 pub use action::{Action, NativeAction, NativeCondition, NativeKind, RuleMailbox};
 pub use condition::{
     AddressField, AddressPart, Condition, HeaderField, MeField, SizeBound, TextOp, TextTest,
+    is_phrase,
 };
 pub use folders::FolderMap;
 pub use outcome::{Kept, Loss, LossReason, RuleOutcome, RulePart};
@@ -57,6 +58,8 @@ mod import_plan_tests;
 mod plan_limit_tests;
 #[cfg(test)]
 mod plan_review_tests;
+#[cfg(test)]
+mod plan_search_tests;
 #[cfg(test)]
 mod plan_source_tests;
 #[cfg(test)]

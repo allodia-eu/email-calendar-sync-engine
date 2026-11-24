@@ -140,6 +140,10 @@ pub enum TextOp {
     Matches,
     /// The text matches the value as a regular expression.
     Regex,
+    /// The text holds the value's words, in order, as a search engine matches them: whole words,
+    /// ignoring case and the punctuation between them (Gmail's filters). Neither wider nor
+    /// narrower than another operation in every case, so no other stands in for it.
+    Words,
 }
 
 /// An address field a rule tests.
@@ -167,6 +171,9 @@ pub enum AddressPart {
     LocalPart,
     /// What follows the `@`.
     Domain,
+    /// The address and the display name beside it, as the field writes them: what a search over
+    /// the sender matches (Gmail's `from:`).
+    WithName,
 }
 
 /// Where the account's own address appears, for [`Condition::SentToMe`].
@@ -193,4 +200,15 @@ pub enum SizeBound {
     Over(u64),
     /// Smaller than this many bytes.
     Under(u64),
+}
+
+/// Whether `value` can be matched as a phrase by a target that searches
+/// ([`RuleLimit::PhraseValues`](super::RuleLimit::PhraseValues)): not blank, no double quote, line
+/// break or other control character, and not `me` in any case, which a search reads as the
+/// account's own addresses.
+#[must_use]
+pub fn is_phrase(value: &str) -> bool {
+    !value.trim().is_empty()
+        && !value.eq_ignore_ascii_case("me")
+        && !value.chars().any(|c| c == '"' || c.is_control())
 }

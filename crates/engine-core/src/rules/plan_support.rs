@@ -2,9 +2,9 @@
 
 use super::{
     Action, AddressField, AddressPart, Condition, HeaderField, Match, MeField, RuleFeature,
-    RuleLimit, RuleMailbox, RuleVocabulary, Support, TextOp,
+    RuleLimit, RuleMailbox, RuleVocabulary, Support, TextOp, is_phrase,
 };
-use crate::mail::{Keyword, MailboxRole, SystemKeyword};
+use crate::mail::{Importance, Keyword, MailboxRole, SystemKeyword};
 
 /// Whether a value of `when`'s conditions or exceptions spans lines.
 pub(super) fn spans_lines(when: &Match) -> bool {
@@ -125,8 +125,23 @@ pub(super) fn folders_named(action: &Action) -> usize {
     }
 }
 
+/// The text test `condition` holds, if any.
+fn text_test(condition: &Condition) -> Option<&super::TextTest> {
+    match condition {
+        Condition::Header { test, .. }
+        | Condition::Address { test, .. }
+        | Condition::Body(test) => Some(test),
+        _ => None,
+    }
+}
+
 /// How `target` holds `condition`.
 pub(super) fn condition_support(condition: &Condition, target: &RuleVocabulary) -> Option<Support> {
+    if target.has_limit(RuleLimit::PhraseValues)
+        && text_test(condition).is_some_and(|test| !test.values().iter().all(|v| is_phrase(v)))
+    {
+        return None;
+    }
     match condition {
         Condition::Address {
             field: AddressField::To | AddressField::Cc,
@@ -142,6 +157,7 @@ pub(super) fn condition_support(condition: &Condition, target: &RuleVocabulary) 
                 AddressPart::All => worst(target, &[text]),
                 AddressPart::LocalPart => worst(target, &[text, RuleFeature::AddressLocalPart]),
                 AddressPart::Domain => worst(target, &[text, RuleFeature::AddressDomain]),
+                AddressPart::WithName => worst(target, &[text, RuleFeature::AddressWithName]),
             }
         }
         Condition::SentToMe(_) => worst(target, &[RuleFeature::SentToMe]),
@@ -157,6 +173,18 @@ pub(super) fn condition_support(condition: &Condition, target: &RuleVocabulary) 
 /// How `target` holds `action`.
 pub(super) fn action_support(action: &Action, target: &RuleVocabulary) -> Option<Support> {
     match action {
+        Action::FileInto {
+            mailbox: RuleMailbox::Role(role),
+            copy,
+        } if target.has_limit(RuleLimit::TrashJunkArchiveOnly)
+            && (*copy
+                || !matches!(
+                    role,
+                    MailboxRole::Trash | MailboxRole::Junk | MailboxRole::Archive
+                )) =>
+        {
+            None
+        }
         Action::FileInto { mailbox, copy } => {
             let into = match mailbox {
                 // The inbox needs no role to be named: every transport has one by name.
@@ -198,9 +226,23 @@ pub(super) fn action_support(action: &Action, target: &RuleVocabulary) -> Option
         {
             None
         }
+        Action::AddKeywords(keywords)
+            if target.keywords().is_some_and(|named| {
+                keywords
+                    .iter()
+                    .any(|k| k.as_system().is_none() && !named.contains(k))
+            }) =>
+        {
+            None
+        }
         Action::AddKeywords(keywords) => {
             let features: Vec<RuleFeature> = keywords.iter().map(keyword_feature).collect();
             worst(target, &features)
+        }
+        Action::MarkImportance(Importance::Normal)
+            if target.has_limit(RuleLimit::ImportanceHighOrLow) =>
+        {
+            None
         }
         Action::MarkImportance(_) => worst(target, &[RuleFeature::MarkImportance]),
         Action::Native(native) => target.stores_native(native.kind).then_some(Support::Exact),

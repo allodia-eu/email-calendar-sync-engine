@@ -19,7 +19,10 @@ pub struct RuleOutcome {
 pub enum Kept {
     /// All of it, some parts perhaps [`Approximated`](LossReason::Approximated).
     Whole,
-    /// Without an action, its stop, its name or its order: it does less, never more.
+    /// Without an action, its stop, its name or its order: it does less, never more. Or stored
+    /// beside the rule it was read as, which could not be removed
+    /// ([`LeftBeside`](LossReason::LeftBeside)): then both run, which can do more, until the old
+    /// one is removed.
     Reduced,
     /// Stored disabled for review: an imported rule that sends mail out of the account, or one
     /// its source marks in error. What else it lost is in its [`losses`](RuleOutcome::losses),
@@ -100,4 +103,7 @@ pub enum LossReason {
     /// one went on past it, and the receipt's [`failures`](super::RulesReceipt::failures) say
     /// why. On the whole rule it is not kept as given; on its order, it is reduced.
     NotWritten,
+    /// The rule was stored anew, and the rule it was read as could not be removed: both run. The
+    /// receipt's [`failures`](super::RulesReceipt::failures) name the one left.
+    LeftBeside,
 }

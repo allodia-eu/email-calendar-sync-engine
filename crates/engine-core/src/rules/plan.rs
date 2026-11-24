@@ -302,9 +302,17 @@ impl Planned {
                             .any(|t| test_kind(t).as_ref() == Some(&kind))
                 })
         };
+        // A provider's own condition where the target holds it only among all-of conditions.
+        let native_alone = |condition: &Condition, outside: bool| {
+            outside
+                && target.has_limit(RuleLimit::NativeConditionsAllOf)
+                && matches!(condition, Condition::Native(_))
+        };
+        let any_of = when.mode == MatchMode::Any && when.conditions.len() > 1;
         for (i, condition) in when.conditions.iter().enumerate() {
-            let support = condition_support(condition, target)
-                .filter(|_| !repeated(&when.conditions, i, false));
+            let support = condition_support(condition, target).filter(|_| {
+                !repeated(&when.conditions, i, false) && !native_alone(condition, any_of)
+            });
             self.require(RulePart::Condition(i), support);
         }
         for (i, exception) in when.except.iter().enumerate() {
@@ -312,7 +320,13 @@ impl Planned {
                 target.support(RuleFeature::Except),
                 condition_support(exception, target),
             )
-            .filter(|_| !repeated(&when.except, i, true));
+            .filter(|support| {
+                !repeated(&when.except, i, true)
+                    && !native_alone(exception, true)
+                    // A narrower exception vetoes less: the rule would do more.
+                    && (!target.has_limit(RuleLimit::ExactExceptions)
+                        || *support != Support::Approximated)
+            });
             self.require(RulePart::Exception(i), support);
         }
         let had_actions = !rule.actions.is_empty();
@@ -323,6 +337,12 @@ impl Planned {
         for (i, action) in rule.actions.iter().enumerate() {
             let addresses = match action {
                 Action::Redirect { to, .. } | Action::Forward { to } => to.len(),
+                // A provider's own action that sends mail sends it somewhere: one address at least.
+                Action::Native(native)
+                    if native.sends_mail && target.stores_native(native.kind) =>
+                {
+                    1
+                }
                 _ => 0,
             };
             // An import files into the target's counterpart of a source folder, or nowhere.
