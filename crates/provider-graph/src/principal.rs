@@ -68,13 +68,25 @@ impl MailboxAddress {
 }
 
 /// The mailbox a [`GraphClient`](crate::GraphClient)'s requests are rooted at.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` says which kind it is and never the address, which is personal: `Me`, or
+/// `User(address present)`.
+#[derive(Clone, PartialEq, Eq)]
 pub enum MailboxPrincipal {
     /// The signed-in user's own mailbox — requests are rooted at `/me`.
     Me,
     /// A shared or other mailbox the signed-in user can access, addressed by its
     /// UPN/SMTP address — requests are rooted at `/users/{address}`.
     User(MailboxAddress),
+}
+
+impl core::fmt::Debug for MailboxPrincipal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Me => f.write_str("Me"),
+            Self::User(_) => f.write_str("User(address present)"),
+        }
+    }
 }
 
 impl MailboxPrincipal {

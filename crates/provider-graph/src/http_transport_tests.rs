@@ -115,6 +115,8 @@ async fn the_anonymous_byte_path_sends_no_authorization_header() {
     .unwrap();
 
     transport.get_bytes_unauthenticated(&base).await.unwrap();
+    // The content host's connection is not the account's: what it negotiated is not recorded.
+    assert_eq!(GraphTransport::http_version(&transport), None);
 
     let sent = seen.lock().unwrap().to_lowercase();
     assert!(

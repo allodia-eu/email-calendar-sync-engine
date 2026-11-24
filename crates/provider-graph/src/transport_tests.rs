@@ -29,6 +29,11 @@ fn client_roots_urls_at_the_principal_and_redacts_debug() {
     );
     // The Debug rendering must not leak the bearer token.
     assert!(!format!("{me:?}").contains("super-secret-token"));
+    // Nor the mailbox's address, which is personal: it says only that one is there.
+    for debug in [format!("{shared:?}"), format!("{:?}", shared.principal())] {
+        assert!(!debug.contains("info@example.org"), "{debug}");
+        assert!(debug.contains("address present"), "{debug}");
+    }
 }
 
 #[test]

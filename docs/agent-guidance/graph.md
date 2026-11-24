@@ -34,9 +34,9 @@ each over its own `GraphClient` on the same token. The mail layers:
   No redirect is followed; a token goes over plaintext only to loopback from a base on
   loopback, and only to an origin the source permits. A `401` whose challenge offers `Bearer`
   is replaced once and the request sent again (a `sendMail` included: a `401` says it was not
-  processed); a `401` with **no** challenge is not a refusal of the token on Graph, which
-  answers that way for a source the account does not have (MICROSOFT-2,
-  `spec-deviations.md`). Only a token is presented (`engine_http::present_bearer`): a source
+  processed), and so is one with no challenge at all (YAHOO-1), except on the directory's
+  delta (`/users/delta`), which Graph answers that way on a personal account with a good token
+  (MICROSOFT-2, `spec-deviations.md`): only that read takes a bare `401` as final. Only a token is presented (`engine_http::present_bearer`): a source
   answering a password fails the request as `Permanent` before it is sent. Content URLs keep
   their anonymous client and never ask. `GraphClient` is a cheap clone whose clones share the
   transport, so one client per account serves every folder-bound `GraphProvider`; a token with

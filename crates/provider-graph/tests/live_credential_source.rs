@@ -1,6 +1,6 @@
 //! Gated live proof that Microsoft Graph asks the account's credential source per request: a
 //! token Graph refuses is replaced once and the request succeeds with the replacement, and a
-//! `401` Graph sends without a challenge asks for none (MICROSOFT-2 in
+//! `401` Graph sends without a challenge to the directory read asks for none (MICROSOFT-2 in
 //! `docs/spec-deviations.md`).
 //!
 //! Read-only: it lists the mail folders and, on a personal account, asks for the directory
@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use engine_core::ids::{AccountId, MailboxId};
 use engine_provider::{
     ContactSourceSync, ContactsProvider, Credential, CredentialRequest, CredentialSource,
-    CredentialSubject, Provider, ProviderError,
+    CredentialSubject, Provider, ProviderError, ProviderResult,
 };
 use provider_graph::{GraphClient, GraphContactProvider, GraphProvider};
 
@@ -90,6 +90,20 @@ fn client(source: &Arc<Source>) -> GraphClient {
     .expect("client")
 }
 
+/// `result`'s value. A failure panics with its class and `what` alone: a server's error text,
+/// which `ProviderError`'s `Debug` carries, can echo the account's content.
+fn ok<T>(result: ProviderResult<T>, what: &str) -> T {
+    result.unwrap_or_else(|err| panic!("{what}: failed as {:?}", err.class()))
+}
+
+/// `result`'s failure. A success panics with `what` alone, never the value, which is mail.
+fn failed<T>(result: ProviderResult<T>, what: &str) -> ProviderError {
+    match result {
+        Ok(_) => panic!("{what}: succeeded"),
+        Err(err) => err,
+    }
+}
+
 fn account() -> AccountId {
     AccountId::try_from("live").unwrap()
 }
@@ -103,10 +117,10 @@ async fn live_a_refused_token_is_replaced_and_the_folders_listed() {
     let source = Source::new(GARBAGE, token);
     let provider = GraphProvider::new(client(&source), MailboxId::try_from("inbox").unwrap());
 
-    let folders = provider
-        .sync_mailboxes(&account(), None)
-        .await
-        .expect("listed with the replacement");
+    let folders = ok(
+        provider.sync_mailboxes(&account(), None).await,
+        "listed with the replacement",
+    );
 
     assert!(folders.is_snapshot());
     // The listing's first request was refused and replaced; every later one asked again and
@@ -127,7 +141,10 @@ async fn live_the_control_a_garbage_token_without_a_replacement_is_refused() {
     let source = Source::new(GARBAGE, GARBAGE.to_owned());
     let provider = GraphProvider::new(client(&source), MailboxId::try_from("inbox").unwrap());
 
-    let err = provider.sync_mailboxes(&account(), None).await.unwrap_err();
+    let err = failed(
+        provider.sync_mailboxes(&account(), None).await,
+        "a garbage token",
+    );
 
     eprintln!("class={:?} counts={:?}", err.class(), source.counts());
     assert_eq!(

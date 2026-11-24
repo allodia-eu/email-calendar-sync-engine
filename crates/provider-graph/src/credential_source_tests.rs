@@ -217,23 +217,46 @@ async fn a_403_is_not_a_refusal_of_the_token() {
     assert_eq!(source.replaced(), 0);
 }
 
-/// MICROSOFT-2: Graph answers a source a personal account does not have with a `401` and no
-/// challenge. A new token is refused the same way, so none is asked for.
+/// MICROSOFT-2: Graph answers the directory of a personal account, which has none, with a
+/// `401` and no challenge. A new token is refused the same way, so none is asked for, on the
+/// first page and on a link Graph handed back alike.
 #[tokio::test]
-async fn a_401_without_a_challenge_is_not_a_refusal_of_the_token() {
+async fn the_directorys_401_without_a_challenge_is_not_a_refusal_of_the_token() {
     const BODY: &str = include_str!("../tests/fixtures/error/contacts_directory_unauthorized.json");
-    let (base, seen) = scripted(vec![reply("401 Unauthorized", BODY)]);
+    for path in ["/users/delta?$select=id", "/users/delta?$deltatoken=t1"] {
+        let (base, seen) = scripted(vec![reply("401 Unauthorized", BODY)]);
+        let source = Tokens::rotating("tok-a", &["tok-b"]);
+        let client = client(&base, &source);
+
+        let err = client.get(&client.global_url(path)).await.unwrap_err();
+
+        assert_eq!(err.failure_class(), FailureClass::Authentication);
+        assert_eq!(presented(&seen), [Some(bearer("tok-a"))], "{path}");
+        assert_eq!(source.replaced(), 0, "{path}");
+    }
+}
+
+/// Anywhere else a `401` without a challenge is read as every adapter reads it (YAHOO-1): the
+/// token was refused, and is replaced once. MICROSOFT-2 is evidence about the directory only.
+#[tokio::test]
+async fn any_other_401_without_a_challenge_is_a_refusal_of_the_token() {
+    let (base, seen) = scripted(vec![
+        reply("401 Unauthorized", ""),
+        reply("200 OK", r#"{"value":[]}"#),
+    ]);
     let source = Tokens::rotating("tok-a", &["tok-b"]);
     let client = client(&base, &source);
 
-    let err = client
-        .get(&client.global_url("/users/delta"))
+    client
+        .get(&client.url("/mailFolders"))
         .await
-        .unwrap_err();
+        .expect("a page");
 
-    assert_eq!(err.failure_class(), FailureClass::Authentication);
-    assert_eq!(presented(&seen), [Some(bearer("tok-a"))]);
-    assert_eq!(source.replaced(), 0);
+    assert_eq!(
+        presented(&seen),
+        [Some(bearer("tok-a")), Some(bearer("tok-b"))]
+    );
+    assert_eq!(source.replaced(), 1);
 }
 
 #[tokio::test]
@@ -341,3 +364,6 @@ async fn clones_of_a_client_share_one_transport() {
     );
     assert_eq!(source.asks(), 2, "asked per request, not per client");
 }
+
+#[path = "credential_edge_tests.rs"]
+mod edge;

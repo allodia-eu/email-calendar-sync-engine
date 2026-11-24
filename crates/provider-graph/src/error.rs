@@ -212,6 +212,8 @@ impl From<reqwest::Error> for GraphError {
     }
 }
 
+/// The source's failure, or the engine's refusal of an origin or a kind of credential, with
+/// the class it gave.
 impl From<engine_provider::CredentialFailure> for GraphError {
     fn from(failure: engine_provider::CredentialFailure) -> Self {
         Self::Credential(failure.into_error())

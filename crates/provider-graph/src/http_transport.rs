@@ -165,16 +165,26 @@ fn present(builder: RequestBuilder, credential: &Credential) -> Result<RequestBu
     Ok(engine_http::present_bearer(builder, credential)?)
 }
 
-/// What a `401` to a request that carried the token says ([`engine_http::judge_by_scheme`]),
-/// except that one without a challenge is not a refusal of the token: Graph answers that way for
-/// a source the account does not have, and a new token is refused the same (MICROSOFT-2 in
-/// `docs/spec-deviations.md`). Graph's refusal of a token carries a `Bearer` challenge.
+/// What a `401` to a request that carried the token says: [`engine_http::judge_by_scheme`], as on
+/// every adapter, so a refusal with a `Bearer` challenge or none at all (YAHOO-1) is replaced
+/// once. The one exception is the directory read with no challenge (MICROSOFT-2 in
+/// `docs/spec-deviations.md`), which is final.
 fn judge(reply: &Sent, credential: &Credential) -> Unauthorized {
-    if engine_http::offered_schemes(reply.headers()).is_empty() {
+    if is_absent_directory(reply) {
         Unauthorized::Final
     } else {
         engine_http::judge_by_scheme(reply, credential)
     }
+}
+
+/// Whether `reply` is Graph saying the account has no directory: a `401` with no challenge to
+/// its delta (`/users/delta`, the first page or a link Graph handed back). Graph answers a
+/// personal account's directory read that way with a good token, so a new token would be
+/// refused the same; it refuses a token with a `Bearer` challenge. Only that read was observed,
+/// so only that read is read this way.
+fn is_absent_directory(reply: &Sent) -> bool {
+    reply.url().path().ends_with("/users/delta")
+        && engine_http::offered_schemes(reply.headers()).is_empty()
 }
 
 /// Turns a successful write response into its parsed JSON body, or `None` when the
@@ -226,8 +236,8 @@ impl GraphTransport for HttpTransport {
     async fn get_bytes_unauthenticated(&self, url: &str) -> Result<Vec<u8>, GraphError> {
         // No `Authorization` and no `Prefer`: this URL came from payload content, not
         // from the Graph API, so it gets a bare GET.
+        // Not recorded: the content host's connection says nothing about the account's.
         let resp = send_retrying(self.anonymous.get(url), &self.retry, Exchange::Ordinary).await?;
-        self.connection.record(&resp);
         Self::collect_bytes(resp).await
     }
 
