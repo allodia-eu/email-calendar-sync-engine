@@ -70,6 +70,35 @@ async fn no_logout_is_sent_on_a_stream_that_failed_and_one_is_on_a_sound_one() {
 
 #[tokio::test(start_paused = true)]
 async fn a_deadline_after_the_script_was_stored_and_before_it_was_switched_on_needs_confirmation() {
+    // PUTSCRIPT stored at once; the answer to SETACTIVE a byte at a time.
+    let (written, slots) = write_then_trickle(b"OK\r\n").await;
+    assert!(written.unwrap_err().requires_confirmation());
+    assert_eq!(slots.available_permits(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_logout_answered_slowly_does_not_put_a_finished_write_in_doubt() {
+    use crate::managesieve::test_support::{listing, script};
+
+    // PUTSCRIPT, SETACTIVE and the read after them answered at once; only LOGOUT's answer
+    // trickles.
+    let mut answered = b"OK\r\nOK\r\n".to_vec();
+    answered.extend_from_slice(&listing(&[("rules", true)]));
+    answered.extend_from_slice(&script(""));
+    let (written, slots) = write_then_trickle(&answered).await;
+    assert!(written.is_ok(), "{written:?}");
+    assert_eq!(slots.available_permits(), 1);
+}
+
+/// A write of no rules to an empty account whose server answers the greeting, `CAPABILITY`,
+/// `LISTSCRIPTS` and then `answered` at once, and anything after a byte every 20 seconds, past
+/// the session's deadline.
+async fn write_then_trickle(
+    answered: &[u8],
+) -> (
+    Result<engine_core::rules::RulesReceipt, engine_provider::ProviderError>,
+    Arc<Semaphore>,
+) {
     use engine_core::{ids::AccountId, rules::RuleSet, version::RuleSetVersion};
     use engine_provider::MailRules;
 
@@ -83,13 +112,11 @@ async fn a_deadline_after_the_script_was_stored_and_before_it_was_switched_on_ne
         let stream = client.lock().unwrap().take().expect("one dial");
         Box::pin(Session::open(stream))
     });
-    // Greeting, CAPABILITY, LISTSCRIPTS (none), PUTSCRIPT stored at once; then the answer to
-    // SETACTIVE a byte at a time, until the session's deadline.
+    let mut quick = GREETING.to_vec();
+    quick.extend_from_slice(&capability("fileinto"));
+    quick.extend_from_slice(&listing(&[]));
+    quick.extend_from_slice(answered);
     tokio::spawn(async move {
-        let mut quick = GREETING.to_vec();
-        quick.extend_from_slice(&capability("fileinto"));
-        quick.extend_from_slice(&listing(&[]));
-        quick.extend_from_slice(b"OK\r\n");
         server.write_all(&quick).await.unwrap();
         loop {
             tokio::time::sleep(Duration::from_secs(20)).await;
@@ -108,7 +135,5 @@ async fn a_deadline_after_the_script_was_stored_and_before_it_was_switched_on_ne
         server_reply: None,
     };
     let base = RuleSet::new(Vec::new()).with_version(RuleSetVersion::new(empty.version()));
-    let err = sieve.replace_rules(&account, &base, &[]).await.unwrap_err();
-    assert!(err.requires_confirmation(), "{err:?}");
-    assert_eq!(slots.available_permits(), 1);
+    (sieve.replace_rules(&account, &base, &[]).await, slots)
 }

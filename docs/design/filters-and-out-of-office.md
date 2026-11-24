@@ -452,8 +452,9 @@ dial, and `invalidate()` asks for a probe whatever the last one found, so a blip
 hide the rules for the account's lifetime. One that will not pass (no `STARTTLS`, not ManageSieve)
 waits for `invalidate()`.
 `Some` says the service answers, not that signing in works: nothing is signed in at connect. Each call opens a session of its own in a
-slot of the account's connection budget (closing a parked IMAP socket when the shelf is full) and
-logs out. The credential is asked as `CredentialProtocol::ManageSieve` for the origin
+slot of the account's connection budget (closing a parked IMAP socket when the shelf is full),
+with two minutes for the dial and the work, and then sends `LOGOUT` without waiting for its
+answer, so a slow `LOGOUT` never puts a finished write in doubt. The credential is asked as `CredentialProtocol::ManageSieve` for the origin
 `sieve://<server name>:<port>` (RFC 5804 §3); a password goes as `AUTHENTICATE "PLAIN"`, a token as
 `OAUTHBEARER` or `XOAUTH2`. The version is a SHA-256 of the script list (names and the active flag)
 and the rules script's text; ManageSieve has no conditional `PUTSCRIPT`, so the guard is

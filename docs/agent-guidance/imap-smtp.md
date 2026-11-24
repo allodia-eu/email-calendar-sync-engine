@@ -924,7 +924,9 @@ connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "
 - **A session per call, in the budget.** `ImapPool::reserve_other` takes a permit (closing the
   longest-parked IMAP socket when the shelf and the slots in use would pass the ceiling); the
   session dials, signs in (`AUTHENTICATE "PLAIN"` with `sasl::plain_response`, or
-  `OAUTHBEARER`/`XOAUTH2`), works and logs out. The credential is asked as
+  `OAUTHBEARER`/`XOAUTH2`) and works, within `SESSION_DEADLINE` (2 min); past it, after a write
+  went out, the call answers needs-confirmation. `LOGOUT` then goes out outside the deadline,
+  unawaited, so a slow answer to it never puts a finished write in doubt. The credential is asked as
   `CredentialProtocol::ManageSieve` for `sieve://<server name>:<port>`. A `Credential::ActingAs` is refused
   before sending (`ImapError::Bad`), as SMTP refuses it: `PLAIN` with an authorization identity
   over ManageSieve has not been proven on a harness server yet.

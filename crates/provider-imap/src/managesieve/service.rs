@@ -103,9 +103,10 @@ impl<T> ManageSieve<T> {
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> ManageSieve<T> {
     /// Runs `work` over a signed-in session, holding a slot of the account's budget throughout,
-    /// and logs out after it whatever it answered, unless the stream failed under it.
+    /// and sends `LOGOUT` after it whatever it answered, unless the stream failed under it, without
+    /// waiting for the answer.
     ///
-    /// The dial, the work and the `LOGOUT` together get [`SESSION_DEADLINE`]: each wait on the
+    /// The dial and the work together get [`SESSION_DEADLINE`]: each wait on the
     /// server is bounded on its own, but a server that answers a byte at a time inside each bound
     /// could hold the slot indefinitely. Past the deadline the session is dropped unannounced, the
     /// slot is given back, and the call fails as a timeout, which is retryable.
@@ -119,14 +120,19 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> ManageSieve<T> {
             let mut session = (self.dial)().await.map_err(E::from)?;
             session.watch_writes(Arc::clone(&wrote));
             let outcome = work(&mut session).await;
-            if !session.broken() {
-                session.logout().await;
-            }
-            outcome
+            Ok((outcome, session))
         };
-        tokio::time::timeout(SESSION_DEADLINE, session)
-            .await
-            .unwrap_or_else(|_| {
+        match tokio::time::timeout(SESSION_DEADLINE, session).await {
+            Ok(Ok((outcome, session))) => {
+                // The work is done and answered: `LOGOUT` goes out, and how slowly the server
+                // answers it changes nothing, so nothing waits for it.
+                if !session.broken() {
+                    session.leave().await;
+                }
+                outcome
+            }
+            Ok(Err(err)) => Err(err),
+            Err(_) => {
                 // Past a write, the store or the switch may have landed: the caller must read
                 // before writing again, as after any write whose answer was lost.
                 Err(E::from(if wrote.load(Ordering::SeqCst) {
@@ -137,7 +143,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> ManageSieve<T> {
                         "the ManageSieve session did not finish in time",
                     ))
                 }))
-            })
+            }
+        }
     }
 }
 
