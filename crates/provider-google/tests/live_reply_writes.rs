@@ -7,8 +7,9 @@
 //! all it prints. The reply it writes runs only in 2099, so no mail is answered meanwhile.
 //!
 //! It proves a guarded write (and whether Gmail shows it at once, measured by reads), the window
-//! rounded to the millisecond and never wider, a stale read refused, a part left out cleared, and
-//! a write of the reply as read giving back what was read.
+//! rounded to the millisecond and never wider, a reply with both bodies refused before sending
+//! (Gmail drops the text where HTML is set: shown by an earlier run that sent both), a stale read
+//! refused, a part left out cleared, and a write of the reply as read giving back what was read.
 
 mod gmail_settings_support;
 
@@ -85,10 +86,18 @@ async fn cycle(token: String) {
         .with_reply(
             AutoReply::default()
                 .with_subject(format!("Away {marker}"))
-                .with_text(format!("Back soon. {marker}"))
                 .with_html(format!("<p>Back soon. {marker}</p>")),
         )
         .with_audience(ReplyAudience::Contacts);
+    // Text and HTML side by side: Gmail keeps the HTML and drops the text (observed in an earlier
+    // run of this suite), so the engine refuses it before sending.
+    let mut both = reply.clone();
+    both.reply = both.reply.clone().with_text(format!("Back soon. {marker}"));
+    let err = vacation
+        .set_vacation(&account(), VacationPrecondition::IfUnchanged(&read), &both)
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), FailureClass::Permanent, "both bodies refused");
     let receipt = vacation
         .set_vacation(&account(), VacationPrecondition::IfUnchanged(&read), &reply)
         .await
@@ -120,11 +129,9 @@ async fn cycle(token: String) {
     assert_eq!(setting["endTime"].as_str(), Some("4070995200001"), "end");
     assert_eq!(setting["restrictToContacts"], true);
     assert_eq!(setting["enableAutoReply"], true);
-    let text_kept =
-        setting["responseBodyPlainText"].as_str() == Some(format!("Back soon. {marker}").as_str());
     let html_kept = setting["responseBodyHtml"].as_str()
         == Some(format!("<p>Back soon. {marker}</p>").as_str());
-    eprintln!("text kept as sent: {text_kept}; html kept as sent: {html_kept}");
+    eprintln!("html kept as sent: {html_kept}");
     let model = vacation
         .read_vacation(&account())
         .await

@@ -167,6 +167,14 @@ impl Write<'_> {
         let Some(filter) = self.filter(source, &rule, existing).await else {
             return;
         };
+        // A change the filter does not show (an `is` read back as `contains`) sends nothing: Gmail
+        // refuses a filter identical to one it holds (observed).
+        if let Some(index) = existing
+            && same_filter(&self.now.filters[index], &filter)
+        {
+            self.keep.insert(index);
+            return;
+        }
         let url = self.client.url(FILTERS);
         let body = filter.to_string().into_bytes();
         match self.client.post(&url, "application/json", body).await {
@@ -311,6 +319,11 @@ impl Write<'_> {
             }
         }
     }
+}
+
+/// Whether `held` already says what `filter` does: the same criteria and the same actions.
+fn same_filter(held: &Value, filter: &Value) -> bool {
+    held.get("criteria") == filter.get("criteria") && held.get("action") == filter.get("action")
 }
 
 /// Whether `action` sends the message on: a forward Gmail checks.

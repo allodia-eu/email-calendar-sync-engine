@@ -93,7 +93,7 @@ fn a_search_with_any_other_term_or_operator_is_not_read() {
         "from:me",
         "cc:a@example.com",
         "in:inbox",
-        "from:a@example.comsubject:x",
+        "from:a@example.com(subject:x)",
         "from:\"a\"subject:x",
         "category:promotions",
         "list:list.example.com",

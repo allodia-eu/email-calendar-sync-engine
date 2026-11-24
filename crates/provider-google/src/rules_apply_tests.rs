@@ -242,15 +242,15 @@ async fn a_forward_to_an_unverified_address_is_not_allowed() {
     let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
     let state = state.lock().unwrap();
     assert_eq!(state.forwarding_reads, 1);
-    // The verified forward is written; the pending one loses its forward and keeps its trash;
-    // the third had nothing else to do, so its filter stays as it was.
-    assert_eq!(state.ids(), ["c", "new4", "new5"]);
+    // The verified forward is written; the pending one loses its forward, which leaves the
+    // filter it was read as, unsent; the third had nothing else to do, so its filter stays too.
+    assert_eq!(state.ids(), ["b", "c", "new4"]);
     let forwards: Vec<Option<&str>> = state
         .list
         .iter()
         .map(|f| f["action"]["forward"].as_str())
         .collect();
-    assert_eq!(forwards, [None, Some("kept@example.net"), None]);
+    assert_eq!(forwards, [None, None, Some("kept@example.net")]);
     assert_eq!(receipt.outcomes[1].kept, Kept::Reduced);
     assert!(receipt.outcomes[1].losses.contains(&Loss::new(
         RulePart::Action(1),
@@ -306,4 +306,30 @@ async fn a_keyword_is_filed_under_the_label_named_for_it_made_where_missing() {
     let state = state.lock().unwrap();
     assert_eq!(state.labels[0]["name"], "Work tag");
     assert_eq!(state.list[0]["action"]["addLabelIds"], json!(["Label_900"]));
+}
+
+/// Gmail refuses a filter identical to one it holds (observed): a change the filter does not show
+/// keeps the filter and sends nothing.
+#[tokio::test]
+async fn a_change_the_filter_does_not_show_sends_nothing() {
+    let (client, state) = client(three());
+    let base = read(&client).await;
+    let mut rules = base.rules.clone();
+    let is = Condition::Address {
+        field: engine_core::rules::AddressField::From,
+        part: engine_core::rules::AddressPart::All,
+        test: TextTest::new(TextOp::Is, vec!["one@example.com".to_owned()]).unwrap(),
+    };
+    rules[0].body = MailRule::typed(
+        Match::all(vec![is]),
+        vec![Action::FileInto {
+            mailbox: RuleMailbox::Role(MailboxRole::Trash),
+            copy: false,
+        }],
+    )
+    .body;
+    assert_ne!(rules[0], base.rules[0]);
+    let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
+    assert_eq!(state.lock().unwrap().writes.len(), 0);
+    assert_eq!(receipt.failures.len(), 0);
 }

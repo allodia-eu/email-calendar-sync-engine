@@ -16,12 +16,12 @@ fn at(text: &str) -> UtcDateTime {
 const WORKSPACE: &str = include_str!("../tests/fixtures/identity/userinfo_workspace.json");
 const PERSONAL: &str = include_str!("../tests/fixtures/identity/userinfo_personal.json");
 
-/// A reply as Gmail documents its `VacationSettings`, every part set.
+/// A reply as Gmail keeps its `VacationSettings`, every part set: one body, since Gmail drops the
+/// text where an HTML one is set (observed).
 fn documented() -> Value {
     json!({
         "enableAutoReply": true,
         "responseSubject": "Away",
-        "responseBodyPlainText": "Back soon.",
         "responseBodyHtml": "<p>Back soon.</p>",
         "restrictToContacts": true,
         "restrictToDomain": false,
@@ -37,7 +37,7 @@ fn a_reply_reads_as_the_model_says() {
     assert_eq!(reply.window.start, Some(at("2026-01-01T00:00:00Z")));
     assert_eq!(reply.window.end, Some(at("2026-01-02T00:00:00.5Z")));
     assert_eq!(reply.reply.subject.as_deref(), Some("Away"));
-    assert_eq!(reply.reply.text.as_deref(), Some("Back soon."));
+    assert_eq!(reply.reply.text, None);
     assert_eq!(reply.reply.html.as_deref(), Some("<p>Back soon.</p>"));
     assert_eq!(reply.audience, ReplyAudience::Contacts);
     assert!(reply.outside_reply.is_none());
@@ -157,6 +157,7 @@ async fn the_organization_is_offered_on_a_workspace_account_only() {
             .contains(&ReplyAudience::ContactsInOrganization)
     );
     assert!(vocabulary.has_subject());
+    assert_eq!(vocabulary.bodies(), engine_core::vacation::ReplyBodies::One);
     assert!(!vocabulary.has_outside_reply());
 }
 
@@ -236,4 +237,18 @@ async fn a_guarded_write_refuses_a_reply_that_moved_or_was_never_read() {
         .count();
     assert_eq!(puts, 1);
     assert_eq!(provider.vacation_write_guard(), WriteGuard::Absent);
+}
+
+/// A reply never set, as Gmail answers it (observed): only some fields, an empty subject.
+#[test]
+fn a_reply_never_set_reads_as_off_and_empty() {
+    let captured: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/mail/settings_vacation_off.json"
+    ))
+    .unwrap();
+    let off = reply(&captured).unwrap();
+    assert!(!off.enabled);
+    assert!(off.reply.is_empty());
+    assert_eq!(off.audience, ReplyAudience::Everyone);
+    assert!(off.window.is_open());
 }

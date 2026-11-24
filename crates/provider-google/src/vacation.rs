@@ -6,8 +6,9 @@
 //! - **As the model says**: `enableAutoReply` is whether it runs; `startTime` and `endTime`
 //!   (milliseconds since the epoch) are the window, either end optional; `responseSubject` the
 //!   subject, which Gmail puts before the subject of the message answered rather than in its place;
-//!   `responseBodyPlainText` and `responseBodyHtml` the two bodies, kept side by side (Gmail sends
-//!   the HTML one where both are set, and cleans it before storing).
+//!   `responseBodyPlainText` or `responseBodyHtml` the body. **One body**: where both are sent,
+//!   Gmail keeps the HTML and drops the text (observed), so a reply with both is refused before
+//!   sending ([`ReplyBodies::One`](engine_core::vacation::ReplyBodies::One)).
 //! - **The audience** is `restrictToContacts` ([`Contacts`](ReplyAudience::Contacts)),
 //!   `restrictToDomain` ([`Organization`](ReplyAudience::Organization)), both
 //!   ([`ContactsInOrganization`](ReplyAudience::ContactsInOrganization)), or neither. The domain
@@ -46,7 +47,7 @@ use crate::{
 
 const SETTING: &str = "/gmail/v1/users/me/settings/vacation";
 
-/// What Gmail's reply holds: either end of a window, a subject, a text and an HTML body, and
+/// What Gmail's reply holds: either end of a window, a subject, one body (text or HTML), and
 /// replies limited to contacts; on a Workspace account also to the organization, and to contacts
 /// in it.
 #[must_use]
@@ -54,7 +55,6 @@ pub(crate) fn vocabulary(workspace: bool) -> VacationVocabulary {
     let personal = VacationVocabulary::everyone()
         .with_window(WindowSupport::EitherEnd)
         .with_subject()
-        .with_text_and_html()
         .with_audience(ReplyAudience::Contacts);
     if workspace {
         personal

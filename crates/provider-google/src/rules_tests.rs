@@ -43,7 +43,7 @@ fn rules_read_from_gmail_plan_whole_against_its_own_vocabulary() {
         json!({"id": "1", "criteria": {"from": "a OR b", "to": "c", "subject": "\"d e\"",
             "hasAttachment": true, "size": 5, "sizeComparison": "smaller",
             "negatedQuery": "from:x OR larger:9"},
-            "action": {"addLabelIds": ["Label_1", "STARRED", "IMPORTANT", "Label_77"],
+            "action": {"addLabelIds": ["STARRED", "IMPORTANT", "Label_77"],
                 "removeLabelIds": ["INBOX", "UNREAD"], "forward": "f@example.net"}}),
         json!({"id": "2", "criteria": {"query": "from:a OR subject:b", "excludeChats": true},
             "action": {"addLabelIds": ["SPAM", "CATEGORY_SOCIAL"], "removeLabelIds": ["IMPORTANT"]}}),
@@ -166,4 +166,58 @@ fn what_a_filter_cannot_be_is_decided_by_the_plan() {
         )],
     );
     assert_eq!(plan(answered).kept, Kept::NotKept);
+}
+
+/// Gmail answers an account with no filters `204 No Content`, with no body at all (observed live;
+/// `forwardingAddresses` does the same): that is an empty listing, not a malformed one.
+#[tokio::test]
+async fn no_filters_is_an_empty_answer_and_an_empty_listing() {
+    let (base, _seen) = crate::test_support::capturing_server("204 No Content", "");
+    let client = GoogleClient::with_base(
+        "t",
+        base,
+        crate::test_support::tls(),
+        &crate::test_support::retry(),
+        &crate::test_support::user_agent(),
+    )
+    .unwrap();
+    let listing = Listing::read(&client).await.unwrap();
+    assert_eq!(listing.filters.len(), 0);
+    assert_eq!(listing.rule_set(&named()).rules.len(), 0);
+}
+
+#[test]
+fn one_label_of_the_users_per_filter_and_none_without_a_criterion() {
+    let plan = |rule: MailRule| {
+        plan_rules(&[rule], &vocabulary(true), PlanMode::Edit)
+            .outcomes
+            .remove(0)
+    };
+    let label = |id: &str| Action::FileInto {
+        mailbox: RuleMailbox::Id(engine_core::ids::MailboxId::try_from(id).unwrap()),
+        copy: true,
+    };
+    let two = MailRule::typed(
+        Match::all(vec![from(&["a"])]),
+        vec![label("Label_1"), label("Label_2")],
+    );
+    assert!(
+        plan(two)
+            .losses
+            .contains(&Loss::new(RulePart::Action(1), LossReason::NotExpressible))
+    );
+    let keyword = MailRule::typed(
+        Match::all(vec![from(&["a"])]),
+        vec![
+            label("Label_1"),
+            Action::AddKeywords([Keyword::new("$work").unwrap()].into()),
+        ],
+    );
+    assert!(
+        plan(keyword)
+            .losses
+            .contains(&Loss::new(RulePart::Action(1), LossReason::NotExpressible))
+    );
+    let every = MailRule::typed(Match::all(Vec::new()), vec![Action::Discard]);
+    assert_eq!(plan(every).kept, Kept::NotKept);
 }

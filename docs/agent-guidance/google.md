@@ -71,6 +71,8 @@ Auth-Code+PKCE loopback flow and captures fixtures — the exact mirror of
   read over IMAP, when the host connects it (below).
 - **`mutate`/`submit`** — `edit_mail` (label deltas) and `submit_email` (`messages.send`).
 - **`labels_write`**: `edit_mailbox`, the folder changes (below).
+- **`rules`**, **`rules_query`**, **`rules_read`**, **`rules_write`**, **`rules_apply`**,
+  **`vacation`**: the filters and the vacation reply (below).
 - **`provider`** — `GmailProvider`, the `Provider` impl.
 
 ## The base URL
@@ -594,6 +596,70 @@ so it already syncs under the user's own account. What has no route is the other
 calendar opened as part of **another user's store**: like Gmail's `users/{userId}`, reaching
 another user's calendars needs a service account with domain-wide delegation, not a user
 token. So there is nothing to bind, and a host never needs to ask.
+
+## Filters and the vacation reply
+
+`GmailProvider` implements `MailRules` (`rules`, `rules_query`, `rules_read`, `rules_write`,
+`rules_apply`) and `Vacation` (`vacation`), and answers `Some` from `mail_rules()` and
+`vacation()` on every account: whether the token may read or write them is a scope, known only by
+asking. The mapping is the Gmail column of `docs/design/filters-and-out-of-office.md` §5; what
+follows is what the adapter adds.
+
+- **Where.** Filters are `users.settings.filters` (`list`, `create`, `delete`; there is no
+  update), the reply `users.settings.vacation` (`getVacation`, and `updateVacation`, a `PUT` of the
+  whole setting, so a part left out is cleared). Writing either needs `gmail.settings.basic`.
+- **Criteria are searches**, and only a small subset is read typed (`rules_query`): `from`, `to`
+  and `subject` holding a word, a quoted phrase, or several as `a OR b`, `(a OR b)` or `{a b}`; and
+  in `query` the terms `from:`, `to:`, `subject:`, `has:attachment`, `larger:` and `smaller:` (bytes,
+  no unit), joined by spaces. Anything else in a criterion keeps that criterion whole, as a native
+  condition that carries to Gmail unchanged and to no other target. `me` is no value: `to:me` stays
+  native. A `negatedQuery` of terms joined by ` OR ` is the rule's exceptions; one whose terms
+  must all hold (`a b`) says "not both", which no list of exceptions says, so it stays native. A
+  `query` of terms joined by ` OR ` beside no other criterion is an any-of rule.
+- **Every text test is a `Contains`, approximated.** Gmail matches by words and phrases, ignoring
+  case, `from:` over the sender's name as well as the address, `to:` over every recipient. So the
+  vocabulary approximates a sender or the recipients that contain or are a value, and a subject
+  that contains one; it holds no subject that *is* a value, no body (a search word also matches
+  the subject and the senders), no domain alone (`@example.com` would match
+  `example.com.evil.test`): each of those would widen the rule.
+- **Actions are label changes.** A user's label added files the message, moved where `INBOX` is
+  removed; `TRASH` and `SPAM` added are Trash and Junk; `INBOX` removed with nothing else to file
+  into is the Archive role; `STARRED` added and `UNREAD` removed are `$flagged` and `$seen`; a label
+  standing for a keyword (`named_labels`) is that keyword, and the vocabulary holds a named keyword
+  only where the host named one; `IMPORTANT` added or removed marks the importance high or low
+  (Gmail's own marker, approximated); `forward` is a redirect that keeps the message. Every other
+  label change is a native action that sends no mail.
+- **No name, order, stop or disabled filter.** Gmail applies every filter that matches; the
+  listing is sorted by id, and the version is a SHA-256 of it. An account with no filters answers
+  `204` with no body (observed), which the transport reads as `null`, an empty listing.
+- **What Gmail refuses, the plan sees** (each observed, `400`): a filter adding two of the user's
+  labels, a folder and a label standing for a keyword alike (`RuleLimit::OneFolderPerRule`), and
+  a filter with no criteria (`RuleLimit::SomeTest`).
+- **Written filter by filter** (`rules_apply`). A rule equal to the filter it was read as is not
+  sent. A changed one is created as a new filter, and the old one is deleted only once the new one
+  is stored; a change the filter does not show (an `is` read back as `contains`) sends nothing,
+  since Gmail refuses a filter identical to one it holds (observed). **A rule that is not written, because the plan does not keep it, the writer cannot
+  place it, or the server refuses it, leaves the filter it was read as where it is**, and the
+  receipt lists it as a failure; only the filters no rule names are deleted, last. A forward to an
+  address the account has not verified (`settings.forwardingAddresses`, `accepted`) is held back
+  as `ForwardNotAllowed` before anything is sent, asked once per write and only where a rule
+  forwards; sent anyway, Gmail refuses it (`400 failedPrecondition`, observed).
+- **Guards.** Both are `Absent`: a filter and the reply carry no ETag. A write reads again and
+  refuses a base that moved as `Conflict`, which narrows the race and does not close it, and
+  neither receipt carries a version. Gmail showed every write on the next read (no lag observed).
+- **The reply.** `startTime` and `endTime` are milliseconds, written with the start rounded up and
+  the end down, so the window is never wider than asked. `responseSubject` is put before the
+  answered message's subject rather than in its place. **One body**: where text and HTML are both
+  sent, Gmail keeps the HTML and drops the text (observed), so the vocabulary is
+  `ReplyBodies::One` and a reply with both is refused before sending. `restrictToContacts` is Contacts, `restrictToDomain` Organization, both
+  ContactsInOrganization; the domain restriction is a Workspace account's alone, so the vocabulary
+  asks the affiliation (`userinfo.email`), and a write asks it only for a reply limited to the
+  organization.
+
+Live: `tests/live_rules.rs` (reads), `tests/live_rules_writes.rs` and `tests/live_reply_writes.rs`
+(writes, each behind a gate of its own, `GMAIL_RULES_WRITES=1` and `GMAIL_REPLY_WRITES=1`), all
+run on the throwaway account on 2026-11-24; the write suites leave every filter they did not create
+and the reply byte for byte as they found them.
 
 ## Testing (3-tier, mirroring Graph — `AGENTS.md` offline-mock caveat)
 

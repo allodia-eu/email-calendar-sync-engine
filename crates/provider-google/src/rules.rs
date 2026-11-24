@@ -88,7 +88,9 @@ pub(crate) fn vocabulary(keywords: bool) -> RuleVocabulary {
         .with_native(NativeKind::Gmail)
         .with_limit(RuleLimit::RecipientsTogether)
         .with_limit(RuleLimit::NoOtherSystemKeyword)
-        .with_limit(RuleLimit::RealFoldersOnly);
+        .with_limit(RuleLimit::RealFoldersOnly)
+        .with_limit(RuleLimit::OneFolderPerRule)
+        .with_limit(RuleLimit::SomeTest);
     if keywords {
         vocabulary.with(RuleFeature::NamedKeyword, Support::Approximated)
     } else {

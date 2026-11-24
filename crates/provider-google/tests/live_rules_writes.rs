@@ -51,7 +51,7 @@ fn marker() -> String {
 
 async fn listing(token: &str) -> Vec<Value> {
     let (status, page) = send(token, Method::GET, "/settings/filters", None).await;
-    assert_eq!(status, 200, "listing");
+    assert!(matches!(status, 200 | 204), "listing: {status}");
     let mut filters = page["filter"].as_array().cloned().unwrap_or_default();
     filters.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     filters

@@ -344,3 +344,45 @@ fn a_label_id_that_is_no_users_label_is_not_a_folder() {
         assert!(!is_user_label(id), "{id}");
     }
 }
+
+const CAPTURED: &str = include_str!("../tests/fixtures/mail/settings_filters.json");
+
+/// Two filters the live suite wrote through the engine, as Gmail listed them: read back typed,
+/// each part as written.
+#[test]
+fn captured_filters_read_back_typed() {
+    let listed: Value = serde_json::from_str(CAPTURED).unwrap();
+    let filters = listed["filter"].as_array().unwrap();
+    let first = rule(&filters[0], 1, 0, &named());
+    let (when, actions) = typed(&first);
+    assert_eq!(
+        when.conditions,
+        [from(&["a@example.com"]), subject(&["engine-live-filter-a"])]
+    );
+    let marks: BTreeSet<Keyword> = [
+        Keyword::system(SystemKeyword::Flagged),
+        Keyword::system(SystemKeyword::Seen),
+    ]
+    .into();
+    assert_eq!(actions, [Action::AddKeywords(marks)]);
+    let second = rule(&filters[1], 1, 1, &named());
+    let (when, actions) = typed(&second);
+    assert_eq!(
+        when.conditions,
+        [
+            subject(&["engine-live-filter-b1", "engine-live-filter-b2"]),
+            Condition::Size(SizeBound::Over(5_000_000)),
+        ]
+    );
+    assert_eq!(
+        when.except,
+        [Condition::HasAttachment, from(&["boss@example.com"])]
+    );
+    assert_eq!(
+        actions,
+        [
+            role(MailboxRole::Archive),
+            Action::MarkImportance(Importance::High)
+        ]
+    );
+}
