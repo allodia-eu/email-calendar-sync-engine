@@ -5,16 +5,19 @@
 //! sees and edits the same named rules there. Its bytes are pinned from the plugin's own output
 //! (`tests/fixtures/roundcube/`).
 //!
-//! - [`read_rules`] reads each top-level command as one rule, in order: an `if` the dialect writes
-//!   as a typed rule, anything else (a hand-written test, `keep`, `vacation`, `include`, a `set`)
-//!   as a rule carried whole, its exact text. A `require` and what trails the last command are no
-//!   rules. Each rule records the segment it came from
-//!   ([`RuleOrigin::ScriptSegment`](engine_core::rules::RuleOrigin::ScriptSegment)).
+//! - [`read_rules`] reads each top-level command but the out-of-office reply's ([`reply`]) as one
+//!   rule, in order: an `if` the dialect writes as a typed rule, anything else (a hand-written
+//!   test, `keep`, `vacation`, `include`, a `set`) as a rule carried whole, its exact text. A
+//!   `require` and what trails the last command are no rules. Each rule records the segment it came
+//!   from ([`RuleOrigin::ScriptSegment`](engine_core::rules::RuleOrigin::ScriptSegment)).
 //! - [`write_rules`] writes a rule list over the script it was read from: a rule that is still what
 //!   its segment reads as is copied byte for byte, comments and layout included; a changed or new
 //!   rule is written as Roundcube writes one, keeping any comments that led it; a rule left out is
-//!   gone. One `require` names what the written rules need, added to what the script named, and is
-//!   the only other line that changes.
+//!   gone. The reply's rule stays where it was among them, byte for byte. One `require` names what
+//!   the written rules need, added to what the script named, and is the only other line that
+//!   changes.
+//! - [`reply`] reads and writes the out-of-office reply where it is a rule of the script, as the
+//!   plugin's vacation engine writes it.
 //! - [`vocabulary`] says what the writer can write for an account, from its server's extensions,
 //!   for [`plan_rules`](engine_core::rules::plan_rules).
 //!
@@ -33,6 +36,9 @@ mod facts;
 mod matching;
 mod read;
 mod render;
+pub mod reply;
+mod reply_read;
+mod reply_render;
 mod vocabulary;
 mod write;
 
@@ -54,9 +60,12 @@ pub fn read_rules(script: &str) -> Vec<MailRule> {
     let Ok(context) = self::script(script, &segments) else {
         return whole(script);
     };
+    // The out-of-office reply is a rule of the script, but no rule of the user's (`reply`).
+    let reply = reply_read::find(script, &segments, context.literal).map(|(at, _)| at);
     segments
         .iter()
         .enumerate()
+        .filter(|(index, _)| Some(*index) != reply)
         .filter_map(|(index, segment)| read::rule(segment, index, &context))
         .collect()
 }
@@ -133,6 +142,9 @@ pub enum DialectErrorKind {
         /// The rule's index in the list handed in.
         rule: usize,
     },
+    /// The out-of-office reply cannot be written as a rule of the script, for this reason
+    /// ([`reply::write_reply`]).
+    Reply(reply::ReplyRefusal),
 }
 
 impl DialectError {
@@ -151,6 +163,12 @@ impl DialectError {
     fn variable(rule: usize) -> Self {
         Self {
             kind: DialectErrorKind::Variable { rule },
+        }
+    }
+
+    fn reply(reason: reply::ReplyRefusal) -> Self {
+        Self {
+            kind: DialectErrorKind::Reply(reason),
         }
     }
 
@@ -182,6 +200,10 @@ impl fmt::Display for DialectError {
             DialectErrorKind::Require(kind) => {
                 write!(f, "the script's require cannot be written ({kind:?})")
             }
+            DialectErrorKind::Reply(reason) => write!(
+                f,
+                "the out-of-office reply cannot be written as a Sieve rule ({reason:?})"
+            ),
         }
     }
 }

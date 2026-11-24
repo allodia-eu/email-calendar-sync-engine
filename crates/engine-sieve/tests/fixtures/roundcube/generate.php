@@ -3,7 +3,13 @@
 // what the plugin writes for each, base64-encoded so CR LF survive, beside what it writes again
 // after reading its own output back. It calls the plugin and copies none of it; `README.md` says
 // how to run it.
+// Roundcube's bootstrap, so the vacation engine's own window builder can be called below.
+chdir('/usr/src/roundcubemail');
+define('INSTALL_PATH', '/usr/src/roundcubemail/');
+require 'program/include/iniset.php';
 require '/usr/src/roundcubemail/plugins/managesieve/lib/Roundcube/rcube_sieve_script.php';
+require '/usr/src/roundcubemail/plugins/managesieve/lib/Roundcube/rcube_sieve_engine.php';
+require '/usr/src/roundcubemail/plugins/managesieve/lib/Roundcube/rcube_sieve_vacation.php';
 $caps = ['fileinto','reject','envelope','vacation','imap4flags','copy','body','relational','regex','mailbox','date','variables','editheader','include','subaddress','index','mime','special-use','mailboxid','duplicate','enotify','vacation-seconds'];
 function rule($name, $tests, $actions, $join = false, $disabled = false) {
     return ['type' => 'if', 'tests' => $tests, 'actions' => $actions, 'join' => $join, 'disabled' => $disabled, 'name' => $name];
@@ -49,6 +55,64 @@ $sets['vacation_rule'] = [
          [['type' => 'vacation', 'days' => 1, 'subject' => 'Away', 'from' => 'carol@example.com', 'reason' => "I am away.\nBack on the ninth."]], true),
     rule('Invoices', [['test' => 'header', 'not' => false, 'arg1' => 'subject', 'arg2' => 'Invoice', 'type' => 'contains']],
          [['type' => 'fileinto', 'target' => 'Finance']]),
+];
+// Out-of-office replies as the plugin's vacation engine builds them (`rcube_sieve_vacation`'s
+// `set_vacation`): `currentdate` tests on the `iso8601` part with the zone given, `allof` for two,
+// `true` for none, and the rule named `Out-of-Office`.
+function window_test($type, $arg, $zone = '+0000', $part = 'iso8601') {
+    return ['test' => 'currentdate', 'not' => false, 'part' => $part, 'type' => 'value-' . $type, 'zone' => $zone, 'arg' => $arg];
+}
+$sets['reply_window'] = [
+    rule('Out-of-Office', [window_test('ge', '2030-01-02T09:00:00Z'), window_test('le', '2030-01-09T17:30:00Z')],
+         [['type' => 'vacation', 'days' => 7, 'subject' => 'Away', 'reason' => "I am away.\nBack on the ninth."]], true),
+    rule('Invoices', [['test' => 'header', 'not' => false, 'arg1' => 'subject', 'arg2' => 'Invoice', 'type' => 'contains']],
+         [['type' => 'fileinto', 'target' => 'Finance']]),
+];
+$sets['reply_start'] = [
+    rule('Out-of-Office', [window_test('ge', '2030-01-02T09:00:00Z')],
+         [['type' => 'vacation', 'reason' => 'Away from the second.']]),
+];
+$sets['reply_always'] = [
+    rule('Out-of-Office', [['test' => 'true']],
+         [['type' => 'vacation', 'subject' => 'Away', 'reason' => 'Away for now.']]),
+];
+$sets['reply_disabled'] = [
+    rule('Out-of-Office', [window_test('ge', '2030-01-02T09:00:00Z'), window_test('le', '2030-01-09T17:30:00Z')],
+         [['type' => 'vacation', 'subject' => 'Away', 'reason' => 'Away.']], true, true),
+];
+$sets['reply_date_zone'] = [
+    rule('Out-of-Office', [window_test('ge', '2030-01-02', '+0100', 'date'), window_test('le', '2030-01-09', '+0100', 'date')],
+         [['type' => 'vacation', 'reason' => 'Away.']], true),
+];
+$sets['reply_redirect'] = [
+    rule('Out-of-Office', [['test' => 'true']],
+         [['type' => 'vacation', 'reason' => 'Away.'], ['type' => 'redirect', 'copy' => true, 'target' => 'deputy@example.com']]),
+];
+// A user in Amsterdam, the window built by the plugin's own expressions from a DateTime in that
+// zone (`rcube_sieve_vacation.php:276-282`, `set_vacation` at `:834-842`): the zone as `O`, the
+// value as `c` with only `+00:00` turned into `Z`.
+function zoned_test($type, $local) {
+    $dt = new DateTime($local, new DateTimeZone('Europe/Amsterdam'));
+    return ['test' => 'currentdate', 'not' => false, 'part' => 'iso8601', 'type' => 'value-' . $type,
+            'zone' => $dt->format('O'), 'arg' => str_replace('+00:00', 'Z', strtoupper($dt->format('c')))];
+}
+$sets['reply_zone'] = [
+    rule('Out-of-Office', [zoned_test('ge', '2030-01-02 10:00'), zoned_test('le', '2030-01-09 18:30')],
+         [['type' => 'vacation', 'subject' => 'Away', 'reason' => 'Away.']], true),
+];
+// Without `date`, the window is the plugin's `header :regex "received"` tests, built by its own
+// `build_regexp_tests` (`rcube_sieve_vacation.php:580`) and joined with `anyof` (`:325`).
+$build = new ReflectionMethod('rcube_sieve_vacation', 'build_regexp_tests');
+$build->setAccessible(true);
+$error = null;
+$sets['reply_received'] = [
+    rule('Out-of-Office', $build->invokeArgs(null, ['2030-01-30', '2030-02-02', &$error]),
+         [['type' => 'vacation', 'subject' => 'Away', 'reason' => 'Away.']], false),
+];
+$sets['reply_arguments'] = [
+    rule('Out-of-Office', [['test' => 'true']],
+         [['type' => 'vacation', 'seconds' => 3600, 'addresses' => ['carol@example.com', 'c@example.com'],
+           'subject' => 'Away', 'handle' => 'away-1', 'from' => 'carol@example.com', 'reason' => 'Away.']]),
 ];
 foreach ($sets as $name => $rules) {
     $s = new rcube_sieve_script('', $caps);

@@ -156,6 +156,35 @@ reply's, and a first write creates `rules` and activates it. On a JMAP server th
 as a script of its own, the rules script includes the reply's while the reply is on, so both run
 ("Settled by live tests", slice 2).
 
+Where the server keeps no reply of its own (ManageSieve), the reply is a rule of that same script,
+as Roundcube's vacation engine writes it: a new one written first and named `Out-of-Office`, its
+window `currentdate :zone … :value "ge"` / `"le" "iso8601"` tests (`allof` for two, `true` for
+none), switched off as any rule is. The plugin takes as the reply the first rule whose first action
+is `vacation`; the engine narrows that to one whose tests are only those the plugin writes for a
+window, so a user's own `if header :contains "from" "boss" { vacation …; }` stays an ordinary rule
+rather than being read, and rewritten, as a reply to everyone. `engine_sieve::dialect::reply`
+reads it into the neutral `VacationResponse` and writes one over a script, in place, keeping the
+`vacation` arguments the model leaves to the script (`:days`, `:seconds`, `:addresses`, `:handle`,
+`:from`) and any action after it, every other rule copied byte for byte. The reply rule is the
+reply's alone: `read_rules` leaves it out of the user's rules, and `write_rules` copies it where it
+was, so a host that hides it and writes the rules back keeps the reply, and a migration does not
+carry the `vacation` twice; `write_rules` puts it after the last written rule that ran before it
+(else before the first that ran after it), so every rule that ran ahead of it, a `discard; stop`
+among them, still does however a host inserts or moves rules. A reply rule
+holding more than the model says (another action, an `elsif` or `else`, a `:mime` body, a date in
+the server's own zone, a `${` the script would expand) is read as a reply the engine cannot show,
+never as a narrower one; it belongs to neither the reply nor the rules, so a host shows it, and
+`UnreadReply::sends_mail` says whether it may send mail, for a preflight. It is written over only
+when the caller names it (`write_reply_over`): that keeps its name, every command after `vacation`
+and any `elsif` or `else`, and `vacation`'s unmodelled arguments where `vacation` could be read,
+and discards the rest. A reply that is on is refused where any enabled rule of the user's runs
+`vacation` in any branch (it may match the same message, RFC 5230 §4.7 makes two an error, and
+Dovecot then sends neither), and beside an `include`, which the dialect does not follow. The
+window is written to the second and never wider than asked; one that holds no whole second is
+refused. Text only for now: a `:mime` body holding HTML is a follow-up. The bytes are pinned from
+the plugin's own output, one script saved through its settings page
+(`tests/fixtures/roundcube/README.md`).
+
 ### Types (`engine-core::rules`, implemented in slice 2)
 
 Implemented as sketched, with these differences, each for a reason the code met:

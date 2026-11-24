@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use engine_core::rules::{Expansion, MailRule, RuleBody, RuleOrigin, RuleSyntax};
 
-use super::{DialectError, read, render};
+use super::{DialectError, read, render, reply_read};
 use crate::{
     require,
     segment::{Segment, SegmentKind, segment},
@@ -17,6 +17,8 @@ pub(super) fn write(base: &str, rules: &[MailRule]) -> Result<String, DialectErr
     let mut needs = render::Extensions::new();
     let mut needed: BTreeSet<String> = BTreeSet::new();
     let mut pieces: Vec<(bool, String)> = Vec::with_capacity(rules.len());
+    // The segment each written rule was read from, where it was read from this script.
+    let mut origins: Vec<Option<usize>> = Vec::with_capacity(rules.len());
     for (index, rule) in rules.iter().enumerate() {
         // An origin names a segment of the script it was read from, and of no other.
         let origin = match rule.origin {
@@ -26,6 +28,7 @@ pub(super) fn write(base: &str, rules: &[MailRule]) -> Result<String, DialectErr
             }) if from == script.fingerprint => segments.get(at).map(|segment| (at, segment)),
             _ => None,
         };
+        origins.push(origin.map(|(at, _)| at));
         if let Some((at, segment)) = origin
             && read::rule(segment, at, &script).as_ref() == Some(rule)
         {
@@ -66,9 +69,53 @@ pub(super) fn write(base: &str, rules: &[MailRule]) -> Result<String, DialectErr
         pieces.push((true, text));
     }
     needed.extend(needs.into_iter().map(str::to_owned));
-    let merged = require::merged(&segments, &needed).map_err(DialectError::require)?;
+    // The reply rule is the reply's, not one of the rules (`super::reply`): it is copied byte for
+    // byte, and stays between the rules it was between.
+    if let Some((at, _)) = reply_read::find(base, &segments, script.literal) {
+        let position = reply_position(&segments, at, &origins);
+        pieces.insert(
+            position.min(pieces.len()),
+            (false, segments[at].text().to_owned()),
+        );
+    }
+    assemble(&segments, &needed, pieces)
+}
 
-    let mut out = String::with_capacity(base.len());
+/// Where the reply rule, segment `reply` of the script, goes among written rules read from
+/// `origins`: after the last whose segment came before it, so every rule that ran ahead of it
+/// (a `discard; stop` among them) still does, however the rules moved; else before the first
+/// whose segment came after it. Where a moved rule puts the two at odds, this errs toward fewer
+/// replies. A new rule, read from nowhere, moves it neither way; where every written rule is new,
+/// it keeps its place among the script's commands.
+fn reply_position(segments: &[Segment<'_>], reply: usize, origins: &[Option<usize>]) -> usize {
+    origins
+        .iter()
+        .rposition(|origin| origin.is_some_and(|at| at < reply))
+        .map(|before| before + 1)
+        .or_else(|| {
+            origins
+                .iter()
+                .position(|origin| origin.is_some_and(|at| at > reply))
+        })
+        .unwrap_or_else(|| {
+            segments[..reply]
+                .iter()
+                .filter(|segment| segment.kind() == SegmentKind::Command)
+                .count()
+        })
+}
+
+/// The script from `segments`: one `require` naming what they named and `needed`, then `pieces`
+/// in order (each flagged when it was rendered rather than copied, so it starts on a line of its
+/// own), then what trailed the last command.
+pub(super) fn assemble(
+    segments: &[Segment<'_>],
+    needed: &BTreeSet<String>,
+    pieces: Vec<(bool, String)>,
+) -> Result<String, DialectError> {
+    let merged = require::merged(segments, needed).map_err(DialectError::require)?;
+
+    let mut out = String::with_capacity(pieces.iter().map(|(_, piece)| piece.len()).sum());
     let requires: Vec<&Segment<'_>> = segments
         .iter()
         .filter(|segment| segment.kind() == SegmentKind::Require)
