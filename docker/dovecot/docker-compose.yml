@@ -56,6 +56,9 @@ services:
       # Drop-ins beside the image's own config, so the vendor rootless setup stays intact:
       # the shared shape, then the one file that decides the dialect.
       - ./harness.conf:/etc/dovecot/conf.d/harness.conf:ro
+      # The master user both services share (README.md → "Signing in as another account").
+      - ./master-user.conf:/etc/dovecot/conf.d/master-user.conf:ro
+      - ./master-users:/etc/dovecot/master-users:ro
       - ./rev1.conf:/etc/dovecot/conf.d/rev1.conf:ro
       # The same messages the Stalwart harness seeds, so one dataset validates every server.
       - ../stalwart/seed/mail:/harness/seed/mail:ro
@@ -71,6 +74,8 @@ services:
     volumes:
       - ./entrypoint.sh:/harness/entrypoint.sh:ro
       - ./harness.conf:/etc/dovecot/conf.d/harness.conf:ro
+      - ./master-user.conf:/etc/dovecot/conf.d/master-user.conf:ro
+      - ./master-users:/etc/dovecot/master-users:ro
       - ./rev2.conf:/etc/dovecot/conf.d/rev2.conf:ro
       - ../stalwart/seed/mail:/harness/seed/mail:ro
       - dovecot-rev2-mail:/srv/vmail

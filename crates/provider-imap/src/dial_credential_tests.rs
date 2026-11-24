@@ -19,7 +19,7 @@ use super::{
         token_config,
     },
 };
-use crate::{config::ImapConfig, error::ImapError, mock::script};
+use crate::{config::ImapConfig, credentials::PresentedIdentity, error::ImapError, mock::script};
 
 #[tokio::test]
 async fn every_ask_names_imap_and_the_servers_tls_name() {
@@ -28,7 +28,7 @@ async fn every_ask_names_imap_and_the_servers_tls_name() {
     // A loopback address mapped to a real name: the source is told the name.
     let config = ImapConfig::from_credential_source("127.0.0.1:993", HOST, source.clone());
 
-    dial_with(&config, || servers.open())
+    dial_with(&config, &PresentedIdentity::default(), || servers.open())
         .await
         .expect("the replacement authenticates");
 
@@ -69,7 +69,7 @@ async fn a_source_that_never_answers_fails_the_dial_as_retryable_at_the_dial_dea
     // Bounded twice over, so an unbounded ask fails here rather than hanging the suite.
     let err = tokio::time::timeout(
         2 * crate::deadline::BOUNDS.dial(),
-        dial_with(&config, || servers.open()),
+        dial_with(&config, &PresentedIdentity::default(), || servers.open()),
     )
     .await
     .expect("the ask must give up by itself")
@@ -112,7 +112,7 @@ async fn a_server_the_source_does_not_permit_is_never_dialled() {
     let servers = Servers::new(vec![accepting()]);
     let config = token_config(Arc::new(ElsewhereSource(CredentialSubject::new("alice"))));
 
-    let err = dial_with(&config, || servers.open())
+    let err = dial_with(&config, &PresentedIdentity::default(), || servers.open())
         .await
         .expect_err("not permitted");
 
@@ -129,7 +129,7 @@ async fn a_token_without_the_accounts_username_is_never_dialled() {
     let servers = Servers::new(vec![accepting()]);
     let config = ImapConfig::new(format!("{HOST}:993"), HOST, Credential::bearer("a-token"));
 
-    let err = dial_with(&config, || servers.open())
+    let err = dial_with(&config, &PresentedIdentity::default(), || servers.open())
         .await
         .expect_err("SASL needs the username");
 
@@ -158,9 +158,13 @@ async fn a_failure_that_judged_no_credential_asks_for_no_replacement() {
             accepting(),
         ]);
 
-        let err = dial_with(&token_config(source.clone()), || servers.open())
-            .await
-            .expect_err("not signed in");
+        let err = dial_with(
+            &token_config(source.clone()),
+            &PresentedIdentity::default(),
+            || servers.open(),
+        )
+        .await
+        .expect_err("not signed in");
 
         assert_eq!(err.failure_class(), class, "{answer}");
         assert_eq!(source.renewals.load(Ordering::SeqCst), 0, "{answer}");
@@ -170,9 +174,13 @@ async fn a_failure_that_judged_no_credential_asks_for_no_replacement() {
     let source = TokenSource::new("a-token", Some("another-token"));
     let password_only = "* CAPABILITY IMAP4rev1 AUTH=PLAIN\r\na1 OK CAPABILITY done\r\n";
     let servers = Servers::new(vec![script(&[GREETING, password_only]), accepting()]);
-    let err = dial_with(&token_config(source.clone()), || servers.open())
-        .await
-        .expect_err("no mechanism for a token");
+    let err = dial_with(
+        &token_config(source.clone()),
+        &PresentedIdentity::default(),
+        || servers.open(),
+    )
+    .await
+    .expect_err("no mechanism for a token");
     assert!(matches!(err, ImapError::AuthUnsupported(_)), "{err:?}");
     assert_eq!(err.failure_class(), FailureClass::Authentication);
     assert_eq!(source.renewals.load(Ordering::SeqCst), 0);

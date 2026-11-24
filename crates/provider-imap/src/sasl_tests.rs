@@ -1,9 +1,9 @@
-//! Unit tests for the OAuth SASL mechanisms.
+//! Unit tests for the SASL responses: `PLAIN` and the two OAuth mechanisms.
 //!
-//! The two initial-response vectors are the ones the specifications publish, decoded
-//! and re-encoded byte for byte: RFC 7628 §4.1's `OAUTHBEARER` example and Google's
-//! `XOAUTH2` example. A hand-written expectation would only prove the code agrees with
-//! itself — these prove it agrees with the servers.
+//! The initial-response vectors are the ones the specifications publish, decoded and
+//! re-encoded byte for byte: RFC 4616 §4's two `PLAIN` examples, RFC 7628 §4.1's
+//! `OAUTHBEARER` example and Google's `XOAUTH2` example. A hand-written expectation would only
+//! prove the code agrees with itself — these prove it agrees with the servers.
 
 use super::*;
 
@@ -206,4 +206,39 @@ fn a_hostile_challenge_cannot_forge_a_log_line_or_grow_without_bound() {
     assert_eq!(describe_challenge("not base64!"), "not base64!");
     // An empty challenge contributes nothing.
     assert_eq!(describe_challenge("   "), "");
+}
+
+/// RFC 4616 §4's two examples, verbatim: `\0tim\0tanstaaftanstaaf` (no authorization identity)
+/// and `Ursel\0Kurt\0xipj3plmq` (Kurt signs in to act as Ursel).
+const RFC4616_PLAIN: &str = "AHRpbQB0YW5zdGFhZnRhbnN0YWFm";
+const RFC4616_PLAIN_AUTHZID: &str = "VXJzZWwAS3VydAB4aXBqM3BsbXE=";
+
+#[test]
+fn plain_builds_the_rfc_4616_responses_with_and_without_an_authorization_identity() {
+    let own = plain_response(None, "tim", "tanstaaftanstaaf").unwrap();
+    assert_eq!(own.as_str(), RFC4616_PLAIN);
+    let acting = plain_response(Some("Ursel"), "Kurt", "xipj3plmq").unwrap();
+    assert_eq!(acting.as_str(), RFC4616_PLAIN_AUTHZID);
+    // Built at its final length, so no grown buffer left a copy of the password behind.
+    assert_eq!(acting.capacity(), acting.len());
+}
+
+#[test]
+fn plain_refuses_a_nul_in_any_component_before_encoding() {
+    // NUL is PLAIN's field separator, so a component holding one would move the boundaries:
+    // `alice\0admin` as an authorization identity reads as an authentication identity too.
+    // Every other byte is the server's to judge (RFC 4616 §2: UTF8SAFE excludes only NUL).
+    for (authzid, username, password) in [
+        (Some("a\0b"), "u", "p"),
+        (None, "u\0x", "p"),
+        (None, "u", "p\0x"),
+    ] {
+        let Err(err) = plain_response(authzid, username, password) else {
+            panic!("a NUL in {authzid:?}/{username:?}/{password:?} was encoded");
+        };
+        assert!(matches!(err, ImapError::Bad(_)), "{err:?}");
+        assert!(!err.to_string().contains('\0'), "{err}");
+    }
+    // Bytes that frame the OAuth mechanisms are ordinary password bytes here.
+    assert!(plain_response(None, "u", "p\x01\r\n").is_ok());
 }

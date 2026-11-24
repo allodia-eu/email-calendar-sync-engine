@@ -45,6 +45,34 @@ folder exists only *virtually* until something opens it, and `doveadm acl set` o
 `No local acl file path` — so the entrypoint opens each folder (`doveadm mailbox status`)
 before granting on it.
 
+### Signing in as another account (a master user)
+
+`master-user.conf` adds a **master user**, `master@test.local` with the throwaway password in
+`master-users` (`dovecot-master-pw`), to both services. It signs in as any account with SASL
+`PLAIN` and an authorization identity (RFC 4616): `AUTHENTICATE PLAIN` over
+`alice@test.local\0master@test.local\0dovecot-master-pw` opens **alice's** mailbox. This is the
+server `Credential::ActingAs` is proven against (`provider-imap/tests/live_imap_acting_as.rs`).
+Master passdbs are consulted only when a sign-in names an authorization identity, so every other
+sign-in still goes through the image's static passdb.
+
+Observed by hand on 2.4.4 before the variant was written, every line otherwise as below:
+
+```text
+C: a1 AUTHENTICATE PLAIN <alice@test.local NUL master@test.local NUL dovecot-master-pw>
+S: a1 OK Logged in                                 (LIST shows alice's folders, not the master's)
+C: a1 AUTHENTICATE PLAIN <alice@test.local NUL master@test.local NUL wrong-pw>
+S: a1 NO [AUTHENTICATIONFAILED] Authentication failed.
+C: a1 AUTHENTICATE PLAIN <alice@test.local NUL bob@test.local NUL dovecot-alice-pw>
+S: a1 NO [AUTHENTICATIONFAILED] Authentication failed.   (bob is no master user)
+```
+
+Both services answer `SASL-IR AUTH=PLAIN` before sign-in, and without `SASL-IR` Dovecot
+prompts with `+ ` (a trailing space) and takes the response on the next line. The master
+passdb's `result_success = continue` looks the target up in the ordinary passdb, as a production
+setup does so a master user acts only as accounts that exist; the static passdb knows every
+name, so here **every** authorization identity resolves, and one naming no account cannot be
+shown on this harness. The refusals it can show are the two above.
+
 Things this fixture proves that **Stalwart cannot** (see "Which server proves what" in
 [`imap-smtp.md`](../../docs/agent-guidance/imap-smtp.md)):
 
@@ -63,6 +91,9 @@ Things this fixture proves that **Stalwart cannot** (see "Which server proves wh
   [`utf7`](../../crates/provider-imap/src/utf7.rs) — decoding a `LIST` name *and* encoding
   one back for a `SELECT` — has live coverage on `dovecot-rev1` and nowhere else. That is
   why the rev1 half pins `imap4rev2_enable = no` instead of moving with the image default.
+- **That an authorization identity is honoured.** Stalwart ignores it and signs the
+  authentication identity in to its own mailbox (`spec-deviations.md`, STALWART-9), so
+  `Credential::ActingAs` has a live server that honours it here and nowhere else.
 - **That only untagged lines are data.** Dovecot's completion detail is prose whose first
   word is the command name and whose last character is a period, so a parser that reads
   the completion line as data invents a mailbox named `.` from it.
@@ -78,6 +109,7 @@ It is **test infrastructure, not product code**.
   ([the documented mechanism](https://doc.dovecot.org/main/installation/docker.html)), so
   the vendor rootless setup stays intact. It declares the special-use mailbox set explicitly
   rather than relying on the image's defaults.
+- `master-user.conf` + `master-users` — the master user both services share (above).
 - `rev1.conf` / `rev2.conf` — one file per service, three settings each, and the *entire*
   difference between the two servers. Anything that diverged for another reason would make
   them incomparable.
@@ -97,7 +129,8 @@ docker compose up -d --wait          # both self-seed; healthy when ready
 DOVECOT_REV1_IMAP_ADDR=127.0.0.1:11994 \
 DOVECOT_REV2_IMAP_ADDR=127.0.0.1:11995 \
   cargo test -p provider-imap --test live_imap_contract -- --nocapture
-# then the dialect suites: --test live_imap_rev1 / --test live_imap_rev2
+# then the dialect suites: --test live_imap_rev1 / --test live_imap_rev2,
+# and the master user: --test live_imap_acting_as
 
 docker compose down -v               # stop + wipe
 ```
@@ -114,6 +147,7 @@ Each suite skips the servers whose address variable is unset, so the offline
 | IMAP rev2 (implicit TLS) | `127.0.0.1:11995` |
 | Account (both) | `alice@test.local` |
 | Password (both) | `dovecot-alice-pw` (throwaway) |
+| Master user (both) | `master@test.local` / `dovecot-master-pw` (throwaway; `master-user.conf`) |
 
 STARTTLS is exposed on the rev1 service only: it is a transport concern with nothing
 dialect-specific about it, so a second listener would be surface no test uses.

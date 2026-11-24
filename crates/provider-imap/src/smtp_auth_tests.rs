@@ -285,3 +285,21 @@ fn mechanisms_are_read_per_line_and_in_both_spellings() {
     assert_eq!(advertised_mechanisms(&line("")), [] as [&str; 0]);
     assert_eq!(advertised_mechanisms(&line("AUTH")), [] as [&str; 0]);
 }
+
+#[tokio::test]
+async fn a_credential_acting_as_another_account_is_never_presented_over_smtp() {
+    // Submitting as another account is not what an administrator's grant to read its mailbox
+    // says, so the conversation stops after `EHLO` with the host's mistake, and nothing
+    // carrying the administrator's password is written.
+    let credential = Credential::acting_as("master@example.com", "master-pw", "alice@example.com");
+    let (outcome, sent) = submit(
+        script(&["220 mail ESMTP\r\n", "250-mail\r\n250 AUTH PLAIN\r\n"]),
+        &credential,
+    )
+    .await;
+
+    let err = outcome.expect_err("refused");
+    assert!(matches!(err, ImapError::Bad(_)), "{err:?}");
+    assert_eq!(err.failure_class(), FailureClass::Permanent);
+    assert!(!sent.contains("AUTH"), "{sent}");
+}

@@ -12,7 +12,8 @@
 //!
 //! - [`Secret`] holds a password or token in one buffer that is zeroed when its last clone drops,
 //!   and never prints it.
-//! - [`Credential`] is what a source answers: a password, or a bearer token.
+//! - [`Credential`] is what a source answers: a password, a bearer token, or an administrator's
+//!   password acting as another account.
 //! - [`CredentialSubject`] names who a source signs in as, so everything authenticated can be keyed
 //!   by it and never shared across subjects.
 //! - [`Origin`] and [`CredentialProtocol`] say where the credential is about to go, and over which

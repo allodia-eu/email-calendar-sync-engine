@@ -156,3 +156,17 @@ async fn a_token_without_the_accounts_username_is_never_submitted() {
     assert_eq!(err.class(), FailureClass::Permanent);
     assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing is dialled");
 }
+
+#[tokio::test]
+async fn a_credential_acting_as_another_account_is_never_submitted() {
+    // Submitting as another account is not the grant an administrator's access to a mailbox
+    // is, so the submission refuses before it dials, and the password goes nowhere.
+    let (port, accepted) = counting_listener().await;
+    let credential = Credential::acting_as("master@example.com", "master-pw", "alice@example.com");
+    let source = engine_provider::FixedCredential::unique(credential);
+
+    let err = submit_to(port, Arc::new(source)).await;
+
+    assert_eq!(err.class(), FailureClass::Permanent);
+    assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing is dialled");
+}

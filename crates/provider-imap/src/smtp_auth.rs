@@ -1,4 +1,4 @@
-//! SMTP authentication (RFC 4954): `AUTH PLAIN` for a password, `AUTH OAUTHBEARER` /
+//! SMTP authentication (RFC 4954): `AUTH PLAIN` (RFC 4616) for a password, `AUTH OAUTHBEARER` /
 //! `AUTH XOAUTH2` for an OAuth 2.0 access token.
 //!
 //! Split from [`crate::smtp`] (which owns the submission *conversation* and is at the
@@ -14,10 +14,9 @@
 
 use engine_provider::Credential;
 use tokio::io::{AsyncRead, AsyncWrite};
-use zeroize::Zeroizing;
 
 use crate::{
-    credentials::{SignIn, sign_in},
+    credentials::{SubmitAs, submit_as},
     error::{ImapError, ImapResult},
     sasl::{self, Mechanism},
     secret_line::{Part, secret_line},
@@ -42,7 +41,8 @@ pub(crate) struct SmtpAuth<'a> {
 /// [`ImapError::AuthUnsupported`] for any other failure that judged no credential, including a
 /// token offered to a server that advertises no OAuth mechanism (the message names what it did
 /// offer, because the usual cause is a token pointed at an account that only takes a password);
-/// [`ImapError::Bad`] for a credential SMTP cannot present; [`ImapError::RateLimited`] if it
+/// [`ImapError::Bad`] for a credential SMTP cannot present, or one holding a NUL (which would
+/// forge `PLAIN`'s fields); [`ImapError::RateLimited`] if it
 /// defers the attempt with a 4xx other than `432`.
 pub(crate) async fn authenticate<S>(
     smtp: &mut SmtpStream<S>,
@@ -52,11 +52,11 @@ pub(crate) async fn authenticate<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    match sign_in(auth.credential)? {
-        SignIn::Password { username, password } => {
+    match submit_as(auth.credential)? {
+        SubmitAs::Password { username, password } => {
             // `AUTH PLAIN` is sent whether or not the server listed it, which is how
             // this path has always behaved; the reply is the answer either way.
-            let token = plain_token(username, password);
+            let token = sasl::plain_response(None, username, password)?;
             let line = secret_line(&[
                 Part::Text("AUTH PLAIN "),
                 Part::Text(&token),
@@ -69,7 +69,7 @@ where
             }
             Ok(())
         }
-        SignIn::Token { username, token } => {
+        SubmitAs::Token { username, token } => {
             let offered = advertised_mechanisms(extensions);
             let mechanism = sasl::select(offered.iter().copied()).ok_or_else(|| {
                 ImapError::auth_unsupported(format!(
@@ -170,17 +170,6 @@ pub(crate) fn advertised_mechanisms(extensions: &[String]) -> Vec<&str> {
         })
         .flatten()
         .collect()
-}
-
-/// The `AUTH PLAIN` SASL token: base64 of `\0user\0password` (RFC 4616). Both copies of the
-/// password it makes are allocated at their final length and zeroed when dropped.
-fn plain_token(username: &str, password: &str) -> Zeroizing<String> {
-    let mut credentials = Zeroizing::new(Vec::with_capacity(username.len() + password.len() + 2));
-    credentials.push(0);
-    credentials.extend_from_slice(username.as_bytes());
-    credentials.push(0);
-    credentials.extend_from_slice(password.as_bytes());
-    Zeroizing::new(crate::base64::encode(&credentials))
 }
 
 #[cfg(test)]

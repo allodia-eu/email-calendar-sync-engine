@@ -48,8 +48,8 @@ impl core::fmt::Debug for Secret {
     }
 }
 
-/// How an account proves who it is: what a [`CredentialSource`](super::CredentialSource)
-/// answers.
+/// How an account proves who it is, or an administrator signs in on its behalf: what a
+/// [`CredentialSource`](super::CredentialSource) answers.
 ///
 /// There are no mechanism-specific variants. `XOAUTH2` and `OAUTHBEARER` carry the same username
 /// and token, and HTTP Basic and IMAP `LOGIN` the same password, so an adapter picks the
@@ -77,6 +77,24 @@ pub enum Credential {
         username: Option<String>,
         /// The access token.
         token: Secret,
+    },
+    /// An administrator's password, signing in to act as another account: SASL `PLAIN` with an
+    /// authorization identity (RFC 4616), which is how a Dovecot master user works. What a
+    /// transfer host holds where the server grants administrative access, instead of each
+    /// account's own credential. IMAP only: SMTP refuses it, because submitting as another
+    /// account is a different question from reading its mailbox.
+    ///
+    /// ⚠️ IMAP gives a client no way to ask whose session it got, so the engine cannot check
+    /// that the server honoured `acting_as`. A server that ignores the authorization identity
+    /// signs the administrator in to their **own** mailbox without an error (observed on
+    /// Stalwart). Use this only against a server verified to honour it.
+    ActingAs {
+        /// The administrator's account name: the SASL authentication identity.
+        username: String,
+        /// The administrator's password.
+        password: Secret,
+        /// The account whose mailbox the session opens: the SASL authorization identity.
+        acting_as: String,
     },
 }
 
@@ -109,6 +127,21 @@ impl Credential {
         }
     }
 
+    /// The administrator `username`, signing in with `password` to act as the account
+    /// `acting_as` ([`Credential::ActingAs`]; read its warning first).
+    #[must_use]
+    pub fn acting_as(
+        username: impl Into<String>,
+        password: impl Into<String>,
+        acting_as: impl Into<String>,
+    ) -> Self {
+        Self::ActingAs {
+            username: username.into(),
+            password: Secret::new(password),
+            acting_as: acting_as.into(),
+        }
+    }
+
     /// [`bearer_for`](Self::bearer_for) under the name `provider_imap::Credentials` gave it,
     /// kept so that deprecated alias still builds the same credential.
     #[deprecated(note = "use `Credential::bearer_for`")]
@@ -117,13 +150,30 @@ impl Credential {
         Self::bearer_for(username, access_token)
     }
 
-    /// The account name, when the credential carries one. It is not a secret, but it is
-    /// personal, so `Debug` does not print it.
+    /// The account name that signs in, when the credential carries one.
+    ///
+    /// For [`ActingAs`](Self::ActingAs) this is the **administrator's**, not the account whose
+    /// mailbox opens: ask [`authorization_identity`](Self::authorization_identity) for that. It is
+    /// not a secret, but it is personal, so `Debug` does not print it.
     #[must_use]
     pub fn username(&self) -> Option<&str> {
         match self {
-            Self::Password { username, .. } => Some(username),
+            Self::Password { username, .. } | Self::ActingAs { username, .. } => Some(username),
             Self::Bearer { username, .. } => username.as_deref(),
+        }
+    }
+
+    /// The account whose mailbox a session signed in with this credential opens: SASL's
+    /// authorization identity (RFC 4616 §2), presented or derived.
+    ///
+    /// For [`ActingAs`](Self::ActingAs), the account acted as; for every other credential, its
+    /// [`username`](Self::username), since it signs in as itself. `None` for a token without
+    /// one. Personal, like the username, so `Debug` does not print it.
+    #[must_use]
+    pub fn authorization_identity(&self) -> Option<&str> {
+        match self {
+            Self::ActingAs { acting_as, .. } => Some(acting_as),
+            Self::Password { .. } | Self::Bearer { .. } => self.username(),
         }
     }
 }
@@ -133,15 +183,21 @@ impl core::fmt::Debug for Credential {
         let (variant, secret) = match self {
             Self::Password { .. } => ("Password", "password"),
             Self::Bearer { .. } => ("Bearer", "token"),
+            Self::ActingAs { .. } => ("ActingAs", "password"),
         };
         let username = if self.username().is_some() {
             "<present>"
         } else {
             "<absent>"
         };
-        f.debug_struct(variant)
+        let mut shown = f.debug_struct(variant);
+        shown
             .field("username", &format_args!("{username}"))
-            .field(secret, &format_args!("<redacted>"))
-            .finish()
+            .field(secret, &format_args!("<redacted>"));
+        if let Self::ActingAs { .. } = self {
+            // Always present: the variant has no shape without it.
+            shown.field("acting_as", &format_args!("<present>"));
+        }
+        shown.finish()
     }
 }

@@ -19,7 +19,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerNam
 
 use crate::{
     config::{ImapConfig, ImapSecurity},
-    credentials::{SignIn, sign_in, with_credential},
+    credentials::{PresentedIdentity, SignIn, another_account, sign_in, with_credential},
     deadline,
     error::{ImapError, ImapResult},
     tls_info,
@@ -43,9 +43,10 @@ use crate::{
 /// credential to give, or gives none within the dial deadline.
 pub(crate) async fn connect_session(
     config: &ImapConfig,
+    presented: &PresentedIdentity,
     connector: &TlsConnector,
 ) -> Result<(Connection<TlsStream<TcpStream>>, Option<TlsVersion>), ImapError> {
-    dial_with(config, || {
+    dial_with(config, presented, || {
         open_secured(
             &config.addr,
             &config.server_name,
@@ -67,6 +68,12 @@ pub(crate) async fn connect_session(
 /// server may close a connection after a failed sign-in, and one that does not has still
 /// counted the attempt.
 ///
+/// Every dial of one account shares `presented`: once a dial has signed in, a credential
+/// naming another account fails before anything is opened ([`PresentedIdentity`]). A
+/// replacement must name the account the refused credential named, whatever is remembered: a
+/// source that answers a refusal with another account's credential is answering for the wrong
+/// subject, on the first dial as on any other.
+///
 /// Generic over the stream so the offline suite drives it over scripted connections.
 ///
 /// # Errors
@@ -74,6 +81,7 @@ pub(crate) async fn connect_session(
 /// As [`connect_session`].
 pub(crate) async fn dial_with<S, F, Fut>(
     config: &ImapConfig,
+    presented: &PresentedIdentity,
     mut open: F,
 ) -> ImapResult<(Connection<S>, Option<TlsVersion>)>
 where
@@ -83,11 +91,28 @@ where
 {
     let origin = config.origin();
     let source = config.credentials.as_ref();
+    // The account this dial's first credential named; a replacement must name the same.
+    let mut first: Option<String> = None;
     with_credential(source, CredentialProtocol::Imap, &origin, |credential| {
-        let opening = sign_in(&credential).map(|_| open());
+        let opening = sign_in(&credential)
+            .and_then(|_| {
+                // `sign_in` refused every credential without one, so this is never empty.
+                let identity = credential.authorization_identity().unwrap_or_default();
+                match &first {
+                    Some(first) if first != identity => return Err(another_account()),
+                    Some(_) => {}
+                    None => first = Some(identity.to_owned()),
+                }
+                presented.check(identity)?;
+                Ok(identity.to_owned())
+            })
+            .map(|identity| (identity, open()));
         async move {
-            let (connection, tls_version) = opening?.await?;
+            let (identity, opening) = opening?;
+            let (connection, tls_version) = opening.await?;
             let connection = finish_session(connection, tls_version, config, &credential).await?;
+            // Dropping the connection on a mismatch closes it: it never reaches the pool.
+            presented.remember(&identity)?;
             Ok((connection, tls_version))
         }
     })
@@ -165,11 +190,21 @@ pub(crate) async fn finish_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
         observer.step(&ConnectStep::TlsEstablished(version));
     }
     // A password logs in; an access token goes over SASL, with the mechanism chosen
-    // from what this server advertises (`crate::sasl`). Either way the next line is the
-    // same: the observer is told the session is authenticated, not *how*.
+    // from what this server advertises (`crate::sasl`); an administrator acting as another
+    // account goes over SASL `PLAIN`. Whichever it is, the next line is the same: the observer is
+    // told the session is authenticated, not *how*.
     match sign_in(credential)? {
         SignIn::Password { username, password } => {
             connection.login(username, password).await?;
+        }
+        SignIn::ActingAs {
+            username,
+            password,
+            acting_as,
+        } => {
+            connection
+                .authenticate_acting_as(username, password, acting_as)
+                .await?;
         }
         SignIn::Token { username, token } => {
             // `server_name` (not the dial `addr`) is the host an `OAUTHBEARER` response
@@ -204,3 +239,7 @@ mod renewal_tests;
 #[cfg(test)]
 #[path = "dial_credential_tests.rs"]
 mod credential_tests;
+
+#[cfg(test)]
+#[path = "dial_identity_tests.rs"]
+mod identity_tests;

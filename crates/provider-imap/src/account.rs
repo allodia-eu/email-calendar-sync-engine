@@ -31,6 +31,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream};
 use crate::{
     capability::Extension,
     config::ImapConfig,
+    credentials::PresentedIdentity,
     dial::connect_session,
     error::ImapError,
     filing::{SmtpSender, resolve_smtp},
@@ -81,9 +82,12 @@ impl<S> core::fmt::Debug for ImapAccount<S> {
 
 impl ImapAccount<TlsStream<TcpStream>> {
     /// Connects over TLS (implicit or STARTTLS, per the config) and authenticates with the
-    /// [`Credential`](engine_provider::Credential) the config's source gives, a password or an
-    /// OAuth 2.0 access token, proving them and reading the server's capabilities. The connection
-    /// is kept for the first folder that needs one.
+    /// [`Credential`](engine_provider::Credential) the config's source gives: a password, an
+    /// OAuth 2.0 access token, or an administrator's password acting as another account
+    /// ([`Credential::ActingAs`](engine_provider::Credential::ActingAs), read its warning
+    /// first). This proves the credential and reads the server's capabilities, and the
+    /// connection is kept for the first folder that needs one. Every later connection the
+    /// account opens must sign in as the same account, the one whose mailbox this one opened.
     ///
     /// The `connector` carries the host's trust policy — the library never bakes in a root
     /// store, so a mobile host (or the self-signed test fixture) injects its own
@@ -99,8 +103,10 @@ impl ImapAccount<TlsStream<TcpStream>> {
             .smtp
             .as_ref()
             .map(|settings| resolve_smtp(settings, &connector, config));
-        let (connection, tls_version) = connect_session(config, &connector).await?;
-        let dial = dial_tls(config.clone(), connector);
+        // One identity for every connection the account opens, the first included.
+        let presented = Arc::new(PresentedIdentity::default());
+        let (connection, tls_version) = connect_session(config, &presented, &connector).await?;
+        let dial = dial_tls(config.clone(), presented, connector);
         Ok(Self::build(
             connection,
             dial,
@@ -114,14 +120,20 @@ impl ImapAccount<TlsStream<TcpStream>> {
 /// The pool's dial for a live account: the same TCP, TLS and authentication sequence as the
 /// first connection, from the same config. Each dial asks the config's
 /// [`CredentialSource`](crate::CredentialSource) afresh, so a connection opened an hour after
-/// [`ImapAccount::connect`] presents a token that is valid then.
-fn dial_tls(config: ImapConfig, connector: TlsConnector) -> Dial<TlsStream<TcpStream>> {
+/// [`ImapAccount::connect`] presents a token that is valid then, and every one signs in as the
+/// account the first connection signed in as (`presented`).
+fn dial_tls(
+    config: ImapConfig,
+    presented: Arc<PresentedIdentity>,
+    connector: TlsConnector,
+) -> Dial<TlsStream<TcpStream>> {
     let config = Arc::new(config);
     Arc::new(move || {
         let config = Arc::clone(&config);
+        let presented = Arc::clone(&presented);
         let connector = connector.clone();
         Box::pin(async move {
-            connect_session(&config, &connector)
+            connect_session(&config, &presented, &connector)
                 .await
                 .map(|(connection, _tls_version)| connection)
         })

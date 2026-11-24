@@ -9,6 +9,7 @@ use super::{
 };
 
 const ADDRESS: &str = "alice@example.com";
+const ADMIN: &str = "master@example.com";
 const PASSWORD: &str = "hunter2-correct-horse";
 const TOKEN: &str = "ya29.a-token-nobody-may-print";
 
@@ -61,6 +62,34 @@ fn a_credential_prints_neither_its_secret_nor_its_username() {
 }
 
 #[test]
+fn a_credential_acting_as_another_account_prints_neither_account_nor_its_secret() {
+    let credential = Credential::acting_as(ADMIN, PASSWORD, ADDRESS);
+    let shown = format!("{credential:?}");
+    assert_eq!(
+        shown,
+        "ActingAs { username: <present>, password: <redacted>, acting_as: <present> }"
+    );
+    for leaked in [ADMIN, "master", ADDRESS, "alice", PASSWORD] {
+        assert!(!shown.contains(leaked), "{leaked} leaked: {shown}");
+    }
+}
+
+#[test]
+fn a_credential_acting_as_another_account_carries_both_accounts() {
+    let credential = Credential::acting_as(ADMIN, PASSWORD, ADDRESS);
+    // The username is the one that signs in, the administrator's: the mailbox acted as is
+    // not who the password belongs to.
+    assert_eq!(credential.username(), Some(ADMIN));
+    // The mailbox that opens is the account acted as.
+    assert_eq!(credential.authorization_identity(), Some(ADDRESS));
+    assert!(matches!(
+        &credential,
+        Credential::ActingAs { username, password, acting_as }
+            if username == ADMIN && password.expose() == PASSWORD && acting_as == ADDRESS
+    ));
+}
+
+#[test]
 fn a_fixed_credential_prints_nothing_secret_or_personal() {
     let credential = Credential::password(ADDRESS, PASSWORD);
     // A host names its subjects after accounts as often as not.
@@ -84,6 +113,15 @@ fn the_username_reads_out_of_either_shape() {
         Some(ADDRESS)
     );
     assert_eq!(Credential::bearer(TOKEN).username(), None);
+    // Signing in as itself, a credential's mailbox is its username's (RFC 4616 §2: the
+    // authorization identity is derived from the authentication identity).
+    for credential in [
+        Credential::password(ADDRESS, PASSWORD),
+        Credential::bearer_for(ADDRESS, TOKEN),
+    ] {
+        assert_eq!(credential.authorization_identity(), Some(ADDRESS));
+    }
+    assert_eq!(Credential::bearer(TOKEN).authorization_identity(), None);
     #[expect(deprecated, reason = "the name the IMAP alias keeps compiling")]
     let old = Credential::oauth2(ADDRESS, TOKEN);
     assert!(
