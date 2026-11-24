@@ -105,6 +105,15 @@ pub struct Loss {
     pub reason: LossReason,
 }
 
+impl Loss {
+    /// `part` lost or changed, for `reason`: what an adapter adds to a planned outcome for what
+    /// only it can find it cannot write.
+    #[must_use]
+    pub fn new(part: RulePart, reason: LossReason) -> Self {
+        Self { part, reason }
+    }
+}
+
 /// A part of a rule, by position: never its value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
