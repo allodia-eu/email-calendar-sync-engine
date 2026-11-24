@@ -17,10 +17,10 @@ Slice 3 has landed the reply as a rule of the script (`engine_sieve::dialect::re
 `Provider::rules_importer`, one import over every target's own `MailRules` and `Vacation`
 (`engine_provider::import::append_rules`, `import_reply`), the preflight list
 (`engine_core::rules::held_forwarding`), and both Sieve targets, proven live ("Settled in slice
-4"). Graph's rules and reply are read and written by `provider-graph` (the source half of slice
-4, with slice 5's Graph writes), reads and writes proven live, the writes on rules and a reply of
-the test's own ("Settled for Graph"). Where the code differs from a sketch below, the sketch has been brought up
-to date and says why.
+4"). Slice 4's source half, Graph's rules and reply, is read by `provider-graph`, which writes
+them too (slice 5's Graph writes), reads and writes proven live, the writes on rules and a reply
+of the test's own ("Settled for Graph"). Where the code differs from a sketch below, the sketch
+has been brought up to date and says why.
 
 Marks used below: **live** = observed against a harness server on 2026-11-23; **docs** = read from
 the RFC or vendor reference cited; **unverified** = believed, not yet checked, and must be proven
@@ -890,17 +890,18 @@ Each slice is proven live before the next starts (`AGENTS.md`).
    `managesieve` module of `provider-imap` over the adapter's TLS, SASL and connection budget, at a
    host-configured endpoint; vacation and rules in one script. Live on both, which exercises two
    vocabularies.
-4. **Import from Graph.** Read `messageRules` and `automaticRepliesSetting` into the model;
-   `RulesImporter` on the JMAP and ManageSieve targets; per-rule receipts; the preflight list of
-   forwarding rules. **The target half is implemented**: `RulesImporter` and
+4. **Import from Graph. Implemented.** Read `messageRules` and `automaticRepliesSetting` into the
+   model; `RulesImporter` on the JMAP and ManageSieve targets; per-rule receipts; the preflight list
+   of forwarding rules. The target half: `RulesImporter` and
    `Provider::rules_importer`, the receipts, `held_forwarding`, and both Sieve targets, proven
    live on Stalwart (JMAP and ManageSieve) and Dovecot with a rule set built in the model as Graph
-   reads it ("Settled in slice 4"). **The Graph read is implemented** too (`provider-graph`),
-   proven live on a work/school tenant, delegated and with application permissions ("Settled for
-   Graph").
+   reads it ("Settled in slice 4"). The source half, the Graph read (`provider-graph`), proven live
+   on a work/school tenant, delegated and with application permissions ("Settled for Graph"). A
+   rule Graph marks in error imports disabled, and an import knows a rule it already holds
+   whatever marks its source puts on it.
 5. **Gmail read**, then Graph and Gmail writes for the sync and direct hosts. Graph's writes are
-   **implemented** with Graph's read (`provider-graph`), proven against fakes that log each request;
-   their live run awaits the test tenant owner's OK ("Settled for Graph"). Gmail is next.
+   **implemented** with Graph's read (`provider-graph`), proven live on rules and a reply of the
+   test's own ("Settled for Graph"). Gmail is next.
 
 ### Tests
 
