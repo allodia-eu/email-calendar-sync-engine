@@ -79,7 +79,7 @@ that never sends a message twice.
 |---|---|---|---|
 | every one | connect, TLS handshake | `dial` | `Retryable`: nothing reached the server |
 | IMAP, SMTP | asking the credential source for a credential, or for a replacement after a refusal | `dial`, each ask | `Retryable`: no session was opened and no message sent (SMTP's `AUTH` precedes `MAIL FROM`) |
-| JMAP (every HTTP adapter on `AuthenticatedClient`) | asking the credential source for a credential, or for a replacement after a `401` | `reply`, each ask | `Retryable`: the request was not sent, a submission included |
+| JMAP, CalDAV, CardDAV, Talk (every HTTP adapter on `AuthenticatedClient`) | asking the credential source for a credential, or for a replacement after a `401` | `reply`, each ask | `Retryable`: the request was not sent, a submission included |
 | IMAP | greeting, `LOGIN`, `AUTHENTICATE`, `CAPABILITY`, `ENABLE`, `STARTTLS`, `SELECT`/`EXAMINE`, `LIST`, `SEARCH`, metadata `FETCH`, `STORE`, `MOVE`, `EXPUNGE`, `CREATE`, `APPEND`'s continuation and completion, `IDLE`'s start and `DONE` | `reply` per line | `Retryable` |
 | IMAP | a `BODY[]` literal, single or batched | `stall` per read | `Retryable` |
 | IMAP | every write, an `APPEND` literal included | `stall` per 8 KiB | `Retryable` |

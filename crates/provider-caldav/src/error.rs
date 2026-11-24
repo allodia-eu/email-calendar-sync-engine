@@ -53,6 +53,17 @@ pub enum CalDavError {
     #[error("the server asks for an authentication method this account cannot use: {0}")]
     UnsupportedAuthentication(String),
 
+    /// The credential could not be presented, or not replaced: the account's
+    /// [`CredentialSource`](engine_provider::CredentialSource) did not permit the origin, had no
+    /// credential to give, or did not answer within the request's deadline; the engine refused
+    /// the origin (plaintext HTTP, except to loopback from an account configured there); or the
+    /// credential is of a kind HTTP cannot present (an administrator acting as another account).
+    /// In each of those nothing was sent. When the source fails as it is asked to replace a
+    /// credential the server refused with a `401`, a request was sent and refused, and this takes
+    /// the `401`'s place. Classified as the source classified it, and `Permanent` for a refusal.
+    #[error("no credential to present: {0}")]
+    Credential(ProviderError),
+
     /// A write that may have been applied: its request may have reached the server and no
     /// answer of the server's own came back. Becomes [`ProviderError::needs_confirmation`].
     #[error("{0}; the change may have been applied")]
@@ -129,6 +140,7 @@ impl CalDavError {
             | Self::Ical(_)
             | Self::Protocol(_)
             | Self::UnsupportedAuthentication(_)
+            | Self::Credential(_)
             | Self::Unconfirmed(_) => false,
         };
         if unknown {
@@ -152,6 +164,9 @@ impl CalDavError {
             | Self::Ical(_)
             | Self::Protocol(_)
             | Self::UnsupportedAuthentication(_) => FailureClass::Permanent,
+            // The source's own class: a broker that is down is retried, consent that is gone is
+            // the person's to give again.
+            Self::Credential(source) => source.class(),
             // Never retried as it stands: the first attempt may have landed.
             Self::Unconfirmed(_) => FailureClass::InvalidState,
         }
@@ -209,8 +224,19 @@ impl From<reqwest::Error> for CalDavError {
     }
 }
 
+impl From<engine_provider::CredentialFailure> for CalDavError {
+    fn from(failure: engine_provider::CredentialFailure) -> Self {
+        Self::Credential(failure.into_error())
+    }
+}
+
 impl From<CalDavError> for ProviderError {
     fn from(err: CalDavError) -> Self {
+        // The source's own error, passed through as it gave it: its class, and a rate limit's
+        // instant with it.
+        if let CalDavError::Credential(source) = err {
+            return source;
+        }
         let detail = err.to_string();
         err.into_provider_error(detail)
     }
@@ -220,6 +246,9 @@ impl CalDavError {
     /// This failure as a [`ProviderError`] saying `detail`: the classification is this
     /// error's whatever the words, so a caller that names its own service (Talk) keeps it.
     pub(crate) fn into_provider_error(self, detail: String) -> ProviderError {
+        if let CalDavError::Credential(source) = self {
+            return source;
+        }
         if matches!(self, CalDavError::Unconfirmed(_)) {
             return ProviderError::needs_confirmation(detail).with_source(self);
         }
@@ -254,10 +283,21 @@ impl CalDavError {
             Self::UnsupportedAuthentication(_) => {
                 format!("{what}: the server asks for an authentication method this account lacks")
             }
+            Self::Credential(_) => format!("{what}: no credential could be presented"),
             Self::Unconfirmed(_) => {
                 format!("{what}: no answer came back, so it may have been applied")
             }
         };
+        // The source's class and, for a rate limit, its instant; its words are its own, and
+        // stay out of a report that must carry no server or broker text.
+        if let Self::Credential(source) = &self {
+            return match source.class() {
+                FailureClass::RateLimited => {
+                    ProviderError::rate_limited(detail, source.retry_after())
+                }
+                class => ProviderError::new(class, detail),
+            };
+        }
         if matches!(self, Self::Unconfirmed(_)) {
             return ProviderError::needs_confirmation(detail);
         }

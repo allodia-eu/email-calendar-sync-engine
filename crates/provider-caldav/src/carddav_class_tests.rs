@@ -223,18 +223,18 @@ async fn a_class_on_a_second_dav_line_is_read() {
 
 #[test]
 fn config_debug_shows_the_observer_without_leaking_the_password() {
-    // Hand-written because a `dyn` observer is not `Debug`, so the redaction the derive
-    // inherited from `Credentials` is asserted here.
+    // Hand-written because a `dyn` observer is not `Debug`, so the redaction is asserted
+    // here: a source's `Debug` names neither the secret nor the account.
     let config = CardDavConfig::new(
         "https://dav.example.com",
         alice("hunter2"),
         engine_http::test_server::user_agent(),
     );
     let shown = format!("{config:?}");
-    assert!(shown.contains("alice") && shown.contains("dav.example.com"));
+    assert!(shown.contains("dav.example.com"));
     assert!(
-        !shown.contains("hunter2"),
-        "password must not leak: {shown}"
+        !shown.contains("hunter2") && !shown.contains("alice"),
+        "neither the password nor the account's name may show: {shown}"
     );
     assert!(shown.contains("connect_observer: false"), "{shown}");
 

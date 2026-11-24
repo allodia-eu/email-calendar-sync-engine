@@ -17,6 +17,10 @@ use sha2::{Digest, Sha256};
 /// without one signs in to a session that names no mail account.
 const MAIL_SCOPE: &str = "urn:ietf:params:oauth:scope:mail";
 
+/// The scope a token for calendars is minted with. A mail token signs in to CalDAV discovery,
+/// but the calendar home answers it `403`.
+pub(crate) const CALENDARS_SCOPE: &str = "urn:ietf:params:oauth:scope:calendars";
+
 /// Where the code would be sent back to. Nothing dereferences it: the code is read out of the
 /// redirect Stalwart answers with.
 const REDIRECT_URI: &str = "engine.test://jmap";
@@ -53,12 +57,20 @@ pub(crate) struct Client {
     http: reqwest::Client,
     base: String,
     id: String,
+    /// What every token this client mints is for.
+    scope: &'static str,
 }
 
 impl Client {
     /// Registers a public client (no secret) that may redirect to [`REDIRECT_URI`] and ask for
     /// [`MAIL_SCOPE`].
     pub(crate) async fn register(addr: &str) -> Self {
+        Self::register_for(addr, MAIL_SCOPE).await
+    }
+
+    /// Registers a public client, as [`register`](Self::register) does, whose tokens are for
+    /// `scope`.
+    pub(crate) async fn register_for(addr: &str, scope: &'static str) -> Self {
         let http = http();
         let base = format!("http://{addr}");
         let registered: Value = http
@@ -67,7 +79,7 @@ impl Client {
                 "redirect_uris": [REDIRECT_URI],
                 "client_name": "engine live suite",
                 "token_endpoint_auth_method": "none",
-                "scope": MAIL_SCOPE,
+                "scope": scope,
             }))
             .send()
             .await
@@ -79,7 +91,12 @@ impl Client {
             .as_str()
             .expect("a client id")
             .to_owned();
-        Self { http, base, id }
+        Self {
+            http,
+            base,
+            id,
+            scope,
+        }
     }
 
     /// Signs `account` in with `password` and returns the access token its code is exchanged
@@ -96,7 +113,7 @@ impl Client {
                 ("state", "live"),
                 ("code_challenge", challenge.as_str()),
                 ("code_challenge_method", "S256"),
-                ("scope", MAIL_SCOPE),
+                ("scope", self.scope),
             ],
         )
         .expect("a query");

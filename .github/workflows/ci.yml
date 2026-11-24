@@ -313,7 +313,7 @@ jobs:
       - name: Run the gated SabreDAV CalDAV integration test (live)
         env:
           SABREDAV_HTTP_ADDR: 127.0.0.1:18081
-        run: cargo test -p provider-caldav --features import --test live_sabredav --test live_sabredav_delegation --test live_shared_calendars --test live_challenges -- --nocapture
+        run: cargo test -p provider-caldav --features import --test live_sabredav --test live_sabredav_delegation --test live_shared_calendars --test live_challenges --test live_credential_source -- --nocapture
 
       - name: Dump SabreDAV logs on failure
         if: failure()
@@ -357,7 +357,7 @@ jobs:
       - name: Run the gated Nextcloud CalDAV, CardDAV and Talk integration tests (live)
         env:
           NEXTCLOUD_HTTP_ADDR: 127.0.0.1:18082
-        run: cargo test -p provider-caldav --features import --test live_nextcloud --test live_nextcloud_contacts --test live_talk -- --nocapture
+        run: cargo test -p provider-caldav --features import --test live_nextcloud --test live_nextcloud_contacts --test live_talk --test live_credential_source -- --nocapture
 
       - name: Dump Nextcloud logs on failure
         if: failure()

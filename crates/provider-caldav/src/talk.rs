@@ -8,17 +8,22 @@
 //! the password and the invitation carries it. A conversation is found again by the token in
 //! its link, and Talk answers 404 for one that is gone.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use engine_core::calendar::{
     Conference, ConferenceKey, ConferenceOrigin, ConferenceService, ConferenceUri, EntryPoint,
 };
-use engine_http::{Exchange, RetryConfig, send_retrying};
-use engine_provider::{MeetingRequest, MeetingService, ProviderError, ProviderResult};
+use engine_http::{AuthenticatedClient, Exchange, RetryConfig};
+use engine_provider::{
+    CredentialSource, FixedCredential, MeetingRequest, MeetingService, ProviderError,
+    ProviderResult,
+};
 use engine_tls::TlsClientConfig;
-use reqwest::{Client, Method, RequestBuilder, redirect::Policy};
+use reqwest::{Method, RequestBuilder};
 use serde_json::{Value, json};
 
-use crate::{error::CalDavError, transport::Credentials};
+use crate::{error::CalDavError, presentation, transport::Credentials};
 
 /// What a Talk meeting attached to an event is called there.
 const LABEL: &str = "Nextcloud Talk";
@@ -29,20 +34,18 @@ const NAME_LIMIT: usize = 255;
 const ROOMS: &str = "/ocs/v2.php/apps/spreed/api/v4/room";
 const CAPABILITIES: &str = "/ocs/v2.php/cloud/capabilities";
 
-/// Talk meetings on one Nextcloud server, made as the account its credentials sign in as.
+/// Talk meetings on one Nextcloud server, made as the account its credential signs in as.
 pub struct TalkMeetings {
-    client: Client,
+    /// The account's client, which asks its source for the credential on every request.
+    http: AuthenticatedClient,
     /// The server's address, without a trailing `/`; a path is kept, for a server beneath one.
     server: String,
-    credentials: Credentials,
-    retry: RetryConfig,
 }
 
 impl core::fmt::Debug for TalkMeetings {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TalkMeetings")
             .field("server", &self.server)
-            .field("credentials", &self.credentials)
             .finish_non_exhaustive()
     }
 }
@@ -55,17 +58,39 @@ struct Rules {
 }
 
 impl TalkMeetings {
-    /// Meetings on the Nextcloud server at `server`, such as `https://cloud.example.org`.
-    /// Requests follow no redirect, so the credential goes to that origin and no other.
+    /// Meetings on the Nextcloud server at `server`, such as `https://cloud.example.org`, signed
+    /// in with `credentials`, which never change and are never replaced
+    /// ([`FixedCredential`] under a subject of its own). A host whose credential changes uses
+    /// [`from_credential_source`](Self::from_credential_source).
+    ///
+    /// # Errors
+    ///
+    /// As [`from_credential_source`](Self::from_credential_source).
+    pub fn new(
+        server: &str,
+        credentials: Credentials,
+        tls: &TlsClientConfig,
+        retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
+    ) -> ProviderResult<Self> {
+        let source = Arc::new(FixedCredential::unique(credentials.into()));
+        Self::from_credential_source(server, source, tls, retry, user_agent)
+    }
+
+    /// Meetings on the Nextcloud server at `server`, asking `source` for the credential on every
+    /// request (`docs/design/credential-source.md`). Requests follow no redirect, so the
+    /// credential goes to that origin and no other; it goes over plaintext only to a loopback
+    /// server, and a `401` whose challenge offers its scheme, or none, asks the source once for
+    /// a replacement and sends the request once more.
     ///
     /// # Errors
     ///
     /// [`ProviderError::invalid_state`] when `server` is no `http` or `https` address, or has
     /// a user name, a query or a fragment, none of which a conversation's link appended to it
     /// could carry; a transport error when the HTTP client cannot be built.
-    pub fn new(
+    pub fn from_credential_source(
         server: &str,
-        credentials: Credentials,
+        source: Arc<dyn CredentialSource>,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
         user_agent: &engine_http::UserAgent,
@@ -84,37 +109,39 @@ impl TalkMeetings {
                     "a Talk server is an http or https address without a user name, query or fragment",
                 )
             })?;
-        let client = engine_http::client(tls, user_agent)
-            .redirect(Policy::none())
-            .build()
-            .map_err(|err| unanswered(err.into()))?;
-        Ok(Self {
-            client,
-            server: url.as_str().trim_end_matches('/').to_owned(),
-            credentials,
-            retry: retry.clone().labelled("talk"),
-        })
+        let server = url.as_str().trim_end_matches('/').to_owned();
+        let http =
+            AuthenticatedClient::new(tls, user_agent, url, source, retry.clone().labelled("talk"))
+                .map_err(unanswered)?;
+        Ok(Self { http, server })
     }
 
     fn request(&self, method: Method, path: &str) -> RequestBuilder {
-        let builder = self
-            .client
-            .request(method, format!("{}{path}", self.server))
+        self.http
+            .request(method, &format!("{}{path}", self.server))
             .header("OCS-APIRequest", "true")
-            .header(reqwest::header::ACCEPT, "application/json");
-        match &self.credentials {
-            Credentials::Basic { username, password } => {
-                builder.basic_auth(username, Some(password))
-            }
-            Credentials::Bearer(token) => builder.bearer_auth(token),
-        }
+            .header(reqwest::header::ACCEPT, "application/json")
     }
 
-    /// Sends `request`, answering the reply's status and its OCS `data`, or `None` for 404.
+    /// Sends `request` with the account's credential, answering the reply's status and its OCS
+    /// `data`, or `None` for 404.
     async fn send(&self, request: RequestBuilder) -> ProviderResult<Option<Value>> {
-        let sent = send_retrying(request, &self.retry, Exchange::Ordinary)
+        let sent = self
+            .http
+            .send(
+                request,
+                Exchange::Ordinary,
+                presentation::present,
+                presentation::judge,
+            )
             .await
-            .map_err(unanswered)?;
+            .map_err(|err: CalDavError| match err {
+                CalDavError::Transport(cause) => unanswered(cause),
+                other => {
+                    let detail = format!("Talk: {other}");
+                    other.into_provider_error(detail)
+                }
+            })?;
         let status = sent.status().as_u16();
         let wait = sent.stated_wait();
         let body = sent.text().await.map_err(unanswered)?;

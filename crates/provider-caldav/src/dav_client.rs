@@ -2,23 +2,34 @@
 //! base, applies the credential where [`CredentialScope`] says it belongs, and answers one
 //! authentication challenge per request. It does not follow redirects itself, so discovery
 //! can resolve the RFC 6764 well-known redirect and decide what each hop may receive.
+//!
+//! The credential is never held. Every request that carries it goes through the account's
+//! [`AuthenticatedClient`], which asks the account's
+//! [`CredentialSource`](engine_provider::CredentialSource) for it then, refuses an origin the
+//! engine's plaintext rule or the source does not admit, and on a `401` to a request that carried
+//! it asks the source once for a replacement and sends the request once more
+//! (`docs/design/credential-source.md`).
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use engine_http::{Exchange, ObservedConnection, RetryConfig, send_retrying};
+use engine_http::{AuthenticatedClient, Exchange, ObservedConnection, RetryConfig, send_retrying};
 use engine_provider::{HttpVersion, TlsVersion};
-use engine_tls::TlsClientConfig;
-use reqwest::{Client, Method, redirect::Policy};
+use reqwest::Method;
 
+#[allow(deprecated)]
+use crate::credential_hosts::CredentialHosts;
 use crate::{
-    credential_hosts::{self, CredentialHosts},
     credential_scope::CredentialScope,
     delete_guard::refused_before_delete,
     error::CalDavError,
     href::single_encoded,
-    transport::{Credentials, DavExecutor, DavMethod, HttpResponse, Precondition, WriteRequest},
+    presentation,
+    transport::{DavExecutor, DavMethod, HttpResponse, Precondition, WriteRequest},
 };
+
+#[path = "dav_client_build.rs"]
+mod build;
 
 /// Whether `response` is a concurrency refusal the send funnel claimed and gave up waiting on
 /// (`DavThrottles` buffers every `400`, so its body is there to read).
@@ -31,15 +42,18 @@ fn is_throttle(response: &engine_http::Sent) -> bool {
 
 /// The live `reqwest`-backed CalDAV transport.
 pub(crate) struct DavClient {
-    client: Client,
+    /// The account's client: every request goes out on it, and every one that carries the
+    /// credential goes through its [`send`](AuthenticatedClient::send).
+    http: AuthenticatedClient,
     /// The origin every relative href resolves onto: the configured server until discovery
     /// settles on the collection home ([`DavExecutor::settle_on`]). Behind a lock for that
     /// one move; read once per request afterwards.
     base: std::sync::RwLock<reqwest::Url>,
-    credentials: Credentials,
     /// Which origins receive the credential, and when ([`CredentialScope`]).
     scope: CredentialScope,
-    /// The host's say over which origins the credential may move to ([`CredentialHosts`]).
+    /// The host's older say over which hosts the credential may move to, kept beside the
+    /// source's [`permits`](CredentialSource::permits) while hosts move off it: both must agree.
+    #[allow(deprecated)]
     credential_hosts: Option<Arc<dyn CredentialHosts>>,
     /// The HTTP and TLS versions most recently observed — the post-connect facts
     /// `ConnectionInfo` reports. Every response funnels through
@@ -65,57 +79,6 @@ impl core::fmt::Debug for DavClient {
 }
 
 impl DavClient {
-    /// Builds a transport against `base_url` (the server origin), using the given
-    /// credentials. Redirect-following is disabled so discovery handles the
-    /// well-known `307` itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CalDavError`] if `base_url` is not a valid URL or the HTTP client
-    /// cannot be built.
-    ///
-    /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`); the
-    /// library builds no trust store of its own.
-    pub(crate) fn new(
-        base_url: &str,
-        credentials: Credentials,
-        tls: &TlsClientConfig,
-        retry: &RetryConfig,
-        user_agent: &engine_http::UserAgent,
-    ) -> Result<Self, CalDavError> {
-        let base = reqwest::Url::parse(base_url)
-            .map_err(|e| CalDavError::protocol(format!("bad base URL {base_url:?}: {e}")))?;
-        let client = engine_http::client(tls, user_agent)
-            .redirect(Policy::none())
-            .build()?;
-        Ok(Self {
-            client,
-            scope: CredentialScope::new(&base),
-            base: std::sync::RwLock::new(base),
-            credentials,
-            credential_hosts: None,
-            connection: ObservedConnection::default(),
-            retry: retry
-                .clone()
-                .labelled("caldav")
-                // Stalwart refuses a request over its concurrency cap with a `400`, which the
-                // shared status rule reads as a request defect. See `DavThrottles`.
-                .classifying(Arc::new(crate::throttle::DavThrottles)),
-        })
-    }
-}
-
-impl DavClient {
-    /// Lets `policy` refuse an origin discovery would move the credential to.
-    #[must_use]
-    pub(crate) fn with_credential_hosts(
-        mut self,
-        policy: Option<Arc<dyn CredentialHosts>>,
-    ) -> Self {
-        self.credential_hosts = policy;
-        self
-    }
-
     /// The connection's current origin. Cloned rather than borrowed so no request is
     /// built while the lock is held.
     fn base(&self) -> reqwest::Url {
@@ -182,25 +145,16 @@ impl DavClient {
             .map_err(|e| CalDavError::protocol(format!("bad href {href:?}: {e}")))
     }
 
-    /// A request for `method` to `url`, carrying the credential when `authenticate`.
+    /// A request for `method` to `url`, without the credential: [`AuthenticatedClient::send`]
+    /// adds it where it goes.
     fn request(
         &self,
         method: DavMethod,
-        url: reqwest::Url,
-        authenticate: bool,
+        url: &reqwest::Url,
     ) -> Result<reqwest::RequestBuilder, CalDavError> {
         let method = Method::from_bytes(method.as_str().as_bytes())
             .map_err(|e| CalDavError::protocol(format!("bad method: {e}")))?;
-        let builder = self.client.request(method, url);
-        if !authenticate {
-            return Ok(builder);
-        }
-        Ok(match &self.credentials {
-            Credentials::Basic { username, password } => {
-                builder.basic_auth(username, Some(password))
-            }
-            Credentials::Bearer(token) => builder.bearer_auth(token),
-        })
+        Ok(self.http.request(method, url.as_str()))
     }
 
     /// Sends `method` to `href`, with whatever `dress` adds and `body`, and answers one
@@ -250,6 +204,11 @@ impl DavClient {
     /// (A `400` the send funnel waited on and gave up is a refusal of *this* URL's request
     /// for now, not of its spelling, so [`exchange`](Self::exchange) hands it back unrespelled:
     /// asking the once-encoded URL would answer for another resource and lose the throttle.)
+    ///
+    /// An origin the scope already answers is sent the credential with the request. Any other
+    /// gets the request without it, and a `401` from a trusted one is answered: the credential is
+    /// asked for then, and sent if the challenge offers its scheme. A challenge only for schemes
+    /// it cannot answer is [`CalDavError::UnsupportedAuthentication`], with nothing sent.
     async fn exchange_at(
         &self,
         method: DavMethod,
@@ -257,35 +216,51 @@ impl DavClient {
         dress: &impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
         body: Option<&bytes::Bytes>,
     ) -> Result<engine_http::Sent, CalDavError> {
-        let url = url.clone();
-        let build = |authenticate| -> Result<reqwest::RequestBuilder, CalDavError> {
-            let request = dress(self.request(method, url.clone(), authenticate)?);
+        let build = || -> Result<reqwest::RequestBuilder, CalDavError> {
+            let request = dress(self.request(method, url)?);
             Ok(match body {
                 Some(body) => request.body(body.clone()),
                 None => request,
             })
         };
-        let authenticated = self.scope.sends_to(&url);
-        let response =
-            send_retrying(build(authenticated)?, &self.retry, Exchange::Ordinary).await?;
-        if authenticated || response.status() != reqwest::StatusCode::UNAUTHORIZED {
+        if self.scope.sends_to(url) {
+            return self
+                .http
+                .send(
+                    build()?,
+                    Exchange::Ordinary,
+                    presentation::present,
+                    presentation::judge,
+                )
+                .await;
+        }
+        let response = send_retrying(build()?, &self.retry, Exchange::Ordinary).await?;
+        if response.status() != reqwest::StatusCode::UNAUTHORIZED || !self.scope.trusts(url) {
             return Ok(response);
         }
-        if !self
-            .scope
-            .answers(&url, response.headers(), &self.credentials)
-        {
-            // A trusted origin that asked only for a method this credential cannot answer: say so,
-            // rather than leave a `401` that reads as the credential being refused.
-            if let Some(offered) =
-                self.scope
-                    .unanswerable(&url, response.headers(), &self.credentials)
-            {
-                return Err(CalDavError::UnsupportedAuthentication(offered));
-            }
-            return Ok(response);
-        }
-        Ok(send_retrying(build(true)?, &self.retry, Exchange::Ordinary).await?)
+        // A trusted origin asked. Its challenge is kept and its reply let go, so the connection is
+        // free for the answer.
+        let challenge = response.headers().clone();
+        drop(response);
+        self.http
+            .send(
+                build()?,
+                Exchange::Ordinary,
+                |builder, credential| {
+                    let scheme = presentation::scheme_of(credential)
+                        .ok_or_else(presentation::unpresentable)?;
+                    // A trusted origin that asked only for a method this credential cannot
+                    // answer: say so, rather than leave a `401` that reads as the credential
+                    // being refused.
+                    if let Some(offered) = self.scope.unanswerable(url, &challenge, scheme) {
+                        return Err(CalDavError::UnsupportedAuthentication(offered));
+                    }
+                    self.scope.answers(url, &challenge, scheme);
+                    presentation::present(builder, credential)
+                },
+                presentation::judge,
+            )
+            .await
     }
 }
 
@@ -322,13 +297,11 @@ impl DavExecutor for DavClient {
         if !next.origin().is_tuple() {
             return true;
         }
-        // A connection that started on TLS never trusts a plaintext origin: the password
-        // would cross the wire in the clear, to a host nobody typed. A chain that began in
-        // plaintext (the loopback fixtures) is left alone.
-        if self.base().scheme() == "https" && next.scheme() != "https" {
-            return false;
-        }
-        if !credential_hosts::permitted(self.credential_hosts.as_ref(), next.as_str()) {
+        // The engine's plaintext rule and the source's `permits`, and the deprecated host policy
+        // where one is set: a connection that started on TLS never trusts a plaintext origin, so
+        // the password never crosses the wire in the clear to a host nobody typed, and only an
+        // account configured on loopback trusts plaintext loopback (the harnesses).
+        if !self.admits(&next) {
             return false;
         }
         self.scope.trust(&next);

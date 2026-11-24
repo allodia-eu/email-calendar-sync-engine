@@ -104,13 +104,9 @@ impl CardDavProvider {
             .connect_observer
             .as_deref()
             .unwrap_or(&IgnoreConnectSteps);
-        crate::credential_hosts::refuse_unpermitted_base(
-            config.credential_hosts.as_ref(),
+        let client = DavClient::from_source(
             &config.base_url,
-        )?;
-        let client = DavClient::new(
-            &config.base_url,
-            config.credentials,
+            config.source,
             &config.tls,
             &config.retry,
             &config.user_agent,

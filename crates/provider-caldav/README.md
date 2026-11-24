@@ -158,11 +158,13 @@ How an origin becomes trusted:
 
 ```mermaid
 flowchart TD
-    O[The start URL, or an origin discovery reaches:<br/>a redirect, a principal or a home] --> P{Connection started on https<br/>and this origin is http?}
+    O[The start URL, or an origin discovery reaches:<br/>a redirect, a principal or a home] --> P{Plaintext http, and not loopback<br/>from an account configured on loopback?}
     P -- yes --> F[Refused: the connect fails]
-    P -- no --> Q{Does the host's CredentialHosts<br/>policy permit this host?}
+    P -- no --> Q{Does the account's CredentialSource<br/>permit this origin?}
     Q -- no --> F
-    Q -- "yes, or no policy set" --> OK[Trusted]
+    Q -- yes --> H{Does the deprecated CredentialHosts<br/>policy, where set, permit this host?}
+    H -- no --> F
+    H -- "yes, or no policy set" --> OK[Trusted]
 ```
 
 A refusal fails the whole connect rather than carrying on without the credential: a request
@@ -176,17 +178,21 @@ that may have gone stale, which is why a host stores the principal and nothing f
 
 ### A password and a token are confined differently
 
-| | Password (`Credentials::Basic`) | OAuth token (`Credentials::Bearer`) |
+| | Password (`Credential::Password`) | OAuth token (`Credential::Bearer`) |
 |---|---|---|
 | Who it is good for | One account on one service | Whoever its issuer's resource servers accept it at |
-| What confines it | The trusted and answered sets above | The same, plus the host's `CredentialHosts` policy |
+| What confines it | The trusted and answered sets above | The same, plus the source's `permits` |
 | Typical policy | None: the account's own server decides where its data is | The token issuer's hosts, so a token is never handed to a server outside them |
 | Challenge it answers | `WWW-Authenticate: Basic` | `WWW-Authenticate: Bearer` |
 
-`CredentialHosts` is the host application's say over which hosts may receive the credential
-(`CalDavConfig::with_credential_hosts`, the same on `CardDavConfig`). It is consulted for the
-configured URL before anything is sent, and for every origin discovery reaches. The adapter
-cannot know a token's audience; the host can, from the issuer that granted it.
+The account's `CredentialSource` is asked for the credential on every request that carries it
+(`CalDavConfig::from_credential_source`, the same on `CardDavConfig`), so a refreshed token is
+the one presented, and a `401` to a request that carried it asks the source once for a
+replacement before the request is sent again. Its `permits` is the host application's say over
+which origins may receive the credential: it is consulted for the configured URL before anything
+is sent, and for every origin discovery reaches. The adapter cannot know a token's audience; the
+host can, from the issuer that granted it. The older `CredentialHosts` policy
+(`with_credential_hosts`) is deprecated; where a host still sets one, both must agree.
 
 ## When something goes wrong (host, with the engine's verdict)
 

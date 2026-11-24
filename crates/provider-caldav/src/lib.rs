@@ -68,6 +68,7 @@ mod multiget;
 mod owners;
 #[cfg(feature = "import")]
 mod precondition;
+mod presentation;
 mod provider;
 mod request;
 mod response;
@@ -97,6 +98,8 @@ mod carddav_unit_tests;
 #[cfg(test)]
 mod carddav_write_tests;
 #[cfg(test)]
+mod credential_source_tests;
+#[cfg(test)]
 mod ctag_sync_tests;
 #[cfg(test)]
 mod delete_guard_tests;
@@ -112,6 +115,7 @@ mod write_outcome_tests;
 pub use caldav_config::CalDavConfig;
 pub use carddav::CardDavProvider;
 pub use carddav_config::CardDavConfig;
+#[allow(deprecated)]
 pub use credential_hosts::CredentialHosts;
 /// The product a host names in every request's `User-Agent`, required by both configs.
 pub use engine_http::UserAgent;

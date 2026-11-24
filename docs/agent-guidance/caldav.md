@@ -228,11 +228,18 @@ are split escape-aware so the writer and the parser agree.
   origin (`DavExecutor::settle_on`): iCloud answers the principal on `caldav.icloud.com` and
   names the home on `pNN-caldav.icloud.com`, and every collection href the home returns is
   relative to the latter. `crates/provider-caldav/README.md` draws the whole walk.
-  A host may also confine the credential with a `CredentialHosts` policy
-  (`CalDavConfig::with_credential_hosts`, the same on `CardDavConfig`): the configured base URL
-  and every origin discovery is led to must be a host it permits, or the connect fails before
-  anything is sent there. Which hosts qualify is the host's decision; for an OAuth token it is the token
-  issuer's resources, which this adapter knows nothing of.
+  The credential is never held: every request that carries it goes through the account's
+  `engine_http::AuthenticatedClient`, which asks the account's `CredentialSource` for it then
+  (`CalDavConfig::from_credential_source`, the same on `CardDavConfig`; `new` wraps a fixed
+  credential), and on a `401` to a request that carried it, whose challenge offers its scheme or
+  none, asks once for a replacement and sends the request once more
+  (`docs/design/credential-source.md`). The configured start and every origin discovery is led
+  to must be admitted (`AuthenticatedClient::admits`): plaintext only from a loopback account to
+  loopback, and only where the source's `permits` agrees, or the connect fails before anything
+  is sent there. Which hosts qualify is the host's decision; for an OAuth token it is the token
+  issuer's resources, which this adapter knows nothing of. The older `CredentialHosts` policy
+  (`with_credential_hosts`) is deprecated and still consulted beside `permits`; both must agree.
+  `Talk` (`TalkMeetings::from_credential_source`) sends through the same client.
   CalDAV emits no `Authenticated` step —
   credentials ride on every `PROPFIND` to an answered origin, so there is no discrete
   authentication exchange to observe — and no `TlsEstablished`, because an HTTP adapter learns its TLS
