@@ -188,4 +188,14 @@ pub enum RuleOrigin {
         /// The command's index among the script's segments, counting every segment.
         index: usize,
     },
+    /// One of the separate objects a provider lists the rules as (Graph's `messageRule`s): the
+    /// object at `index` of the listing kept in the set's raw form, in the order read. The
+    /// provider's own id stays there, so the origin is a position and never a value.
+    Listed {
+        /// A fingerprint of the listing read, so a rule read from one listing is never taken
+        /// for an object of another.
+        set: u64,
+        /// The object's index in that listing.
+        index: usize,
+    },
 }
