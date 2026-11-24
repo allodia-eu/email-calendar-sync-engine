@@ -113,8 +113,13 @@ fn graph_rules(marker: &str) -> Vec<MailRule> {
     ]
 }
 
+/// Both tests write Carol's scripts and reply, and restore them after; run at once (as `cargo test`
+/// does by default) one would see the other's writes. Each holds this for its whole run.
+static CAROL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test]
 async fn live_rules_and_a_reply_are_imported_beside_the_accounts_own() {
+    let _carol = CAROL.lock().await;
     let Some(harness) = sieve_common::harness("live_rules_import") else {
         return;
     };
@@ -353,6 +358,7 @@ async fn import_reply(carol: &JmapProvider, own: &MailRule) {
 
 #[tokio::test]
 async fn live_an_import_into_a_script_switched_off_drops_its_idle_include_and_copies_the_rest() {
+    let _carol = CAROL.lock().await;
     let Some(harness) = sieve_common::harness("live_rules_import") else {
         return;
     };
