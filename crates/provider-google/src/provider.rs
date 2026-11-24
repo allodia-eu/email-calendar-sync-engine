@@ -394,6 +394,27 @@ impl Provider for GmailProvider {
     ) -> ProviderResult<engine_provider::ReportReceipt> {
         crate::report::report_message(&self.client, report).await
     }
+
+    /// The filters (`crate::rules`), on every Gmail account: whether the token may read or
+    /// write them is a scope, known only by asking.
+    fn mail_rules(&self) -> Option<&dyn engine_provider::MailRules> {
+        Some(self)
+    }
+
+    /// The vacation reply (`crate::vacation`), as for the filters.
+    fn vacation(&self) -> Option<&dyn engine_provider::Vacation> {
+        Some(self)
+    }
+}
+
+impl GmailProvider {
+    pub(crate) fn client(&self) -> &GoogleClient {
+        &self.client
+    }
+
+    pub(crate) fn labels(&self) -> &Labels {
+        &self.labels
+    }
 }
 
 impl CalendarSync for GmailProvider {}

@@ -31,6 +31,8 @@ engine-tls = { workspace = true, features = ["reqwest"] }
 # HTTP stack, mirroring provider-graph/provider-jmap.
 reqwest = { workspace = true }
 serde = { workspace = true }
+# The version a filter listing and a vacation reply are read at: a SHA-256 of what was read.
+sha2 = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }

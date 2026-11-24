@@ -141,7 +141,7 @@ impl GoogleError {
     /// `502` or `504` says the server behind it gave no answer rather than that it refused,
     /// or a success arrived whose body cannot be read. Every other status is the server's own
     /// answer, and a connect or handshake that never completed sent nothing.
-    fn leaves_outcome_unknown(&self) -> bool {
+    pub(crate) fn leaves_outcome_unknown(&self) -> bool {
         match self {
             Self::Transport(err) => err.may_have_been_received(),
             Self::Status { status, .. } => engine_http::gateway_without_answer(*status),

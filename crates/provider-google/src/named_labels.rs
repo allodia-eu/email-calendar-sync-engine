@@ -62,6 +62,11 @@ impl NamedLabels {
         self.0.contains_key(id)
     }
 
+    /// The keyword the label `id` stands for, if it stands for one.
+    pub(crate) fn keyword(&self, id: &str) -> Option<&Keyword> {
+        self.0.get(id)
+    }
+
     /// A label standing for `keyword`, if the account has one.
     fn id_for(&self, keyword: &Keyword) -> Option<&str> {
         self.0
@@ -207,6 +212,23 @@ impl Labels {
         } else {
             BTreeSet::new()
         }
+    }
+
+    /// The id of the label standing for `keyword`, made where the account has none yet, or
+    /// `None` where the host registered no name for it (`crate::rules_apply` files a filter's
+    /// keyword under it).
+    pub(crate) async fn label_id(
+        &self,
+        client: &GoogleClient,
+        keyword: &Keyword,
+    ) -> Option<Result<String, GoogleError>> {
+        let named = self.names.iter().find(|named| named.keyword() == keyword)?;
+        Some(self.label_for(client, named).await)
+    }
+
+    /// Whether any keyword has a name registered, so a filter can add one.
+    pub(crate) fn any(&self) -> bool {
+        !self.names.is_empty()
     }
 
     /// The id of the label standing for `named`: one the account has under any of its names,
