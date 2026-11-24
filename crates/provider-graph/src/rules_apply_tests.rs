@@ -387,3 +387,22 @@ async fn a_rule_already_numbered_for_its_place_is_placed_again_after_one_before_
         && url == "messageRules/AQAAAAAAAAI="
         && body.as_ref().unwrap() == &json!({"sequence": 2})));
 }
+
+#[tokio::test]
+async fn a_rule_changed_into_one_the_writer_cannot_place_is_not_kept_and_goes() {
+    // As on every transport, the set written is the set planned: a rule not kept is not there.
+    let (client, log) = client(CAPTURED, vec![]);
+    let base = base(&client).await;
+    let mut rules = base.rules.clone();
+    if let engine_core::rules::RuleBody::Typed(typed) = &mut rules[8].body {
+        typed.when.conditions = vec![subject("a"), subject("b")];
+    }
+    let receipt = replace(&client, &base, &rules).await.unwrap();
+    assert_eq!(receipt.outcomes[8].kept, Kept::NotKept);
+    let sent = writes(&log);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        (sent[0].0, sent[0].1.as_str()),
+        ("DELETE", "messageRules/AQAAAAAAAAk=")
+    );
+}

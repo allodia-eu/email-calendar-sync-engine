@@ -68,10 +68,15 @@ pub(crate) async fn replace(
     };
     let mut kept = BTreeSet::new();
     for (place, planned) in plan.rules.iter().enumerate() {
-        let existing = existing(&now, &planned.rule).filter(|index| kept.insert(*index));
-        write
+        let existing = existing(&now, &planned.rule).filter(|index| !kept.contains(index));
+        let placed = write
             .one(planned.source, &planned.rule, existing, place + 1)
             .await;
+        // A rule the writer could not place is not in the set written, as on every transport,
+        // so the one it was read as goes; one whose request failed is still there as it was.
+        if let (Body::Placed(()), Some(index)) = (placed, existing) {
+            kept.insert(index);
+        }
     }
     for index in (0..now.rules.len()).filter(|index| !kept.contains(index)) {
         write.remove(index).await;
@@ -125,12 +130,29 @@ struct Write<'a> {
     disturbed: bool,
 }
 
+/// What became of one rule: placed (written, or tried and failed, so its old self stays), or not
+/// placed by the writer (not kept).
+enum Body<T> {
+    Placed(T),
+    Failed,
+    NotPlaced,
+}
+
 impl Write<'_> {
-    async fn one(&mut self, source: usize, rule: &MailRule, existing: Option<usize>, place: usize) {
+    /// Writes one rule in its place.
+    async fn one(
+        &mut self,
+        source: usize,
+        rule: &MailRule,
+        existing: Option<usize>,
+        place: usize,
+    ) -> Body<()> {
         let failed = |class| RuleWriteFailure::new(FailedRule::Written(source), class);
         let Some(index) = existing else {
-            let Some(mut body) = self.body(source, rule).await else {
-                return;
+            let mut body = match self.body(source, rule).await {
+                Body::Placed(body) => body,
+                Body::Failed => return Body::Failed,
+                Body::NotPlaced => return Body::NotPlaced,
             };
             body.insert("sequence".to_owned(), json!(place));
             let url = self.client.url(RULES);
@@ -143,28 +165,29 @@ impl Write<'_> {
                     .push(failure(FailedRule::Written(source), &err));
             }
             self.disturbed = true;
-            return;
+            return Body::Placed(());
         };
         let old = &self.now.rules[index];
         let unchanged = self.now.rule(index).as_ref() == Some(rule);
         let numbered = old.get("sequence").and_then(Value::as_u64) == u64::try_from(place).ok();
         let moved = self.disturbed || !numbered;
         if unchanged && !moved {
-            return;
+            return Body::Placed(());
         }
         if read_only(old) {
             // Never sent. Its number may still be right after a rule before it was placed.
             if !unchanged || !numbered {
                 self.failures.push(failed(FailureClass::Permanent));
             }
-            return;
+            return Body::Placed(());
         }
         let mut patch = Map::new();
         if !unchanged {
-            let Some(body) = self.body(source, rule).await else {
-                return;
+            patch = match self.body(source, rule).await {
+                Body::Placed(body) => body,
+                Body::Failed => return Body::Placed(()),
+                Body::NotPlaced => return Body::NotPlaced,
             };
-            patch = body;
             rules_write::clear_dropped(&mut patch, old);
         }
         if moved {
@@ -173,7 +196,7 @@ impl Write<'_> {
         }
         let Some(url) = self.rule_url(index) else {
             self.failures.push(failed(FailureClass::Permanent));
-            return;
+            return Body::Placed(());
         };
         if let Err(err) = self
             .client
@@ -183,6 +206,7 @@ impl Write<'_> {
             self.failures
                 .push(failure(FailedRule::Written(source), &err));
         }
+        Body::Placed(())
     }
 
     async fn remove(&mut self, index: usize) {
@@ -211,9 +235,9 @@ impl Write<'_> {
         Some(self.client.url(&format!("{RULES}/{id}")))
     }
 
-    /// `rule`'s body, or `None` where it is not written: the writer cannot place a part (not kept,
-    /// that part named), or a folder it names by role could not be looked up (a failure).
-    async fn body(&mut self, source: usize, rule: &MailRule) -> Option<Map<String, Value>> {
+    /// `rule`'s body, or why it is not written: the writer cannot place a part (not kept, that
+    /// part named), or a folder it names by role could not be looked up (a failure).
+    async fn body(&mut self, source: usize, rule: &MailRule) -> Body<Map<String, Value>> {
         for role in roles_needed(rule) {
             if self.folders.contains_key(&role) {
                 continue;
@@ -226,7 +250,7 @@ impl Write<'_> {
                     Err(err) => {
                         self.failures
                             .push(failure(FailedRule::Written(source), &err));
-                        return None;
+                        return Body::Failed;
                     }
                 },
             };
@@ -234,14 +258,14 @@ impl Write<'_> {
         }
         let folders = &self.folders;
         match rules_write::body(rule, &|role| folders.get(role).cloned().flatten()) {
-            Ok(body) => Some(body),
+            Ok(body) => Body::Placed(body),
             Err(part) => {
                 let outcome = &mut self.outcomes[source];
                 outcome.kept = Kept::NotKept;
                 outcome
                     .losses
                     .push(Loss::new(part, LossReason::NotExpressible));
-                None
+                Body::NotPlaced
             }
         }
     }

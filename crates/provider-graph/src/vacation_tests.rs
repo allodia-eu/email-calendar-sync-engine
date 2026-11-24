@@ -250,6 +250,8 @@ fn graph_offers_the_reply_with_its_vocabulary_and_no_server_guard() {
     assert!(graph.vacation().is_some());
     assert_eq!(graph.vacation_write_guard(), WriteGuard::Absent);
     let held = vocabulary();
+    let asked = futures_util::FutureExt::now_or_never(Vacation::vocabulary(&graph, &account()));
+    assert_eq!(asked.unwrap().unwrap(), held);
     assert!(held.has_outside_reply() && !held.has_subject());
     let shown = format!("{:?}", reply(&json(DISABLED)).unwrap());
     assert!(!shown.contains("Example reply"), "{shown}");
