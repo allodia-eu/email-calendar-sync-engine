@@ -64,7 +64,7 @@ fn a_typed_rule_is_written_key_by_key() {
             Condition::Importance(Importance::High),
         ])
         .except(vec![
-            from(AddressPart::Domain, TextOp::Is, "example.org"),
+            from(AddressPart::All, TextOp::Contains, "@example.org"),
             from(AddressPart::All, TextOp::Contains, "z"),
         ]),
         vec![
@@ -114,14 +114,14 @@ fn a_typed_rule_is_written_key_by_key() {
 fn two_conditions_on_one_key_are_refused_since_graph_would_read_either() {
     let rule = MailRule::typed(Match::all(vec![subject("a"), subject("b")]), vec![read()]);
     assert_eq!(write(&rule), Err(RulePart::Condition(1)));
-    let domain_and_sender = MailRule::typed(
+    let two_senders = MailRule::typed(
         Match::all(vec![
-            from(AddressPart::Domain, TextOp::Is, "example.org"),
+            from(AddressPart::All, TextOp::Contains, "y"),
             from(AddressPart::All, TextOp::Contains, "z"),
         ]),
         vec![read()],
     );
-    assert_eq!(write(&domain_and_sender), Err(RulePart::Condition(1)));
+    assert_eq!(write(&two_senders), Err(RulePart::Condition(1)));
     // The same condition twice says nothing more, and is written once.
     let twice = MailRule::typed(Match::all(vec![subject("a"), subject("a")]), vec![read()]);
     assert!(write(&twice).is_ok());
@@ -133,6 +133,8 @@ fn an_address_graph_cannot_name_alone_is_refused() {
         (AddressField::To, AddressPart::All, TextOp::Contains),
         (AddressField::Cc, AddressPart::All, TextOp::Is),
         (AddressField::From, AddressPart::Domain, TextOp::Contains),
+        // `@example.org` within the sender would also match `@example.org.evil.test`.
+        (AddressField::From, AddressPart::Domain, TextOp::Is),
         (AddressField::From, AddressPart::LocalPart, TextOp::Is),
         (AddressField::From, AddressPart::All, TextOp::Matches),
     ] {
@@ -289,4 +291,30 @@ fn a_patch_clears_what_the_old_rule_held_and_the_new_one_does_not() {
         json!({"permanentDelete": true, "moveToFolder": null, "markAsRead": false})
     );
     assert_eq!(new["exceptions"], json!({"bodyContains": null}));
+}
+
+#[test]
+fn a_patch_keeps_the_display_names_the_old_rule_had() {
+    let old = json!({"actions": {"forwardTo": [
+        {"emailAddress": {"name": "Person 1", "address": "p1@example.com"}},
+        {"emailAddress": {"name": "Person 2", "address": "p2@example.com"}}
+    ]}});
+    let rule = MailRule::typed(
+        Match::default(),
+        vec![Action::Forward {
+            to: vec![
+                RuleAddress::new("p2@example.com").unwrap(),
+                RuleAddress::new("p3@example.com").unwrap(),
+            ],
+        }],
+    );
+    let mut new = write(&rule).unwrap();
+    super::keep_names(&mut new, &old);
+    assert_eq!(
+        new["actions"]["forwardTo"],
+        json!([
+            {"emailAddress": {"name": "Person 2", "address": "p2@example.com"}},
+            {"emailAddress": {"address": "p3@example.com"}}
+        ])
+    );
 }

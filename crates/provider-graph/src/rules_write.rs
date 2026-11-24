@@ -4,17 +4,17 @@
 //! are finer than that grain, and this writer is where they are found:
 //!
 //! - **One predicate per kind.** Graph's predicates are keys of one object, and the values of one
-//!   key are any-of. Two conditions that write the same key (two subject tests, a domain and a
-//!   sender test) would be read back as either one, which widens the rule: refused. In the
-//!   exceptions, where any one already vetoes, they merge.
+//!   key are any-of. Two conditions that write the same key (two subject tests) would be read back
+//!   as either one, which widens the rule: refused. In the exceptions, where any one already
+//!   vetoes, they merge.
 //! - **Which addresses a test can name.** Graph tests the sender, or the `To` and `Cc` recipients
-//!   together: a test of `To` alone or `Cc` alone, or of a domain by anything but equality, would
-//!   widen the rule, and is refused.
+//!   together, by equality or containment, never a domain alone.
 //! - **One folder per kind of filing**, and a role Graph has a well-known folder for.
 //!
-//! A refusal names the part ([`RulePart`]), never its value. The caller reports the rule as not
-//! kept: dropping a condition would widen it, and an action is refused only where one of its kind
-//! is already there.
+//! The Graph vocabulary states each of these (`crate::rules::vocabulary`, its `RuleLimit`s), so
+//! `plan_rules` has already left out what this writer cannot place: a refusal here is a bug. It
+//! names the part ([`RulePart`]), never its value, and the caller keeps the server's rule as it
+//! was and reports a failure.
 
 use engine_core::{
     ids::MailboxId,
@@ -102,6 +102,36 @@ pub(crate) fn body(
     out.insert("exceptions".to_owned(), Value::Object(exceptions));
     out.insert("actions".to_owned(), Value::Object(actions));
     Ok(out)
+}
+
+/// Gives each recipient in `new` the display name `old` had for the same address, under the same
+/// key: the model tests addresses alone, and a `PATCH` should not drop the names a user sees.
+pub(crate) fn keep_names(new: &mut Map<String, Value>, old: &Value) {
+    for section in ["conditions", "exceptions", "actions"] {
+        let Some(Value::Object(new)) = new.get_mut(section) else {
+            continue;
+        };
+        for (key, value) in new.iter_mut() {
+            let Some(entries) = value.as_array_mut() else {
+                continue;
+            };
+            let named = old[section][key.as_str()].as_array();
+            for entry in entries {
+                let address = entry["emailAddress"]["address"].clone();
+                let name = named
+                    .into_iter()
+                    .flatten()
+                    .find(|was| was["emailAddress"]["address"] == address)
+                    .and_then(|was| was["emailAddress"].get("name"))
+                    .cloned();
+                if let (Some(name), Some(Value::Object(email))) =
+                    (name, entry.get_mut("emailAddress"))
+                {
+                    email.insert("name".to_owned(), name);
+                }
+            }
+        }
+    }
 }
 
 /// Clears in `new` every predicate and action `old` holds that `new` does not, so a `PATCH`
@@ -209,16 +239,7 @@ fn address(
     match (part, test.op()) {
         (AddressPart::All, TextOp::Is) => Some((exact, recipients(test.values()))),
         (AddressPart::All, TextOp::Contains) => Some((contains, values(test))),
-        // A domain is the text after the `@`: `@example.com` within the address.
-        (AddressPart::Domain, TextOp::Is) => Some((
-            contains,
-            json!(
-                test.values()
-                    .iter()
-                    .map(|domain| format!("@{domain}"))
-                    .collect::<Vec<_>>()
-            ),
-        )),
+        // A domain as `@domain` within the address would also match `@domain.evil.test`.
         _ => None,
     }
 }

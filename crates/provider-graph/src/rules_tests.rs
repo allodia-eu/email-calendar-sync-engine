@@ -4,7 +4,7 @@
 use engine_core::{
     error::FailureClass,
     ids::{AccountId, MailboxId},
-    rules::{RuleFeature, Support, TextOp},
+    rules::{RuleFeature, RuleLimit, Support, TextOp},
 };
 use engine_provider::{MailRules, Provider, WriteGuard};
 use serde_json::json;
@@ -70,11 +70,22 @@ fn the_vocabulary_is_the_graph_column() {
     ] {
         assert_eq!(held.support(feature), Some(Support::Exact), "{feature:?}");
     }
-    for feature in [RuleFeature::AddressDomain, RuleFeature::NamedKeyword] {
-        assert_eq!(held.support(feature), Some(Support::Approximated));
+    assert_eq!(
+        held.support(RuleFeature::NamedKeyword),
+        Some(Support::Approximated)
+    );
+    for limit in [
+        RuleLimit::OneTestPerKind,
+        RuleLimit::OneActionPerKind,
+        RuleLimit::RecipientsTogether,
+        RuleLimit::NoOtherSystemKeyword,
+    ] {
+        assert!(held.has_limit(limit), "{limit:?}");
     }
     for feature in [
         RuleFeature::MatchAny,
+        // A domain within the sender's text would also match a longer domain: widened.
+        RuleFeature::AddressDomain,
         RuleFeature::HeaderText(TextOp::Contains),
         RuleFeature::SubjectText(TextOp::Is),
         RuleFeature::SizeOver,

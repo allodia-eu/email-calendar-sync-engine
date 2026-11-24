@@ -150,7 +150,7 @@ async fn a_changed_rule_is_patched_whole_with_what_it_dropped_cleared() {
     let (method, url, body) = &sent[0];
     assert_eq!(
         (*method, url.as_str()),
-        ("PATCH", "messageRules/AQAAAAAAAAE=")
+        ("PATCH", "messageRules/AQAAAAAAAAE%3D")
     );
     let body = body.as_ref().unwrap();
     assert_eq!(body["displayName"], "Renamed");
@@ -178,21 +178,18 @@ async fn a_rule_put_first_is_posted_first_and_every_rule_after_it_placed_again()
 }
 
 #[tokio::test]
-async fn a_rule_left_out_is_deleted_after_the_rest_are_placed() {
+async fn a_rule_left_out_is_deleted_and_the_rest_keep_their_numbers() {
     let (client, log) = client(CAPTURED, vec![]);
     let base = base(&client).await;
     let mut rules = base.rules.clone();
     rules.remove(2);
-    let _ = replace(&client, &base, &rules).await.unwrap();
-    let sent = writes(&log);
-    // The six rules after it move up one place each, then it goes.
-    assert_eq!(sent.len(), 7);
-    assert!(sent[..6].iter().all(|(m, ..)| *m == "PATCH"));
-    assert_eq!(sent[0].2.as_ref().unwrap(), &json!({"sequence": 3}));
+    let receipt = replace(&client, &base, &rules).await.unwrap();
+    // A gap in the numbers is still the order: the rules after it are not sent.
     assert_eq!(
-        (sent[6].0, sent[6].1.as_str()),
-        ("DELETE", "messageRules/AQAAAAAAAAM=")
+        writes(&log),
+        vec![("DELETE", "messageRules/AQAAAAAAAAM%3D".to_owned(), None)]
     );
+    assert!(receipt.outcomes.iter().all(|o| o.kept == Kept::Whole));
 }
 
 #[tokio::test]
@@ -201,15 +198,15 @@ async fn each_failed_request_lands_in_the_receipt_and_the_rest_go_ahead() {
         CAPTURED,
         vec![
             (
-                "messageRules/AQAAAAAAAAI=",
+                "messageRules/AQAAAAAAAAI%3D",
                 Err((400, envelope("ErrorInvalidRequest"))),
             ),
             (
-                "messageRules/AQAAAAAAAAM=",
+                "messageRules/AQAAAAAAAAM%3D",
                 Err((504, envelope("GatewayTimeout"))),
             ),
             (
-                "messageRules/AQAAAAAAAAQ=",
+                "messageRules/AQAAAAAAAAQ%3D",
                 Err((404, envelope("ErrorItemNotFound"))),
             ),
         ],
@@ -234,12 +231,18 @@ async fn each_failed_request_lands_in_the_receipt_and_the_rest_go_ahead() {
                 .outcome_unknown(),
         ]
     );
-    // The fifth rule's rename went out all the same, now in third place.
+    // The rule the server refused is not kept as given, and its outcome says so.
+    assert_eq!(receipt.outcomes[1].kept, Kept::NotKept);
+    assert_eq!(
+        receipt.outcomes[1].losses,
+        vec![Loss::new(RulePart::Rule, LossReason::NotWritten)]
+    );
+    // The fifth rule's rename went out all the same, its number kept.
     let sent = writes(&log);
     assert!(sent.iter().any(|(m, url, body)| *m == "PATCH"
-        && url == "messageRules/AQAAAAAAAAU="
+        && url == "messageRules/AQAAAAAAAAU%3D"
         && body.as_ref().unwrap()["displayName"] == "Renamed too"
-        && body.as_ref().unwrap()["sequence"] == 3));
+        && body.as_ref().unwrap().get("sequence").is_none()));
     // The failure carries no server words.
     assert!(!format!("{receipt:?}").contains("server words"));
 }
@@ -270,12 +273,56 @@ async fn a_read_only_rule_is_never_sent_and_a_change_to_it_is_reported() {
             FailureClass::Permanent
         )]
     );
-    // The third rule moved up a place; the read-only one was not deleted.
-    assert!(writes(&log).iter().all(|(m, ..)| *m == "PATCH"));
+    // The read-only one was not deleted, and the third keeps its number.
+    assert_eq!(writes(&log).len(), 0);
+    assert_eq!(receipt.outcomes[0].kept, Kept::Whole);
 }
 
 #[tokio::test]
-async fn a_rule_the_writer_cannot_place_is_not_kept_and_says_which_part() {
+async fn a_read_only_rule_still_in_order_is_in_its_place_and_one_out_of_order_is_reported() {
+    let (client, log) = client(SHAPES, vec![]);
+    let base = base(&client).await;
+    // The first rule goes: the read-only second is still in order, so nothing is wrong.
+    let receipt = replace(&client, &base, &base.rules[1..]).await.unwrap();
+    assert_eq!(receipt.failures, Vec::new());
+    assert_eq!(writes(&log).len(), 1, "the DELETE alone");
+    log.lock().unwrap().clear();
+    // The third first: the read-only one cannot move after it.
+    let rules = vec![
+        base.rules[2].clone(),
+        base.rules[1].clone(),
+        base.rules[0].clone(),
+    ];
+    let receipt = replace(&client, &base, &rules).await.unwrap();
+    assert_eq!(
+        receipt.failures,
+        vec![RuleWriteFailure::new(
+            FailedRule::Written(1),
+            FailureClass::Permanent
+        )]
+    );
+    assert_eq!(receipt.outcomes[1].kept, Kept::Reduced);
+    assert_eq!(
+        receipt.outcomes[1].losses,
+        vec![
+            // It is the one the fixture marks in error, too.
+            Loss::new(RulePart::Rule, LossReason::SourceInError),
+            Loss::new(RulePart::Order, LossReason::NotWritten),
+        ]
+    );
+    // The first follows the third, the read-only one never sent.
+    assert_eq!(
+        writes(&log),
+        vec![(
+            "PATCH",
+            "messageRules/AQAAAAAAAQE%3D".to_owned(),
+            Some(json!({"sequence": 4}))
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_rule_graph_cannot_hold_is_not_kept_and_says_which_part() {
     let (client, log) = client(CAPTURED, vec![]);
     let base = base(&client).await;
     let mut rules = base.rules.clone();
@@ -350,46 +397,90 @@ async fn a_folder_lookup_that_fails_is_that_rules_failure() {
             FailureClass::Retryable
         )]
     );
+    assert_eq!(receipt.outcomes[9].kept, Kept::NotKept);
 }
 
 #[tokio::test]
-async fn a_rule_id_that_is_not_one_path_segment_is_not_sent() {
+async fn an_existing_rule_the_writer_cannot_place_stays_as_it_was() {
+    // The account has no Archive: the plan cannot know, so the writer cannot place the move.
+    let (client, log) = client(
+        CAPTURED,
+        vec![(
+            "mailFolders/archive",
+            Err((404, envelope("ErrorItemNotFound"))),
+        )],
+    );
+    let base = base(&client).await;
+    let mut rules = base.rules.clone();
+    if let engine_core::rules::RuleBody::Typed(typed) = &mut rules[3].body {
+        typed.actions = vec![Action::FileInto {
+            mailbox: RuleMailbox::Role(MailboxRole::Archive),
+            copy: false,
+        }];
+    }
+    let receipt = replace(&client, &base, &rules).await.unwrap();
+    assert_eq!(
+        receipt.failures,
+        vec![RuleWriteFailure::new(
+            FailedRule::Written(3),
+            FailureClass::Permanent
+        )]
+    );
+    assert_eq!(receipt.outcomes[3].kept, Kept::NotKept);
+    // Neither changed nor removed.
+    assert_eq!(writes(&log).len(), 0);
+}
+
+#[tokio::test]
+async fn a_rule_id_is_one_percent_encoded_path_segment() {
     let mut listing = json(CAPTURED);
-    listing["value"][0]["id"] = json!("AQ/AAAAAAAE=");
+    listing["value"][0]["id"] = json!("AQ/A+AAAAAE=");
     let fixture = listing.to_string();
     let (client, log) = client(&fixture, vec![]);
     let base = base(&client).await;
     let receipt = replace(&client, &base, &base.rules[1..]).await.unwrap();
-    assert!(receipt.failures.contains(&RuleWriteFailure::new(
-        FailedRule::Removed(0),
-        FailureClass::Permanent
-    )));
-    assert!(writes(&log).iter().all(|(m, ..)| *m != "DELETE"));
+    assert_eq!(receipt.failures, Vec::new());
+    assert_eq!(
+        writes(&log),
+        vec![("DELETE", "messageRules/AQ%2FA%2BAAAAAE%3D".to_owned(), None)]
+    );
 }
 
 #[tokio::test]
-async fn a_rule_already_numbered_for_its_place_is_placed_again_after_one_before_it_moved() {
-    // From 1 2 3 4 to 3 2 4 1. The second keeps its number, but where Exchange renumbers the
-    // others on each change, moving the third to the top has pushed it down to third: without
-    // placing it again, moving the fourth and then the first would leave it after the fourth.
+async fn a_rule_whose_number_still_fits_is_placed_again_after_one_before_it_moved() {
+    // From 1 2 3 4 5 to 2 1 5 3 4. The fifth's number is above the first's new one, but where
+    // Exchange renumbers the others on each change, the numbers read are stale once the first has
+    // moved: every rule after a move takes the next number.
     let (client, log) = client(CAPTURED, vec![]);
     let base = base(&client).await;
     let mut rules = vec![
-        base.rules[2].clone(),
         base.rules[1].clone(),
-        base.rules[3].clone(),
         base.rules[0].clone(),
+        base.rules[4].clone(),
+        base.rules[2].clone(),
+        base.rules[3].clone(),
     ];
-    rules.extend(base.rules[4..].iter().cloned());
+    rules.extend(base.rules[5..].iter().cloned());
     let _ = replace(&client, &base, &rules).await.unwrap();
-    let sent = writes(&log);
-    assert!(sent.iter().any(|(m, url, body)| *m == "PATCH"
-        && url == "messageRules/AQAAAAAAAAI="
-        && body.as_ref().unwrap() == &json!({"sequence": 2})));
+    let placed: Vec<(String, Value)> = writes(&log)
+        .into_iter()
+        .map(|(_, url, body)| (url, body.unwrap()["sequence"].clone()))
+        .collect();
+    // The second keeps 2; every rule after the first's move rises from 3.
+    assert_eq!(
+        placed[0],
+        ("messageRules/AQAAAAAAAAE%3D".to_owned(), json!(3))
+    );
+    assert_eq!(
+        placed[1],
+        ("messageRules/AQAAAAAAAAU%3D".to_owned(), json!(4))
+    );
+    let numbers: Vec<u64> = placed.iter().map(|(_, n)| n.as_u64().unwrap()).collect();
+    assert_eq!(numbers, (3..=10).collect::<Vec<_>>());
 }
 
 #[tokio::test]
-async fn a_rule_changed_into_one_the_writer_cannot_place_is_not_kept_and_goes() {
+async fn a_rule_changed_into_one_graph_cannot_hold_is_not_kept_and_goes() {
     // As on every transport, the set written is the set planned: a rule not kept is not there.
     let (client, log) = client(CAPTURED, vec![]);
     let base = base(&client).await;
@@ -403,6 +494,18 @@ async fn a_rule_changed_into_one_the_writer_cannot_place_is_not_kept_and_goes() 
     assert_eq!(sent.len(), 1);
     assert_eq!(
         (sent[0].0, sent[0].1.as_str()),
-        ("DELETE", "messageRules/AQAAAAAAAAk=")
+        ("DELETE", "messageRules/AQAAAAAAAAk%3D")
     );
+}
+
+#[tokio::test]
+async fn a_patch_keeps_the_names_of_the_recipients_it_sends() {
+    let (client, log) = client(CAPTURED, vec![]);
+    let base = base(&client).await;
+    let mut rules = base.rules.clone();
+    rules[8].name = Some(RuleName::new("Renamed").unwrap());
+    let _ = replace(&client, &base, &rules).await.unwrap();
+    let sent = writes(&log);
+    let forward = &sent[0].2.as_ref().unwrap()["actions"]["forwardTo"][0]["emailAddress"];
+    assert_eq!(forward["name"], "Person 5");
 }

@@ -24,7 +24,8 @@ use engine_core::{
     ids::AccountId,
     raw::RawRules,
     rules::{
-        MailRule, NativeKind, RuleFeature, RuleSet, RuleVocabulary, RulesReceipt, Support, TextOp,
+        MailRule, NativeKind, RuleFeature, RuleLimit, RuleSet, RuleVocabulary, RulesReceipt,
+        Support, TextOp,
     },
     version::RuleSetVersion,
 };
@@ -41,12 +42,17 @@ pub(crate) const RULES: &str = "/mailFolders/inbox/messageRules";
 
 /// What Graph's rule language holds (`filters-and-out-of-office.md`, §5, the Graph column).
 ///
-/// Approximated: a domain is tested as `@domain` within the sender's or recipients' text, and a
-/// named keyword is assigned as a category of its name. Not held: any-of conditions, a named
-/// header (Graph's `headerContains` searches every header, which would widen the rule), a local
-/// part, a test other than "contains" or, for addresses, equality, a size (`withinSizeRange` is
-/// read native: its kilobyte bounds are not proven to mean what bytes do), a folder by path, a
-/// redirect that keeps no copy (Exchange's always keeps one), and a flag.
+/// Approximated: a named keyword is assigned as a category of its name. Not held: any-of
+/// conditions, a named header (Graph's `headerContains` searches every header, which would widen
+/// the rule), a domain or a local part (`senderContains "@example.com"` also matches
+/// `example.com.evil.test`: a widened condition), a test other than "contains" or, for addresses,
+/// equality, a size (`withinSizeRange` is read native: its kilobyte bounds are not proven to mean
+/// what bytes do), a folder by path, a redirect that keeps no copy (Exchange's always keeps one),
+/// and a flag.
+///
+/// Its limits ([`RuleLimit`]): one test per kind on each side, since Graph's predicates are keys
+/// of one object whose values are any-of; one move, one copy and one importance per rule; `To`
+/// and `Cc` only together; no system keyword but `$seen` (and `$flagged`, which it lacks anyway).
 #[must_use]
 pub(crate) fn vocabulary() -> RuleVocabulary {
     RuleVocabulary::new()
@@ -73,9 +79,12 @@ pub(crate) fn vocabulary() -> RuleVocabulary {
             RuleFeature::Name,
             RuleFeature::Order,
         ])
-        .with(RuleFeature::AddressDomain, Support::Approximated)
         .with(RuleFeature::NamedKeyword, Support::Approximated)
         .with_native(NativeKind::Graph)
+        .with_limit(RuleLimit::OneTestPerKind)
+        .with_limit(RuleLimit::OneActionPerKind)
+        .with_limit(RuleLimit::RecipientsTogether)
+        .with_limit(RuleLimit::NoOtherSystemKeyword)
 }
 
 /// The account's rules as Graph listed them, in `sequence` order, and the text they are kept as.
@@ -105,11 +114,17 @@ impl Listing {
     }
 
     fn new(mut rules: Vec<Value>) -> Self {
-        // A rule without a sequence sorts last; the sort is stable, so ties keep Graph's order.
-        rules.sort_by_key(|rule| {
-            rule.get("sequence")
-                .and_then(Value::as_i64)
-                .unwrap_or(i64::MAX)
+        // A rule without a sequence sorts last, and ties sort by id: the order Graph lists them in
+        // must not move the version, or a write would see a conflict nothing caused.
+        rules.sort_by(|a, b| {
+            let key = |rule: &Value| {
+                let sequence = rule.get("sequence").and_then(Value::as_i64);
+                (
+                    sequence.unwrap_or(i64::MAX),
+                    opt_str(rule, "id").map(str::to_owned),
+                )
+            };
+            key(a).cmp(&key(b))
         });
         let text = Value::Array(rules.clone()).to_string();
         Self { rules, text }
