@@ -411,5 +411,8 @@ fn encode(body: &Map<String, Value>) -> Vec<u8> {
 }
 
 #[cfg(test)]
+#[path = "rules_apply_order_tests.rs"]
+mod order_tests;
+#[cfg(test)]
 #[path = "rules_apply_tests.rs"]
 mod tests;
