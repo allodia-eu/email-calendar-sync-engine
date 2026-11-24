@@ -1136,6 +1136,8 @@ Captured, scrubbed, as `provider-graph/tests/fixtures/rules/`.
   adapter follows a next link all the same.
 - **The schedule is in UTC** on both mailboxes read; another zone is resolved through the tzdb, a
   skipped or repeated wall time never widening the window.
+- **An unscheduled reply reports a rolling schedule**: from the top of the current hour to a day
+  later, moving every hour. The version leaves the two ends out unless the reply is scheduled.
 
 **Follow-ups for Graph.**
 

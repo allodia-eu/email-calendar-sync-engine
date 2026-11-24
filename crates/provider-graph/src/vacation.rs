@@ -133,8 +133,16 @@ pub(crate) fn reply(setting: &Value) -> ProviderResult<VacationResponse> {
         .ok_or_else(|| GraphError::protocol("automaticRepliesSetting is not an object"))?;
     // The context names the mailbox; it is not part of the setting.
     kept.remove("@odata.context");
-    let raw = Value::Object(kept).to_string();
     let status = opt_str(setting, "status").unwrap_or("disabled");
+    // For a reply that is not scheduled, Graph reports a schedule of its own, from the current
+    // hour to a day later (observed): the raw form keeps it, and the version leaves it out, or it
+    // would move every hour with nothing changed.
+    let raw = Value::Object(kept.clone()).to_string();
+    if status != "scheduled" {
+        kept.remove("scheduledStartDateTime");
+        kept.remove("scheduledEndDateTime");
+    }
+    let versioned = Value::Object(kept).to_string();
     let (enabled, scheduled) = match status {
         "disabled" => (false, false),
         "alwaysEnabled" => (true, false),
@@ -162,7 +170,7 @@ pub(crate) fn reply(setting: &Value) -> ProviderResult<VacationResponse> {
     reply = reply
         .with_reply(body(internal))
         .with_audience(audience)
-        .with_version(VacationVersion::new(digest_hex(&raw)))
+        .with_version(VacationVersion::new(digest_hex(&versioned)))
         .with_raw(RawVacation::new(raw));
     if audience != ReplyAudience::Organization && external != internal {
         reply = reply.with_outside_reply(body(external));

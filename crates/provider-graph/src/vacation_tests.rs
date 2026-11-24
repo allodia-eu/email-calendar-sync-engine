@@ -323,3 +323,25 @@ fn an_external_message_the_model_does_not_hold_is_not_sent() {
     assert_eq!(written["externalAudience"], "none");
     assert!(written.get("externalReplyMessage").is_none(), "{written}");
 }
+
+#[test]
+fn the_schedule_graph_reports_for_a_reply_not_scheduled_does_not_move_its_version() {
+    // Observed: for a reply that is off, Graph reports a schedule from the current hour to a day
+    // later, so the two ends move on their own every hour. They say nothing of the reply.
+    let mut earlier = json(DISABLED);
+    let mut later = json(DISABLED);
+    earlier["scheduledStartDateTime"]["dateTime"] = json!("2026-11-24T11:00:00.0000000");
+    later["scheduledStartDateTime"]["dateTime"] = json!("2026-11-24T12:00:00.0000000");
+    later["scheduledEndDateTime"]["dateTime"] = json!("2026-11-25T12:00:00.0000000");
+    assert_eq!(
+        reply(&earlier).unwrap().version,
+        reply(&later).unwrap().version
+    );
+    // Scheduled, the ends are the reply's, and a change to them moves the version.
+    earlier["status"] = json!("scheduled");
+    later["status"] = json!("scheduled");
+    assert_ne!(
+        reply(&earlier).unwrap().version,
+        reply(&later).unwrap().version
+    );
+}

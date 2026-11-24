@@ -685,7 +685,10 @@ column of `docs/design/filters-and-out-of-office.md` §5; what follows is what t
   `item_unavailable`, never a guess. Written, a text body is escaped into HTML, an off reply keeps
   its window, and a message the model does not hold is not sent: with no outside reply and an
   audience of the organization, `externalReplyMessage` is left out. Both accounts read so far store
-  their schedule in `UTC`.
+  their schedule in `UTC`. For a reply that is not scheduled, Graph reports a schedule of its own:
+  from the top of the current hour to exactly a day later, moving every hour (observed on the work
+  account, confirmed with an app-only token). The raw form keeps it; the version leaves it out
+  unless `status` is `scheduled`, or a guarded write would meet a conflict nothing caused.
 
 **Live status.** Reads are proven live: delegated at `/me`, application-only for a user's and a
 shared mailbox (`tests/live_rules.rs`). Writes ran once against the delegated work mailbox

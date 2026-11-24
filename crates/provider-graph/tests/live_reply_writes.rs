@@ -31,13 +31,18 @@ async fn setting(token: &str) -> Value {
     setting
 }
 
-/// How many of `kept`'s fields `now` does not hold as they were, either way.
+/// How many of `kept`'s fields `now` does not hold as they were, either way. While neither is
+/// scheduled the two schedule fields are left out: Graph reports a rolling window there for a reply
+/// that is not scheduled, from the current hour to a day later (observed).
 fn differing(kept: &Value, now: &Value) -> usize {
     let (Some(kept), Some(now)) = (kept.as_object(), now.as_object()) else {
         return usize::MAX;
     };
+    let unscheduled = kept.get("status") != Some(&json!("scheduled"))
+        && now.get("status") != Some(&json!("scheduled"));
     kept.keys()
         .chain(now.keys().filter(|key| !kept.contains_key(*key)))
+        .filter(|key| !(unscheduled && key.starts_with("scheduled")))
         .filter(|key| kept.get(*key) != now.get(*key))
         .count()
 }
