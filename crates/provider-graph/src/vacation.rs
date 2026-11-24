@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use engine_core::{
     ids::AccountId,
     raw::RawVacation,
-    time::{CalendarDateTime, LocalDateTime, UtcDateTime, resolve_zone_name},
+    time::{LocalDateTime, TimeZoneId, UtcDateTime, resolve_zone_name},
     vacation::{
         AutoReply, ReplyAudience, RulesEffect, VacationReceipt, VacationResponse,
         VacationVocabulary, VacationWindow, WindowSupport,
@@ -108,12 +108,19 @@ impl Vacation for GraphProvider {
     }
 }
 
-async fn read(client: &GraphClient) -> Result<VacationResponse, GraphError> {
+async fn read(client: &GraphClient) -> ProviderResult<VacationResponse> {
     reply(&client.get(&client.url(SETTING)).await?)
 }
 
 /// The reply a read `automaticRepliesSetting` says, with its version and raw form.
-pub(crate) fn reply(setting: &Value) -> Result<VacationResponse, GraphError> {
+///
+/// # Errors
+///
+/// A protocol error for a setting not as Graph documents it, and
+/// [`item_unavailable`](ProviderError::item_unavailable) for a schedule in a zone the engine
+/// cannot resolve: when that reply runs cannot be said, and a guess could answer senders the user
+/// did not mean to.
+pub(crate) fn reply(setting: &Value) -> ProviderResult<VacationResponse> {
     let mut kept = setting
         .as_object()
         .cloned()
@@ -126,7 +133,7 @@ pub(crate) fn reply(setting: &Value) -> Result<VacationResponse, GraphError> {
         "disabled" => (false, false),
         "alwaysEnabled" => (true, false),
         "scheduled" => (true, true),
-        _ => return Err(GraphError::protocol("unknown automatic replies status")),
+        _ => return Err(GraphError::protocol("unknown automatic replies status").into()),
     };
     let mut reply = VacationResponse::default();
     if enabled {
@@ -134,8 +141,8 @@ pub(crate) fn reply(setting: &Value) -> Result<VacationResponse, GraphError> {
     }
     if scheduled {
         let window = VacationWindow::default()
-            .with_start(instant(setting, "scheduledStartDateTime")?)
-            .with_end(instant(setting, "scheduledEndDateTime")?);
+            .with_start(instant(setting, "scheduledStartDateTime", Edge::Start)?)
+            .with_end(instant(setting, "scheduledEndDateTime", Edge::End)?);
         reply = reply.with_window(window);
     }
     let internal = message(setting, "internalReplyMessage");
@@ -167,19 +174,56 @@ fn body(html: Option<&str>) -> AutoReply {
     })
 }
 
-/// A `dateTimeTimeZone` as the instant it names.
-fn instant(setting: &Value, key: &str) -> Result<UtcDateTime, GraphError> {
-    let bad = || GraphError::protocol(format!("bad {key}"));
+/// Which end of the window a wall time is.
+#[derive(Clone, Copy)]
+enum Edge {
+    Start,
+    End,
+}
+
+/// A `dateTimeTimeZone` as the instant it names. A wall time the zone skips or repeats names two
+/// instants; the start takes the later and the end the earlier, so the window is never wider than
+/// the schedule says (and one wholly inside a skipped hour runs at no instant).
+fn instant(setting: &Value, key: &str, edge: Edge) -> ProviderResult<UtcDateTime> {
+    let bad = || ProviderError::from(GraphError::protocol(format!("bad {key}")));
     let value = setting.get(key).ok_or_else(bad)?;
     let local: LocalDateTime = opt_str(value, "dateTime")
         .ok_or_else(bad)?
         .parse()
         .map_err(|_| bad())?;
-    let zone = resolve_zone_name(opt_str(value, "timeZone").unwrap_or("UTC")).map_err(|_| bad())?;
-    engine_recurrence::resolve_instant(&CalendarDateTime::Zoned { local, zone })
+    let unknown = || {
+        ProviderError::item_unavailable(
+            "this out-of-office reply's schedule names a time zone the engine cannot resolve",
+        )
+    };
+    let zone = resolve_zone_name(opt_str(value, "timeZone").unwrap_or("UTC"))
         .ok()
-        .flatten()
-        .ok_or_else(bad)
+        .filter(TimeZoneId::is_iana)
+        .ok_or_else(unknown)?;
+    let tz = jiff::tz::TimeZone::get(zone.as_str()).map_err(|_| unknown())?;
+    let civil = to_civil(local).ok_or_else(bad)?;
+    let ambiguous = tz.to_ambiguous_timestamp(civil);
+    let (Ok(a), Ok(b)) = (ambiguous.earlier(), ambiguous.later()) else {
+        return Err(bad());
+    };
+    let at = match edge {
+        Edge::Start => a.max(b),
+        Edge::End => a.min(b),
+    };
+    UtcDateTime::parse_rfc3339(&at.to_string()).map_err(|_| bad())
+}
+
+fn to_civil(local: LocalDateTime) -> Option<jiff::civil::DateTime> {
+    jiff::civil::DateTime::new(
+        i16::try_from(local.year()).ok()?,
+        i8::try_from(local.month()).ok()?,
+        i8::try_from(local.day()).ok()?,
+        i8::try_from(local.hour()).ok()?,
+        i8::try_from(local.minute()).ok()?,
+        i8::try_from(local.second()).ok()?,
+        i32::try_from(local.nanosecond()).ok()?,
+    )
+    .ok()
 }
 
 /// The `automaticRepliesSetting` that says `reply`; the caller has refused what Graph cannot
@@ -198,7 +242,13 @@ pub(crate) fn setting(reply: &VacationResponse) -> Value {
         out.insert("scheduledEndDateTime".to_owned(), zoned(end));
     }
     let internal = html(&reply.reply);
-    let external = reply.outside_reply.as_ref().map_or(internal.clone(), html);
+    // With no outside reply, outside senders get the same one; where none of them gets a reply
+    // at all, the model holds no external message, and the one stored is left as it is.
+    let external = match (&reply.outside_reply, reply.audience) {
+        (Some(outside), _) => Some(html(outside)),
+        (None, ReplyAudience::Organization) => None,
+        (None, _) => Some(internal.clone()),
+    };
     let audience = match reply.audience {
         ReplyAudience::Organization => "none",
         ReplyAudience::OrganizationAndContacts => "contactsOnly",
@@ -206,7 +256,9 @@ pub(crate) fn setting(reply: &VacationResponse) -> Value {
     };
     out.insert("externalAudience".to_owned(), json!(audience));
     out.insert("internalReplyMessage".to_owned(), json!(internal));
-    out.insert("externalReplyMessage".to_owned(), json!(external));
+    if let Some(external) = external {
+        out.insert("externalReplyMessage".to_owned(), json!(external));
+    }
     Value::Object(out)
 }
 

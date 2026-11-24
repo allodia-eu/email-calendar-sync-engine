@@ -256,3 +256,69 @@ fn graph_offers_the_reply_with_its_vocabulary_and_no_server_guard() {
     let shown = format!("{:?}", reply(&json(DISABLED)).unwrap());
     assert!(!shown.contains("Example reply"), "{shown}");
 }
+
+fn scheduled(start: &str, end: &str, zone: &str) -> Value {
+    let mut doc = json(SCHEDULED);
+    doc["scheduledStartDateTime"] = json!({"dateTime": start, "timeZone": zone});
+    doc["scheduledEndDateTime"] = json!({"dateTime": end, "timeZone": zone});
+    doc
+}
+
+#[test]
+fn a_wall_time_dst_skips_or_repeats_never_widens_the_window() {
+    // Western Europe, 2026: 02:00 to 03:00 is skipped on 29 March and repeated on 25 October.
+    // The start takes the later instant the wall time can name, the end the earlier one.
+    let zone = "W. Europe Standard Time";
+    let gap = reply(&scheduled(
+        "2026-03-29T02:30:00.0000000",
+        "2026-03-29T02:30:00.0000000",
+        zone,
+    ))
+    .unwrap();
+    // Both ends name the same skipped time: the window holds no instant, so no message gets a
+    // reply, rather than one an hour long.
+    assert!(gap.window.is_empty());
+    let read = reply(&scheduled(
+        "2026-03-29T02:30:00.0000000",
+        "2026-10-25T02:30:00.0000000",
+        zone,
+    ))
+    .unwrap();
+    assert_eq!(read.window.start, Some(at("2026-03-29T01:30:00Z")));
+    assert_eq!(read.window.end, Some(at("2026-10-25T00:30:00Z")));
+    let fold = reply(&scheduled(
+        "2026-10-25T02:30:00.0000000",
+        "2026-10-26T00:00:00.0000000",
+        zone,
+    ))
+    .unwrap();
+    assert_eq!(fold.window.start, Some(at("2026-10-25T01:30:00Z")));
+}
+
+#[test]
+fn a_schedule_in_a_zone_the_engine_cannot_resolve_is_refused_not_guessed() {
+    let err = reply(&scheduled(
+        "2026-07-01T09:00:00.0000000",
+        "2026-07-02T09:00:00.0000000",
+        "Mars Standard Time",
+    ))
+    .unwrap_err();
+    assert!(err.is_item_unavailable(), "{err}");
+    assert_eq!(err.class(), FailureClass::Permanent);
+    // A reply that is not scheduled does not read its schedule at all.
+    let mut off = scheduled("x", "y", "Mars Standard Time");
+    off["status"] = json!("disabled");
+    assert!(reply(&off).is_ok());
+}
+
+#[test]
+fn an_external_message_the_model_does_not_hold_is_not_sent() {
+    // Nobody outside gets a reply, and the model holds no outside message: the one stored stays.
+    let inside_only = VacationResponse::default()
+        .turned_on()
+        .with_reply(AutoReply::default().with_html("<p>in</p>"))
+        .with_audience(ReplyAudience::Organization);
+    let written = setting(&inside_only);
+    assert_eq!(written["externalAudience"], "none");
+    assert!(written.get("externalReplyMessage").is_none(), "{written}");
+}

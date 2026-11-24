@@ -20,8 +20,9 @@ engine-rfc5322 = { workspace = true }
 # One throttling answer for every HTTP provider (docs/agent-guidance/http-throttling.md).
 engine-http = { workspace = true }
 # The out-of-office schedule is a zoned `dateTimeTimeZone`, read as the instant it names
-# (`vacation`), through the same tzdb the calendar expands with.
-engine-recurrence = { workspace = true }
+# (`vacation`), through the engine's bundled tzdb; a wall time a zone skips or repeats names two
+# instants, and the read chooses between them so the window never widens.
+jiff = { workspace = true }
 engine-tls = { workspace = true, features = ["reqwest"] }
 # reqwest + rustls (pure-Rust TLS, mobile cross-compile) on the engine's standard
 # HTTP stack, mirroring provider-jmap.
