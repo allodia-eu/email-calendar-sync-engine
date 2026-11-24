@@ -157,7 +157,7 @@ impl<S> GmailMail<S> {
 
     /// Who the account signs in as: the [`subject`](engine_provider::CredentialSource::subject)
     /// of the source its [`ImapConfig`](crate::ImapConfig) asks. A host pairing this with the
-    /// same account's Gmail API client checks they share one source by it.
+    /// same account's Gmail API client checks by it that both sign in as the same subject.
     #[must_use]
     pub fn credential_subject(&self) -> &CredentialSubject {
         &self.subject

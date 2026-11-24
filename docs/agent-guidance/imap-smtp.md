@@ -1225,8 +1225,10 @@ object. `ImapAccount::gmail` (offered only on a session advertising `X-GM-EXT-1`
 three folders that between them hold every message once. It reads and never writes; what a
 label means is `provider-google`'s (`google.md`, "Mail read over IMAP"), which is the only user.
 `GmailMail::credential_subject` says who it signs in as (the subject of its config's source,
-recorded by `ImapAccount::connect`), so the Gmail adapter can refuse a reader that does not ask
-the same source as its API half.
+recorded by `ImapAccount::connect`), so the Gmail adapter can refuse a reader that does not sign
+in as the same credential subject as its API half. `test_server::gmail` (the `test-server`
+feature, which only dev-dependencies turn on) serves an in-process Gmail over TLS, so another
+crate's suite can connect a real `ImapAccount` offline.
 
 - **Gmail's items.** `X-GM-MSGID`, `X-GM-THRID` and `X-GM-LABELS` (`parse_gmail`) are the same
   for a message in every folder; a message moving between the three keeps its Gmail id under a
