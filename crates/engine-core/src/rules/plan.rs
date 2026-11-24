@@ -164,6 +164,10 @@ pub enum LossReason {
     SourceInError,
     /// A rule the engine could not read, going to another kind of transport.
     OpaqueSource,
+    /// The target was asked to store the part and did not: a transport that stores rules one by
+    /// one went on past it, and the receipt's [`failures`](super::RulesReceipt::failures) say
+    /// why. On the whole rule it is not kept as given; on its order, it is reduced.
+    NotWritten,
 }
 
 /// Decides what `target` keeps of `rules`, and how each rule is to be written.
