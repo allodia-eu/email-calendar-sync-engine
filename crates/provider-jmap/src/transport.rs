@@ -5,27 +5,34 @@
 //! the session-discovery flow in [`crate`] resolves the well-known redirect itself
 //! so it can rebase a foreign advertised origin onto the connection (see
 //! [`SessionUrlPolicy`](crate::SessionUrlPolicy)).
+//!
+//! Every request asks the account's [`CredentialSource`] for the credential it carries,
+//! through `engine_http::send_authenticated`: session discovery and each redirect hop, method
+//! calls, blob downloads and uploads, and the push stream. So no path can hold a stale token,
+//! skip the plaintext rule or the source's `permits`, or replay a refused request twice.
 
-use engine_http::{Exchange, ObservedConnection, RetryConfig, send_retrying};
-use engine_provider::{HttpVersion, TlsVersion};
+use std::sync::Arc;
+
+use engine_http::{Exchange, ObservedConnection, RetryConfig, Sent, Unauthorized};
+use engine_provider::{Credential, CredentialSource, HttpVersion, ProviderError, TlsVersion};
 use engine_tls::TlsClientConfig;
-use reqwest::{Client, RequestBuilder, StatusCode, header::WWW_AUTHENTICATE, redirect::Policy};
+use reqwest::{Client, RequestBuilder, header::WWW_AUTHENTICATE, redirect::Policy};
 use serde_json::Value;
 
 use crate::{
-    Credentials,
-    auth::{AuthScheme, NegotiatedScheme, negotiate},
+    auth::{AuthScheme, Challenge, NegotiatedScheme, read_challenge},
     error::JmapError,
 };
 
 /// An authenticated HTTP transport.
 pub(crate) struct Transport {
     client: Client,
-    credentials: Credentials,
-    /// The scheme credentials are currently presented under. JMAP specifies no
-    /// authentication mechanism of its own (RFC 8620 §8.2) — the server declares one in
-    /// its `401` challenge — so this starts at the credential's natural scheme and
-    /// moves if a server says otherwise. See [`crate::auth`].
+    /// Asked for the credential on every request; never a credential held.
+    source: Arc<dyn CredentialSource>,
+    /// The scheme credentials are presented under once a server has said which. JMAP
+    /// specifies no authentication mechanism of its own (RFC 8620 §8.2) — the server declares
+    /// one in its `401` challenge — so a credential starts at its natural scheme and moves if
+    /// a server says otherwise. See [`crate::auth`].
     scheme: NegotiatedScheme,
     /// The HTTP and TLS versions most recently observed — the post-connect facts
     /// `ConnectionInfo` reports. Every request funnels through
@@ -43,9 +50,9 @@ pub(crate) struct Transport {
 
 impl Transport {
     /// Builds a transport with redirect-following disabled, trusting per `tls`
-    /// (`docs/agent-guidance/tls.md`).
+    /// (`docs/agent-guidance/tls.md`), presenting what `source` answers.
     pub(crate) fn new(
-        credentials: Credentials,
+        source: Arc<dyn CredentialSource>,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
         user_agent: &engine_http::UserAgent,
@@ -55,8 +62,8 @@ impl Transport {
             .build()?;
         Ok(Self {
             client,
-            scheme: NegotiatedScheme::new(credentials.preferred_scheme()),
-            credentials,
+            source,
+            scheme: NegotiatedScheme::default(),
             connection: ObservedConnection::default(),
             retry: retry
                 .clone()
@@ -79,78 +86,92 @@ impl Transport {
         self.connection.tls_version()
     }
 
-    /// Applies the configured credentials to a request builder under `scheme`.
-    fn authed(&self, builder: RequestBuilder, scheme: AuthScheme) -> RequestBuilder {
-        match (&self.credentials, scheme) {
-            (Credentials::Basic { username, password }, AuthScheme::Basic) => {
-                builder.basic_auth(username, Some(password))
+    /// Frames `credential` on `builder` under the scheme it is presented under now, and
+    /// records that scheme in `used`, where the challenge of a `401` is read against it.
+    fn present(
+        &self,
+        builder: RequestBuilder,
+        credential: &Credential,
+        used: &NegotiatedScheme,
+    ) -> Result<RequestBuilder, JmapError> {
+        let scheme = self.scheme.scheme_for(credential);
+        if let Some(scheme) = scheme {
+            used.set(scheme);
+        }
+        match (credential, scheme) {
+            (Credential::Password { username, password }, Some(AuthScheme::Basic)) => {
+                Ok(builder.basic_auth(username, Some(password.expose())))
             }
-            // Every other pairing presents the bare secret as a bearer token. A bearer
-            // credential is never asked to produce a Basic header — it has no username,
-            // and `Credentials::can_present` refuses that switch — so this arm is only
-            // ever the bearer framing of whichever secret we hold.
-            _ => builder.bearer_auth(self.credentials.bearer_secret()),
+            // The same secret framed bare, where a server asked for bearer tokens.
+            (Credential::Password { password, .. }, Some(AuthScheme::Bearer)) => {
+                Ok(builder.bearer_auth(password.expose()))
+            }
+            (Credential::Bearer { token, .. }, Some(_)) => Ok(builder.bearer_auth(token.expose())),
+            _ => Err(JmapError::Credential(ProviderError::permanent(
+                "this kind of credential cannot be presented over JMAP",
+            ))),
         }
     }
 
-    /// Authenticates and ships `builder`, honouring the server's authentication
-    /// challenge: a `401` whose `WWW-Authenticate` does not offer the scheme we used is
-    /// replayed once under a scheme it does offer, which is then latched for the rest of
-    /// the connection (RFC 9110 §11.6.1; see [`crate::auth`]). A `401` that *does* offer
-    /// our scheme is returned untouched — that is a wrong credential, not a wrong
-    /// framing.
+    /// Reads a `401` to a request that carried `credential` under `used`: a challenge for
+    /// another scheme the credential can be framed under latches it and re-presents the same
+    /// credential; one for the scheme used, or none, is a refusal of the credential.
+    fn judge(
+        &self,
+        reply: &Sent,
+        credential: &Credential,
+        used: &NegotiatedScheme,
+    ) -> Unauthorized {
+        let challenges = reply
+            .headers()
+            .get_all(WWW_AUTHENTICATE)
+            .iter()
+            .filter_map(|value| value.to_str().ok());
+        // `present` always records a scheme before anything is sent.
+        let used = used.latched().unwrap_or(AuthScheme::Basic);
+        match read_challenge(used, challenges, credential) {
+            Challenge::Reframe(next) => {
+                self.scheme.set(next);
+                Unauthorized::Reframe
+            }
+            Challenge::Refused => Unauthorized::Refused,
+            Challenge::Unusable => Unauthorized::Final,
+        }
+    }
+
+    /// Authenticates and ships `builder` (`engine_http::send_authenticated`), honouring the
+    /// server's challenge: a `401` whose `WWW-Authenticate` does not offer the scheme used is
+    /// replayed once under a scheme it does offer, which is then latched (RFC 9110 §11.6.1;
+    /// see [`crate::auth`]). A `401` that *does* offer it refuses the credential, and the
+    /// account's source is asked once for a replacement; the request goes once more if it has
+    /// one. A `401` that survives both comes back for the caller to read.
     ///
     /// This is the one funnel every request in this transport passes, so no path can
-    /// forget either the version observation or the negotiation.
+    /// forget the credential rules, the version observation or the negotiation. The engine's
+    /// shared client offers ALPN `h2` then `http/1.1` (`docs/agent-guidance/tls.md`), so this
+    /// is HTTP/2 wherever the server supports it.
     async fn send(
         &self,
         builder: RequestBuilder,
         exchange: Exchange<'_>,
-    ) -> Result<engine_http::Sent, JmapError> {
-        let scheme = self.scheme.get();
-        // Cloned before the body is consumed, so a scheme switch replays the identical
-        // request. Only a streaming body would refuse to clone, and this transport sends
-        // none — every body is a JSON value or an owned byte vector.
-        let replay = builder.try_clone();
-        let response = self
-            .dispatch(self.authed(builder, scheme), exchange)
-            .await?;
-        if response.status() != StatusCode::UNAUTHORIZED {
-            return Ok(response);
-        }
-
-        let next = {
-            let challenges = response
-                .headers()
-                .get_all(WWW_AUTHENTICATE)
-                .iter()
-                .filter_map(|value| value.to_str().ok());
-            negotiate(scheme, challenges, &self.credentials)
-        };
-        let (Some(next), Some(replay)) = (next, replay) else {
-            return Ok(response);
-        };
-        self.scheme.set(next);
-        self.dispatch(self.authed(replay, next), exchange).await
-    }
-
-    /// Ships a fully authenticated `builder`, recording the negotiated HTTP and TLS
-    /// versions on the way through. The engine's shared client offers ALPN `h2` then
-    /// `http/1.1` (`docs/agent-guidance/tls.md`), so this is HTTP/2 wherever the server
-    /// supports it.
-    async fn dispatch(
-        &self,
-        builder: RequestBuilder,
-        exchange: Exchange<'_>,
-    ) -> Result<engine_http::Sent, JmapError> {
-        let response = send_retrying(builder, &self.retry, exchange).await?;
+    ) -> Result<Sent, JmapError> {
+        let used = NegotiatedScheme::default();
+        let response = engine_http::send_authenticated(
+            self.source.as_ref(),
+            builder,
+            &self.retry,
+            exchange,
+            |builder, credential| self.present(builder, credential, &used),
+            |reply, credential| self.judge(reply, credential, &used),
+        )
+        .await?;
         self.connection.record(&response);
         Ok(response)
     }
 
     /// Sends an authenticated GET, returning the raw response so the caller can
     /// inspect a redirect's status and `Location` before reading any body.
-    pub(crate) async fn get(&self, url: &str) -> Result<engine_http::Sent, JmapError> {
+    pub(crate) async fn get(&self, url: &str) -> Result<Sent, JmapError> {
         self.send(self.client.get(url), Exchange::Ordinary).await
     }
 
@@ -159,7 +180,7 @@ impl Transport {
     /// content-negotiating server/proxy keys on to serve the streaming SSE
     /// representation rather than a buffered JSON/HTML one. The status is **not**
     /// checked here; the caller does so before treating the body as a stream.
-    pub(crate) async fn get_event_stream(&self, url: &str) -> Result<engine_http::Sent, JmapError> {
+    pub(crate) async fn get_event_stream(&self, url: &str) -> Result<Sent, JmapError> {
         self.send(
             self.client
                 .get(url)
@@ -231,9 +252,7 @@ pub(crate) async fn read_json(resp: engine_http::Sent) -> Result<Value, JmapErro
 /// [`JmapError::Status`] carrying the code + body for diagnostics. The single place
 /// that turns an HTTP error status into an engine error, shared by the JSON, blob, and
 /// EventSource paths so their failure handling cannot drift.
-pub(crate) async fn error_for_status(
-    resp: engine_http::Sent,
-) -> Result<engine_http::Sent, JmapError> {
+pub(crate) async fn error_for_status(resp: engine_http::Sent) -> Result<Sent, JmapError> {
     let status = resp.status();
     if status.is_success() {
         Ok(resp)
@@ -250,6 +269,10 @@ pub(crate) async fn error_for_status(
 #[cfg(test)]
 #[path = "transport_tests.rs"]
 mod transport_tests;
+
+#[cfg(test)]
+#[path = "credential_tests.rs"]
+mod credential_tests;
 
 #[cfg(test)]
 #[path = "deadline_tests.rs"]

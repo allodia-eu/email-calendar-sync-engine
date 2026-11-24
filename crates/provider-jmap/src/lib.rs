@@ -73,6 +73,7 @@ mod report;
 mod request;
 mod response;
 mod rules;
+mod server_text;
 mod session;
 mod session_accounts;
 mod session_limits;
@@ -96,10 +97,11 @@ pub use config::{Credentials, JmapConfig};
 use engine_core::ids::BlobId;
 use engine_http::Exchange;
 use engine_provider::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
-pub use error::{JmapError, ServerText};
+pub use error::JmapError;
 pub use request::{CallId, Request, ResultRef, capability};
 use reqwest::Url;
 pub use response::Response;
+pub use server_text::ServerText;
 pub use session::{CoreLimits, Session, SessionUrlPolicy};
 pub use session_accounts::JmapAccountId;
 pub use watch::{DEFAULT_EVENT_SOURCE_PING, JmapWatcher};
@@ -164,7 +166,7 @@ impl JmapClient {
             .as_deref()
             .unwrap_or(&IgnoreConnectSteps);
         let transport = Transport::new(
-            config.credentials,
+            config.source,
             &config.tls,
             &config.retry,
             &config.user_agent,
