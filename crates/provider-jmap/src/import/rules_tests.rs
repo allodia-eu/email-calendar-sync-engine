@@ -61,11 +61,10 @@ const OWN: &str = "require [\"fileinto\",\"include\"];\r\ninclude :personal :opt
                    \"vacation\";\r\n# rule:[Mine]\r\nif header :contains \"subject\" \"mine\"\r\n\
                    {\r\n\tfileinto \"Mine\";\r\n}\r\n";
 
-/// `Mailbox/get` for the ids the rules name: `finance` held, `unmapped` not.
+/// `Mailbox/get` for the ids the rules name, as Stalwart answered it for `carol@`'s inbox (`a`)
+/// and an id it does not have (`AAMkunmapped`).
 fn mailboxes() -> Value {
-    json!({ "methodResponses": [["Mailbox/get", {
-        "accountId": "c", "state": "m1", "list": [{ "id": "finance" }], "notFound": ["unmapped"]
-    }, "0"]], "sessionState": "s" })
+    fixture("mailbox_get_rule_folders_response.json")
 }
 
 fn named(name: &str, actions: Vec<Action>) -> MailRule {
@@ -94,8 +93,8 @@ fn imported() -> Vec<MailRule> {
                 copy: false,
             }],
         ),
-        named("Finance", vec![into_id("finance")]),
-        named("Lost", vec![into_id("unmapped"), seen]),
+        named("Finance", vec![into_id("a")]),
+        named("Lost", vec![into_id("AAMkunmapped"), seen]),
         named(
             "Path",
             vec![Action::FileInto {
@@ -146,7 +145,7 @@ async fn rules_are_appended_after_the_accounts_own_byte_for_byte_and_the_reply_s
     assert_eq!(
         requests[0]["methodCalls"][0],
         json!(["Mailbox/get", {
-            "accountId": "c", "ids": ["finance", "unmapped"], "properties": ["id"]
+            "accountId": "c", "ids": ["AAMkunmapped", "a"], "properties": ["id"]
         }, "0"])
     );
     assert_eq!(
@@ -169,8 +168,8 @@ async fn rules_are_appended_after_the_accounts_own_byte_for_byte_and_the_reply_s
         added.starts_with("# rule:[Forward]\r\nif false # header :contains"),
         "the redirect is appended, disabled: {added}"
     );
-    assert!(added.contains(":mailboxid \"finance\""), "{added}");
-    assert!(!added.contains("unmapped"), "{added}");
+    assert!(added.contains(":mailboxid \"a\""), "{added}");
+    assert!(!added.contains("AAMkunmapped"), "{added}");
     assert!(added.contains("fileinto \"Archive\""), "{added}");
 }
 
