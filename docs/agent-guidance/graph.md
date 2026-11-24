@@ -624,9 +624,14 @@ column of `docs/design/filters-and-out-of-office.md` §5; what follows is what t
   rule's id stays in the raw listing and its origin is `RuleOrigin::Listed`, its index there. No
   `fromAddresses` entry of the mailbox read was an X.500 address (checked, 0 of 4).
 - **What Graph holds** is a constant vocabulary with `RuleLimit`s, so `plan_rules` sees every
-  limit before anything is written: one test per kind on each side (Graph's predicates are keys of
-  one object, any-of within a key), one move, copy and importance per rule, `To` and `Cc` only
-  together, no system keyword but `$seen`. A domain is not offered: `senderContains
+  limit before anything is written: one test per kind among the conditions (Graph's predicates are
+  keys of one object, any-of within a key) and, among the exceptions, one only of a kind with a
+  single value (an importance), since tests with values merge there; one move, copy and importance
+  per rule; `To` and `Cc` only together; no system keyword but `$seen`; filing only into folders,
+  never a virtual collection. The one pair the plan cannot see is a `Native` predicate under a key
+  a typed test also writes: the reader makes none (it reads natively only keys the model has no
+  type for, or values Graph does not document), and a host-built pair meets the writer's refusal,
+  the server's rule left as it was. A domain is not offered: `senderContains
   "@example.com"` also matches `example.com.evil.test`, which would widen the condition. A rule the
   writer still cannot place (a role whose folder the account lacks) keeps the server's rule as it
   was and is a `Permanent` failure.
@@ -635,12 +640,21 @@ column of `docs/design/filters-and-out-of-office.md` §5; what follows is what t
   of `sequence` alone moves the rule. So the writer removes left-out rules first, then walks the
   planned rules keeping the server's list as it goes: a new rule is `POST`ed at its position, a
   rule out of place gets a `PATCH` of `sequence` alone, a rule in place is not sent. Inserting or
-  moving one rule sends nothing to the others.
+  moving one rule sends nothing to the others. Removing first keeps the positions those of the
+  rules that stay; the cost is that a rule left out is gone even where a later write of the set
+  fails, which is what the caller asked for of that rule. The offline tests run against a fake that
+  keeps such a list (`rules_fake.rs`), and check the list each write leaves.
 - **A `PATCH` clears nothing.** A predicate, an action or `displayName` sent as `null` stays as it
   was, with a `200` (observed). A changed rule that drops none is `PATCH`ed whole, its recipients'
-  display names kept; one that drops a part (or its name) is written as a new rule in its place,
-  `POST`ed first, and the old one `DELETE`d after. A `POST` without `displayName` is accepted and
-  Graph gives the rule a name of its own (observed), so a Graph rule always has a name.
+  display names kept; one that drops a part, or sends a list shorter (whether a `PATCH` replaces a
+  list is what the second live run asks), is written as a new rule in its place, `POST`ed first,
+  and the old one `DELETE`d after. Where the `POST` fails the old rule stays and nothing is
+  deleted; where the `DELETE` fails both stay, the new one first, and the rule's outcome says so
+  beside the receipt's failure. A host that meets either re-reads the rules and edits from what it
+  reads, never replays its old edit, which would write the rule a third time.
+- **Every rule has a name.** A `POST` without `displayName` is accepted and Graph names the rule
+  itself (observed). An edit that removes a rule's name leaves the old name, and the outcome reports
+  the name as not written.
 - **No ETag, and no read to trust straight after a write.** A `messageRule` carries no
   `@odata.etag`, in the listing or read alone, and a `PATCH` with a stale `If-Match` lands
   (observed), so both guards are `WriteGuard::Absent`. The version is a SHA-256 of what was read
@@ -650,11 +664,13 @@ column of `docs/design/filters-and-out-of-office.md` §5; what follows is what t
   did not yet show a rule `POST`ed a moment earlier, so a base read before it passed the check;
   and of two `mailboxSettings` writes a few seconds apart, the reads straight after the second
   showed it while reads minutes later showed the first. So neither receipt carries a version: the
-  next write reads first, and a host that needs to know a write landed reads until it holds.
+  next write reads first, and a host that needs to know a write landed reads until it holds. After a
+  rule written anew, a read soon after may still list the old rule beside the new one, or neither;
+  a removal retried then may meet a `404`, which counts as done.
 - **Ids are percent-encoded path segments**: every byte outside RFC 3986's unreserved set, so a
-  base64 `=` goes as `%3D` (observed to work) and a `/` or `+` as data (none seen: 0 of 9 ids read
-  and 0 of the test's own; Graph re-parses a decoded `%2F`, `principal.rs`, so such an id is
-  unproven live).
+  base64 `=` goes as `%3D` (observed to work) and a `+` as `%2B`. An id holding a `/` is never
+  written to, and a `404` for one is never counted as done: Graph re-parses a decoded `%2F`
+  (`principal.rs`), none has been seen (0 of 9 ids read, 0 of the test's own), so it is unproven.
 - **Every failure lands in the receipt and on the rule's outcome.** An `isReadOnly` rule is never
   sent: changing it, moving it out of place or removing it is a `Permanent` entry in `failures`, as
   is every request that fails, and the rest go ahead. The rule's outcome then says

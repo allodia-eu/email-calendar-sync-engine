@@ -255,10 +255,12 @@ Implemented as sketched, with these differences, each for a reason the code met:
   (`RuleWriteFailure`: `FailedRule::Written` or `Removed`, its class, whether it may have landed);
   the rest of the write goes ahead. A transport that stores the set at once fails whole instead.
 - `RuleLimit` says what a target holds part by part and not together (`RuleVocabulary::with_limit`):
-  one test per kind on each side, one move, copy and importance per rule, `To` and `Cc` only
-  together, no system keyword but `$seen` and `$flagged`. The plan judges a second test of a kind
-  as a lost condition or exception and a second action of a kind as a lost action, so a preflight
-  sees Graph's grain before anything is written. A vocabulary without limits plans as before.
+  one test per kind among the conditions, and among the exceptions (where tests with values merge
+  into one any-of) one only of a kind with a single value; one move, copy and importance per rule;
+  `To` and `Cc` only together; no system keyword but `$seen` and `$flagged`; filing only into
+  folders, not virtual collections (`RealFoldersOnly`). The plan judges a second test of a kind as
+  a lost condition or exception and a second action of a kind as a lost action, so a preflight sees
+  Graph's grain before anything is written. A vocabulary without limits plans as before.
 - `LossReason::NotWritten`: a rule-by-rule write asked for a part and did not get it, and the
   receipt's `failures` say why; on the whole rule it is not kept, on its order it is reduced, so no
   outcome reads whole for a rule listed as failed.
@@ -550,8 +552,10 @@ receipt carries a version. A write plans (the vocabulary's `RuleLimit`s carrying
 removes the rules left out, then walks the planned rules keeping the server's list as it goes: a
 new rule `POST`ed at its position, one out of place given its position by a `sequence`-only
 `PATCH`, one in place not sent; a changed rule `PATCH`ed whole where it drops nothing, and written
-anew in its place (new first, then the old deleted) where it drops a part, since a `PATCH` cannot
-clear one. A read-only rule is never sent. A rule the writer still cannot place keeps the server's
+anew in its place (new first, then the old deleted) where it drops a part or shortens a list,
+since a `PATCH` cannot clear one. Graph names every rule, so an edit that removes a name leaves the
+old one and says so on the outcome. A read-only rule is never sent, nor a rule whose id holds a `/`
+(unproven live). A rule the writer still cannot place keeps the server's
 rule as it was and is a failure; every failure is on the rule's outcome too
 (`LossReason::NotWritten`).
 
