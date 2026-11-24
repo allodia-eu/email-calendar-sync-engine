@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use engine_core::{error::FailureClass, ids::AccountId};
 use engine_provider::{
     Credential, CredentialProtocol, CredentialRequest, CredentialSource, CredentialSubject,
-    Provider, ProviderError,
+    Provider, ProviderError, ProviderResult,
 };
 use provider_google::{GmailProvider, GoogleClient};
 use provider_imap::{GmailMail, ImapAccount, ImapConfig};
@@ -154,6 +154,20 @@ async fn imap(
     account.gmail().ok_or_else(|| "no X-GM-EXT-1".to_owned())
 }
 
+/// `result`'s value. A failure panics with its class and `what` alone: a server's error text,
+/// which `ProviderError`'s `Debug` carries, can echo the account's content.
+fn ok<T>(result: ProviderResult<T>, what: &str) -> T {
+    result.unwrap_or_else(|err| panic!("{what}: failed as {:?}", err.class()))
+}
+
+/// `result`'s failure. A success panics with `what` alone, never the value, which is mail.
+fn failed<T>(result: ProviderResult<T>, what: &str) -> ProviderError {
+    match result {
+        Ok(_) => panic!("{what}: succeeded"),
+        Err(err) => err,
+    }
+}
+
 fn account() -> AccountId {
     AccountId::try_from("live").unwrap()
 }
@@ -167,10 +181,10 @@ async fn live_a_refused_token_is_replaced_and_the_labels_listed() {
     let source = Source::new(address(&token).await, GARBAGE, token);
     let provider = GmailProvider::new(client(&source));
 
-    let labels = provider
-        .sync_mailboxes(&account(), None)
-        .await
-        .expect("listed with the replacement");
+    let labels = ok(
+        provider.sync_mailboxes(&account(), None).await,
+        "listed with the replacement",
+    );
 
     assert!(labels.is_snapshot());
     eprintln!("asked={:?}", source.asked());
@@ -190,7 +204,10 @@ async fn live_the_control_a_garbage_token_without_a_replacement_is_refused() {
     let source = Source::new(address(&token).await, GARBAGE, GARBAGE.to_owned());
     let provider = GmailProvider::new(client(&source));
 
-    let err = provider.sync_mailboxes(&account(), None).await.unwrap_err();
+    let err = failed(
+        provider.sync_mailboxes(&account(), None).await,
+        "a garbage token",
+    );
 
     eprintln!("class={:?} asked={:?}", err.class(), source.asked());
     assert_eq!(err.class(), FailureClass::Authentication);
@@ -217,11 +234,8 @@ async fn live_a_token_the_imap_half_replaced_is_the_one_the_api_half_presents() 
 
     let provider = GmailProvider::new(client(&source))
         .with_imap(mail)
-        .expect("one source for both halves");
-    provider
-        .sync_mailboxes(&account(), None)
-        .await
-        .expect("labels");
+        .unwrap_or_else(|err| panic!("one subject for both halves: {:?}", err.class()));
+    ok(provider.sync_mailboxes(&account(), None).await, "labels");
     let asked = source.asked();
     eprintln!("after API: asked={asked:?}");
     assert!(asked.http.0 >= 1, "the API half asked the same source");
@@ -241,10 +255,12 @@ async fn live_a_token_the_api_half_replaced_is_the_one_the_imap_half_presents() 
     };
     let source = Source::new(address(&token).await, GARBAGE, token);
 
-    GmailProvider::new(client(&source))
-        .sync_mailboxes(&account(), None)
-        .await
-        .expect("labels with the replacement");
+    ok(
+        GmailProvider::new(client(&source))
+            .sync_mailboxes(&account(), None)
+            .await,
+        "labels with the replacement",
+    );
     assert_eq!(source.asked().http.1, 1);
 
     imap(&source).await.expect("signed in");

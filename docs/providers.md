@@ -438,8 +438,8 @@ See `docs/agent-guidance/google.md` and `contacts.md` for scopes and mappings.
 account's source on every request and replaces a token Google refuses once, as on Graph, and the
 client is a cheap clone in the same way. An account that reads its mail over IMAP
 (`GmailProvider::with_imap`) gives the IMAP config the same source, answering the token with the
-account's address (`Credential::bearer_for`): `with_imap` refuses a reader that signs in as
-another subject, so both transports always present the same token.
+account's address (`Credential::bearer_for`), so both transports present the same token;
+`with_imap` refuses a reader that signs in as another credential subject (`InvalidState`).
 
 `MeetMeetings` makes a Meet meeting for an event on any calendar, through the Meet REST API
 (`POST meet.googleapis.com/v2/spaces`). It needs `meetings.space.created`.

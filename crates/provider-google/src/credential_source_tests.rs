@@ -2,7 +2,8 @@
 //! through `engine_http::AuthenticatedClient`: a token Google refuses is replaced once and the
 //! request sent once more with the replacement, and nothing else is replayed. An origin the
 //! rules refuse is sent nothing, a content URL never carries the credential, and the account's
-//! IMAP half is bound only when it asks the same source. The server records every request, so
+//! IMAP half is bound only when it signs in as the same credential subject
+//! (`credential_binding_tests.rs`). The server records every request, so
 //! each test asserts what was actually sent.
 
 use std::{
@@ -15,15 +16,11 @@ use engine_core::error::FailureClass;
 use engine_http::test_server::{authorization, scripted};
 use engine_provider::{
     Credential, CredentialRequest, CredentialSource, CredentialSubject, HandOver, Origin,
-    ProviderError, ProviderResult, Unrecorded,
-};
-use provider_imap::{
-    GmailFolder, GmailFolderState, GmailMessage, GmailQuery, GmailSources, GmailState,
+    ProviderError, Unrecorded,
 };
 
 use crate::{
-    GmailProvider, GoogleClient, GoogleError,
-    imap_mail::ImapMail,
+    GoogleClient, GoogleError,
     test_support::{retry, tls, user_agent},
 };
 
@@ -328,76 +325,6 @@ fn a_credential_failure_keeps_the_class_its_source_gave() {
     );
 }
 
-/// An IMAP half that is never read: only who it signs in as matters here.
-struct Unread;
-
-#[async_trait]
-impl ImapMail for Unread {
-    async fn open(&self, _: GmailFolder) -> ProviderResult<Option<GmailFolderState>> {
-        unreachable!("never read")
-    }
-
-    async fn search(&self, _: GmailFolder, _: u32, _: &GmailQuery) -> ProviderResult<Vec<u32>> {
-        unreachable!("never read")
-    }
-
-    async fn messages(
-        &self,
-        _: GmailFolder,
-        _: u32,
-        _: &[u32],
-    ) -> ProviderResult<Vec<GmailMessage>> {
-        unreachable!("never read")
-    }
-
-    async fn changed(
-        &self,
-        _: GmailFolder,
-        _: u32,
-        _: u32,
-        _: u64,
-    ) -> ProviderResult<Vec<GmailState>> {
-        unreachable!("never read")
-    }
-
-    async fn ids(&self, _: GmailFolder, _: u32, _: &[u32]) -> ProviderResult<Vec<(u32, u64)>> {
-        unreachable!("never read")
-    }
-
-    fn sources<'a>(&'a self, _: &'a [u64]) -> GmailSources<'a> {
-        unreachable!("never read")
-    }
-}
-
-#[test]
-fn the_imap_half_is_bound_only_when_it_asks_the_same_source() {
-    let source = Tokens::rotating("tok-a", &[]);
-    let provider = || GmailProvider::new(client("https://www.example.com", &source));
-
-    let same = provider().bind_imap(source.subject(), Arc::new(Unread));
-    assert!(same.is_ok(), "one source for both halves");
-
-    let other = provider().bind_imap(&CredentialSubject::new("acct-2"), Arc::new(Unread));
-    assert_eq!(
-        other.map(|_| ()).unwrap_err().class(),
-        FailureClass::InvalidState,
-        "another account's IMAP half is refused"
-    );
-
-    // A fixed token signs in under a subject of its own, which no IMAP half shares.
-    let fixed = GmailProvider::new(
-        GoogleClient::with_base(
-            "tok-a",
-            "https://www.example.com",
-            tls(),
-            &retry(),
-            &user_agent(),
-        )
-        .expect("client"),
-    );
-    assert!(fixed.bind_imap(source.subject(), Arc::new(Unread)).is_err());
-}
-
 #[tokio::test]
 async fn clones_of_a_client_share_one_transport() {
     let (base, seen) = scripted(vec![reply("200 OK", "{}"), reply("200 OK", "{}")]);
@@ -418,3 +345,6 @@ async fn clones_of_a_client_share_one_transport() {
     );
     assert_eq!(source.asks(), 2, "asked per request, not per client");
 }
+
+#[path = "credential_binding_tests.rs"]
+mod binding;

@@ -130,7 +130,7 @@ async fn an_imap_sync_writes_what_the_api_sync_writes() {
 
     let imap = GmailProvider::new(sourced(source))
         .with_imap(gmail)
-        .expect("one source");
+        .unwrap_or_else(|err| panic!("one credential subject: {:?}", err.class()));
     let started = Instant::now();
     let (over_imap, messages) = sync_messages(&imap).await;
     let imap_took = started.elapsed();

@@ -5,7 +5,7 @@
 //! the account's [`CredentialSource`] for it each time (`docs/design/credential-source.md`): a
 //! token the host refreshed is the one presented, and a token Google refuses with a `401` is
 //! replaced once and the request sent once more. A content URL is fetched on a plain client,
-//! with no token and no ask. The account's IMAP half asks the same source
+//! with no token and no ask. The account's IMAP half signs in as the same credential subject
 //! ([`GmailProvider::with_imap`](crate::GmailProvider::with_imap)).
 //!
 //! The one funnel every request flows through records the negotiated HTTP and TLS
@@ -206,8 +206,8 @@ impl GoogleTransport for HttpTransport {
     }
 
     async fn get_bytes_unauthenticated(&self, url: &str) -> Result<Vec<u8>, GoogleError> {
+        // Not recorded: the content host's connection says nothing about the account's.
         let resp = send_retrying(self.anonymous.get(url), &self.retry, Exchange::Ordinary).await?;
-        self.connection.record(&resp);
         Self::fetch_bytes(resp).await
     }
 

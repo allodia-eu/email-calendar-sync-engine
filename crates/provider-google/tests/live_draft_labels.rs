@@ -83,7 +83,7 @@ async fn over_imap(token: &str, provider: GmailProvider) -> GmailProvider {
                 .gmail()
                 .expect("imap.gmail.com advertises X-GM-EXT-1"),
         )
-        .expect("one source")
+        .unwrap_or_else(|err| panic!("one credential subject: {:?}", err.class()))
 }
 
 fn draft(unique: u128, body: &str) -> Draft {

@@ -255,13 +255,15 @@ part way; `reconcile;h=…` is a backfill finished and not yet reconciled.
 
 `GmailProvider::with_imap` takes a `provider_imap::GmailMail` (from `ImapAccount::gmail`,
 offered only on a session advertising `X-GM-EXT-1`) and moves the message sync and every body
-read onto IMAP. **Both halves ask one source.** The `ImapConfig` takes the source the client
-asks (`ImapConfig::from_credential_source`), answering the token with the account's address
-(`Credential::bearer_for`: SASL needs it, the API ignores it), and `with_imap` refuses a reader
-that signs in as another subject (`GmailMail::credential_subject`) as `InvalidState`, before
-anything is read: two sources for one account would refresh apart, and another account's
-reader would write its mail under this one. A token replaced after either half's refusal is
-the one the other presents next (`tests/live_credential_source.rs`). Labels, writes, drafts, sending, reports and identities stay on the API. The
+read onto IMAP. **Both halves sign in as the same credential subject.** A host gives the
+`ImapConfig` the source the client asks (`ImapConfig::from_credential_source`), answering the
+token with the account's address (`Credential::bearer_for`: SASL needs it, the API ignores it),
+and `with_imap` refuses a reader that signs in as another credential subject
+(`GmailMail::credential_subject`) as `InvalidState`, before anything is read: another account's
+reader would write its mail under this one. The check is the subject, not the source object:
+two sources naming one subject are one account's by the subject contract, and are accepted.
+With one source, a token replaced after either half's refusal is the one the other presents
+next (`tests/live_credential_source.rs`). Labels, writes, drafts, sending, reports and identities stay on the API. The
 reason is the quota: the API bills a message's metadata 20 units and its body 60 against 6,000
 per user per minute, about 270 messages a minute, and IMAP bills nothing per message.
 

@@ -235,7 +235,7 @@ async fn live_a_pass_reaches_a_deepened_label_and_no_other() {
     .expect("client");
     let imap = GmailProvider::new(sourced)
         .with_imap(account.gmail().expect("X-GM-EXT-1"))
-        .expect("one source");
+        .unwrap_or_else(|err| panic!("one credential subject: {:?}", err.class()));
     let over_imap = fetched(&pass(&imap, None, &window).await);
 
     clear(&token).await;

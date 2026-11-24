@@ -226,13 +226,15 @@ fn transport_class(err: &engine_http::SendError) -> FailureClass {
     }
 }
 
-/// A client error outside any exchange, such as a client that could not be built.
+/// The source's failure, or the engine's refusal of an origin or a kind of credential, with
+/// the class it gave.
 impl From<engine_provider::CredentialFailure> for GoogleError {
     fn from(failure: engine_provider::CredentialFailure) -> Self {
         Self::Credential(failure.into_error())
     }
 }
 
+/// A client error outside any exchange, such as a client that could not be built.
 impl From<reqwest::Error> for GoogleError {
     fn from(err: reqwest::Error) -> Self {
         Self::Transport(err.into())
