@@ -101,7 +101,8 @@ are what this replaces.
 - **The credential is asked for, per request.** `JmapConfig::from_credential_source` takes the
   account's `engine_provider::CredentialSource`, and the transport asks it for every request it
   sends (session discovery and each redirect hop, method calls, blob download and upload, the
-  EventSource stream) through `engine_http::send_authenticated`; `JmapConfig::new` wraps its
+  EventSource stream) through one `engine_http::AuthenticatedClient`, whose own client follows
+  no redirect and sends each request whatever built it; `JmapConfig::new` wraps its
   `Credentials` in a `FixedCredential` of its own. So a host whose token is refreshed builds the
   client once and never rebuilds it to present a new token (`docs/design/credential-source.md`).
   Two behaviours came with it:
@@ -113,7 +114,7 @@ are what this replaces.
     sends its credential to `http://127.0.0.1:…`, even where its session names one, since
     whatever listens on the machine's loopback would read it. The harness is configured on
     `127.0.0.1`, so nothing there changed. Such an account's client also ignores the
-    environment's proxies (`engine_http::client_for`): reqwest applies `HTTP_PROXY` to loopback
+    environment's proxies (`engine_http::AuthenticatedClient::new`): reqwest applies `HTTP_PROXY` to loopback
     unless `NO_PROXY` names it, and a proxy would see the credential in cleartext. Every other
     account keeps the environment's proxies.
   - **A `401` the source can answer is replayed once.** The Basic/Bearer re-framing below runs
