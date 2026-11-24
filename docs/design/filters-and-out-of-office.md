@@ -635,10 +635,17 @@ why.
   the receipt lists it (`already_held`); its outcome is still what the plan decided. A rule equal
   to one the user wrote themselves counts as imported: written again it would do nothing more,
   since the held copy runs first on the same messages. A rule carried whole is never taken as held
-  (its text is compared by no one), so running an import twice writes such a rule twice. Rules
-  are compared as the target reads them back, their actions in any order (the writer puts marks
-  first); a rule the target's reader reads in another form (a Sieve `fileinto "INBOX"` reads as
-  the inbox's role, not as a path) is not recognised, and a second run writes it again. A
+  (its text is compared by no one), so running an import twice writes such a rule twice. A
+  planned rule is compared in the form the target will read it back once written: the target's
+  own writer renders it and its own reader reads it (`ImportDialect::read_back`;
+  `engine_sieve::dialect::read_back` for both Sieve targets). So whatever the dialect makes of a
+  rule on the way is made of the rule handed in too, with no case-by-case normalisation: a
+  forward written as `redirect :copy`, two redirects or two keyword actions alike read as one,
+  a single condition of either kind read as `All`, `INBOX` by path read as the inbox's role.
+- **Facts from the text.** A rule carried whole is planned with what its own text requires and
+  does, read by the target's dialect (`ImportDialect::facts`; `engine_sieve::dialect::
+  facts_from_text`), not with what the host that built it said: a host-built `RawRule` defaults to
+  sending no folder id and running no script, so trusting it would skip both checks. A
   forwarding rule an operator has switched on since reads differently from the disabled one the
   import writes, so a second run adds it again, disabled.
 - **Never stop what runs.** On JMAP, where the target runs the server's reply script and the new
@@ -670,10 +677,20 @@ why.
   block adds it), and the window is taken to whole seconds inward, as the Sieve writer stores it.
   Where the target's reply is empty (off, nothing to say, no window, the default audience) it
   writes the imported one, guarded by that read. Where it already says the same, it answers
-  without writing, so an import run again after an interruption answers as the first did. Any
+  without writing, so an import run again after an interruption answers as the first did. One
+  race is left open: on a JMAP server whose `SieveScript` and `VacationResponse` states are
+  separate counters, a user script switched on between the write's listing and its
+  `VacationResponse/set` is switched off by the reply going on by the server's flag, which the
+  import would have refused had it seen it. The receipt says so (`RulesEffect::Deactivated`),
+  which is how the host learns of it and can offer to switch the rules back on. Any
   other reply, on or off, is the target's own and is refused (`item_unavailable`): an import never
   replaces it, as it never replaces a rule. A host that means to replace it writes through
   `Vacation::set_vacation` itself, `Unconditional` if it must.
+- **A disabled rule filing by id reads as enabled over ManageSieve.** A rule another client wrote
+  as `if false # …` with `fileinto :mailboxid` is carried whole there, and a rule carried whole is
+  enabled: its text decides whether it runs, and it does not. A host shows it as a rule it cannot
+  display rather than as a disabled one. Keeping `enabled: false` on it would make every edit drop
+  it (the plan and the writer take a rule carried whole as running), so this stays a known limit.
 - **Folders by id, per target.** JMAP files by the target's `Mailbox` id, which its Sieve
   `:mailboxid` names. ManageSieve files by no id: Sieve's `:mailboxid` names an RFC 8474
   `MAILBOXID`, which the IMAP adapter does not read (its folder ids are names), so its vocabulary

@@ -428,7 +428,10 @@ The contract: **never change what the target already had, and be safe to run aga
   would not write its rules back as they are, nothing is imported (`item_unavailable`). An
   imported rule is written as a rule of no script (its origin cleared).
 - **Safe to run again**: a planned rule the target already holds an equal typed rule for is not
-  written again, one held rule for each handed in, and the receipt lists it (`already_held`).
+  written again, one held rule for each handed in, and the receipt lists it (`already_held`). It
+  is compared as the target will read it back once written, and a rule carried whole is planned
+  with the facts its own text gives: both through the `ImportDialect` the adapter passes (for a
+  Sieve target, `engine_sieve::dialect::read_back` and `facts_from_text`).
 - **The answer** is a `RulesReceipt` whose outcomes are indexed by the rules handed in; it also
   says where the rules went (`Unwritten` where nothing was left to add), whether they run, and
   which were already held.
