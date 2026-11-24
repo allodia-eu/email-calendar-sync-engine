@@ -426,7 +426,7 @@ async fn a_rule_carried_whole_is_never_taken_as_already_held() {
 #[tokio::test]
 async fn a_rule_is_known_as_held_in_the_form_the_target_reads_it_back() {
     // A language that reads a forward back as a redirect keeping a copy, as Sieve does.
-    fn read_back(rule: &MailRule) -> Option<MailRule> {
+    fn read_back(rule: &MailRule) -> MailRule {
         let mut back = rule.clone();
         back.origin = None;
         if let RuleBody::Typed(typed) = &mut back.body {
@@ -439,7 +439,7 @@ async fn a_rule_is_known_as_held_in_the_form_the_target_reads_it_back() {
                 }
             }
         }
-        Some(back)
+        back
     }
     let forward = rule(
         "forward",
@@ -447,12 +447,12 @@ async fn a_rule_is_known_as_held_in_the_form_the_target_reads_it_back() {
             to: vec![RuleAddress::new("away@example.com").unwrap()],
         }],
     );
-    let mut target = Target::with_own(vec![read_back(&forward).unwrap().disabled()]);
+    let mut target = Target::with_own(vec![read_back(&forward).disabled()]);
     target.vocabulary = vocabulary().with_exact([RuleFeature::RedirectCopy]).with(
         RuleFeature::Forward,
         engine_core::rules::Support::Approximated,
     );
-    target.dialect = ImportDialect::new(|rule| rule, read_back);
+    target.dialect = ImportDialect::new(|rule| rule, |rule| Some(read_back(rule)));
     let receipt = target
         .import_rules(
             &account(),
@@ -506,7 +506,7 @@ async fn a_rule_carried_whole_is_planned_with_the_facts_its_text_gives() {
         .await
         .unwrap();
     assert_eq!(receipt.outcomes[0].kept, Kept::NotKept);
-    assert!(target.replaced().is_empty());
+    assert!(target.replaced().is_empty(), "nothing written");
 }
 
 /// Reaches the accessor as a host generic over `P: Provider` does, through the `Box` impl.
