@@ -163,6 +163,24 @@ fn tags(rules: &[Value], marker: &str) -> Vec<String> {
     rules.iter().filter_map(|r| tag(r, marker)).collect()
 }
 
+/// Whether two rules say the same, whatever order their conditions and actions are in: Graph
+/// keeps each as a key of one object, and the reader lists them in key order.
+fn same(a: &MailRule, b: &MailRule) -> bool {
+    let (RuleBody::Typed(x), RuleBody::Typed(y)) = (&a.body, &b.body) else {
+        return a == b;
+    };
+    let alike =
+        |p: &[Condition], q: &[Condition]| p.len() == q.len() && p.iter().all(|c| q.contains(c));
+    a.name == b.name
+        && a.enabled == b.enabled
+        && x.stop == y.stop
+        && x.when.mode == y.when.mode
+        && alike(&x.when.conditions, &y.when.conditions)
+        && alike(&x.when.except, &y.when.except)
+        && x.actions.len() == y.actions.len()
+        && x.actions.iter().all(|action| y.actions.contains(action))
+}
+
 /// The addresses of a rule's `fromAddresses` condition.
 fn senders(rule: &Value) -> usize {
     rule["conditions"]["fromAddresses"]
@@ -276,7 +294,7 @@ async fn rule_cycle(token: String, marker: String, count: usize) {
     for (read, sent) in created.rules[count..].iter().zip(&written[count..]) {
         let mut read = read.clone();
         read.origin = None;
-        assert!(&read == sent, "a rule read back is not the one written");
+        assert!(same(&read, sent), "a rule read back is not the one written");
     }
     capture("created_rule", find(&listed, &marker, "d").unwrap());
 
