@@ -234,3 +234,7 @@ fn refuse_changed_own(base: &RuleSet, own: &RulesPlan) -> ProviderResult<()> {
 #[cfg(test)]
 #[path = "rules_tests.rs"]
 pub(super) mod tests;
+
+#[cfg(test)]
+#[path = "rerun_tests.rs"]
+mod rerun_tests;
