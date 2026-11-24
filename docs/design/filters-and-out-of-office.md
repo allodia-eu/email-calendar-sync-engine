@@ -447,10 +447,11 @@ Where that succeeds the connect observer sees `ConnectStep::Negotiated("ManageSi
 and `mail_rules()` answers `Some` (`vacation()` too where `vacation` is listed). Where it fails the
 observer sees `ConnectStep::Unavailable { service: ConnectService::ManageSieve, class }`, the class
 alone, and both answer `None`; mail works without them. The accessors answer what the last probe
-found: a failure that may pass (`Retryable`, a timeout) is probed again beside the account's next
-dial, and `invalidate()` asks for a probe whatever the last one found, so a blip at connect does not
-hide the rules for the account's lifetime. One that will not pass (no `STARTTLS`, not ManageSieve)
-waits for `invalidate()`.
+found: a failure that may pass (`Retryable`, a timeout) is probed again beside a later dial, and
+`invalidate()` asks for a probe whatever the last one found, so a blip at connect does not hide the
+rules for the account's lifetime. One that will not pass (no `STARTTLS`, not ManageSieve) waits for
+`invalidate()`. After any failure no dial probes for five minutes, so a blackholed endpoint costs a
+dial at most one probe deadline in that time, and a probe whose dial is dropped is wanted again.
 `Some` says the service answers, not that signing in works: nothing is signed in at connect. Each call opens a session of its own in a
 slot of the account's connection budget (closing a parked IMAP socket when the shelf is full),
 with two minutes for the dial and the work, and then sends `LOGOUT` without waiting for its

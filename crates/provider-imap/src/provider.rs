@@ -174,7 +174,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
     fn mail_rules(&self) -> Option<&dyn engine_provider::MailRules> {
         self.sieve
             .as_deref()
-            .filter(|sieve| sieve.available())
+            .filter(|sieve| sieve.offered().is_some())
             .map(|sieve| sieve as &dyn engine_provider::MailRules)
     }
 
@@ -183,7 +183,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
     fn vacation(&self) -> Option<&dyn engine_provider::Vacation> {
         self.sieve
             .as_deref()
-            .filter(|sieve| sieve.available() && sieve.replies())
+            .filter(|sieve| sieve.offered() == Some(true))
             .map(|sieve| sieve as &dyn engine_provider::Vacation)
     }
 

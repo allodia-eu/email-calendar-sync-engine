@@ -74,12 +74,14 @@ pub(crate) fn reach(
     let endpoint = config.managesieve.clone()?;
     let dial = dial_tls(config.clone(), endpoint, connector.clone());
     let sieve = Arc::new(ManageSieve::new(dial, budget, false));
-    record(&sieve, config.connect_observer(), probed);
+    let (offered, retry) = outcome(config.connect_observer(), probed);
+    sieve.probe.record(offered, retry);
     Some(sieve)
 }
 
-/// Probes `sieve` again where it wants it ([`ManageSieve::take_stale`]), alongside `dial`, and
-/// answers what `dial` answered.
+/// Probes `sieve` again where it wants it and its backoff allows (`ProbeState::take`), alongside
+/// `dial`, and answers what `dial` answered. A dial dropped before both finish leaves the probe
+/// wanted, for the next one.
 pub(crate) async fn reprobe<D: Future>(
     sieve: Option<&ManageSieve<TlsStream<TcpStream>>>,
     config: &ImapConfig,
@@ -87,11 +89,15 @@ pub(crate) async fn reprobe<D: Future>(
     dial: D,
 ) -> D::Output {
     match (sieve, &config.managesieve) {
-        (Some(sieve), Some(endpoint)) if sieve.take_stale() => {
-            let (dialled, probed) = tokio::join!(dial, probe(endpoint, connector));
-            record(sieve, config.connect_observer(), probed);
-            dialled
-        }
+        (Some(sieve), Some(endpoint)) => match sieve.probe.take() {
+            Some(taken) => {
+                let (dialled, probed) = tokio::join!(dial, probe(endpoint, connector));
+                let (offered, retry) = outcome(config.connect_observer(), probed);
+                taken.record(offered, retry);
+                dialled
+            }
+            None => dial.await,
+        },
         _ => dial.await,
     }
 }
@@ -105,18 +111,18 @@ async fn greet<T: AsyncRead + AsyncWrite + Unpin + Send>(
     Ok(capabilities)
 }
 
-/// Records the probe's outcome on `sieve` and tells the observer: the extensions, or the class of
-/// the failure.
-fn record<T>(
-    sieve: &ManageSieve<T>,
+/// Tells the observer what the probe found, the extensions or the class of the failure, and
+/// answers what to record: offered (with the reply where `vacation` is listed), and whether to
+/// probe again (after a failure that may pass).
+fn outcome(
     observer: &dyn ConnectObserver,
     probed: SieveResult<Capabilities>,
-) {
+) -> (Option<bool>, bool) {
     match probed {
         Ok(capabilities) => {
             let extensions: Vec<&str> = capabilities.sieve.iter().map(String::as_str).collect();
             observer.step(&ConnectStep::negotiated("ManageSieve", &extensions));
-            sieve.record(Some(capabilities.lists("vacation")), false);
+            (Some(capabilities.lists("vacation")), false)
         }
         Err(err) => {
             let class = ProviderError::from(err).class();
@@ -124,7 +130,7 @@ fn record<T>(
                 ConnectService::ManageSieve,
                 class,
             ));
-            sieve.record(None, class == FailureClass::Retryable);
+            (None, class == FailureClass::Retryable)
         }
     }
 }
@@ -150,10 +156,8 @@ mod tests {
         line.split('"').nth(3).unwrap().split_whitespace().count()
     }
 
-    /// The service after recording `probed`: offered, with the reply, wanting another probe; and
-    /// what the observer saw.
-    fn recorded(probed: SieveResult<Capabilities>) -> ((bool, bool, bool), Vec<String>) {
-        let (sieve, _) = scripted(&[]);
+    /// What `probed` is recorded as, offered and probed again, and what the observer saw.
+    fn recorded(probed: SieveResult<Capabilities>) -> ((Option<bool>, bool), Vec<String>) {
         let steps = Mutex::new(Vec::new());
         let observer = |step: &ConnectStep<'_>| {
             steps.lock().unwrap().push(match step {
@@ -166,13 +170,8 @@ mod tests {
                 _ => "other".to_owned(),
             });
         };
-        record(&sieve, &observer, probed);
-        let state = (
-            sieve.available(),
-            sieve.lists_vacation(),
-            sieve.take_stale(),
-        );
-        (state, steps.into_inner().unwrap())
+        let outcome = outcome(&observer, probed);
+        (outcome, steps.into_inner().unwrap())
     }
 
     #[tokio::test(start_paused = true)]
@@ -193,7 +192,7 @@ mod tests {
             "no credential sent"
         );
         let (state, steps) = recorded(greeting);
-        assert_eq!(state, (true, true, false), "offered, with the reply");
+        assert_eq!(state, (Some(true), false), "offered, with the reply");
         assert_eq!(
             steps,
             [format!("ManageSieve {}", capabilities_count(GREETING))]
@@ -204,44 +203,55 @@ mod tests {
     fn a_failure_offers_nothing_and_one_that_may_pass_is_probed_again() {
         let refused = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "x.example");
         let (state, steps) = recorded(Err(ImapError::Io(refused).into()));
-        assert_eq!(state, (false, false, true));
+        assert_eq!(state, (None, true));
         assert_eq!(steps, ["unavailable ManageSieve Retryable"]);
         // No STARTTLS, or no ManageSieve at all: not offered, and not probed again.
         let (state, steps) = recorded(Err(ImapError::protocol("no STARTTLS").into()));
-        assert_eq!(state, (false, false, false));
+        assert_eq!(state, (None, false));
         assert_eq!(steps, ["unavailable ManageSieve Permanent"]);
         // Offered without the reply where `vacation` is not listed.
         let (state, _) = recorded(Ok(Capabilities::default()));
-        assert_eq!(state, (true, false, false));
+        assert_eq!(state, (Some(false), false));
     }
 
-    #[tokio::test]
-    async fn a_dial_probes_again_only_when_the_service_wants_it() {
+    /// A service with an endpoint at `addr`, and a count of the probes reported.
+    fn service_at(
+        addr: &str,
+    ) -> (
+        ManageSieve<TlsStream<TcpStream>>,
+        ImapConfig,
+        Arc<Mutex<usize>>,
+    ) {
         let dial: super::super::service::SieveDial<TlsStream<TcpStream>> =
             Arc::new(|| unreachable!("a probe signs in to nothing"));
         let budget = Arc::new(crate::managesieve::test_support::OneSlot(Arc::new(
             tokio::sync::Semaphore::new(1),
         )));
-        let sieve = ManageSieve::new(dial, budget, false);
         let steps = Arc::new(Mutex::new(0));
         let seen = Arc::clone(&steps);
-        // Nothing listens on port 1: a probe there fails at once, as one that may pass.
         let config = ImapConfig::new(
             "h:993",
             "h",
             engine_provider::Credential::password("a", "b"),
         )
-        .with_managesieve("127.0.0.1:1", "localhost")
+        .with_managesieve(addr, "localhost")
         .with_connect_observer(Arc::new(move |_: &ConnectStep<'_>| {
             *seen.lock().unwrap() += 1;
         }));
+        (ManageSieve::new(dial, budget, false), config, steps)
+    }
+
+    #[tokio::test]
+    async fn a_dial_probes_again_only_when_the_service_wants_it() {
+        // Nothing listens on port 1: a probe there fails at once, as one that may pass.
+        let (sieve, config, steps) = service_at("127.0.0.1:1");
         let connector = engine_tls::TlsClientConfig::dangerous_accept_any().connector();
         assert_eq!(
             reprobe(Some(&sieve), &config, &connector, async { 7 }).await,
             7
         );
         assert_eq!(*steps.lock().unwrap(), 0, "not wanted: no probe");
-        sieve.mark_stale();
+        sieve.probe.want();
         assert_eq!(
             reprobe(Some(&sieve), &config, &connector, async { 8 }).await,
             8
@@ -251,11 +261,66 @@ mod tests {
             1,
             "wanted: one probe, beside the dial"
         );
-        assert!(!sieve.available());
-        assert!(
-            sieve.take_stale(),
-            "it failed as one that may pass: wanted again"
+        assert_eq!(sieve.probe.offered(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_endpoint_costs_a_dial_one_probe_deadline_per_backoff() {
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = silent.local_addr().unwrap().to_string();
+        let held = tokio::spawn(async move {
+            let mut kept = Vec::new();
+            while let Ok((stream, _)) = silent.accept().await {
+                kept.push(stream);
+            }
+        });
+        let (sieve, config, steps) = service_at(&addr);
+        let connector = engine_tls::TlsClientConfig::dangerous_accept_any().connector();
+        sieve.probe.want();
+        let timed = async || {
+            let started = tokio::time::Instant::now();
+            reprobe(Some(&sieve), &config, &connector, async {}).await;
+            started.elapsed()
+        };
+        assert_eq!(
+            timed().await,
+            PROBE_DEADLINE,
+            "the first dial waits out the probe"
         );
+        for _ in 0..3 {
+            assert_eq!(timed().await, Duration::ZERO, "later dials do not wait");
+        }
+        tokio::time::advance(super::super::probe_state::PROBE_BACKOFF).await;
+        assert_eq!(
+            timed().await,
+            PROBE_DEADLINE,
+            "after the backoff, one probe again"
+        );
+        assert_eq!(*steps.lock().unwrap(), 2);
+        held.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_dial_dropped_mid_probe_leaves_the_probe_wanted() {
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = silent.local_addr().unwrap().to_string();
+        let (sieve, config, steps) = service_at(&addr);
+        let connector = engine_tls::TlsClientConfig::dangerous_accept_any().connector();
+        sieve.probe.want();
+        let dropped = tokio::time::timeout(
+            Duration::from_secs(1),
+            reprobe(
+                Some(&sieve),
+                &config,
+                &connector,
+                std::future::pending::<()>(),
+            ),
+        )
+        .await;
+        assert!(dropped.is_err(), "the dial was dropped");
+        assert_eq!(*steps.lock().unwrap(), 0, "nothing recorded");
+        assert!(sieve.probe.take().is_some(), "the next dial probes");
+        drop(silent);
     }
 
     #[tokio::test]
@@ -276,15 +341,15 @@ mod tests {
                 provider.vacation().is_some(),
             )
         };
-        sieve.record(Some(false), false);
+        sieve.probe.record(Some(false), false);
         assert_eq!(
             offered(&provider),
             (true, false),
             "no vacation listed: no reply"
         );
-        sieve.record(None, true);
+        sieve.probe.record(None, true);
         assert_eq!(offered(&provider), (false, false), "the last probe failed");
-        sieve.record(Some(true), false);
+        sieve.probe.record(Some(true), false);
         assert_eq!(offered(&provider), (true, true));
     }
 }

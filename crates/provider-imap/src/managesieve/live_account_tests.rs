@@ -62,21 +62,21 @@ async fn an_endpoint_that_does_not_answer_costs_the_probe_s_deadline_and_hides_t
 }
 
 #[tokio::test]
-async fn after_invalidate_a_service_that_failed_for_good_is_probed_again() {
+async fn after_invalidate_the_service_is_probed_again_and_offered_as_it_answers_now() {
     let (Some(imap), Some(sieve)) = (
         address("stalwart", "STALWART_IMAP_ADDR"),
         address("stalwart", "STALWART_MANAGESIEVE_ADDR"),
     ) else {
         return;
     };
-    // At first the endpoint greets without `STARTTLS` (a failure that does not pass, so not
-    // probed again by itself); after that it relays to the harness's service.
+    // At first the endpoint relays to the harness's service; after that it greets without
+    // `STARTTLS`, as no ManageSieve server does.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap();
     let relay = tokio::spawn(async move {
         let mut first = true;
         while let Ok((mut inbound, _)) = listener.accept().await {
-            if std::mem::take(&mut first) {
+            if !std::mem::take(&mut first) {
                 let _ = inbound
                     .write_all(b"\"IMPLEMENTATION\" \"plain\"\r\nOK\r\n")
                     .await;
@@ -93,25 +93,21 @@ async fn after_invalidate_a_service_that_failed_for_good_is_probed_again() {
     let (config, steps) = observed(&imap, &port.to_string());
     let account = ImapAccount::connect(&config, connector()).await.unwrap();
     let provider = account.provider(MailboxId::try_from("INBOX").unwrap());
-    assert!(engine_provider::Provider::mail_rules(&provider).is_none());
-    assert_eq!(
-        *steps.lock().unwrap(),
-        [(ConnectService::ManageSieve, FailureClass::Permanent)]
-    );
-    // A new network: the next dial probes again.
+    let offered_at_connect = engine_provider::Provider::mail_rules(&provider).is_some();
+    // A new network: the next dial probes again, and finds no ManageSieve there now.
     account.invalidate();
     let id = AccountId::try_from("live-managesieve").unwrap();
     let folders = engine_provider::Provider::sync_mailboxes(&provider, &id, None).await;
     relay.abort();
+    assert!(offered_at_connect);
     assert!(folders.is_ok(), "{folders:?}");
     assert!(
-        engine_provider::Provider::mail_rules(&provider).is_some(),
-        "offered once a probe succeeded"
+        engine_provider::Provider::mail_rules(&provider).is_none(),
+        "hidden once a probe failed"
     );
     assert_eq!(
-        steps.lock().unwrap().len(),
-        1,
-        "one failure, then an answer"
+        *steps.lock().unwrap(),
+        [(ConnectService::ManageSieve, FailureClass::Permanent)]
     );
 }
 

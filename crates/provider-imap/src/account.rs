@@ -298,7 +298,7 @@ impl<S> ImapAccount<S> {
         self.pool.invalidate();
         // A new network may reach a ManageSieve service the old one did not, or not reach it.
         if let Some(sieve) = &self.sieve {
-            sieve.mark_stale();
+            sieve.want_probe();
         }
     }
 }

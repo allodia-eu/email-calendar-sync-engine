@@ -25,6 +25,7 @@ mod auth;
 pub(crate) mod dial;
 pub(crate) mod error;
 pub(crate) mod name;
+mod probe_state;
 pub(crate) mod reach;
 pub(crate) mod response;
 mod rules;
@@ -39,27 +40,22 @@ pub(crate) use reach::{probe, reach, reprobe};
 /// The rules and the reply of an account, as its providers hand them out: one object, since on
 /// ManageSieve they are one script with one version.
 pub(crate) trait Sieve: MailRules + Vacation {
-    /// Whether the last probe of the service succeeded: the rules are offered only then.
-    fn available(&self) -> bool;
-    /// Whether the server listed `vacation` then: the reply is offered only then.
-    fn replies(&self) -> bool;
-    /// Asks for a probe on the account's next dial (`ImapAccount::invalidate`).
-    fn mark_stale(&self);
+    /// What the last probe of the service found: `None` where it failed (nothing is offered),
+    /// else whether the server listed `vacation` (the reply is offered only then).
+    fn offered(&self) -> Option<bool>;
+    /// Asks a later dial to probe (`ImapAccount::invalidate`).
+    fn want_probe(&self);
 }
 
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> Sieve
     for service::ManageSieve<T>
 {
-    fn available(&self) -> bool {
-        self.available()
+    fn offered(&self) -> Option<bool> {
+        self.probe.offered()
     }
 
-    fn replies(&self) -> bool {
-        self.lists_vacation()
-    }
-
-    fn mark_stale(&self) {
-        self.mark_stale();
+    fn want_probe(&self) {
+        self.probe.want();
     }
 }
 

@@ -23,6 +23,7 @@ use tokio_rustls::{TlsConnector, client::TlsStream};
 use super::{
     dial::{self, SieveEndpoint},
     error::{SieveError, SieveResult},
+    probe_state::ProbeState,
     session::Session,
 };
 use crate::{config::ImapConfig, pool::other::Budget};
@@ -39,65 +40,29 @@ pub(crate) type SieveDial<T> =
 pub(crate) struct ManageSieve<T> {
     dial: SieveDial<T>,
     budget: Arc<dyn Budget>,
-    /// Whether the last probe of the service succeeded (`crate::managesieve::reach`): only then
-    /// are the rules and the reply offered.
-    available: AtomicBool,
-    /// Whether the last successful probe found `vacation` listed.
-    replies: AtomicBool,
-    /// Whether the service is to be probed again on the account's next dial: after a failure
-    /// that may pass, or `invalidate()`.
-    stale: AtomicBool,
+    /// What the last probe found, and whether a dial is to probe again
+    /// (`crate::managesieve::reach`): the rules and the reply are offered only as it says.
+    pub(crate) probe: ProbeState,
 }
 
 impl<T> core::fmt::Debug for ManageSieve<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ManageSieve")
-            .field("available", &self.available())
-            .field("replies", &self.lists_vacation())
+            .field("offered", &self.probe.offered())
             .finish_non_exhaustive()
     }
 }
 
 impl<T> ManageSieve<T> {
     /// The service `dial` signs in to, spending from `budget`, offered, with the reply where
-    /// `replies`. The account's own service starts unoffered and is offered by its probe
-    /// ([`record`](Self::record)).
+    /// `replies`. The account's own service is then recorded with its probe
+    /// ([`ProbeState::record`]).
     pub(crate) fn new(dial: SieveDial<T>, budget: Arc<dyn Budget>, replies: bool) -> Self {
         Self {
             dial,
             budget,
-            available: AtomicBool::new(true),
-            replies: AtomicBool::new(replies),
-            stale: AtomicBool::new(false),
+            probe: ProbeState::offered_with(replies),
         }
-    }
-
-    /// Whether the last probe succeeded.
-    pub(crate) fn available(&self) -> bool {
-        self.available.load(Ordering::SeqCst)
-    }
-
-    /// Whether the last successful probe found `vacation` listed.
-    pub(crate) fn lists_vacation(&self) -> bool {
-        self.replies.load(Ordering::SeqCst)
-    }
-
-    /// Records a probe: offered, with the reply where `replies`, or not offered, and whether to
-    /// probe again on the next dial.
-    pub(crate) fn record(&self, offered: Option<bool>, probe_again: bool) {
-        self.available.store(offered.is_some(), Ordering::SeqCst);
-        self.replies.store(offered == Some(true), Ordering::SeqCst);
-        self.stale.store(probe_again, Ordering::SeqCst);
-    }
-
-    /// Asks for a probe on the account's next dial (`ImapAccount::invalidate`).
-    pub(crate) fn mark_stale(&self) {
-        self.stale.store(true, Ordering::SeqCst);
-    }
-
-    /// Whether a probe is wanted, clearing the want: one dial probes, not every one at once.
-    pub(crate) fn take_stale(&self) -> bool {
-        self.stale.swap(false, Ordering::SeqCst)
     }
 }
 
