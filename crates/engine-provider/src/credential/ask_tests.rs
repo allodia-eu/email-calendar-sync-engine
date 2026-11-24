@@ -354,3 +354,14 @@ fn a_source_failure_converts_into_the_provider_error_it_carries() {
     let error: ProviderError = failure.into();
     assert_eq!(error.class(), FailureClass::Authentication);
 }
+
+#[test]
+fn an_origin_the_engine_refuses_is_a_permanent_failure_with_its_reason() {
+    let failure = CredentialFailure::refused_origin("plaintext to a remote host");
+    let error = failure.into_error();
+    assert_eq!(error.class(), FailureClass::Permanent);
+    assert!(
+        error.to_string().contains("plaintext to a remote host"),
+        "{error}"
+    );
+}

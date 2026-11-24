@@ -47,8 +47,11 @@ tokio = { workspace = true, features = ["time", "macros", "rt", "test-util", "ne
 rcgen = "0.13"
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
-# A test log for a submission's hand-over, which is an `async_trait` trait.
+# A test log for a submission's hand-over, and the credential sources the authenticated
+# funnel's suite asks, are `async_trait` traits.
 async-trait = { workspace = true }
+# `FailureClass`, which the authenticated funnel's suite asserts a refusal's class by.
+engine-core = { workspace = true }
 
 [lints]
 workspace = true

@@ -6,8 +6,9 @@ use core::{future::Future, time::Duration};
 use super::{Credential, CredentialRequest, CredentialSource};
 use crate::ProviderError;
 
-/// The credential source failed, as opposed to the server: it did not permit the origin, it
-/// had no credential to give, or it did not answer in time.
+/// No credential was presented, and the server did not refuse one: the origin may not receive
+/// it (the source did not permit it, or an engine rule such as HTTP's plaintext rule refused
+/// it), the source had no credential to give, or it did not answer in time.
 ///
 /// An adapter turns it into its own error with `From`, keeping the class the source gave. The
 /// class alone tells a host which failed and what to do: a broker that is down is
@@ -17,6 +18,16 @@ use crate::ProviderError;
 pub struct CredentialFailure(pub(super) ProviderError);
 
 impl CredentialFailure {
+    /// The engine refusing to present any credential to an origin, whatever the source would
+    /// permit: [`Permanent`], with `reason`. For a rule no source can loosen, such as
+    /// `engine_http`'s refusal of plaintext HTTP to anything but loopback.
+    ///
+    /// [`Permanent`]: engine_core::error::FailureClass::Permanent
+    #[must_use]
+    pub fn refused_origin(reason: &'static str) -> Self {
+        Self(ProviderError::permanent(reason))
+    }
+
     /// The source's error, with the class it gave.
     #[must_use]
     pub fn into_error(self) -> ProviderError {

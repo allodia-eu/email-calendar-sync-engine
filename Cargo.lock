@@ -510,6 +510,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "engine-core",
  "engine-provider",
  "engine-tls",
  "http",

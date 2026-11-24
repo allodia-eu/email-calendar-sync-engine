@@ -41,6 +41,7 @@
 //! which requests are submissions ([`Exchange`]); a failure tells it whether the request
 //! [may have been received](SendError::may_have_been_received). See `deadline.rs`.
 
+mod authenticated;
 mod classify;
 mod deadline;
 mod error;
@@ -55,6 +56,7 @@ mod send;
 pub mod test_server;
 mod user_agent;
 
+pub use authenticated::{Unauthorized, send_authenticated};
 pub use classify::{StatusAlone, Throttle, ThrottleClassifier};
 pub use deadline::{Exchange, chunk_within, client};
 pub use error::{SendError, gateway_without_answer};
