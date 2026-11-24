@@ -642,10 +642,19 @@ why.
   rule on the way is made of the rule handed in too, with no case-by-case normalisation: a
   forward written as `redirect :copy`, two redirects or two keyword actions alike read as one,
   a single condition of either kind read as `All`, `INBOX` by path read as the inbox's role.
-- **Facts from the text.** A rule carried whole is planned with what its own text requires and
-  does, read by the target's dialect (`ImportDialect::facts`; `engine_sieve::dialect::
-  facts_from_text`), not with what the host that built it said: a host-built `RawRule` defaults to
-  sending no folder id and running no script, so trusting it would skip both checks. A
+- **Facts from the text, failing closed.** A rule carried whole is planned with what its own text
+  requires and does, read by the target's dialect (`ImportDialect::facts`;
+  `engine_sieve::dialect::facts_from_text`), not with what the host that built it said. A
+  `RawRule` a host builds is assumed to send mail, name a folder by id and run another script
+  until a reader says otherwise (`sending_no_mail`, `naming_no_folder_by_id`,
+  `including_no_script`), so a target that read nothing from the text still carries none of it.
+  The import is stricter than an edit here, on purpose: where a carried rule uses a command or a
+  tag the dialect's tables do not know (a vendor extension's, such as Dovecot's `pipe`),
+  the reader of a script falls back to everything the source script's `require` named, but
+  `facts_from_text` reads the rule alone, with no script to fall back to, so what it needs is
+  unknown and no target stores it (`OpaqueSource`). Needs that cannot be verified fail closed,
+  since the source's `require` names what the source server took, not what the rule needs on
+  another. An edit is unaffected: it plans the account's own rules, read with their script. A
   forwarding rule an operator has switched on since reads differently from the disabled one the
   import writes, so a second run adds it again, disabled.
 - **Never stop what runs.** On JMAP, where the target runs the server's reply script and the new
