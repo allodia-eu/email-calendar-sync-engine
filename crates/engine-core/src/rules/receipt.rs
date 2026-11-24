@@ -1,7 +1,7 @@
 //! What a write of the rules answers.
 
 use super::{RuleOutcome, RulesActivation};
-use crate::version::RuleSetVersion;
+use crate::{error::FailureClass, version::RuleSetVersion};
 
 /// What replacing an account's rules answers once the server has stored them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +26,10 @@ pub struct RulesReceipt {
     /// would be written, and did not write again: what makes running an import twice add nothing.
     /// Each still has its [`outcome`](Self::outcomes), as planned. Empty for an edit.
     pub already_held: Vec<usize>,
+    /// Each rule a transport that stores rules one by one (Graph) did not store, or did not
+    /// remove: the rest of the write went ahead, so these are reported here rather than failing
+    /// it. Always empty where the set is stored at once (a Sieve script), which fails whole.
+    pub failures: Vec<RuleWriteFailure>,
 }
 
 impl RulesReceipt {
@@ -39,6 +43,7 @@ impl RulesReceipt {
             reply: ReplyEffect::Untouched,
             activation: RulesActivation::Running,
             already_held: Vec::new(),
+            failures: Vec::new(),
         }
     }
 
@@ -51,6 +56,12 @@ impl RulesReceipt {
     /// Records whether the rules run now (builder-style).
     pub fn with_activation(mut self, activation: RulesActivation) -> Self {
         self.activation = activation;
+        self
+    }
+
+    /// Records the rules the write did not store or remove (builder-style).
+    pub fn with_failures(mut self, failures: Vec<RuleWriteFailure>) -> Self {
+        self.failures = failures;
         self
     }
 
@@ -91,4 +102,49 @@ pub enum ReplyEffect {
     /// script of its own, the write switched on another script and could not include the
     /// reply's in it. A host tells the user, and offers to turn the reply on again.
     Stopped,
+}
+
+/// One rule a write did not store or remove, by position and class: never its value, nor the
+/// server's words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct RuleWriteFailure {
+    /// Which rule.
+    pub rule: FailedRule,
+    /// Why, as the engine classes a failure: whether waiting, signing in again or reading again
+    /// can help.
+    pub class: FailureClass,
+    /// Whether the request went out and no answer came back, so the change may have been made:
+    /// read the rules again before writing again.
+    pub outcome_unknown: bool,
+}
+
+impl RuleWriteFailure {
+    /// `rule` was not stored or removed, for a reason of `class`.
+    #[must_use]
+    pub fn new(rule: FailedRule, class: FailureClass) -> Self {
+        Self {
+            rule,
+            class,
+            outcome_unknown: false,
+        }
+    }
+
+    /// Records that the change may have been made after all (builder-style).
+    #[must_use]
+    pub fn outcome_unknown(mut self) -> Self {
+        self.outcome_unknown = true;
+        self
+    }
+}
+
+/// A rule a write did not store or remove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FailedRule {
+    /// The rule at this index of the rules handed in was not stored as given: a new rule was not
+    /// created, or an existing one is still as it was read (its order included).
+    Written(usize),
+    /// The rule at this index of the base was to be removed, and is still there.
+    Removed(usize),
 }
