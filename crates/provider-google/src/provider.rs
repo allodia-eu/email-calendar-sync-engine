@@ -18,10 +18,11 @@ use engine_core::{
     time::CalendarDate,
 };
 use engine_provider::{
-    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, Draft, DraftReceipt, EmailStream,
-    IdentityControls, KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt,
-    MailboxWrites, Provider, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
-    ScopeSync, SenderIdentity, SenderIdentityId, SourceStream, SubmissionReceipt,
+    CalendarSync, CalendarWrites, Capabilities, ConnectionInfo, CredentialSubject, Draft,
+    DraftReceipt, EmailStream, IdentityControls, KeywordName, MailEdit, MailEditReceipt,
+    MailboxEdit, MailboxEditReceipt, MailboxWrites, Provider, ProviderError, ProviderResult,
+    ReportControls, ReportEvidence, ReportVerdicts, ScopeSync, SenderIdentity, SenderIdentityId,
+    SourceStream, SubmissionReceipt,
 };
 use futures_util::StreamExt;
 use provider_imap::GmailMail;
@@ -127,12 +128,41 @@ impl GmailProvider {
     /// nothing per message and reads a thousand in about a second. Both write the same keys,
     /// threads, memberships and keywords, so an account moves between them without a resync
     /// of its rows (`crate::imap_labels`).
-    #[must_use]
-    pub fn with_imap<S>(self, mail: GmailMail<S>) -> Self
+    ///
+    /// Both halves sign in as one account with one token, so they ask one source: the
+    /// [`ImapConfig`](provider_imap::ImapConfig) the reader's account was connected with takes
+    /// the source this provider's client asks ([`GoogleClient::connect_with_source`]), and the
+    /// source answers the token with the account's address
+    /// ([`Credential::bearer_for`](engine_provider::Credential::bearer_for)), which IMAP's SASL
+    /// needs and the API ignores. A token the source replaces after either half's refusal is
+    /// the one both present next.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::invalid_state`] when the reader signs in as another subject than this
+    /// provider's client ([`GmailMail::credential_subject`]): two sources for one account, or
+    /// another account's mail. Nothing is sent.
+    pub fn with_imap<S>(self, mail: GmailMail<S>) -> ProviderResult<Self>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
     {
-        self.with_imap_mail(Arc::new(mail))
+        let subject = mail.credential_subject().clone();
+        self.bind_imap(&subject, Arc::new(mail))
+    }
+
+    /// The reader `imap`, which signs in as `subject`, when that is who this provider's client
+    /// signs in as.
+    pub(crate) fn bind_imap(
+        self,
+        subject: &CredentialSubject,
+        imap: Arc<dyn ImapMail>,
+    ) -> ProviderResult<Self> {
+        if self.client.subject() != Some(subject) {
+            return Err(ProviderError::invalid_state(
+                "the account's IMAP and API halves must ask one credential source",
+            ));
+        }
+        Ok(self.with_imap_mail(imap))
     }
 
     pub(crate) fn with_imap_mail(mut self, imap: Arc<dyn ImapMail>) -> Self {

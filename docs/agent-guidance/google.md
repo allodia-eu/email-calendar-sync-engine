@@ -18,8 +18,9 @@ than Graph:
 - **Google Calendar is IANA-native** and returns recurring **masters with an RFC 5545
   `RRULE`** — no Windows-zone table, no pre-expanded `calendarView` (contrast Graph).
 
-The engine stays **OAuth-agnostic**: a host supplies a bearer access token; token
-acquisition/refresh is the host's job (`north-star.md`). `tools/google-oauth` is a
+The engine stays **OAuth-agnostic**: a host supplies the account's `CredentialSource`
+(`GoogleClient::connect_with_source`), or a fixed bearer token (`connect`); acquiring and
+refreshing the token is the source's job (`north-star.md`, `credential-source.md`). `tools/google-oauth` is a
 standalone dev helper (outside the workspace gates) that drives the interactive
 Auth-Code+PKCE loopback flow and captures fixtures — the exact mirror of
 `tools/graph-oauth`.
@@ -49,8 +50,14 @@ Auth-Code+PKCE loopback flow and captures fixtures — the exact mirror of
   against captured fixtures.
 - **`transport`** — a `GoogleTransport` seam over bearer HTTP. `HttpTransport` (reqwest +
   rustls, built from the caller-supplied `TlsClientConfig` passed to
-  `GoogleClient::connect`/`with_base` — `tls.md`) is production; the seam lets the
-  fetch/provider orchestration run offline. There is **no session discovery** (the API
+  `GoogleClient::connect_with_source`/`with_base_and_source`, or `connect`/`with_base` for a
+  fixed token — `tls.md`) is production; the seam lets the
+  fetch/provider orchestration run offline. **The token is asked for, not held**: every
+  authenticated request goes through the account's `engine_http::AuthenticatedClient`, as on
+  Graph (`graph.md`, "The crate"); a `401` whose challenge offers `Bearer` (Google's says
+  `error="invalid_token"`) is replaced once and the request sent again, only a token is ever
+  presented, and content URLs (People photos) keep their anonymous client. `GoogleClient` is a
+  cheap clone whose clones share the transport, its request gate and its quota pacing. There is **no session discovery** (the API
   root is fixed) and **no immutable-id preference header** (unlike Graph). Like Graph,
   having no connect-time request, Google's `ConnectionInfo::http_version` is `None` until
   its first fetch, recorded at the transport's single funnel. Google returns opaque
@@ -248,7 +255,13 @@ part way; `reconcile;h=…` is a backfill finished and not yet reconciled.
 
 `GmailProvider::with_imap` takes a `provider_imap::GmailMail` (from `ImapAccount::gmail`,
 offered only on a session advertising `X-GM-EXT-1`) and moves the message sync and every body
-read onto IMAP. Labels, writes, drafts, sending, reports and identities stay on the API. The
+read onto IMAP. **Both halves ask one source.** The `ImapConfig` takes the source the client
+asks (`ImapConfig::from_credential_source`), answering the token with the account's address
+(`Credential::bearer_for`: SASL needs it, the API ignores it), and `with_imap` refuses a reader
+that signs in as another subject (`GmailMail::credential_subject`) as `InvalidState`, before
+anything is read: two sources for one account would refresh apart, and another account's
+reader would write its mail under this one. A token replaced after either half's refusal is
+the one the other presents next (`tests/live_credential_source.rs`). Labels, writes, drafts, sending, reports and identities stay on the API. The
 reason is the quota: the API bills a message's metadata 20 units and its body 60 against 6,000
 per user per minute, about 270 messages a minute, and IMAP bills nothing per message.
 
@@ -586,8 +599,10 @@ Restoring the old mapping fails the live test on `writer: share`. The captured e
 an omission. Gmail delegation is a real product feature, but a user credential cannot reach it:
 the API route that would serve it, `users/{userId}` for another user, needs a **service
 account with domain-wide delegation** — a different credential model from the user bearer
-token this adapter holds. Advertising anything else would offer a host an onboarding flow that
-could only fail, so both discovery verbs keep their rejecting defaults (`providers.md`).
+token this adapter is given. Advertising anything else would offer a host an onboarding flow that
+could only fail, so both discovery verbs keep their rejecting defaults (`providers.md`). A host
+holding domain-wide delegation needs nothing from this: its source mints a token for each user,
+and each user is an account of its own (`credential-source.md`, "Administrative credentials").
 
 `GoogleCalendarProvider` advertises `Unsupported` too, for the calendar half of the same
 question (`SharedAccounts`, `providers.md`). A calendar shared with the user arrives **in the

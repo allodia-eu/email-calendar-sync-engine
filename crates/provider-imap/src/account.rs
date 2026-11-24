@@ -19,8 +19,8 @@ use std::{
 
 use engine_core::ids::{MailboxId, SharedAccountId};
 use engine_provider::{
-    Capabilities, ConnectionInfo, ProviderResult, ReportControls, ReportEvidence, ReportVerdicts,
-    SharedAccounts, TlsVersion,
+    Capabilities, ConnectionInfo, CredentialSubject, ProviderResult, ReportControls,
+    ReportEvidence, ReportVerdicts, SharedAccounts, TlsVersion,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -71,6 +71,8 @@ pub struct ImapAccount<S> {
     /// The account's rules and reply over ManageSieve, where configured and answering
     /// (`crate::managesieve::reach`).
     sieve: Option<Arc<dyn Sieve>>,
+    /// Who the account's source signs in as, which every connection in the pool presents.
+    pub(crate) subject: CredentialSubject,
 }
 
 impl<S> core::fmt::Debug for ImapAccount<S> {
@@ -130,7 +132,8 @@ impl ImapAccount<TlsStream<TcpStream>> {
             connector.clone(),
             Arc::clone(&sieve_slot),
         );
-        let mut account = Self::build(connection, dial, smtp, config.since, tls_version);
+        let subject = config.credentials.subject().clone();
+        let mut account = Self::build(connection, dial, smtp, config.since, tls_version, subject);
         let budget = Arc::clone(&account.pool) as Arc<dyn Budget>;
         if let Some(sieve) =
             probed.and_then(|probed| crate::managesieve::reach(config, &connector, budget, probed))
@@ -189,6 +192,7 @@ impl<S> ImapAccount<S> {
         smtp: Option<SmtpSender>,
         since: Option<time::Date>,
         tls_version: Option<TlsVersion>,
+        subject: CredentialSubject,
     ) -> Self {
         let capabilities = capabilities(&connection, smtp.is_some());
         let gmail = connection.negotiated.has(Extension::XGmExt1);
@@ -206,6 +210,7 @@ impl<S> ImapAccount<S> {
             namespaces: Arc::new(OnceLock::new()),
             gmail,
             sieve: None,
+            subject,
         }
     }
 
@@ -224,7 +229,12 @@ impl<S> ImapAccount<S> {
                 )))
             })
         });
-        Self::build(connection, dial, smtp, None, None)
+        // A subject of its own, as a fixed credential has.
+        let fixed = engine_provider::FixedCredential::unique(engine_provider::Credential::bearer(
+            "offline",
+        ));
+        let subject = engine_provider::CredentialSource::subject(&fixed).clone();
+        Self::build(connection, dial, smtp, None, None, subject)
     }
 
     /// The same account, covering a mail store shared **with** the credential rather than the
@@ -253,6 +263,7 @@ impl<S> ImapAccount<S> {
             namespaces: Arc::clone(&self.namespaces),
             gmail: self.gmail,
             sieve: self.sieve.clone(),
+            subject: self.subject.clone(),
         }
     }
 
@@ -262,7 +273,7 @@ impl<S> ImapAccount<S> {
     #[must_use]
     pub fn gmail(&self) -> Option<GmailMail<S>> {
         (self.gmail && self.shared_account.is_none())
-            .then(|| GmailMail::new(Arc::clone(&self.pool)))
+            .then(|| GmailMail::new(Arc::clone(&self.pool), self.subject.clone()))
     }
 
     /// A provider bound to `mailbox` for its email scope, drawing its connections from this

@@ -206,3 +206,14 @@ async fn a_refused_body_read_ends_the_stream_with_its_failure() {
     assert_eq!(got.len(), 1);
     assert!(got[0].is_err());
 }
+
+#[tokio::test]
+async fn the_reader_signs_in_as_the_account_does() {
+    let (account, _) = gmail_over(GMAIL_CAPABILITY, &[]).await;
+    let gmail = account.gmail().unwrap();
+    assert_eq!(gmail.credential_subject(), &account.subject);
+    assert_eq!(
+        gmail.clone().credential_subject(),
+        gmail.credential_subject()
+    );
+}

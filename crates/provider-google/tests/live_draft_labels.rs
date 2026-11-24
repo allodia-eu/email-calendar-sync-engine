@@ -8,7 +8,7 @@
 //! account itself and deleted at the end, and so is the label, whose name carries the run's own
 //! suffix.
 
-use std::{collections::BTreeSet, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use engine_core::{
     ids::{AccountId, MessageIdHeader},
@@ -16,7 +16,10 @@ use engine_core::{
     sync::{SyncUpdate, SyncWindow},
     time::CalendarDate,
 };
-use engine_provider::{Credential, Draft, KeywordName, MailboxEdit, MailboxWrites, Provider};
+use engine_provider::{
+    Credential, CredentialSource, CredentialSubject, Draft, FixedCredential, KeywordName,
+    MailboxEdit, MailboxWrites, Provider,
+};
 use futures_util::StreamExt;
 use provider_google::{GmailProvider, GoogleClient};
 use provider_imap::{ImapAccount, ImapConfig};
@@ -43,9 +46,17 @@ fn yesterday() -> CalendarDate {
     CalendarDate::new(day.year(), u8::from(day.month()), day.day()).unwrap()
 }
 
+/// The account's one source, which both its API and its IMAP half ask.
+fn source(token: &str) -> Arc<dyn CredentialSource> {
+    Arc::new(FixedCredential::new(
+        CredentialSubject::new("live"),
+        Credential::bearer_for(SELF_ADDRESS.to_owned(), token.to_owned()),
+    ))
+}
+
 fn provider(token: &str, names: Vec<KeywordName>) -> GmailProvider {
-    let client = GoogleClient::connect(
-        token.to_owned(),
+    let client = GoogleClient::connect_with_source(
+        source(token),
         &engine_tls::TlsClientConfig::bundled(),
         &engine_http::RetryConfig::default(),
         &engine_http::test_server::user_agent(),
@@ -58,19 +69,21 @@ fn provider(token: &str, names: Vec<KeywordName>) -> GmailProvider {
 
 /// `provider`, reading mail over IMAP as a host that connects one does.
 async fn over_imap(token: &str, provider: GmailProvider) -> GmailProvider {
-    let config = ImapConfig::new(
+    let config = ImapConfig::from_credential_source(
         "imap.gmail.com:993".to_owned(),
         "imap.gmail.com".to_owned(),
-        Credential::bearer_for(SELF_ADDRESS.to_owned(), token.to_owned()),
+        source(token),
     );
     let account = ImapAccount::connect(&config, engine_tls::TlsClientConfig::bundled().connector())
         .await
         .expect("the token must open an IMAP session");
-    provider.with_imap(
-        account
-            .gmail()
-            .expect("imap.gmail.com advertises X-GM-EXT-1"),
-    )
+    provider
+        .with_imap(
+            account
+                .gmail()
+                .expect("imap.gmail.com advertises X-GM-EXT-1"),
+        )
+        .expect("one source")
 }
 
 fn draft(unique: u128, body: &str) -> Draft {

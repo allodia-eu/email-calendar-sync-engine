@@ -20,7 +20,7 @@ use engine_core::{
     mail::{MailboxRole, Message},
     raw::RawMime,
 };
-use engine_provider::{ProviderError, ProviderResult};
+use engine_provider::{CredentialSubject, ProviderError, ProviderResult};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::OnceCell,
@@ -122,6 +122,7 @@ struct Folders {
 pub struct GmailMail<S> {
     pool: Arc<ImapPool<S>>,
     folders: Arc<OnceCell<Folders>>,
+    subject: CredentialSubject,
 }
 
 impl<S> core::fmt::Debug for GmailMail<S> {
@@ -129,6 +130,8 @@ impl<S> core::fmt::Debug for GmailMail<S> {
         f.debug_struct("GmailMail")
             .field("pool", &self.pool)
             .field("folders", &self.folders.get())
+            // Says named or minted, never the name.
+            .field("subject", &self.subject)
             .finish()
     }
 }
@@ -138,16 +141,26 @@ impl<S> Clone for GmailMail<S> {
         Self {
             pool: Arc::clone(&self.pool),
             folders: Arc::clone(&self.folders),
+            subject: self.subject.clone(),
         }
     }
 }
 
 impl<S> GmailMail<S> {
-    pub(crate) fn new(pool: Arc<ImapPool<S>>) -> Self {
+    pub(crate) fn new(pool: Arc<ImapPool<S>>, subject: CredentialSubject) -> Self {
         Self {
             pool,
             folders: Arc::new(OnceCell::new()),
+            subject,
         }
+    }
+
+    /// Who the account signs in as: the [`subject`](engine_provider::CredentialSource::subject)
+    /// of the source its [`ImapConfig`](crate::ImapConfig) asks. A host pairing this with the
+    /// same account's Gmail API client checks they share one source by it.
+    #[must_use]
+    pub fn credential_subject(&self) -> &CredentialSubject {
+        &self.subject
     }
 }
 

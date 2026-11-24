@@ -10,6 +10,13 @@ use engine_core::error::FailureClass;
 
 use super::*;
 
+/// `token` as a source that never changes.
+fn fixed(token: &str) -> Arc<dyn CredentialSource> {
+    Arc::new(engine_provider::FixedCredential::unique(
+        engine_provider::Credential::bearer(token),
+    ))
+}
+
 /// Serves one canned response and hands back the raw request head, so a test can
 /// assert on the headers that actually went out.
 fn mock_server_capturing(response: String) -> (String, std::sync::Arc<std::sync::Mutex<String>>) {
@@ -35,7 +42,8 @@ async fn the_anonymous_byte_path_sends_no_authorization_header() {
     let body = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nbytes";
     let (base, seen) = mock_server_capturing(body.to_owned());
     let transport = HttpTransport::new(
-        "super-secret".to_owned(),
+        &base,
+        fixed("super-secret"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -81,7 +89,8 @@ fn http(status_line: &str, body: &str) -> String {
 async fn get_parses_a_success_body() {
     let base = mock_server(http("200 OK", r#"{"labels":[]}"#));
     let transport = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -97,7 +106,8 @@ async fn the_http_version_is_unknown_until_the_first_response() {
     // has observed nothing; the first response fills the fact in.
     let base = mock_server(http("200 OK", r#"{"labels":[]}"#));
     let transport = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -121,7 +131,8 @@ async fn non_success_status_becomes_a_classified_status_error() {
     let body = r#"{"error":{"code":401,"message":"nope","errors":[{"reason":"authError"}],"status":"UNAUTHENTICATED"}}"#;
     let base = mock_server(http("401 Unauthorized", body));
     let err = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -138,7 +149,8 @@ async fn non_success_status_becomes_a_classified_status_error() {
 async fn a_non_json_success_body_is_a_permanent_decode_error() {
     let base = mock_server(http("200 OK", "this is not json"));
     let err = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -159,7 +171,8 @@ async fn a_non_json_success_body_is_a_permanent_decode_error() {
 #[tokio::test]
 async fn a_refused_connection_is_a_retryable_transport_error() {
     let err = HttpTransport::new(
-        "tok".to_owned(),
+        "http://127.0.0.1:1",
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -177,7 +190,8 @@ async fn a_write_body_parses_json_or_treats_empty_as_none() {
     // A modify/send echoes JSON; a 204 (a trash/untrash no-body) carries none.
     let base = mock_server(http("200 OK", r#"{"id":"m1"}"#));
     let sent = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -190,7 +204,8 @@ async fn a_write_body_parses_json_or_treats_empty_as_none() {
 
     let base = mock_server(http("204 No Content", ""));
     HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),
@@ -206,7 +221,8 @@ async fn a_write_non_success_is_a_classified_status_error() {
     let body = r#"{"error":{"code":403,"message":"no","errors":[{"reason":"insufficientPermissions"}],"status":"PERMISSION_DENIED"}}"#;
     let base = mock_server(http("403 Forbidden", body));
     let err = HttpTransport::new(
-        "tok".to_owned(),
+        &base,
+        fixed("tok"),
         crate::test_support::tls(),
         &crate::test_support::retry(),
         &crate::test_support::user_agent(),

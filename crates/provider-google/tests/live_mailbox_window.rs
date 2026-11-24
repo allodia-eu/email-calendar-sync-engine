@@ -15,14 +15,16 @@
 //!   cargo test -p provider-google --test live_mailbox_window -- --nocapture
 //! ```
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use engine_core::{
     ids::{AccountId, MailboxId},
     sync::{MailboxWindows, SyncState, SyncWindow},
     time::CalendarDate,
 };
-use engine_provider::{Credential, EmailChunk, Provider};
+use engine_provider::{
+    Credential, CredentialSource, CredentialSubject, EmailChunk, FixedCredential, Provider,
+};
 use futures_util::StreamExt;
 use provider_google::{GmailProvider, GoogleClient};
 use provider_imap::{ImapAccount, ImapConfig};
@@ -211,15 +213,29 @@ async fn live_a_pass_reaches_a_deepened_label_and_no_other() {
     let listed = present(&pass(&api, Some(&reconcile_at), &window).await);
 
     // Over IMAP: one snapshot.
-    let config = ImapConfig::new(
+    // One source for both halves, as `with_imap` requires.
+    let source: Arc<dyn CredentialSource> = Arc::new(FixedCredential::new(
+        CredentialSubject::new("live"),
+        Credential::bearer_for(address(&token).await, token.clone()),
+    ));
+    let config = ImapConfig::from_credential_source(
         "imap.gmail.com:993".to_owned(),
         "imap.gmail.com".to_owned(),
-        Credential::bearer_for(address(&token).await, token.clone()),
+        Arc::clone(&source),
     );
     let account = ImapAccount::connect(&config, engine_tls::TlsClientConfig::bundled().connector())
         .await
         .expect("the token must open an IMAP session");
-    let imap = GmailProvider::new(client(&token)).with_imap(account.gmail().expect("X-GM-EXT-1"));
+    let sourced = GoogleClient::connect_with_source(
+        source,
+        &engine_tls::TlsClientConfig::bundled(),
+        &engine_http::RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
+    )
+    .expect("client");
+    let imap = GmailProvider::new(sourced)
+        .with_imap(account.gmail().expect("X-GM-EXT-1"))
+        .expect("one source");
     let over_imap = fetched(&pass(&imap, None, &window).await);
 
     clear(&token).await;
