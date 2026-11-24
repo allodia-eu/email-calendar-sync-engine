@@ -941,9 +941,18 @@ connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "
 - **Rules and reply.** `managesieve::state` picks the script (as JMAP does) and hashes the list and
   the script into the version; `rules` and `vacation` implement the traits over
   `engine_sieve::dialect`, the reply as Roundcube's reply rule (`dialect::reply`). The guard is
-  `Absent`; a stale base is refused in the write's own session.
+  `Absent`; a stale base is refused in the write's own session. The receipt says whether the
+  rules written run (`RulesReceipt::activation`): a write never switches the script on or off.
+- **Import** (`managesieve/import.rs`, the `import` feature): `RulesImporter` through
+  `engine_provider::import::append_rules` and `import_reply` over the same service
+  (`providers.md`, "Importing rules and the reply"), answered by `Provider::rules_importer`
+  wherever `mail_rules` is. No folder is known by id: a Sieve `:mailboxid` names an RFC 8474
+  `MAILBOXID`, which this adapter does not read (its folder ids are names), so a rule filing by id
+  loses that action as `MissingMailbox` rather than being written with an id the server does not
+  know; a host names an IMAP target's folders by path.
 - **Proven live** on both harness servers (`managesieve/live_tests.rs`,
-  `live_provider_tests.rs`); offline over the captured responses in
+  `live_provider_tests.rs`, and `live_import_tests.rs` for the import, which CI's Dovecot job runs
+  with `--features import`); offline over the captured responses in
   `tests/fixtures/managesieve/`. Stalwart's `HAVESPACE` says yes to any size (STALWART-10), so
   nothing asks it before storing.
 

@@ -66,8 +66,10 @@ If product pressure changes the order, the domain model tests still need JMAP an
   `Some(self)`, one that cannot implements nothing and answers `None`, and the answer is
   both the capability check and the means to act on it, so no flag in `Capabilities` has to
   agree with a method that rejects. `Provider::vacation() -> Option<&dyn Vacation>` (below,
-  "Out-of-office") is the second, and `Provider::mail_rules() -> Option<&dyn MailRules>` (below,
-  "Mail rules") the third. `Box<dyn Provider>` delegates every accessor, so a host
+  "Out-of-office") is the second, `Provider::mail_rules() -> Option<&dyn MailRules>` (below,
+  "Mail rules") the third, and `Provider::rules_importer() -> Option<&dyn RulesImporter>`
+  (behind `import`; below, "Importing rules and the reply") the fourth. `Box<dyn Provider>`
+  delegates every accessor, so a host
   holding the box reaches the capability without knowing the adapter.
 
   The accessor is what makes a sub-trait affordable. A bare sub-trait costs a host what a
@@ -255,7 +257,8 @@ it. An adapter that can import implements the trait; there is no capability flag
   `Box<dyn MailImporter>` and `Arc<dyn MailImporter>` are importers too, for code generic over
   `I: MailImporter`.
 - **Who implements it:** IMAP (`APPEND`, `imap-smtp.md` → "Import") and JMAP (`Email/import`,
-  `jmap.md` → "Import"); Graph and Gmail are sources only.
+  `jmap.md` → "Import"); Graph and Gmail are sources only. Rules and the reply import through a
+  sibling, `RulesImporter` (below, "Importing rules and the reply").
 - **What every importer must do is checked once**: `engine_provider::import::conformance` (the
   `import-conformance` feature, for live suites) imports a dated message with keywords and an
   undated control, and reads both back through the sync seam: bytes, the mailbox asked for, a
@@ -388,7 +391,8 @@ An account's rules are a setting too, written whole and directly, guarded by the
   (`item_unavailable`), an account with no room for it (`refused_by_target(StorageFull)`). A stale
   base is a `Conflict`; a lost answer is `requires_confirmation`.
 - **A write never switches stored rules on or off** (`RuleSet::activation`, `RulesStored`), and
-  says what it did to a running reply (`ReplyEffect`).
+  says on the receipt whether the rules it wrote run (`RulesReceipt::activation`) and what it did
+  to a running reply (`ReplyEffect`).
 - **Rule values are content**: names, addresses, folders, test values. Errors and `Debug` carry
   kinds, positions and counts only.
 
@@ -399,6 +403,37 @@ An account's rules are a setting too, written whole and directly, guarded by the
 | Graph (`messageRule`) | Planned (slices 4, 5) | **unverified** (`@odata.etag`) | fixed |
 | Gmail (filters) | Planned (slice 5) | `Absent` | fixed: no stop, no order, no disabled rule |
 | CalDAV / CardDAV | n/a | | |
+
+### Importing rules and the reply (`RulesImporter`, the `import` feature)
+
+A transfer host carries a source's rules and reply to a target through
+`engine_provider::import::RulesImporter`, reached through `Provider::rules_importer()` wherever the
+target offers its rules (`filters-and-out-of-office.md`, "Import").
+
+- **One import for every target.** An adapter implements the trait with `import::append_rules` and
+  `import::import_reply` over its own `MailRules` and `Vacation`; it adds only what it alone knows,
+  the folders a rule may file into by id. So the import writes through `replace_rules` and
+  `set_vacation`, and script choice, the guard, the reply's include and activation are decided
+  where an edit decides them.
+- **Rules are appended after the target's own, never replacing or reordering them**, planned in
+  `Import` mode: a rule that sends mail out of the account is stored disabled unless the host arms
+  forwarding, and a folder id the host could not map is lost as `MissingMailbox`
+  (`RuleVocabulary::with_mailboxes`). Where the target's own edit would not write its rules back
+  as they are, nothing is imported (`item_unavailable`). The answer is a `RulesReceipt` whose
+  outcomes are indexed by the rules handed in; it also says where the rules went, whether they run,
+  and what the write did to a running reply.
+- **The preflight list** of decision 2 is `engine_core::rules::held_forwarding(rules, target)`:
+  the rules the import holds back because they send mail out, decided by `plan_rules` alone.
+- **A reply is imported only where the target holds none** (off, with nothing to say), answered
+  without a write where it already says the same, and refused (`item_unavailable`) over any other:
+  a host that means to replace a target's reply calls `set_vacation` itself. A part the target
+  cannot hold refuses the reply whole (`refuse_unheld_vacation`).
+
+| Target | Rules import | Folders by id |
+|---|---|---|
+| JMAP (Sieve) | **Implemented** (`jmap.md` → "Mail rules") | asked of the server: one `Mailbox/get` for exactly the ids the rules name |
+| IMAP + ManageSieve | **Implemented** (`imap-smtp.md` → "Rules and the reply over ManageSieve") | none known (folder ids are names, not RFC 8474 `MAILBOXID`s): a rule filing by id loses that action; a host names an IMAP target's folders by path |
+| Graph, Gmail | Sources only, for now | |
 
 ## Stalwart Test Spine
 

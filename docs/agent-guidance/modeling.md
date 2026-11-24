@@ -99,7 +99,9 @@ Capture any provider-specific assumption in tests or fixtures. If a provider beh
   (`RawRules`, `RuleOrigin`). What a target can hold is a `RuleVocabulary` per account, and
   `plan_rules` is the one rule for what it keeps: a lost condition or exception drops the whole
   rule, because it would widen what the rule matches; a lost action reduces it; an imported rule
-  that sends mail out of the account is stored disabled. Like the reply, the rules are a setting
+  that sends mail out of the account is stored disabled (`held_forwarding` lists those for a
+  preflight, decided by `plan_rules` alone), and one filing into a folder the target lacks
+  (`RuleVocabulary::with_mailboxes`) loses that action. Like the reply, the rules are a setting
   (no store table, no outbox), and their values are content: every type's `Debug` shows kinds,
   counts and lengths (`docs/design/filters-and-out-of-office.md`).
 - A keyword and an IMAP flag (or a Sieve `imap4flags` flag, spelled the same) map one way only:
