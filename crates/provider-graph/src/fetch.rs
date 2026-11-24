@@ -168,7 +168,8 @@ async fn message_state(
 /// Fetches one page of the bound folder's messages (see the module docs). `floor`
 /// (the per-sync window's date floor) windows the **initial** snapshot to messages
 /// received on or after that date; later pages follow the server's links, which
-/// carry the window.
+/// carry the window. `fetch_batch` is the most messages the page is asked for
+/// ([`page_size_prefer`]).
 pub(crate) async fn messages_page(
     client: &GraphClient,
     folder: &MailboxId,
@@ -176,6 +177,7 @@ pub(crate) async fn messages_page(
     page: Option<&PageToken>,
     floor: Option<CalendarDate>,
     names: &[KeywordName],
+    fetch_batch: usize,
 ) -> Result<SyncPage<Message>, GraphError> {
     let kind = if cursor.is_none() {
         SyncKind::Snapshot
@@ -183,7 +185,10 @@ pub(crate) async fn messages_page(
         SyncKind::Delta
     };
     let doc = client
-        .get(&page_url(client, folder, cursor, page, floor))
+        .get_with_prefer(
+            &page_url(client, folder, cursor, page, floor),
+            Some(&page_size_prefer(fetch_batch)),
+        )
         .await?;
 
     let mut changed = Vec::new();
@@ -253,6 +258,28 @@ pub(crate) async fn messages_page(
     })
 }
 
+/// The most messages one delta page is asked for, and what a `fetch_batch` of `0` asks for.
+///
+/// Exchange Online's own ceiling, measured: asked for 1,000 it answers 512 a page and says
+/// nothing, so a larger value would only claim a size the server never serves (`graph.md`).
+pub(crate) const MAX_DELTA_PAGE: usize = 512;
+
+/// The `Prefer` value bounding a delta page at `fetch_batch` messages (`0` is
+/// [`MAX_DELTA_PAGE`]).
+///
+/// Without it Graph answers ten messages a page, on a personal account and on Exchange Online
+/// alike, so a folder's first sync is one
+/// sequential round trip per ten messages. `$top` is no substitute: consumer delta does not
+/// paginate on it (`graph.md`). The value is sent on **every** page, continuations and
+/// deltaLinks included, because a header is not carried in the link the server hands back.
+fn page_size_prefer(fetch_batch: usize) -> String {
+    let size = match fetch_batch {
+        0 => MAX_DELTA_PAGE,
+        n => n.min(MAX_DELTA_PAGE),
+    };
+    format!("odata.maxpagesize={size}")
+}
+
 /// The URL for the next page: a continuation `@odata.nextLink`, else the delta
 /// `cursor` (an `@odata.deltaLink`), else the folder's first `messages/delta` call —
 /// which, when `floor` is set, carries a `receivedDateTime` window.
@@ -314,3 +341,7 @@ mod tests;
 #[cfg(test)]
 #[path = "fetch_content_tests.rs"]
 mod content_tests;
+
+#[cfg(test)]
+#[path = "fetch_page_size_tests.rs"]
+mod page_size_tests;

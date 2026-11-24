@@ -77,9 +77,9 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
    …) to ids and match, not read a role property.
 2. **Folder `displayName`s are localized** (these are Dutch: "Postvak IN" = Inbox).
    Never parse display names for roles.
-3. **`messages/delta` `$top` does not paginate on consumer.** Page size is
-   server-controlled; `@odata.nextLink` appears only on large result sets. The
-   `nextLink`-following path is therefore exercised via the *list* endpoint, whose
+3. **`messages/delta` `$top` does not paginate on consumer.** The page size is set with
+   `Prefer: odata.maxpagesize` instead (finding 26). The captured snapshot is a single
+   page, so the `nextLink`-following path is exercised via the *list* endpoint, whose
    `$top` does paginate.
 4. **Incremental `delta` — full objects, except lightweight changes.** Per
    Microsoft's delta-query-messages doc a changed entry is a *full* object, and it
@@ -116,6 +116,17 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
     **hidden** folders that `childFolders` does not return — Conversation History reports 1
     and answers with an empty page — so only a stated `0` stops the descent, and an empty
     page is ordinary.
+
+26. **A delta page holds ten messages unless `odata.maxpagesize` asks for more, and the ask
+    does not travel in the links.** Measured on a personal account and an Exchange Online
+    mailbox with the adapter's own `$select`/`$expand`: no header answers ten a page on
+    both; the header is honoured up to **512** on Exchange Online, where an ask for 1,000
+    answers 512 without an error. A first page asked for 100 named no page size in its
+    `@odata.nextLink`, and that link followed without the header answered ten, so the header
+    goes on every request. A deltaLink read with it answered `200`. No response carried a
+    `Preference-Applied` for the size. The rates are in `graph.md` (**Page size**); no
+    fixture is kept, since the page bodies are the mailbox's own mail and the finding is
+    their count.
 
 ## Mail-write findings (captured, not assumed)
 

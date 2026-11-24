@@ -440,8 +440,8 @@ disposition. The two modes differ in **resumability**:
 **Two decoupled knobs (`StreamTuning { window, fetch_batch, chunk_size }`).** A single
 page size used to conflate network batching with commit granularity. `fetch_batch`
 bounds each provider round trip (an IMAP `UID FETCH` window, a JMAP `Email/get` page, a
-Graph `$top`); `chunk_size` bounds how many messages accumulate before a chunk is
-committed and reported. A large `fetch_batch` with a small `chunk_size` gives *both*
+Graph delta page's `odata.maxpagesize`); `chunk_size` bounds how many messages accumulate
+before a chunk is committed and reported. A large `fetch_batch` with a small `chunk_size` gives *both*
 few round trips *and* row-as-it-arrives commits (`StreamTuning::responsive` is the
 interactive default, `bulk` the throughput one). `window` is the per-sync **depth**
 (`SyncWindow { since }`, `engine-core`) — a provider-neutral date floor, passed per sync so

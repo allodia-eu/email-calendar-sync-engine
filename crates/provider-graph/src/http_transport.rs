@@ -2,8 +2,9 @@
 //!
 //! The one funnel every request flows through records the negotiated HTTP and TLS
 //! versions, so no path forgets to observe them. Reads add `Prefer: IdType="ImmutableId"` (and a
-//! calendar read's `outlook.timezone`); writes add an optional `Content-Type`/`If-Match`.
-//! The offline tests drive it over a blocking single-shot mock server (no network).
+//! calendar read's `outlook.timezone`, a mail delta page's `odata.maxpagesize`); writes add an
+//! optional `Content-Type`/`If-Match`. The offline tests drive it over a blocking single-shot mock
+//! server (no network).
 
 use async_trait::async_trait;
 use engine_http::{Exchange, ObservedConnection, RetryConfig, send_retrying};
@@ -61,7 +62,7 @@ impl HttpTransport {
     /// Issues the authenticated, immutable-id-preferring `GET` the fetch shapes share,
     /// recording the negotiated HTTP and TLS versions on the way through — the one
     /// funnel, so no path can forget them. `extra_prefer` appends a second `Prefer` value
-    /// (the calendar read's `outlook.timezone`).
+    /// (the calendar read's `outlook.timezone`, a mail delta page's `odata.maxpagesize`).
     async fn send(
         &self,
         url: &str,

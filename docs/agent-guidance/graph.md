@@ -98,8 +98,20 @@ each over its own `GraphClient` on the same token. The mail layers:
   role.
 - **Snapshot = the initial delta enumeration** (full objects): drain
   `@odata.nextLink` pages, ending at the `@odata.deltaLink` that becomes the
-  persisted cursor. `$top` does **not** paginate consumer delta (page size is
-  server-controlled; `@odata.nextLink` appears only on large result sets).
+  persisted cursor. `$top` does **not** paginate consumer delta; the page size is asked for
+  with `Prefer: odata.maxpagesize` on every request (**Page size**, below).
+- **Page size.** Without the header a delta page holds **ten** messages on both a personal
+  account and Exchange Online, so a folder's first sync is one sequential round trip per ten
+  messages. The adapter sends `odata.maxpagesize` set to the stream's `fetch_batch` (`0` asks
+  for the most, `MAX_DELTA_PAGE`), on the first page, every `@odata.nextLink` continuation
+  and every deltaLink, because neither link carries it: a continuation followed without the
+  header drops back to ten. Measured on an Exchange Online folder, 1,500 messages, two
+  alternating rounds: no header 22–29 messages/s, 50 → 69–80/s, 100 → 85–96/s,
+  250 → 104–111/s, 500 → 127–136/s. Asked for 1,000, Exchange answers **512** a page without
+  an error, which is why `MAX_DELTA_PAGE` is 512. The rate flattens past 250 while each page
+  waits longer (500: about 4 s), so a host weighing first rows against throughput chooses
+  through `fetch_batch`; the response carries no `Preference-Applied` for the size, so the
+  only evidence it was honoured is the page itself.
 - **Incremental delta: full objects, except lightweight changes.** Microsoft's
   [delta-query-messages](https://learn.microsoft.com/graph/delta-query-messages)
   guidance says a changed entry is a *full* object — and it is for substantive
@@ -147,8 +159,8 @@ each over its own `GraphClient` on the same token. The mail layers:
   (`SyncWindow::admits`, `store-and-sync.md`), which is where the bound holds for every
   adapter. `GraphProvider::with_since` survives only as the `default_sync_window` the
   whole-scope `sync_email` drain fetches under. The `chunk_size` knob is the commit
-  granularity; the `fetch_batch` knob has no lever yet (page size is server-controlled —
-  see Known limitations).
+  granularity; the `fetch_batch` knob is each delta page's `odata.maxpagesize` (**Page
+  size**, above).
 - **Keyword/revision mapping.** `isRead`→`$seen`, `isDraft`→`$draft`,
   `flag.flagStatus == "flagged"`→`$flagged`; `internetMessageId` is preserved
   bracket-stripped as a threading hint (never identity); `conversationId`→thread
@@ -622,11 +634,6 @@ limitation, not a silent one.
   round-trips via `$batch` (≤20 sub-requests) — a follow-up optimization. A
   changed-id re-fetch that `404`s (deleted/moved in the race since the delta) is
   skipped, so a single vanished message cannot wedge the pass.
-- **Page size is server-controlled.** The delta cycle drains every server page
-  (correct), but the adapter does not yet send `Prefer: odata.maxpagesize` — the
-  page-size control the delta-query-messages doc documents — so it ignores the
-  `stream_email` `fetch_batch`. A follow-up for responsive streaming. (`$top` does
-  *not* paginate consumer delta, which is why the header is the right lever.)
 - **National clouds aren't auto-rebased.** `with_base` rebasing rewrites only the
   commercial-cloud origin (`graph.microsoft.com/v1.0`); links a national-cloud
   endpoint (e.g. `graph.microsoft.us`) returns would be followed verbatim — fine
