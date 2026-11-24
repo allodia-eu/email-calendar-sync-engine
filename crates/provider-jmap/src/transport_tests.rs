@@ -17,23 +17,23 @@ use serde_json::json;
 use super::*;
 
 /// A throwaway trust policy; these tests run over plaintext, so it is never exercised.
-fn tls() -> &'static TlsClientConfig {
+pub(super) fn tls() -> &'static TlsClientConfig {
     static TLS: OnceLock<TlsClientConfig> = OnceLock::new();
     TLS.get_or_init(TlsClientConfig::bundled)
 }
 
 /// One request as the mock server saw it.
 #[derive(Debug, Clone)]
-struct Seen {
-    authorization: String,
-    body: String,
+pub(super) struct Seen {
+    pub(super) authorization: String,
+    pub(super) body: String,
 }
 
 /// A mock HTTP server that serves `responses` in order, one per connection, and records
 /// what each request carried. Extra connections are answered with the last response, so a
 /// test that expects two requests fails loudly (on the assertion) rather than hanging if
 /// a third arrives.
-fn mock_server(responses: Vec<String>) -> (String, Arc<Mutex<Vec<Seen>>>) {
+pub(super) fn mock_server(responses: Vec<String>) -> (String, Arc<Mutex<Vec<Seen>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -87,7 +87,7 @@ fn mock_server(responses: Vec<String>) -> (String, Arc<Mutex<Vec<Seen>>>) {
 
 /// An HTTP/1.1 response with `Connection: close`, so reqwest opens a fresh connection per
 /// request and the server sees each one separately.
-fn http(status_line: &str, headers: &[(&str, &str)], body: &str) -> String {
+pub(super) fn http(status_line: &str, headers: &[(&str, &str)], body: &str) -> String {
     let extra = headers
         .iter()
         .fold(String::new(), |mut out, (name, value)| {
@@ -102,9 +102,9 @@ fn http(status_line: &str, headers: &[(&str, &str)], body: &str) -> String {
 }
 
 /// Fastmail's real challenge, captured verbatim from `api.fastmail.com`.
-const FASTMAIL_CHALLENGE: &str = r#"Bearer resource_metadata="https://api.fastmail.com/.well-known/oauth-protected-resource/jmap/session""#;
+pub(super) const FASTMAIL_CHALLENGE: &str = r#"Bearer resource_metadata="https://api.fastmail.com/.well-known/oauth-protected-resource/jmap/session""#;
 
-fn unauthorized(challenge: &str) -> String {
+pub(super) fn unauthorized(challenge: &str) -> String {
     http(
         "401 Unauthorized",
         &[("WWW-Authenticate", challenge)],
@@ -112,23 +112,29 @@ fn unauthorized(challenge: &str) -> String {
     )
 }
 
-fn ok(body: &str) -> String {
+pub(super) fn ok(body: &str) -> String {
     http("200 OK", &[], body)
 }
 
 /// `Basic base64("alice@example.com:s3cret")`, the header a Basic framing produces.
-const EXPECTED_BASIC: &str = "Basic YWxpY2VAZXhhbXBsZS5jb206czNjcmV0";
+pub(super) const EXPECTED_BASIC: &str = "Basic YWxpY2VAZXhhbXBsZS5jb206czNjcmV0";
 /// The same secret framed as a bearer token — the username is dropped, not encoded.
-const EXPECTED_BEARER: &str = "Bearer s3cret";
+pub(super) const EXPECTED_BEARER: &str = "Bearer s3cret";
 
-fn transport() -> Transport {
+/// A transport presenting `credentials`, which never change.
+fn fixed(credentials: crate::Credentials) -> Transport {
     Transport::new(
-        Credentials::basic("alice@example.com", "s3cret"),
+        &reqwest::Url::parse("http://127.0.0.1/").unwrap(),
+        Arc::new(engine_provider::FixedCredential::unique(credentials.into())),
         tls(),
         &engine_http::RetryConfig::default(),
         &engine_http::test_server::user_agent(),
     )
     .unwrap()
+}
+
+fn transport() -> Transport {
+    fixed(crate::Credentials::basic("alice@example.com", "s3cret"))
 }
 
 #[tokio::test]
@@ -197,13 +203,7 @@ async fn a_bearer_credential_is_not_downgraded_to_basic() {
     // A bare token has no username to build a Basic header from, so the 401 stands.
     let (base, seen) = mock_server(vec![unauthorized(r#"Basic realm="jmap""#)]);
 
-    let transport = Transport::new(
-        Credentials::bearer("tok"),
-        tls(),
-        &engine_http::RetryConfig::default(),
-        &engine_http::test_server::user_agent(),
-    )
-    .unwrap();
+    let transport = fixed(crate::Credentials::bearer("tok"));
     let response = transport.get(&base).await.unwrap();
 
     assert_eq!(response.status(), 401);

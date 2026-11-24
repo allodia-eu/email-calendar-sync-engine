@@ -11,7 +11,7 @@ use engine_core::error::FailureClass;
 use engine_provider::ProviderError;
 use serde_json::Value;
 
-use crate::request::CallId;
+use crate::{request::CallId, server_text::ServerText};
 
 /// A JMAP protocol or transport failure.
 #[derive(Debug, thiserror::Error)]
@@ -87,6 +87,17 @@ pub enum JmapError {
     #[error("invalid JMAP session: {0}")]
     Session(String),
 
+    /// The credential could not be presented, or not replaced: the account's
+    /// [`CredentialSource`](engine_provider::CredentialSource) did not permit the origin, had no
+    /// credential to give, or did not answer within the request's deadline; the engine refused
+    /// the origin (plaintext HTTP, except to loopback from an account configured there); or the
+    /// credential is of a kind JMAP cannot present. In each of those nothing was sent. When the
+    /// source fails as it is asked to replace a credential the server refused with a `401`, a
+    /// request was sent and refused, and this takes the `401`'s place. Classified as the source
+    /// classified it, and `Permanent` for a refusal.
+    #[error("no credential to present: {0}")]
+    Credential(ProviderError),
+
     /// The adapter refused a request before sending it, because the protocol says the
     /// client must not: a draft whose `From` no identity on the account may send as.
     #[error("refused before sending: {0}")]
@@ -103,73 +114,6 @@ pub enum JmapError {
     Unconfirmed(Box<JmapError>),
 }
 
-/// Text a server sent in an error reply: a problem-details document, an HTML page, anything.
-///
-/// It may echo what the request carried (a subject, an address), and the engine never logs or
-/// shows content, so it appears in no `Display` and its `Debug` shows only its length. A host
-/// that deliberately wants it reads it with [`as_str`](Self::as_str), knowing what it may hold.
-///
-/// # Examples
-///
-/// ```
-/// use provider_jmap::ServerText;
-///
-/// let body = ServerText::from(r#"{"type":"urn:ietf:params:jmap:error:limit"}"#);
-/// assert_eq!(format!("{body:?}"), "ServerText(43 bytes)");
-/// assert_eq!(
-///     body.problem_type(),
-///     Some("urn:ietf:params:jmap:error:limit")
-/// );
-/// ```
-#[derive(Clone, PartialEq, Eq, Default)]
-pub struct ServerText(String);
-
-impl ServerText {
-    /// The text as the server sent it, which may contain content the request carried.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// The problem-details `type` (RFC 7807, which RFC 8620 §3.6.1 uses) where the text is such
-    /// a document and its `type` is URI-shaped: a code, safe to show. `None` otherwise.
-    #[must_use]
-    pub fn problem_type(&self) -> Option<&str> {
-        let start = self.0.find("\"type\"")?;
-        let rest = self.0[start + 6..]
-            .trim_start()
-            .strip_prefix(':')?
-            .trim_start();
-        let value = rest.strip_prefix('"')?;
-        let value = &value[..value.find('"')?];
-        let uri_shaped = !value.is_empty()
-            && value.len() <= 200
-            && value.contains(':')
-            && value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b":._/-#?=&%~+".contains(&b));
-        uri_shaped.then_some(value)
-    }
-}
-
-impl From<String> for ServerText {
-    fn from(text: String) -> Self {
-        Self(text)
-    }
-}
-
-impl From<&str> for ServerText {
-    fn from(text: &str) -> Self {
-        Self(text.to_owned())
-    }
-}
-
-impl core::fmt::Debug for ServerText {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "ServerText({} bytes)", self.0.len())
-    }
-}
-
 /// ` (<type>)` where `body` names a problem type, else nothing.
 fn problem_suffix(body: &ServerText) -> String {
     body.problem_type()
@@ -182,7 +126,7 @@ impl JmapError {
     pub(crate) fn status(status: u16, body: impl Into<String>) -> Self {
         Self::Status {
             status,
-            body: ServerText(body.into()),
+            body: ServerText::from(body.into()),
             retry_after: None,
         }
     }
@@ -296,6 +240,7 @@ impl JmapError {
             Self::Method { error_type, .. } => error_type == "serverPartialFail",
             Self::Set { .. }
             | Self::Session(_)
+            | Self::Credential(_)
             | Self::Refused(_)
             | Self::Unsettled(_)
             | Self::Unconfirmed(_) => false,
@@ -329,6 +274,7 @@ impl JmapError {
             | Self::MissingResponse(_)
             | Self::Refused(_) => FailureClass::Permanent,
             Self::Method { error_type, .. } => method_class(error_type),
+            Self::Credential(source) => source.class(),
             Self::Set { error_type, .. } => set_error_class(error_type),
             Self::Unsettled(_) => FailureClass::Retryable,
             // Never retried as it stands: the first attempt may have landed.
@@ -445,6 +391,12 @@ fn transport_class(err: &engine_http::SendError) -> FailureClass {
     }
 }
 
+impl From<engine_provider::CredentialFailure> for JmapError {
+    fn from(failure: engine_provider::CredentialFailure) -> Self {
+        Self::Credential(failure.into_error())
+    }
+}
+
 /// A client error outside any exchange, such as a client that could not be built.
 impl From<reqwest::Error> for JmapError {
     fn from(err: reqwest::Error) -> Self {
@@ -454,6 +406,11 @@ impl From<reqwest::Error> for JmapError {
 
 impl From<JmapError> for ProviderError {
     fn from(err: JmapError) -> Self {
+        // The source's own error, passed through as it gave it: its class, and a rate limit's
+        // instant with it.
+        if let JmapError::Credential(source) = err {
+            return source;
+        }
         if matches!(err, JmapError::Unconfirmed(_)) {
             return ProviderError::needs_confirmation(err.to_string()).with_source(err);
         }

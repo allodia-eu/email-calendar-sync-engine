@@ -536,7 +536,10 @@ byte fetch, and the client picks between them by origin.
 **The guard is about who named the URL, not about which origin it is.** A host named by
 *content* never gets the credential. A host the account's **own server** redirects
 discovery to is the opposite case: it is that server saying where its resources live.
-`provider-jmap`'s `fetch_session` adopts the new origin and the credential follows;
+`provider-jmap`'s `fetch_session` adopts the new origin and the credential follows, through
+the same checks as every JMAP request (`engine_http::AuthenticatedClient`): no credential over
+plaintext HTTP except to loopback from an account configured on loopback, and none to an origin the account's
+`CredentialSource` does not permit (`docs/design/credential-source.md`, "Host binding");
 `provider-caldav` trusts it and sends the credential once it asks with a `401` challenge
 (`DavExecutor::trust_origin`, RFC 9110 §11.5). Both adapters resolve a `Location`
 against the URL that issued it (RFC 9110 §10.2.2, `engine_provider::redirect_target`) and

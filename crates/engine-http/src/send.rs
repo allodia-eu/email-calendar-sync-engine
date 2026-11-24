@@ -12,7 +12,7 @@ use reqwest::{RequestBuilder, Response, header::RETRY_AFTER};
 
 use crate::{
     classify::{StatusAlone, ThrottleClassifier},
-    deadline::{Exchange, drain, send_bounded},
+    deadline::{Exchange, chunk_within, drain, send_bounded},
     error::SendError,
     gate::RequestGate,
     observer::{IgnoreThrottles, ThrottleEvent, ThrottleObserver},
@@ -363,6 +363,39 @@ impl Sent {
         let mut response = self.response;
         let body = drain(&mut response).await?;
         decode(&response, body).await
+    }
+
+    /// This reply with up to `limit` bytes of its body read, for no longer than `within`, so
+    /// its connection is free while the reply is kept. Best effort: a read that fails, runs
+    /// past `limit` or out of time keeps what arrived, and the reply stands as it is. For a
+    /// refusal, whose body nothing depends on.
+    pub(crate) async fn read_refusal(self, limit: usize, within: Duration) -> Self {
+        if self.body.is_some() {
+            return self;
+        }
+        let Self {
+            mut response,
+            stated,
+            ..
+        } = self;
+        let deadline = tokio::time::Instant::now() + within;
+        let mut body = Vec::new();
+        while body.len() < limit {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            match chunk_within(&mut response, left).await {
+                Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+                _ => break,
+            }
+        }
+        body.truncate(limit);
+        Self {
+            response,
+            body: Some(body),
+            stated,
+        }
     }
 
     /// The reply itself, for a caller that wants to stream the body rather than hold it.

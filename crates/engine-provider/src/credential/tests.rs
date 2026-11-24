@@ -197,3 +197,11 @@ async fn a_fixed_credential_answers_the_same_every_time_and_never_replaces() {
     let replacement = fixed.replace(&refused, &request).await.expect("no failure");
     assert!(replacement.is_none(), "a fixed credential never replaces");
 }
+
+#[test]
+fn an_ipv6_host_is_kept_without_its_url_brackets() {
+    // The form IMAP's TLS server name takes, so one source compares both alike.
+    let origin = Origin::new("http", "[::1]", 18080);
+    assert_eq!(origin.host(), "::1");
+    assert_eq!(origin, Origin::new("http", "::1", 18080));
+}

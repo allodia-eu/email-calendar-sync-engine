@@ -73,6 +73,7 @@ mod report;
 mod request;
 mod response;
 mod rules;
+mod server_text;
 mod session;
 mod session_accounts;
 mod session_limits;
@@ -96,10 +97,11 @@ pub use config::{Credentials, JmapConfig};
 use engine_core::ids::BlobId;
 use engine_http::Exchange;
 use engine_provider::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
-pub use error::{JmapError, ServerText};
+pub use error::JmapError;
 pub use request::{CallId, Request, ResultRef, capability};
 use reqwest::Url;
 pub use response::Response;
+pub use server_text::ServerText;
 pub use session::{CoreLimits, Session, SessionUrlPolicy};
 pub use session_accounts::JmapAccountId;
 pub use watch::{DEFAULT_EVENT_SOURCE_PING, JmapWatcher};
@@ -152,10 +154,17 @@ impl JmapClient {
     /// Reports each step to [`JmapConfig::with_connect_observer`]'s observer, if one
     /// is configured.
     ///
+    /// Every request asks the config's credential source for its credential
+    /// ([`JmapConfig::from_credential_source`]): no credential goes over plaintext HTTP unless
+    /// the request and the configured base are both on loopback, and a `401` refusing the
+    /// credential is sent once more with the source's replacement, if it has one.
+    ///
     /// # Errors
     ///
     /// Returns [`JmapError`] on a bad base URL, a transport/HTTP failure, or a
-    /// malformed/incomplete session resource.
+    /// malformed/incomplete session resource; [`JmapError::Credential`] when the credential
+    /// could not be presented (an origin refused, the source failed or did not answer) or the
+    /// source failed to replace one the server refused.
     pub async fn connect(config: JmapConfig) -> Result<Self, JmapError> {
         let base = Url::parse(&config.base_url)
             .map_err(|e| JmapError::session(format!("bad base_url {:?}: {e}", config.base_url)))?;
@@ -164,7 +173,8 @@ impl JmapClient {
             .as_deref()
             .unwrap_or(&IgnoreConnectSteps);
         let transport = Transport::new(
-            config.credentials,
+            &base,
+            config.source,
             &config.tls,
             &config.retry,
             &config.user_agent,

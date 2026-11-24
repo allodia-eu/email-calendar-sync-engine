@@ -67,7 +67,9 @@ impl core::fmt::Debug for CredentialSubject {
 /// presents a credential before TLS is up.
 ///
 /// Scheme and host are kept in ASCII lowercase, so origins compare as the URL standard
-/// compares them.
+/// compares them. An IPv6 address is kept without the brackets a URL puts around it (`::1`,
+/// not `[::1]`), the form IMAP's TLS server name takes, so an HTTP origin and an IMAP one
+/// name the same host the same way.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Origin {
     scheme: Box<str>,
@@ -76,9 +78,14 @@ pub struct Origin {
 }
 
 impl Origin {
-    /// The origin `scheme://host:port`, with scheme and host lowercased.
+    /// The origin `scheme://host:port`, with scheme and host lowercased, and an IPv6 host's
+    /// URL brackets removed.
     #[must_use]
     pub fn new(scheme: &str, host: &str, port: u16) -> Self {
+        let host = host
+            .strip_prefix('[')
+            .and_then(|inner| inner.strip_suffix(']'))
+            .unwrap_or(host);
         Self {
             scheme: scheme.to_ascii_lowercase().into_boxed_str(),
             host: host.to_ascii_lowercase().into_boxed_str(),

@@ -68,6 +68,9 @@ engine-sync = { workspace = true }
 store-sqlite = { workspace = true }
 # The process-kill suite's store files, one directory per case.
 tempfile = { workspace = true }
+# The PKCE challenge (`S256`) of the tokens the live credential-source suite mints from the
+# Stalwart harness's own OAuth endpoints (`tests/stalwart_oauth/`).
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

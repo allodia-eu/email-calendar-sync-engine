@@ -7,7 +7,7 @@ use core::fmt;
 use std::sync::Arc;
 
 use engine_core::ids::SharedAccountId;
-use engine_provider::ConnectObserver;
+use engine_provider::{ConnectObserver, Credential, CredentialSource, FixedCredential};
 use engine_tls::TlsClientConfig;
 
 use crate::SessionUrlPolicy;
@@ -53,6 +53,17 @@ impl Credentials {
     }
 }
 
+impl From<Credentials> for Credential {
+    /// The engine's credential for the same secret: a password, or a token with no username,
+    /// which HTTP does not need.
+    fn from(credentials: Credentials) -> Self {
+        match credentials {
+            Credentials::Basic { username, password } => Self::password(username, password),
+            Credentials::Bearer(token) => Self::bearer(token),
+        }
+    }
+}
+
 impl fmt::Debug for Credentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Never render the secret.
@@ -68,7 +79,7 @@ impl fmt::Debug for Credentials {
 #[derive(Clone)]
 pub struct JmapConfig {
     pub(crate) base_url: String,
-    pub(crate) credentials: Credentials,
+    pub(crate) source: Arc<dyn CredentialSource>,
     pub(crate) session_path: String,
     pub(crate) session_urls: SessionUrlPolicy,
     pub(crate) tls: TlsClientConfig,
@@ -82,15 +93,68 @@ impl JmapConfig {
     /// Configures a connection to `base_url` (e.g. `http://127.0.0.1:18080`) with
     /// `credentials`, naming `user_agent` in every request, defaulting to well-known session
     /// discovery and rebasing advertised URLs onto the connection.
+    ///
+    /// The credential never changes and is never replaced: it is a
+    /// [`FixedCredential`] under a subject of its own. It goes over plaintext HTTP only when
+    /// `base_url` and the request are both on loopback (`http://127.0.0.1:…`, `localhost`,
+    /// `::1`): a plaintext base anywhere else fails every request as `Permanent` before anything
+    /// is sent, and an `https` base never sends it over `http://`. Every request is checked as
+    /// [`from_credential_source`](Self::from_credential_source) describes. A host whose credential
+    /// changes (an OAuth token, a broker's grant) uses
+    /// [`from_credential_source`](Self::from_credential_source) instead of rebuilding the client.
     #[must_use]
     pub fn new(
         base_url: impl Into<String>,
         credentials: Credentials,
         user_agent: engine_http::UserAgent,
     ) -> Self {
+        let source = FixedCredential::unique(credentials.into());
+        Self::from_credential_source(base_url, Arc::new(source), user_agent)
+    }
+
+    /// Configures a connection to `base_url` that asks `source` for the credential on every
+    /// request, naming `user_agent` in every request, defaulting to well-known session
+    /// discovery and rebasing advertised URLs onto the connection.
+    ///
+    /// Asked under the request's deadline, for every origin a request goes to: the configured
+    /// one, every well-known redirect target, and each URL the session advertises
+    /// (`apiUrl`, `downloadUrl`, `uploadUrl`, `eventSourceUrl`). Each must be one the source
+    /// [permits](CredentialSource::permits) and, over plaintext HTTP, a loopback origin from
+    /// a `base_url` on plaintext loopback too, or the request fails before anything is sent.
+    /// A plaintext loopback base also gets a client that ignores the environment's proxies
+    /// (`engine_http::AuthenticatedClient`). When the server refuses the credential
+    /// with a `401`, the source is asked once for a
+    /// [replacement](CredentialSource::replace), and the request sent once more with it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    ///
+    /// use engine_provider::{Credential, CredentialSubject, FixedCredential};
+    /// use provider_jmap::JmapConfig;
+    ///
+    /// # fn example(user_agent: engine_http::UserAgent) {
+    /// let source = FixedCredential::new(
+    ///     CredentialSubject::new("account-1"),
+    ///     Credential::bearer("token"),
+    /// );
+    /// let config = JmapConfig::from_credential_source(
+    ///     "https://jmap.example.com",
+    ///     Arc::new(source),
+    ///     user_agent,
+    /// );
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn from_credential_source(
+        base_url: impl Into<String>,
+        source: Arc<dyn CredentialSource>,
+        user_agent: engine_http::UserAgent,
+    ) -> Self {
         Self {
             base_url: base_url.into(),
-            credentials,
+            source,
             session_path: "/.well-known/jmap".to_owned(),
             session_urls: SessionUrlPolicy::RebaseToConnection,
             tls: TlsClientConfig::default(),

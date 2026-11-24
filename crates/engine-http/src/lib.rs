@@ -40,7 +40,18 @@
 //! that keeps moving is never cut off. An adapter builds its client with [`client`] and says
 //! which requests are submissions ([`Exchange`]); a failure tells it whether the request
 //! [may have been received](SendError::may_have_been_received). See `deadline.rs`.
+//!
+//! # A request that carries a credential
+//!
+//! [`AuthenticatedClient`] is the client for those: it asks the account's
+//! [`CredentialSource`](engine_provider::CredentialSource) for the credential on every request,
+//! sends nothing over plaintext HTTP except to loopback from an account configured on loopback
+//! (and builds that account a client no proxy sees), follows no redirect, sends nothing to an
+//! origin the source does not permit, and on a `401` the adapter reads as a refusal asks for one
+//! replacement and sends the request once more (`docs/design/credential-source.md`). See
+//! `authenticated.rs`.
 
+mod authenticated;
 mod classify;
 mod deadline;
 mod error;
@@ -55,6 +66,7 @@ mod send;
 pub mod test_server;
 mod user_agent;
 
+pub use authenticated::{AuthenticatedClient, Unauthorized};
 pub use classify::{StatusAlone, Throttle, ThrottleClassifier};
 pub use deadline::{Exchange, chunk_within, client};
 pub use error::{SendError, gateway_without_answer};

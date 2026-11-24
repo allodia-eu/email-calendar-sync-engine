@@ -2,12 +2,16 @@
 
 use super::*;
 
-fn basic() -> Credentials {
-    Credentials::basic("alice@example.com", "s3cret")
+fn basic() -> Credential {
+    Credential::password("alice@example.com", "s3cret")
 }
 
-fn bearer() -> Credentials {
-    Credentials::bearer("tok")
+fn bearer() -> Credential {
+    Credential::bearer("tok")
+}
+
+fn acting_as() -> Credential {
+    Credential::acting_as("admin@example.com", "s3cret", "alice@example.com")
 }
 
 // ---- challenge parsing -------------------------------------------------------------
@@ -78,33 +82,41 @@ fn an_empty_header_offers_nothing() {
 fn a_bearer_only_challenge_switches_a_basic_credential_to_bearer() {
     // The bug this module exists for: we sent Basic, the server takes only Bearer.
     assert_eq!(
-        negotiate(AuthScheme::Basic, [r#"Bearer realm="jmap""#], &basic()),
-        Some(AuthScheme::Bearer)
+        read_challenge(AuthScheme::Basic, [r#"Bearer realm="jmap""#], &basic()),
+        Challenge::Reframe(AuthScheme::Bearer)
     );
 }
 
 #[test]
-fn a_challenge_offering_the_scheme_we_used_is_left_alone() {
+fn a_challenge_offering_the_scheme_we_used_refuses_the_credential() {
     // Stalwart's shape. The credential is simply wrong — retrying under the same scheme
-    // would be a pointless second round trip, and switching would hide the real cause.
+    // would be a pointless second round trip, and switching would hide the real cause. Only
+    // a replacement can answer it.
     assert_eq!(
-        negotiate(AuthScheme::Basic, [r#"Basic realm="jmap""#], &basic()),
-        None
+        read_challenge(AuthScheme::Basic, [r#"Basic realm="jmap""#], &basic()),
+        Challenge::Refused
     );
 }
 
 #[test]
-fn no_challenge_at_all_leaves_the_401_standing() {
-    assert_eq!(negotiate(AuthScheme::Basic, [], &basic()), None);
-    assert_eq!(negotiate(AuthScheme::Basic, [""], &basic()), None);
+fn no_challenge_at_all_refuses_the_credential() {
+    // Nothing to re-frame to, and the server judged the credential all the same (YAHOO-1).
+    assert_eq!(
+        read_challenge(AuthScheme::Basic, [], &basic()),
+        Challenge::Refused
+    );
+    assert_eq!(
+        read_challenge(AuthScheme::Basic, [""], &basic()),
+        Challenge::Refused
+    );
 }
 
 #[test]
 fn a_basic_only_challenge_cannot_rescue_a_bearer_only_credential() {
     // A bare token has no username to build a Basic header from, so the 401 stands.
     assert_eq!(
-        negotiate(AuthScheme::Bearer, [r#"Basic realm="jmap""#], &bearer()),
-        None
+        read_challenge(AuthScheme::Bearer, [r#"Basic realm="jmap""#], &bearer()),
+        Challenge::Unusable
     );
 }
 
@@ -112,8 +124,8 @@ fn a_basic_only_challenge_cannot_rescue_a_bearer_only_credential() {
 fn a_basic_only_challenge_switches_a_basic_credential_back_to_basic() {
     // The mirror case: latched onto Bearer, then a server that wants Basic.
     assert_eq!(
-        negotiate(AuthScheme::Bearer, [r#"Basic realm="jmap""#], &basic()),
-        Some(AuthScheme::Basic)
+        read_challenge(AuthScheme::Bearer, [r#"Basic realm="jmap""#], &basic()),
+        Challenge::Reframe(AuthScheme::Basic)
     );
 }
 
@@ -121,13 +133,13 @@ fn a_basic_only_challenge_switches_a_basic_credential_back_to_basic() {
 fn bearer_wins_when_both_are_offered_and_neither_was_used() {
     // RFC 8620 §8.2 marks Basic NOT RECOMMENDED, so it is the fallback, not the pick.
     assert_eq!(
-        negotiate(AuthScheme::Bearer, ["Basic, Bearer"], &basic()),
-        None,
+        read_challenge(AuthScheme::Bearer, ["Basic, Bearer"], &basic()),
+        Challenge::Refused,
         "bearer was already used and is offered — nothing to switch"
     );
     assert_eq!(
-        negotiate(AuthScheme::Basic, ["Digest, Bearer, Basic"], &basic()),
-        None,
+        read_challenge(AuthScheme::Basic, ["Digest, Bearer, Basic"], &basic()),
+        Challenge::Refused,
         "basic was used and is offered — nothing to switch"
     );
 }
@@ -136,8 +148,8 @@ fn bearer_wins_when_both_are_offered_and_neither_was_used() {
 fn an_unsupported_scheme_only_challenge_leaves_the_401_standing() {
     // We cannot present Digest; reporting the server's 401 honestly beats guessing.
     assert_eq!(
-        negotiate(AuthScheme::Basic, [r#"Digest realm="jmap""#], &basic()),
-        None
+        read_challenge(AuthScheme::Basic, [r#"Digest realm="jmap""#], &basic()),
+        Challenge::Unusable
     );
 }
 
@@ -145,8 +157,8 @@ fn an_unsupported_scheme_only_challenge_leaves_the_401_standing() {
 fn the_scheme_token_match_is_case_insensitive() {
     // RFC 9110 §11.6.1: the scheme token is case-insensitive.
     assert_eq!(
-        negotiate(AuthScheme::Basic, ["BEARER"], &basic()),
-        Some(AuthScheme::Bearer)
+        read_challenge(AuthScheme::Basic, ["BEARER"], &basic()),
+        Challenge::Reframe(AuthScheme::Bearer)
     );
 }
 
@@ -155,38 +167,53 @@ fn challenges_split_across_several_headers_are_all_considered() {
     // A server may send one `WWW-Authenticate` header per challenge rather than one
     // comma-joined value; both spellings are equivalent.
     assert_eq!(
-        negotiate(AuthScheme::Basic, ["Digest", "Bearer"], &basic()),
-        Some(AuthScheme::Bearer)
+        read_challenge(AuthScheme::Basic, ["Digest", "Bearer"], &basic()),
+        Challenge::Reframe(AuthScheme::Bearer)
     );
 }
 
 // ---- credential capabilities -------------------------------------------------------
 
 #[test]
-fn a_basic_credential_can_present_either_scheme_and_a_bearer_one_cannot() {
-    assert!(basic().can_present(AuthScheme::Basic));
-    assert!(basic().can_present(AuthScheme::Bearer));
-    assert!(bearer().can_present(AuthScheme::Bearer));
-    assert!(!bearer().can_present(AuthScheme::Basic));
+fn a_password_can_be_framed_either_way_and_a_token_only_as_bearer() {
+    assert!(can_present(&basic(), AuthScheme::Basic));
+    assert!(can_present(&basic(), AuthScheme::Bearer));
+    assert!(can_present(&bearer(), AuthScheme::Bearer));
+    assert!(!can_present(&bearer(), AuthScheme::Basic));
 }
 
 #[test]
-fn the_bearer_secret_is_the_password_of_a_basic_credential() {
-    // Re-framing must send the same secret, not the `username:password` pair.
-    assert_eq!(basic().bearer_secret(), "s3cret");
-    assert_eq!(bearer().bearer_secret(), "tok");
+fn an_administrator_acting_as_another_account_cannot_be_presented_over_jmap() {
+    // HTTP has no authorization identity: framing the administrator's password alone would
+    // open the administrator's own account.
+    assert!(!can_present(&acting_as(), AuthScheme::Basic));
+    assert!(!can_present(&acting_as(), AuthScheme::Bearer));
+    assert_eq!(natural_scheme(&acting_as()), None);
+    assert_eq!(NegotiatedScheme::default().scheme_for(&acting_as()), None);
+    assert_eq!(
+        read_challenge(AuthScheme::Basic, ["Bearer"], &acting_as()),
+        Challenge::Unusable
+    );
 }
 
 #[test]
-fn the_preferred_scheme_follows_the_credential_shape() {
-    assert_eq!(basic().preferred_scheme(), AuthScheme::Basic);
-    assert_eq!(bearer().preferred_scheme(), AuthScheme::Bearer);
+fn the_natural_scheme_follows_the_credential_shape() {
+    assert_eq!(natural_scheme(&basic()), Some(AuthScheme::Basic));
+    assert_eq!(natural_scheme(&bearer()), Some(AuthScheme::Bearer));
 }
 
 #[test]
-fn a_latched_scheme_is_readable_and_replaceable() {
-    let cell = NegotiatedScheme::new(AuthScheme::Basic);
-    assert_eq!(cell.get(), AuthScheme::Basic);
+fn a_latched_scheme_applies_to_every_credential_that_can_be_framed_under_it() {
+    let cell = NegotiatedScheme::default();
+    assert_eq!(cell.latched(), None);
+    assert_eq!(cell.scheme_for(&basic()), Some(AuthScheme::Basic));
     cell.set(AuthScheme::Bearer);
-    assert_eq!(cell.get(), AuthScheme::Bearer);
+    assert_eq!(cell.latched(), Some(AuthScheme::Bearer));
+    assert_eq!(cell.scheme_for(&basic()), Some(AuthScheme::Bearer));
+    cell.set(AuthScheme::Basic);
+    assert_eq!(
+        cell.scheme_for(&bearer()),
+        Some(AuthScheme::Bearer),
+        "a token stays a bearer token whatever the server said to a password"
+    );
 }

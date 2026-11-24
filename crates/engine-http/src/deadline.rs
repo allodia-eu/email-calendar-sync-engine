@@ -74,6 +74,29 @@ pub fn client(
         .user_agent(user_agent.as_str())
 }
 
+/// [`client`] for an account configured at `configured`, the URL the host gave the adapter:
+/// what [`AuthenticatedClient`](crate::AuthenticatedClient) is built on.
+///
+/// It is [`client`], with one difference: an account whose configured origin is plaintext
+/// HTTP on loopback gets a client that ignores proxies (`HTTP_PROXY`, `ALL_PROXY`, which
+/// reqwest otherwise reads from the environment and applies to loopback too, unless `NO_PROXY`
+/// lists it). Such an account is the only one whose credential ever goes over plaintext
+/// ([`AuthenticatedClient`](crate::AuthenticatedClient)), and a proxy would see it in cleartext; a
+/// server on the same machine never needs one. Every other account keeps the environment's
+/// proxies, so a host behind a corporate proxy still reaches its servers over `https`.
+pub(crate) fn client_for(
+    tls: &engine_tls::TlsClientConfig,
+    user_agent: &crate::UserAgent,
+    configured: &reqwest::Url,
+) -> reqwest::ClientBuilder {
+    let builder = client(tls, user_agent);
+    if crate::authenticated::plaintext_loopback(configured) {
+        builder.no_proxy()
+    } else {
+        builder
+    }
+}
+
 /// How large a piece of a request body reqwest is handed at a time.
 ///
 /// Small enough that a slow uplink moves one in seconds, so the stall bound is on a server
@@ -352,3 +375,7 @@ mod tests;
 #[cfg(test)]
 #[path = "client_tests.rs"]
 mod client_tests;
+
+#[cfg(test)]
+#[path = "client_proxy_tests.rs"]
+mod client_proxy_tests;
