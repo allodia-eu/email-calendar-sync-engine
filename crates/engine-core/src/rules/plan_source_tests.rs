@@ -77,3 +77,31 @@ fn a_redirect_that_keeps_a_copy_needs_only_that_feature() {
         vec![loss(RulePart::Action(0), LossReason::NotExpressible)]
     );
 }
+
+#[test]
+fn a_forwarding_rule_in_error_is_held_back_either_way_and_not_listed_for_the_switch() {
+    // It is stored disabled whatever the forwarding switch says, so the switch decides nothing
+    // for it: the preflight list leaves it out, and its outcome says why it is disabled.
+    let rule = MailRule::typed(
+        Match::all(vec![subject("a")]),
+        vec![Action::Redirect {
+            to: vec![RuleAddress::new("r@example.com").unwrap()],
+            copy: false,
+        }],
+    )
+    .marked_in_error();
+    let listed = held_forwarding(std::slice::from_ref(&rule), &rich());
+    assert_eq!(listed, Vec::new());
+    let (written, outcome) = one(&rule, &rich(), IMPORT);
+    assert_eq!(outcome.kept, Kept::Disabled);
+    assert!(
+        outcome
+            .losses
+            .contains(&loss(RulePart::Rule, LossReason::SourceInError))
+    );
+    assert!(!written.expect("stored").enabled);
+    // The same rule not in error is the switch's to decide, and listed.
+    let mut sound = rule;
+    sound.in_error = false;
+    assert_eq!(held_forwarding(&[sound], &rich()).len(), 1);
+}

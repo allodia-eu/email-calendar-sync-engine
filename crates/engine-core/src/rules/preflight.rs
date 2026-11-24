@@ -14,8 +14,9 @@ use super::{ForwardingRules, MailRule, PlanMode, RuleOutcome, RuleVocabulary, pl
 /// agrees with the receipt of an import planned against the same `target`; an import plans
 /// against the vocabulary and folders it reads when it runs, so a target that changed in between
 /// can answer differently, and the receipt is what happened. A rule already disabled at the
-/// source, or one the target would not keep either way, is not listed: the switch changes nothing
-/// for it.
+/// source, one its source marks in error (stored disabled either way, its outcome saying
+/// [`SourceInError`](super::LossReason::SourceInError)), or one the target would not keep either
+/// way, is not listed: the switch changes nothing for it.
 #[must_use]
 pub fn held_forwarding(rules: &[MailRule], target: &RuleVocabulary) -> Vec<RuleOutcome> {
     let import = |forwarding| plan_rules(rules, target, PlanMode::Import { forwarding });
