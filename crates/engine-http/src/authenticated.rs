@@ -149,6 +149,19 @@ impl AuthenticatedClient {
         &self.configured
     }
 
+    /// Whether a request to `url` may carry the credential at all: the plaintext rule
+    /// [`send`](Self::send) applies first, then the source's
+    /// [`permits`](CredentialSource::permits). Asks the source for nothing.
+    ///
+    /// For an adapter that decides before it sends whether an origin may ever receive the
+    /// credential, such as a discovery that refuses to move to an origin the credential could not
+    /// follow it to. [`send`](Self::send) checks the same again for every request, so an adapter
+    /// that skips this sends nothing it should not.
+    #[must_use]
+    pub fn admits(&self, url: &Url) -> bool {
+        credential_origin(url, &self.configured).is_ok_and(|origin| self.source.permits(&origin))
+    }
+
     /// Sends `request` on this client with a credential from the source, presented by
     /// `present`, and once more with a replacement if the server refuses it.
     ///
@@ -383,3 +396,7 @@ mod reply_tests;
 #[cfg(test)]
 #[path = "authenticated_wire_tests.rs"]
 mod wire_tests;
+
+#[cfg(test)]
+#[path = "authenticated_admits_tests.rs"]
+mod admits_tests;

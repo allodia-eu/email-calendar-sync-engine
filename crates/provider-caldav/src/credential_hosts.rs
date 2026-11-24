@@ -6,6 +6,12 @@
 //! password is the host's to confine; an OAuth access token is more pressing, because whoever
 //! receives one can use it wherever its issuer's resource servers accept it. Which hosts qualify
 //! is a decision the host makes from the token's issuer, so the adapter asks rather than knows.
+//!
+//! Deprecated: the account's [`CredentialSource`](engine_provider::CredentialSource) answers the
+//! same question for every adapter, through
+//! [`permits`](engine_provider::CredentialSource::permits), which sees the scheme and port as
+//! well as the host (`docs/design/credential-source.md`, "Host binding"). A policy set here is
+//! still consulted beside it, and both must agree.
 
 use std::sync::Arc;
 
@@ -14,6 +20,10 @@ use std::sync::Arc;
 /// Consulted for the configured base URL before anything is sent, and for every origin
 /// discovery moves the connection to. A refusal fails the connect; the credential is never sent
 /// to a host the policy refused.
+#[deprecated(
+    note = "answer `CredentialSource::permits` instead, and build the config with \
+            `from_credential_source`; a policy set here is still consulted beside it"
+)]
 pub trait CredentialHosts: Send + Sync {
     /// Whether `host` may receive the credential.
     fn permits(&self, host: &str) -> bool;
@@ -28,22 +38,9 @@ pub(crate) fn host_of(url: &str) -> Option<String> {
 }
 
 /// Whether `policy` lets `url` receive the credential: always, without a policy.
+#[allow(deprecated)]
 pub(crate) fn permitted(policy: Option<&Arc<dyn CredentialHosts>>, url: &str) -> bool {
     policy.is_none_or(|policy| host_of(url).is_some_and(|host| policy.permits(&host)))
-}
-
-/// Refuses a configured base URL the policy does not permit, before anything is sent to it.
-pub(crate) fn refuse_unpermitted_base(
-    policy: Option<&Arc<dyn CredentialHosts>>,
-    base_url: &str,
-) -> Result<(), crate::CalDavError> {
-    if permitted(policy, base_url) {
-        Ok(())
-    } else {
-        Err(crate::CalDavError::protocol(
-            "the account's credential is not permitted at the configured server".to_owned(),
-        ))
-    }
 }
 
 #[cfg(test)]

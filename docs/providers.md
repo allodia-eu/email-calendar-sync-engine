@@ -338,6 +338,12 @@ let contacts = provider_caldav::CardDavProvider::connect(
 
 One `CalDavProvider` serves every calendar under the home its discovery found. `sync_calendars` lists them, each with its collection tag; `Engine::sync_calendar` syncs the list and then every calendar's events; a write names its calendar on the draft.
 
+`new` takes a fixed credential. A host whose credential changes (an OAuth token, a broker's grant)
+builds the config with `CalDavConfig::from_credential_source(base_url, source, agent)` (the same on
+`CardDavConfig`, and `TalkMeetings::from_credential_source`): the source is asked on every request
+that carries the credential, and a `401` it can answer is replaced once and the request sent again
+(`docs/design/credential-source.md`). Its `permits` replaces the deprecated `CredentialHosts`.
+
 ### Notes
 
 - A `CalDavProvider` binds no calendar. Each calendar's events sync under a scope of their own, and a calendar whose listing tag has not moved since its last sync is skipped without a request.

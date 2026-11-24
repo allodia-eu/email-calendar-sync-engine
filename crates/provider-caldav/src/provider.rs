@@ -28,7 +28,6 @@ use engine_provider::{
 
 use crate::{
     caldav_config::CalDavConfig,
-    credential_hosts::refuse_unpermitted_base,
     discovery,
     error::CalDavError,
     href::{collection_href, resource_name},
@@ -117,10 +116,9 @@ impl CalDavProvider {
             .connect_observer
             .as_deref()
             .unwrap_or(&IgnoreConnectSteps);
-        refuse_unpermitted_base(config.credential_hosts.as_ref(), &config.base_url)?;
-        let client = DavClient::new(
+        let client = DavClient::from_source(
             &config.base_url,
-            config.credentials,
+            config.source,
             &config.tls,
             &config.retry,
             &config.user_agent,

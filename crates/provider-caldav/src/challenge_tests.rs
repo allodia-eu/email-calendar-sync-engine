@@ -8,6 +8,7 @@
 //!
 //! `docker/sabredav` serves the second and third for real (`/bare/` and `/open/`), and
 //! `tests/live_challenges.rs` drives them; these pin the same rules without a container.
+#![allow(deprecated)] // One case keeps the deprecated host policy working.
 
 use std::sync::{Arc, Mutex};
 

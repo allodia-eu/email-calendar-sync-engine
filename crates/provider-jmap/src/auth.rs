@@ -110,9 +110,9 @@ impl NegotiatedScheme {
 /// seen; `None` for a kind JMAP cannot present (an administrator acting as another account:
 /// HTTP has no authorization identity to carry it).
 pub(crate) fn natural_scheme(credential: &Credential) -> Option<AuthScheme> {
-    match credential {
-        Credential::Password { .. } => Some(AuthScheme::Basic),
-        Credential::Bearer { .. } => Some(AuthScheme::Bearer),
+    match engine_http::credential_scheme(credential)? {
+        "basic" => Some(AuthScheme::Basic),
+        "bearer" => Some(AuthScheme::Bearer),
         _ => None,
     }
 }
@@ -159,55 +159,23 @@ pub(crate) fn read_challenge<'a>(
     challenges: impl IntoIterator<Item = &'a str>,
     credential: &Credential,
 ) -> Challenge {
-    let offered: Vec<String> = challenges.into_iter().flat_map(challenge_schemes).collect();
-    let offers = |scheme: AuthScheme| offered.iter().any(|s| s == scheme.token());
-    if offered.is_empty() || offers(used) {
+    let offered: Vec<String> = challenges
+        .into_iter()
+        .flat_map(engine_http::challenge_schemes)
+        .map(str::to_owned)
+        .collect();
+    if engine_http::asks_for(&offered, used.token()) {
         return Challenge::Refused;
     }
+    let offers = |scheme: AuthScheme| {
+        offered
+            .iter()
+            .any(|token| token.eq_ignore_ascii_case(scheme.token()))
+    };
     [AuthScheme::Bearer, AuthScheme::Basic]
         .into_iter()
         .find(|&scheme| offers(scheme) && can_present(credential, scheme))
         .map_or(Challenge::Unusable, Challenge::Reframe)
-}
-
-/// The scheme tokens a `WWW-Authenticate` header value offers, lowercased.
-///
-/// The header is a comma-separated list of challenges, each a scheme token optionally
-/// followed by a `token68` or by comma-separated `name=value` auth-params (RFC 9110
-/// §11.6.1). That makes the comma ambiguous — it separates challenges *and* params — so
-/// a segment is only read as a new challenge when its first token is a bare word: a
-/// `realm="jmap"` continuation carries an `=`, a scheme never does. Commas inside a
-/// quoted param value (`realm="a,b"`) are not separators at all.
-fn challenge_schemes(header: &str) -> Vec<String> {
-    split_outside_quotes(header)
-        .into_iter()
-        .filter_map(|segment| segment.split_whitespace().next())
-        .filter(|first| !first.contains('='))
-        .map(str::to_ascii_lowercase)
-        .collect()
-}
-
-/// Splits on commas that are not inside a quoted string, so a quoted auth-param value
-/// containing a comma stays one segment.
-fn split_outside_quotes(header: &str) -> Vec<&str> {
-    let mut segments = Vec::new();
-    let mut start = 0;
-    let mut quoted = false;
-    let mut escaped = false;
-    for (index, ch) in header.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if quoted && ch == '\\' {
-            escaped = true;
-        } else if ch == '"' {
-            quoted = !quoted;
-        } else if ch == ',' && !quoted {
-            segments.push(&header[start..index]);
-            start = index + 1;
-        }
-    }
-    segments.push(&header[start..]);
-    segments
 }
 
 #[cfg(test)]

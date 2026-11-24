@@ -257,3 +257,132 @@ async fn a_server_that_does_not_answer_is_a_talk_transport_error() {
     let err = talk(&server).create_meeting(&request()).await.unwrap_err();
     assert!(err.detail().starts_with("Talk transport error"), "{err}");
 }
+
+/// A source whose first token the server has revoked, and which mints one replacement and
+/// answers with it from then on, as a refreshing source does.
+#[derive(Debug)]
+struct Revoked {
+    subject: engine_provider::CredentialSubject,
+    replaced: std::sync::Mutex<usize>,
+}
+
+#[async_trait::async_trait]
+impl CredentialSource for Revoked {
+    fn subject(&self) -> &engine_provider::CredentialSubject {
+        &self.subject
+    }
+
+    async fn credential(
+        &self,
+        _: &engine_provider::CredentialRequest<'_>,
+    ) -> Result<engine_provider::Credential, ProviderError> {
+        let token = if *self.replaced.lock().unwrap() == 0 {
+            "revoked"
+        } else {
+            "fresh"
+        };
+        Ok(engine_provider::Credential::bearer(token))
+    }
+
+    async fn replace(
+        &self,
+        _: &engine_provider::Credential,
+        _: &engine_provider::CredentialRequest<'_>,
+    ) -> Result<Option<engine_provider::Credential>, ProviderError> {
+        *self.replaced.lock().unwrap() += 1;
+        Ok(Some(engine_provider::Credential::bearer("fresh")))
+    }
+}
+
+#[tokio::test]
+async fn a_refused_token_is_replaced_once_and_the_request_sent_again() {
+    let (server, seen) = mock_server_capturing(vec![
+        "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
+        http("200 OK", CAPABILITIES),
+        http("201 Created", CREATED),
+    ]);
+    let source = Arc::new(Revoked {
+        subject: engine_provider::CredentialSubject::new("acct-1"),
+        replaced: std::sync::Mutex::new(0),
+    });
+    let talk = TalkMeetings::from_credential_source(
+        &server,
+        Arc::clone(&source) as Arc<dyn CredentialSource>,
+        &TlsClientConfig::default(),
+        &RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
+    )
+    .unwrap();
+
+    talk.create_meeting(&request()).await.expect("made");
+
+    let seen = seen.lock().unwrap();
+    assert!(seen[0].contains("Bearer revoked"), "the refused request");
+    assert!(
+        seen[1].contains("Bearer fresh"),
+        "the same request, sent again"
+    );
+    assert!(
+        seen[2].contains("Bearer fresh"),
+        "the next request asks the source anew"
+    );
+    assert_eq!(*source.replaced.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn an_administrator_acting_as_another_account_is_refused_before_anything_is_sent() {
+    let (server, seen) = mock_server_capturing(vec![]);
+    let source = Arc::new(engine_provider::FixedCredential::unique(
+        engine_provider::Credential::acting_as("admin", "pw", "alice"),
+    ));
+    let talk = TalkMeetings::from_credential_source(
+        &server,
+        source,
+        &TlsClientConfig::default(),
+        &RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
+    )
+    .unwrap();
+
+    let err = talk.create_meeting(&request()).await.unwrap_err();
+    assert_eq!(err.class(), FailureClass::Permanent, "{err}");
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "HTTP has no authorization identity"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_post_is_sent_again_once_and_makes_one_conversation() {
+    // The capabilities `GET` passes; the token is refused on the `POST` that makes the room.
+    let (server, seen) = mock_server_capturing(vec![
+        http("200 OK", CAPABILITIES),
+        "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
+        http("201 Created", CREATED),
+    ]);
+    let source = Arc::new(Revoked {
+        subject: engine_provider::CredentialSubject::new("acct-1"),
+        replaced: std::sync::Mutex::new(0),
+    });
+    let talk = TalkMeetings::from_credential_source(
+        &server,
+        Arc::clone(&source) as Arc<dyn CredentialSource>,
+        &TlsClientConfig::default(),
+        &RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
+    )
+    .unwrap();
+
+    talk.create_meeting(&request()).await.expect("made");
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 3, "one replay, no more");
+    assert!(seen[1].starts_with("POST ") && seen[1].contains("Bearer revoked"));
+    assert!(seen[2].starts_with("POST ") && seen[2].contains("Bearer fresh"));
+    assert_eq!(
+        body(&seen[1]),
+        body(&seen[2]),
+        "the same conversation asked for"
+    );
+    assert_eq!(*source.replaced.lock().unwrap(), 1);
+}

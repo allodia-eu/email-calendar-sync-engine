@@ -1,7 +1,8 @@
 # Design note: one provider-neutral `CredentialSource`
 
-Status: accepted; steps 1 to 3 of "Phasing" have landed (`engine_provider::credential`,
-IMAP/SMTP on it, the IMAP authorization identity, and JMAP on `engine_http::AuthenticatedClient`). The direction is principle 7 of
+Status: accepted; steps 1 to 4 of "Phasing" have landed (`engine_provider::credential`,
+IMAP/SMTP on it, the IMAP authorization identity, JMAP on `engine_http::AuthenticatedClient`, and
+CalDAV, CardDAV and Talk on the same client). The direction is principle 7 of
 `north-star.md`: **credentials are asked for, not held.** The owner settled every open
 question on 2026-11-23 ("Decisions", at the end), and the body below states each decision where
 it applies. One `CredentialSource` is a "Next" step in
@@ -268,7 +269,10 @@ There are two layers, and the source can only narrow:
 2. **`CredentialSource::permits(origin)`, the host's policy.** It is checked for the configured
    origin before anything is sent, and for every origin discovery adds. A refusal fails the
    connect, and nothing is sent. It replaces `provider_caldav::CredentialHosts`, which keeps
-   working as a deprecated shim combined with `permits` (both must agree). The origin includes the
+   working as a deprecated shim combined with `permits` (both must agree). An adapter that must
+   decide before it sends whether an origin may ever receive the credential (CalDAV discovery,
+   before it moves to an origin) asks `AuthenticatedClient::admits`, which gives the plaintext
+   rule and `permits` as one answer, and asks the source for no credential. The origin includes the
    scheme and port, not only the host, so a host can refuse a nonstandard port, or plaintext even
    on loopback.
 
@@ -342,7 +346,7 @@ how a provider is built, not how a capability is reached.
 | `engine-http` | `AuthenticatedClient` (`send_authenticated` in the plan), which also enforces the plaintext rule ("Host binding") | Additive API. **Behaviour change:** a credential is no longer sent to an `http://` origin other than loopback |
 | `provider-imap` | `ImapConfig` holds `Arc<dyn engine_provider::CredentialSource>`; `with_renewal` becomes the shared helper; `dial`/`filing`/`smtp_auth` match on `Credential` | **Breaking**: (1) implementers of `provider_imap::CredentialSource` (`credentials`→`credential(request)`, `renew`→`replace(refused, request)`, new `subject`), and callers of `source.credentials()`/`renew()` too; (2) matches on `Credentials::OAuth2` (now `Credential::Bearer`); (3) `Credentials::username()` returns `Option<&str>`; (4) `Password.password` is a `Secret`, which breaks struct literals and reads of the field as a `String`; (5) a bare `Credentials` is no longer a source (`Arc::new(credentials)`); (6) `Debug` of `ImapConfig` and the credential no longer prints the username; (7) the shims are `#[deprecated]`, so a caller building with `-D warnings` fails until it moves to the new names. Callers otherwise keep compiling: a deprecated `Credentials` alias with its `password`/`oauth2` constructors, and `ImapConfig::new` taking a fixed credential. Not breaking (`ImapError` is `#[non_exhaustive]`): the new `ImapError::AuthUnsupported`, which some failures that were `Auth` now are, with the same class |
 | `provider-jmap` | `Transport` asks per request through an `AuthenticatedClient`; re-framing reads `Credential`; `JmapConfig::from_credential_source`; later `JmapEndpoint` | `JmapConfig::new(base, provider_jmap::Credentials, ua)` kept and converted into a `FixedCredential` with a unique subject. **Behaviour change:** a `401` can now cause one replayed request when the source replaces |
-| `provider-caldav` / CardDAV | `DavClient` asks per request; `CredentialScope` works on `Credential`; `permits` merged with `CredentialHosts` | **Breaking:** `CalDavConfig.credentials` and `CardDavConfig.credentials` are `pub` fields of `provider_caldav::Credentials`. Replacing them with a source breaks struct-literal construction. Constructors stay. `CredentialHosts` and `with_credential_hosts` are deprecated, not removed |
+| `provider-caldav` / CardDAV / Talk | `DavClient` and `TalkMeetings` send on an `AuthenticatedClient`; `CredentialScope` reads the credential's scheme; `permits` merged with `CredentialHosts`; `from_credential_source` on `CalDavConfig`, `CardDavConfig` and `TalkMeetings` | **Breaking:** the `pub credentials` field of `CalDavConfig` and `CardDavConfig` is gone (the source is private, as JMAP's is), so code reading or assigning it breaks; neither struct could be built as a literal before (private fields). `new` and `TalkMeetings::new` keep taking `provider_caldav::Credentials`, as a fixed credential under a unique subject. `CredentialHosts` and `with_credential_hosts` are deprecated, not removed, so a caller building with `-D warnings` fails until it moves to `permits`. **Behaviour changes:** no credential over plaintext except loopback-from-loopback (a plaintext server elsewhere fails the connect as `Permanent` before anything is sent); one replacement and replay on a `401` the source can answer; the configs' `Debug` no longer prints the username |
 | `provider-graph` | `HttpTransport` asks per request; `GraphClient::connect_with_source`; `GraphProvider` shares the client (`Arc`) | `connect(token, …)`, `for_mailbox` and `with_base` kept, wrapping a fixed bearer. `GraphProvider::new(GraphClient, …)` can keep its signature if `GraphClient` becomes a cheap clone |
 | `provider-google` | Same as Graph; `with_imap` and the API side bind **one** source, so both transports present the same token | `connect(token, …)` kept |
 
@@ -467,6 +471,41 @@ These live in `mail-calendar/crates/mailcal-account`, read-only here:
    reqwest's `basic_auth` (marked sensitive, not zeroed), so its `username:password` input is
    one of the copies "Security review" places out of reach.
 4. **CalDAV/CardDAV**: `permits` absorbs `CredentialHosts`, and the scope is keyed by subject.
+   *Landed.* As built: `DavClient` holds an `AuthenticatedClient` built for the configured
+   origin, and every request goes out on its client. CalDAV keeps its challenge-first rule
+   (`CredentialScope`): a request to an origin that has not asked goes without the credential,
+   and a `401` from a trusted origin is answered through `AuthenticatedClient::send`, whose
+   `present` reads the credential's scheme against the challenge already received; an origin
+   that has asked gets every later request through `send` directly. A challenge no credential
+   HTTP carries can answer (only `Digest`, `Negotiate` and the like) is
+   `UnsupportedAuthentication` before the source is asked, so a broker that is down cannot turn
+   it into a retry; one only for the other kind's scheme (Basic, to a token) is the same verdict
+   once the source has answered, with nothing sent. The configured server itself is trusted only
+   once admitted, like every other origin. Either way a `401` to a request that
+   carried the credential, offering its scheme or none (YAHOO-1), is `Refused`, and anything else
+   `Final`. Discovery trusts an origin only when `AuthenticatedClient::admits` and the deprecated
+   `CredentialHosts` both let it through, and it asks that of its start before anything is sent,
+   so a configured server the credential may not reach is never dialled; the old "no plaintext
+   after TLS" rule is the plaintext rule's special case. The scope belongs to one connection and
+   the connection to one source for its life, so it serves one subject; the endpoints of step 6
+   will key it by subject explicitly. Nextcloud Talk (`TalkMeetings`) sends on the same
+   client, so no HTTP path in the crate holds a credential. `CalDavConfig`, `CardDavConfig` and
+   `TalkMeetings` gain `from_credential_source`; their `new` wraps `provider_caldav::Credentials`
+   in `FixedCredential::unique`. An administrator acting as another account is refused before
+   it is sent (`Permanent`), as on JMAP. The `WWW-Authenticate` reading JMAP and CalDAV each
+   had is now shared in `engine_http`: `challenge_schemes` and `offered_schemes` read the
+   headers (lossily, so a realm that is not ASCII no longer hides a scheme from JMAP),
+   `asks_for` is the rule for "this `401` asks for that scheme, or names none", and
+   `credential_scheme` is the scheme each kind of credential goes under. Proven live
+   (`provider-caldav/tests/live_credential_source.rs`) on Stalwart, SabreDAV and Nextcloud: a
+   wrong password at connect replaced; a password that stops working after connect, on an origin
+   that already answered, refused as `Authentication` without a replacement and replaced with
+   one; CardDAV likewise on Stalwart and Nextcloud (the SabreDAV harness serves no address
+   books); `permits` limited to the harness host discovering in full, and permitting nothing
+   failing the connect as `Permanent` without an ask; a Stalwart OAuth token, revoked, refused
+   and replaced by a fresh one (minted with Stalwart's `calendars` scope: a `mail` token passes
+   discovery and is refused `403` at the calendar home); and Talk on Nextcloud replacing a wrong
+   password. With the replacement disabled, every one of those but the `permits` test fails.
 5. **Graph and Google API**: the same bearer funnel. Google's IMAP and API halves share one source.
    This deletes the token halves of the Graph and Gmail wrappers. Graph application permissions
    and Google domain-wide delegation need nothing beyond this slice.
@@ -527,7 +566,7 @@ Live (`AGENTS.md`: any new request shape is run against a real server):
   be reachable by discovery, which presenting a token does not need.
 - **CalDAV/CardDAV**: Stalwart, SabreDAV and Nextcloud, wrong then right on an origin already
   authenticated after discovery, plus a full discovery with `permits` limited to the harness host,
-  showing nothing regresses.
+  showing nothing regresses. As run: see "Phasing", step 4.
 - **Graph and Google**: these cannot run in a local harness. They are verified with the test
   Microsoft account and the throwaway Google account, with tokens from the `tools/*-oauth` token
   tools (`tools/graph-oauth`, `tools/google-oauth`): present a garbage or revoked token first,

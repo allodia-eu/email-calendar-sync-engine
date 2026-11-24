@@ -179,6 +179,23 @@ async fn a_reframe_and_a_replacement_never_answer_the_same_401() {
 }
 
 #[tokio::test]
+async fn a_challenge_with_a_realm_that_is_not_ascii_still_asks_for_its_scheme() {
+    // A Bearer-only challenge whose realm is not ASCII: read as offering Bearer, so the password
+    // is re-framed, rather than read as no challenge at all and the password replaced.
+    let (base, seen) = mock_server(vec![
+        unauthorized("Bearer realm=\"Kalender für alle\""),
+        ok("{}"),
+    ]);
+    let source = Arc::new(Rotating::new(
+        Credential::password("alice@example.com", "s3cret"),
+        vec![Credential::password("alice@example.com", "other")],
+    ));
+    transport(&source).get(&base).await.expect("re-framed");
+    assert_eq!(authorizations(&seen), [EXPECTED_BASIC, EXPECTED_BEARER]);
+    assert_eq!(source.replaced(), 0);
+}
+
+#[tokio::test]
 async fn a_401_that_survives_the_reframe_is_replaced_once() {
     let (base, seen) = mock_server(vec![
         unauthorized(FASTMAIL_CHALLENGE),

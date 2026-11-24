@@ -18,7 +18,7 @@ use engine_http::{
 };
 use engine_provider::{Credential, CredentialSource, HttpVersion, ProviderError, TlsVersion};
 use engine_tls::TlsClientConfig;
-use reqwest::{RequestBuilder, Url, header::WWW_AUTHENTICATE};
+use reqwest::{RequestBuilder, Url};
 use serde_json::Value;
 
 use crate::{
@@ -124,11 +124,10 @@ impl Transport {
     /// present the same credential again; one for the scheme used, or none, refuses the
     /// credential; one for schemes it cannot be framed under at all is final ([`crate::auth`]).
     fn judge(reply: &Sent, credential: &Credential, framing: &Framing) -> Unauthorized {
-        let challenges = reply
-            .headers()
-            .get_all(WWW_AUTHENTICATE)
-            .iter()
-            .filter_map(|value| value.to_str().ok());
+        // Read as every adapter reads them (`engine_http::offered_schemes`): a challenge whose
+        // realm is not ASCII still offers its scheme. Each scheme reads back as itself.
+        let offered = engine_http::offered_schemes(reply.headers());
+        let challenges = offered.iter().map(String::as_str);
         // `present` always records a scheme before anything is sent.
         let used = framing.used.latched().unwrap_or(AuthScheme::Basic);
         match read_challenge(used, challenges, credential) {

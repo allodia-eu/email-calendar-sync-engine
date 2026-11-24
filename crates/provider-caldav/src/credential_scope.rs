@@ -10,9 +10,11 @@
 //!
 //! - **trusted**: the origin the walk starts at (the host's configured URL) and every origin the
 //!   account's own server led discovery to from there (a redirect target, the principal, the
-//!   collection home), each one allowed by TLS and by the host's
-//!   [`CredentialHosts`](crate::CredentialHosts) policy when it was added. Only these may ever
-//!   receive the credential.
+//!   collection home), each one admitted when it was added: by the engine's plaintext rule, by the
+//!   account's [`CredentialSource::permits`](engine_provider::CredentialSource::permits), and by
+//!   the deprecated `CredentialHosts` policy where a host still sets one
+//!   ([`AuthenticatedClient::admits`](engine_http::AuthenticatedClient::admits)). Only these may
+//!   ever receive the credential.
 //! - **answered**: trusted origins that receive the credential with every request. None starts
 //!   here, the configured server included: an origin joins once it has asked, with a `401` whose
 //!   `WWW-Authenticate` offers the scheme the credential is for, and is then sent it for as long as
@@ -21,15 +23,17 @@
 //!
 //! A URL named by remote content, such as a vCard `PHOTO;VALUE=uri`, is never trusted, so it is
 //! fetched without the credential even when it asks for one.
+//!
+//! A scope belongs to one connection, and a connection to one
+//! [`CredentialSource`](engine_provider::CredentialSource) for its whole life, so a scope only
+//! ever serves one subject: no origin one account's server answered is ever sent another
+//! account's credential. Nothing here is keyed by subject explicitly; the shared endpoints of
+//! `docs/design/credential-source.md` ("Direct host") will key it so.
 
 use std::{collections::HashSet, sync::RwLock};
 
-use reqwest::{
-    Url,
-    header::{HeaderMap, WWW_AUTHENTICATE},
-};
-
-use crate::transport::Credentials;
+use engine_http::{asks_for, offered_schemes};
+use reqwest::{Url, header::HeaderMap};
 
 /// The origins a connection may send its credential to, and the ones it does.
 #[derive(Debug)]
@@ -39,6 +43,14 @@ pub(crate) struct CredentialScope {
 }
 
 impl CredentialScope {
+    /// A scope that trusts nothing yet.
+    pub(crate) fn empty() -> Self {
+        Self {
+            trusted: RwLock::new(HashSet::new()),
+            answered: RwLock::new(HashSet::new()),
+        }
+    }
+
     /// A scope in which the configured server is trusted and nothing is answered yet.
     pub(crate) fn new(configured: &Url) -> Self {
         Self {
@@ -74,43 +86,42 @@ impl CredentialScope {
             && self.answered.write().expect("answered lock").insert(origin)
     }
 
+    /// Whether `url`'s origin may receive the credential once it asks.
+    pub(crate) fn trusts(&self, url: &Url) -> bool {
+        self.trusted
+            .read()
+            .expect("trusted lock")
+            .contains(&origin_of(url))
+    }
+
     /// The schemes a `401` from `url` carrying `headers` offers, when `url`'s origin is trusted
-    /// and none of them is the one `credentials` are for: the server wants a method this account
-    /// cannot use, so nothing was sent and nothing is wrong with the credential.
+    /// and none of them is `scheme`, the one the account's credential is presented under: the
+    /// server wants a method this account cannot use, so nothing was sent and nothing is wrong
+    /// with the credential.
     pub(crate) fn unanswerable(
         &self,
         url: &Url,
         headers: &HeaderMap,
-        credentials: &Credentials,
+        scheme: &str,
     ) -> Option<String> {
-        if !self
-            .trusted
-            .read()
-            .expect("trusted lock")
-            .contains(&origin_of(url))
-            || offers(headers, scheme_of(credentials))
-        {
+        let offered = offered_schemes(headers);
+        if !self.trusts(url) || asks_for(&offered, scheme) {
             return None;
         }
-        Some(schemes(headers).join(", "))
+        Some(offered.join(", "))
     }
 
-    /// Whether a `401` from `url` carrying `headers` is a challenge `credentials` should answer:
-    /// the origin is trusted and offers the credential's scheme. An origin that qualifies is
-    /// answered from then on.
-    pub(crate) fn answers(
-        &self,
-        url: &Url,
-        headers: &HeaderMap,
-        credentials: &Credentials,
-    ) -> bool {
-        let origin = origin_of(url);
-        if !self.trusted.read().expect("trusted lock").contains(&origin)
-            || !offers(headers, scheme_of(credentials))
-        {
+    /// Whether a `401` from `url` carrying `headers` is a challenge a credential presented under
+    /// `scheme` should answer: the origin is trusted and offers the scheme. An origin that
+    /// qualifies is answered from then on.
+    pub(crate) fn answers(&self, url: &Url, headers: &HeaderMap, scheme: &str) -> bool {
+        if !self.trusts(url) || !asks_for(&offered_schemes(headers), scheme) {
             return false;
         }
-        self.answered.write().expect("answered lock").insert(origin);
+        self.answered
+            .write()
+            .expect("answered lock")
+            .insert(origin_of(url));
         true
     }
 }
@@ -118,68 +129,6 @@ impl CredentialScope {
 /// The origin a scope keys on: scheme, host and effective port.
 fn origin_of(url: &Url) -> String {
     url.origin().ascii_serialization()
-}
-
-/// The authentication scheme (RFC 9110 §11.1) `credentials` are presented with.
-const fn scheme_of(credentials: &Credentials) -> &'static str {
-    match credentials {
-        Credentials::Basic { .. } => "basic",
-        Credentials::Bearer(_) => "bearer",
-    }
-}
-
-/// Whether a `401` carrying `headers` asks for a credential of `scheme`: one of its
-/// `WWW-Authenticate` challenges names the scheme, or it carries no challenge at all.
-///
-/// A field value may carry several challenges, separated by commas that also separate each
-/// challenge's parameters (RFC 9110 §11.6.1); a scheme is the element whose first token is not
-/// a `name=value` parameter. A comma inside a quoted parameter value separates nothing.
-///
-/// RFC 9110 §15.5.2 says a `401` MUST carry a challenge, and Yahoo's, Google's and AOL's calendar
-/// servers send none (`docs/spec-deviations.md`, YAHOO-1). A bare `401` from a trusted origin is
-/// still that server asking for credentials, so it is answered; a `401` whose challenges all name
-/// another scheme is not, since that server has said what it wants and it is not this credential.
-fn offers(headers: &HeaderMap, scheme: &str) -> bool {
-    let offered = schemes(headers);
-    offered.is_empty()
-        || offered
-            .iter()
-            .any(|token| token.eq_ignore_ascii_case(scheme))
-}
-
-/// The authentication schemes the `WWW-Authenticate` challenges in `headers` name, in order.
-fn schemes(headers: &HeaderMap) -> Vec<String> {
-    let values: Vec<String> = headers
-        .get_all(WWW_AUTHENTICATE)
-        .iter()
-        .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned())
-        .collect();
-    values
-        .iter()
-        .flat_map(|value| unquoted_elements(value))
-        .filter_map(|element| element.split_whitespace().next())
-        .filter(|token| !token.contains('='))
-        .map(str::to_owned)
-        .collect()
-}
-
-/// `value` split at every comma outside a quoted-string (RFC 9110 §5.6.4).
-fn unquoted_elements(value: &str) -> Vec<&str> {
-    let (mut elements, mut start, mut quoted, mut escaped) = (Vec::new(), 0, false, false);
-    for (at, ch) in value.char_indices() {
-        match ch {
-            _ if escaped => escaped = false,
-            '\\' if quoted => escaped = true,
-            '"' => quoted = !quoted,
-            ',' if !quoted => {
-                elements.push(&value[start..at]);
-                start = at + 1;
-            }
-            _ => {}
-        }
-    }
-    elements.push(&value[start..]);
-    elements
 }
 
 #[cfg(test)]
