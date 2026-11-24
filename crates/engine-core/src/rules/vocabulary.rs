@@ -99,6 +99,13 @@ pub enum RuleLimit {
     /// Files only into folders: a role naming a virtual collection (all mail, flagged, important)
     /// is no folder to file into.
     RealFoldersOnly,
+    /// At most one of the user's folders per rule, a named keyword counting as one: the target
+    /// keeps both as one kind of label and a rule adds at most one (Gmail). A role's folder is
+    /// not counted.
+    OneFolderPerRule,
+    /// A rule tests something: one with neither conditions nor exceptions, which matches every
+    /// message, is not held (Gmail stores no filter without a criterion).
+    SomeTest,
 }
 
 /// How a target holds a feature it has.

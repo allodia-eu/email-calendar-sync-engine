@@ -109,6 +109,22 @@ pub(super) fn action_kind(action: &Action) -> Option<ActionKind> {
     }
 }
 
+/// How many of the user's folders `action` names, for [`RuleLimit::OneFolderPerRule`]: a folder
+/// filed into by id or path, and each named keyword.
+pub(super) fn folders_named(action: &Action) -> usize {
+    match action {
+        Action::FileInto {
+            mailbox: RuleMailbox::Id(_) | RuleMailbox::Path(_),
+            ..
+        } => 1,
+        Action::AddKeywords(keywords) => keywords
+            .iter()
+            .filter(|keyword| keyword.as_system().is_none())
+            .count(),
+        _ => 0,
+    }
+}
+
 /// How `target` holds `condition`.
 pub(super) fn condition_support(condition: &Condition, target: &RuleVocabulary) -> Option<Support> {
     match condition {

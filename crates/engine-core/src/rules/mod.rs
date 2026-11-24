@@ -27,6 +27,7 @@
 mod action;
 mod condition;
 mod folders;
+mod outcome;
 mod plan;
 mod plan_support;
 mod preflight;
@@ -41,9 +42,8 @@ pub use condition::{
     AddressField, AddressPart, Condition, HeaderField, MeField, SizeBound, TextOp, TextTest,
 };
 pub use folders::FolderMap;
-pub use plan::{
-    ForwardingRules, Kept, Loss, LossReason, PlanMode, RuleOutcome, RulePart, RulesPlan, plan_rules,
-};
+pub use outcome::{Kept, Loss, LossReason, RuleOutcome, RulePart};
+pub use plan::{ForwardingRules, PlanMode, RulesPlan, plan_rules};
 pub use preflight::held_forwarding;
 pub use raw_rule::{Expansion, RawRule, RuleOrigin, RuleSyntax};
 pub use receipt::{FailedRule, ReplyEffect, RuleWriteFailure, RulesReceipt, RulesStored};
