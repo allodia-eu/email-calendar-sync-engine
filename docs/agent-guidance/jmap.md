@@ -290,7 +290,9 @@ answers it where the session addresses an account with `urn:ietf:params:jmap:sie
 `sieveExtensions`, `maxNumberRedirects` and `maxSizeScript` are read from the session
 (`src/session_sieve.rs`) into the dialect's vocabulary (`engine_sieve::dialect::vocabulary`).
 
-- **One script holds the rules** (`sieve_scripts::Scripts::rules`): the one running; else, where
+- **One script holds the rules** (`sieve_scripts::Scripts::rules`, by the function every adapter
+  uses, `engine_sieve::dialect::scripts::rules_script`, the reply's script known by its name;
+  the include helpers are `engine_sieve::dialect::include`): the one running; else, where
   none of the user's runs, the engine's own `rules` script, or the one script besides the reply's;
   with several and none of them running or named `rules`, the engine starts its own rather than
   pick one for the user. A first write creates `rules` and activates it. Read: `SieveScript/get`

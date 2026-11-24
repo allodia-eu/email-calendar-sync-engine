@@ -12,32 +12,17 @@ fn listed(scripts: &[(&str, bool)]) -> Vec<ListedScript> {
         .collect()
 }
 
-fn chosen(scripts: &[(&str, bool)]) -> Option<String> {
-    holding_rules(&listed(scripts)).map(|script| script.name.as_str().to_owned())
-}
-
-#[test]
-fn the_rules_are_in_the_running_script_else_rules_else_the_only_one() {
-    assert_eq!(chosen(&[("a", false), ("b", true)]).as_deref(), Some("b"));
-    assert_eq!(
-        chosen(&[("a", false), ("rules", false)]).as_deref(),
-        Some("rules")
-    );
-    assert_eq!(chosen(&[("mine", false)]).as_deref(), Some("mine"));
-    assert_eq!(
-        chosen(&[("a", false), ("b", false)]),
-        None,
-        "which one is not ours to pick"
-    );
-    assert_eq!(chosen(&[]), None);
-}
-
 fn state(scripts: &[(&str, bool)], text: &str) -> State {
     let listed = listed(scripts);
     State {
-        script: holding_rules(&listed).cloned(),
+        script: listed
+            .iter()
+            .find(|script| script.active)
+            .or(listed.first().filter(|_| listed.len() == 1))
+            .cloned(),
         listed,
         text: text.to_owned(),
+        server_reply: None,
     }
 }
 

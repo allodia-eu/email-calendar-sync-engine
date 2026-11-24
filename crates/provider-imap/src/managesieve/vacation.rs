@@ -116,7 +116,7 @@ fn vocabulary(capabilities: &Capabilities) -> VacationVocabulary {
 /// The reply `state`'s script holds: off where there is none, or where the script holding it does
 /// not run.
 fn read(state: &State) -> ProviderResult<VacationResponse> {
-    refuse_elsewhere(&state.text)?;
+    refuse_elsewhere(state)?;
     let version = VacationVersion::new(state.version());
     match read_reply(&state.text) {
         ScriptReply::Read { reply, .. } => {
@@ -140,7 +140,7 @@ async fn write<T: AsyncRead + AsyncWrite + Unpin + Send>(
     new: &VacationResponse,
 ) -> ProviderResult<VacationReceipt> {
     let state = State::read(session).await?;
-    refuse_elsewhere(&state.text)?;
+    refuse_elsewhere(&state)?;
     if let VacationPrecondition::IfUnchanged(read) = precondition {
         refuse_stale(read.version.as_ref().map(VacationVersion::as_str), &state)?;
     }
@@ -186,9 +186,11 @@ pub(crate) fn reply_elsewhere(script: &str) -> bool {
         })
 }
 
-/// Refuses to read or write the reply where it may run from elsewhere ([`reply_elsewhere`]).
-fn refuse_elsewhere(script: &str) -> ProviderResult<()> {
-    if reply_elsewhere(script) {
+/// Refuses to read or write the reply where it may run from elsewhere: a server's own reply
+/// script runs (active, or included), or the rules' script may answer from another
+/// ([`reply_elsewhere`]).
+fn refuse_elsewhere(state: &State) -> ProviderResult<()> {
+    if state.server_reply.is_some() || reply_elsewhere(&state.text) {
         return Err(ProviderError::item_unavailable(
             "an automatic reply may run from a script or rule other than the out-of-office reply's, \
              which the engine does not read; it neither reads nor writes the reply here",

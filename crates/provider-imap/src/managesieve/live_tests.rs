@@ -3,9 +3,9 @@
 //!
 //! Every command the client sends goes to a real server here: a sign-in, refused and accepted,
 //! `LISTSCRIPTS`, `PUTSCRIPT` and `GETSCRIPT` of a script of the run's own, `CHECKSCRIPT` of a
-//! script needing an extension the server does not list, and `DELETESCRIPT`. The script is named
-//! for the run and deleted afterwards, so it disturbs nothing the account already holds. Skips
-//! per server when its address variable is unset.
+//! script needing an extension the server does not list, and `DELETESCRIPT`. The account is
+//! cleaned first, so the run starts from no script whatever an earlier one left. Skips per server,
+//! saying so, where its address variable is unset, and on Stalwart where the harness gate is too.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,6 +40,32 @@ pub(super) const SERVERS: [(&str, &str, &str, &str, &str); 2] = [
 /// moment would make a write look stale. The test binary runs its tests on several threads.
 pub(super) static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// The address in `var` where the suite for that server is to run, as every live suite of the
+/// engine gates: skipped, and said so, where it is unset, and on Stalwart where the harness's own
+/// gate (`STALWART_HTTP_ADDR`) is unset too.
+pub(super) fn address(label: &str, var: &str) -> Option<String> {
+    let gated = label != "stalwart" || std::env::var(stalwart_harness::GATE_VAR).is_ok();
+    match std::env::var(var) {
+        Ok(addr) if gated => Some(addr),
+        _ => {
+            eprintln!("skipping ManageSieve on {label}: {var} or the harness gate unset");
+            None
+        }
+    }
+}
+
+/// Leaves the account with no script, none active, so a live test starts from nothing whatever an
+/// earlier run left, and ends there.
+pub(super) async fn clean<S>(session: &mut super::session::Session<S>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+{
+    session.set_active(None).await.unwrap();
+    for script in session.list_scripts().await.unwrap() {
+        session.delete_script(&script.name).await.unwrap();
+    }
+}
+
 pub(super) fn config(addr: &str, user: &str, password: &str) -> ImapConfig {
     // The IMAP half is never dialled here.
     ImapConfig::new(
@@ -55,8 +81,7 @@ async fn the_client_s_commands_are_answered_by_both_servers() {
     let _alone = ONE_AT_A_TIME.lock().await;
     let connector = engine_tls::TlsClientConfig::dangerous_accept_any().connector();
     for (label, var, user, password, lacking) in SERVERS {
-        let Ok(addr) = std::env::var(var) else {
-            eprintln!("skipping ManageSieve on {label}: {var} unset");
+        let Some(addr) = address(label, var) else {
             continue;
         };
         let wrong = config(&addr, user, "not-the-password");
@@ -70,6 +95,7 @@ async fn the_client_s_commands_are_answered_by_both_servers() {
         let mut session = dial::connect(&config, &endpoint, &connector)
             .await
             .unwrap_or_else(|err| panic!("{label}: sign in: {err}"));
+        clean(&mut session).await;
         let run = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

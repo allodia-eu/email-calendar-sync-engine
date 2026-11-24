@@ -455,9 +455,18 @@ logs out. The credential is asked as `CredentialProtocol::ManageSieve` for the o
 `OAUTHBEARER` or `XOAUTH2`. The version is a SHA-256 of the script list (names and the active flag)
 and the rules script's text; ManageSieve has no conditional `PUTSCRIPT`, so the guard is
 `WriteGuard::Absent`, but a write lists and reads again in its own session and refuses a stale base
-as `Conflict`, which narrows the race to one round trip and does not close it. The script chosen is
-JMAP's (the active one, else `rules`, else the only one); a new one is `rules`, stored with
-`PUTSCRIPT` and switched on with `SETACTIVE`. `PUTSCRIPT` checks the script itself, so neither
+as `Conflict`, which narrows the race to one round trip and does not close it. The script is chosen
+as JMAP chooses it, by one function (`engine_sieve::dialect::scripts::rules_script`: the active
+one, else `rules`, else the only one, never a server's own reply script); a new one is `rules`,
+stored with `PUTSCRIPT` and switched on with `SETACTIVE`. JMAP knows the server's reply script by
+its name (`vacation`), ManageSieve by its text (a `vacation` no `# rule:[…]` name marks), so the
+two can choose differently for a user's script named `vacation` or a server's reply script under
+another name; on Stalwart both point at the same script, which the live suite pins. Where a
+server's reply script runs, as the active one or through the rules' `include`, ManageSieve writes
+the rules as JMAP does: the include is kept first, and a new `rules` script includes the running
+reply's and is made the active one, so the reply runs on; a server that lists no `include` is
+refused before anything is sent. The include is no rule of the user's on either protocol
+(`engine_sieve::dialect::include`). `PUTSCRIPT` checks the script itself, so neither
 `CHECKSCRIPT` nor `HAVESPACE` is sent first. The vocabulary is what the server lists once signed in.
 The reply is on where its rule is on and the script runs; turning it on where the script is stored
 but off switches the script on only where that switches on no enabled rule of the user's, and is
@@ -861,13 +870,12 @@ Pigeonhole (as `alice@`), by hand and then by `provider-imap/src/managesieve/liv
   (`managesieve::vacation::reply_elsewhere`): it cannot read that reply as the account's, and one
   written beside it would make two. Proven on
   Stalwart with the reply set over JMAP, in both shapes, nothing written; the guard reverted, the
-  `include` shape read as off and took a write. The rules stay readable and writable, except into a
-  script that holds a `vacation` in a command no `# rule:[…]` name marks (Stalwart's own reply
-  script is one, active while that reply is on): the server rewrites it, so the next JMAP reply
-  write would drop them (`engine_sieve::dialect::reply::unnamed_vacation`). Stalwart refuses
-  `PUTSCRIPT "vacation"` itself too; the live suite checks the refusal is the engine's, made before
-  anything is sent, and went red with the check reverted. A host should prefer JMAP for such an
-  account.
+  `include` shape read as off and took a write. The rules stay readable and writable: Stalwart's reply
+  script is never the rules' script, so they go in a `rules` script that includes it first and
+  runs, and JMAP reads them back from there (live). A script that is chosen and still holds a
+  `vacation` no `# rule:[…]` name marks, one written by hand, is refused rather than rewritten
+  (`engine_sieve::dialect::reply::unnamed_vacation`). Stalwart refuses `PUTSCRIPT "vacation"`
+  itself.
 
 **Follow-ups from slice 3.**
 

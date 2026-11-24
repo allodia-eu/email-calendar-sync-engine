@@ -52,6 +52,8 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> S
 }
 
 #[cfg(test)]
+mod live_account_tests;
+#[cfg(test)]
 mod live_provider_tests;
 #[cfg(test)]
 mod live_tests;

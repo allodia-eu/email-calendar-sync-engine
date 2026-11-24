@@ -33,6 +33,7 @@ use engine_core::{
     version::RuleSetVersion,
 };
 use engine_provider::{MailRules, ProviderError, ProviderResult, WriteGuard};
+use engine_sieve::dialect::include::compose;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{
@@ -94,7 +95,7 @@ fn rule_set(state: &State) -> RuleSet {
     } else {
         RulesActivation::Inactive
     };
-    RuleSet::new(engine_sieve::dialect::read_rules(&state.text))
+    RuleSet::new(state.rules())
         .with_version(RuleSetVersion::new(state.version()))
         .with_raw(RawRules::new(state.text.clone()))
         .with_activation(activation)
@@ -105,11 +106,8 @@ async fn write<T: AsyncRead + AsyncWrite + Unpin + Send>(
     base: &RuleSet,
     rules: &[MailRule],
 ) -> ProviderResult<RulesReceipt> {
-    let plan = plan_rules(
-        rules,
-        &vocabulary(session.refresh_capabilities().await?),
-        PlanMode::Edit,
-    );
+    let capabilities = session.refresh_capabilities().await?.clone();
+    let plan = plan_rules(rules, &vocabulary(&capabilities), PlanMode::Edit);
     let state = State::read(session).await?;
     refuse_stale(base.version.as_ref().map(RuleSetVersion::as_str), &state)?;
     // A script a server keeps its own reply in is the server's to rewrite: rules written there
@@ -120,7 +118,24 @@ async fn write<T: AsyncRead + AsyncWrite + Unpin + Send>(
              script does; rules written there could be undone by the server",
         ));
     }
-    let text = engine_sieve::dialect::write_rules(&state.text, &plan.written()).map_err(|err| {
+    // A server's reply script runs beside the rules: kept running through the rules script's
+    // `include`, as the JMAP adapter keeps it. Where the rules script includes it, the include is
+    // kept first; where a new rules script is created while it runs as the active one, the new
+    // script includes it, so switching the new one on does not stop the reply.
+    let include = match (&state.script, &state.server_reply) {
+        (Some(_), _) => state.included_reply(),
+        (None, Some(reply)) if reply.active => {
+            if !capabilities.lists("include") {
+                return Err(ProviderError::item_unavailable(
+                    "this account's Sieve server runs its own reply script and lists no include \
+                     extension, so new rules would stop the reply",
+                ));
+            }
+            Some(reply.name.as_str())
+        }
+        (None, _) => None,
+    };
+    let text = compose(&state.text, &plan.written(), include).map_err(|err| {
         ProviderError::item_unavailable(format!("the rules cannot be written as Sieve: {err}"))
     })?;
     let created = store(session, &state, &text).await?;

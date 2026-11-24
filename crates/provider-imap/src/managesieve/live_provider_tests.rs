@@ -2,10 +2,10 @@
 //! [`ImapAccount::connect`] and the provider's `mail_rules()` and `vacation()`, on both harness
 //! servers (Stalwart as the scratch account `carol@`, Dovecot as `alice@`).
 //!
-//! One test function per server, run one after the other, because both write the account's one
-//! rules script. The account must start with no script named `rules`; the run deletes the one it
-//! creates and switches back on whatever ran before. Skips per server when an address variable is
-//! unset.
+//! Every test takes the module's lock (`ONE_AT_A_TIME`), because they share each server's account,
+//! and starts and ends with the account holding no script at all, whatever an earlier run left.
+//! Skips per server, saying so, where an address variable is unset, and on Stalwart where the
+//! harness gate (`STALWART_HTTP_ADDR`) is unset too.
 
 use std::{
     fmt::Write as _,
@@ -25,12 +25,12 @@ use engine_core::{
     time::UtcDateTime,
     vacation::{AutoReply, VacationResponse, VacationWindow},
 };
-use engine_provider::{ConnectService, ConnectStep, Credential, VacationPrecondition};
+use engine_provider::{ConnectStep, Credential, VacationPrecondition};
 use futures_util::FutureExt as _;
 
 use super::{
     dial,
-    live_tests::{ONE_AT_A_TIME, config},
+    live_tests::{ONE_AT_A_TIME, address, clean, config},
     name::ScriptName,
     response::ResponseCode,
 };
@@ -54,11 +54,11 @@ const SERVERS: [(&str, &str, &str, &str, &str); 2] = [
     ),
 ];
 
-fn connector() -> tokio_rustls::TlsConnector {
+pub(super) fn connector() -> tokio_rustls::TlsConnector {
     engine_tls::TlsClientConfig::dangerous_accept_any().connector()
 }
 
-fn subject_rule(marker: &str, actions: Vec<Action>) -> MailRule {
+pub(super) fn subject_rule(marker: &str, actions: Vec<Action>) -> MailRule {
     let test = TextTest::new(TextOp::Contains, vec![marker.to_owned()]).unwrap();
     MailRule::typed(
         Match::all(vec![Condition::Header {
@@ -70,7 +70,7 @@ fn subject_rule(marker: &str, actions: Vec<Action>) -> MailRule {
     .named(RuleName::new(format!("Live {marker}")).unwrap())
 }
 
-fn unplaced(set: &RuleSet) -> Vec<MailRule> {
+pub(super) fn unplaced(set: &RuleSet) -> Vec<MailRule> {
     set.rules
         .iter()
         .cloned()
@@ -85,40 +85,21 @@ fn unplaced(set: &RuleSet) -> Vec<MailRule> {
 async fn rules_and_the_reply_round_trip_guarded_on_both_servers() {
     let _alone = ONE_AT_A_TIME.lock().await;
     for (label, imap_var, sieve_var, user, password) in SERVERS {
-        let (Ok(imap), Ok(sieve)) = (std::env::var(imap_var), std::env::var(sieve_var)) else {
-            eprintln!("skipping ManageSieve rules on {label}: {imap_var} or {sieve_var} unset");
+        let (Some(imap), Some(sieve)) = (address(label, imap_var), address(label, sieve_var))
+        else {
             continue;
         };
-        // What ran before, to switch back on afterwards, however the run ends; and no `rules`
-        // script of anyone's, which the run would edit.
+        // From nothing, and back to nothing however the run ends.
         let admin_config = config(&sieve, user, password);
         let endpoint = admin_config.managesieve.clone().unwrap();
         let mut admin = dial::connect(&admin_config, &endpoint, &connector())
             .await
             .unwrap();
-        let before = admin.list_scripts().await.unwrap();
-        let rules = ScriptName::new("rules").unwrap();
-        assert!(
-            before.iter().all(|script| script.name != rules),
-            "{label}: the account already has a `rules` script"
-        );
-        let ran = before
-            .into_iter()
-            .find(|script| script.active)
-            .map(|script| script.name);
+        clean(&mut admin).await;
         let outcome = AssertUnwindSafe(Box::pin(run(label, &imap, &sieve, user, password)))
             .catch_unwind()
             .await;
-        admin.set_active(ran.as_ref()).await.unwrap();
-        if admin
-            .list_scripts()
-            .await
-            .unwrap()
-            .iter()
-            .any(|script| script.name == rules)
-        {
-            admin.delete_script(&rules).await.unwrap();
-        }
+        clean(&mut admin).await;
         admin.logout().await;
         if let Err(panic) = outcome {
             std::panic::resume_unwind(panic);
@@ -279,14 +260,14 @@ async fn run(label: &str, imap: &str, sieve: &str, user: &str, password: &str) {
 #[tokio::test]
 async fn a_script_over_stalwart_s_size_limit_is_refused_by_the_store() {
     let _alone = ONE_AT_A_TIME.lock().await;
-    let Ok(addr) = std::env::var("STALWART_MANAGESIEVE_ADDR") else {
-        eprintln!("skipping the size limit: STALWART_MANAGESIEVE_ADDR unset");
+    let Some(addr) = address("stalwart", "STALWART_MANAGESIEVE_ADDR") else {
         return;
     };
     let config = config(&addr, "carol@test.local", "harness-carol-pw");
     let mut session = dial::connect(&config, config.managesieve.as_ref().unwrap(), &connector())
         .await
         .unwrap();
+    clean(&mut session).await;
     // Over the 102,400 bytes Stalwart's JMAP session states as `maxSizeScript`.
     let mut text = String::from("require [\"fileinto\"];\r\n");
     for at in 0..2500 {
@@ -314,203 +295,4 @@ async fn a_script_over_stalwart_s_size_limit_is_refused_by_the_store() {
         refused.code(),
         Some(ResponseCode::Quota(super::response::Quota::MaxSize))
     );
-}
-
-#[tokio::test]
-async fn an_endpoint_that_does_not_answer_neither_delays_the_mail_nor_hides_the_rules() {
-    let Ok(imap) = std::env::var("STALWART_IMAP_ADDR") else {
-        eprintln!("skipping an unanswering ManageSieve: STALWART_IMAP_ADDR unset");
-        return;
-    };
-    // A service that takes the connection and never greets: the probe would wait out its reply
-    // bound, a minute, if the mail waited for it.
-    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = silent.local_addr().unwrap().to_string();
-    let held = tokio::spawn(async move {
-        let accepted = silent.accept().await;
-        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
-        drop(accepted);
-    });
-    let steps: Arc<Mutex<Vec<(ConnectService, FailureClass)>>> = Arc::default();
-    let seen = Arc::clone(&steps);
-    let config = ImapConfig::new(
-        imap.as_str(),
-        "localhost",
-        Credential::password("carol@test.local", "harness-carol-pw"),
-    )
-    .with_managesieve(addr, "localhost")
-    .with_connect_observer(Arc::new(move |step: &ConnectStep<'_>| {
-        if let ConnectStep::Unavailable { service, class, .. } = step {
-            seen.lock().unwrap().push((*service, *class));
-        }
-    }));
-    let started = std::time::Instant::now();
-    let account = ImapAccount::connect(&config, connector())
-        .await
-        .expect("mail connects whatever Sieve does");
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(20),
-        "{:?}",
-        started.elapsed()
-    );
-    assert_eq!(
-        *steps.lock().unwrap(),
-        [(ConnectService::ManageSieve, FailureClass::Retryable)]
-    );
-    // Not known to fail for good: offered, and the call fails on its own, as one that may pass.
-    let provider = account.provider(MailboxId::try_from("INBOX").unwrap());
-    let rules = engine_provider::Provider::mail_rules(&provider).expect("still offered");
-    let id = AccountId::try_from("live-managesieve").unwrap();
-    let folders = engine_provider::Provider::sync_mailboxes(&provider, &id, None).await;
-    assert!(folders.is_ok(), "the mail works: {folders:?}");
-    held.abort();
-    let unreachable = ImapConfig::new(
-        imap.as_str(),
-        "localhost",
-        Credential::password("carol@test.local", "harness-carol-pw"),
-    )
-    .with_managesieve("127.0.0.1:1", "localhost");
-    let account = ImapAccount::connect(&unreachable, connector())
-        .await
-        .unwrap();
-    let provider = account.provider(MailboxId::try_from("INBOX").unwrap());
-    let rules_unreachable = engine_provider::Provider::mail_rules(&provider).unwrap();
-    let err = rules_unreachable.read_rules(&id).await.unwrap_err();
-    assert_eq!(err.class(), FailureClass::Retryable, "{err:?}");
-    let _ = rules;
-}
-
-/// One JMAP call as carol, answering its result's arguments.
-fn jmap(harness: &stalwart_harness::Harness, using: &str, call: &str) -> serde_json::Value {
-    let body = format!(
-        "{{\"using\":[\"urn:ietf:params:jmap:core\",\"{using}\"],\"methodCalls\":[{call}]}}"
-    );
-    let response = harness
-        .jmap_post_as(("carol@test.local", "harness-carol-pw"), body.as_bytes())
-        .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response.body_text()).unwrap();
-    value["methodResponses"][0][1].clone()
-}
-
-#[tokio::test]
-async fn a_reply_a_jmap_server_runs_from_its_own_script_is_neither_read_nor_written() {
-    let _alone = ONE_AT_A_TIME.lock().await;
-    let (Some(harness), Ok(imap), Ok(sieve)) = (
-        stalwart_harness::Harness::from_env(),
-        std::env::var("STALWART_IMAP_ADDR"),
-        std::env::var("STALWART_MANAGESIEVE_ADDR"),
-    ) else {
-        eprintln!("skipping a JMAP-shaped account: a Stalwart address is unset");
-        return;
-    };
-    let config = ImapConfig::new(
-        imap.as_str(),
-        "localhost",
-        Credential::password("carol@test.local", "harness-carol-pw"),
-    )
-    .with_managesieve(sieve.as_str(), "localhost");
-    let mut admin = dial::connect(&config, config.managesieve.as_ref().unwrap(), &connector())
-        .await
-        .unwrap();
-    assert!(
-        admin.list_scripts().await.unwrap().is_empty(),
-        "scripts already"
-    );
-    let session = harness
-        .jmap_session_as(("carol@test.local", "harness-carol-pw"))
-        .unwrap();
-    let vacation_using = "urn:ietf:params:jmap:vacationresponse";
-    let account = session["primaryAccounts"][vacation_using]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let set_reply = |update: &str| {
-        jmap(
-            &harness,
-            vacation_using,
-            &format!(
-                "[\"VacationResponse/set\",{{\"accountId\":\"{account}\",\
-                 \"update\":{{\"singleton\":{update}}}}},\"0\"]"
-            ),
-        )
-    };
-    // The reply switched on over JMAP: Stalwart writes and activates a `vacation` script of its
-    // own.
-    let on = set_reply(
-        "{\"isEnabled\":true,\"fromDate\":\"2030-01-02T09:00:00Z\",\"textBody\":\"Away.\"}",
-    );
-    assert!(on["updated"].is_object(), "{on}");
-    let reply = ScriptName::new("vacation").unwrap();
-    let rules = ScriptName::new("rules").unwrap();
-    let ours = admin.get_script(&reply).await.unwrap();
-    // ManageSieve may not write that script: it is the reply's (RFC 9661 §4).
-    let refused = admin.put_script(&reply, "keep;\r\n").await.unwrap_err();
-    assert_eq!(refused.code(), None);
-
-    let account_handle = ImapAccount::connect(&config, connector()).await.unwrap();
-    let provider = account_handle.provider(MailboxId::try_from("INBOX").unwrap());
-    let vacation = engine_provider::Provider::vacation(&provider).unwrap();
-    let rules_of = engine_provider::Provider::mail_rules(&provider).unwrap();
-    let id = AccountId::try_from("live-managesieve").unwrap();
-    // Rules are not written into the server's reply script while it runs: its next reply write
-    // would drop them.
-    let base = rules_of.read_rules(&id).await.unwrap();
-    let marker = subject_rule(
-        "zlive-server-script",
-        vec![Action::FileInto {
-            mailbox: RuleMailbox::Path(MailboxPath::new("Archive").unwrap()),
-            copy: false,
-        }],
-    );
-    // Refused before anything is sent: Stalwart would refuse `PUTSCRIPT "vacation"` itself, so the
-    // refusal must be the engine's, which names the reply no rule names.
-    let rules_refused = rules_of
-        .replace_rules(&id, &base, std::slice::from_ref(&marker))
-        .await
-        .is_err_and(|err| err.is_item_unavailable() && err.detail().contains("no rule names"));
-    let mut outcome = Vec::new();
-    // Its script running; then the shape the JMAP adapter leaves, the user's `rules` running and
-    // including it.
-    let including = "require [\"include\"];\r\ninclude :personal :optional \"vacation\";\r\n";
-    for step in 0..2 {
-        if step == 1 {
-            admin.put_script(&rules, including).await.unwrap();
-            admin.set_active(Some(&rules)).await.unwrap();
-        }
-        let read = vacation.read_vacation(&id).await;
-        let mut written = Vec::new();
-        for new in [
-            VacationResponse::default().turned_on(),
-            VacationResponse::default(),
-        ] {
-            let new = new.with_reply(AutoReply::default().with_text("Mine."));
-            written.push(
-                vacation
-                    .set_vacation(&id, VacationPrecondition::Unconditional, &new)
-                    .await
-                    .is_err_and(|err| err.is_item_unavailable()),
-            );
-        }
-        outcome.push((read.is_err_and(|err| err.is_item_unavailable()), written));
-    }
-    let after_reply = admin.get_script(&reply).await.unwrap();
-    let after_rules = admin.get_script(&rules).await.unwrap();
-
-    admin.set_active(None).await.unwrap();
-    admin.delete_script(&rules).await.unwrap();
-    let off = set_reply("{\"isEnabled\":false}");
-    assert!(off["updated"].is_object(), "{off}");
-    admin.delete_script(&reply).await.unwrap();
-    admin.logout().await;
-
-    assert!(
-        rules_refused,
-        "rules written into the server's reply script"
-    );
-    assert_eq!(
-        outcome,
-        [(true, vec![true, true]), (true, vec![true, true])]
-    );
-    assert_eq!(after_reply, ours, "the server's reply script is untouched");
-    assert_eq!(after_rules, including, "nothing was written beside it");
 }

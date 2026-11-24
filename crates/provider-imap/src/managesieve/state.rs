@@ -1,5 +1,12 @@
 //! An account's Sieve scripts as a rule editor sees them: which script holds the rules (and, on
-//! ManageSieve, the out-of-office reply), its text, and the version a write is guarded by.
+//! ManageSieve, the out-of-office reply), its text, the server's own reply script where one runs,
+//! and the version a write is guarded by.
+//!
+//! The script is chosen as every adapter chooses it (`engine_sieve::dialect::scripts`). ManageSieve
+//! tells a server's own reply script only by its text, a `vacation` no `# rule:[…]` name marks
+//! (`unnamed_vacation`), so every listed script is read: one `GETSCRIPT` each, a handful on any
+//! account. Such a script is never the rules'; where it runs, as the active one or through the
+//! rules script's `include`, the rules are written beside it and it keeps running.
 //!
 //! ManageSieve keeps no version of a script and has no conditional `PUTSCRIPT`, so the version is
 //! the engine's: a SHA-256 of the script list (each name and whether it is active) and the text
@@ -9,6 +16,14 @@
 
 use core::fmt::Write as _;
 
+use engine_core::rules::MailRule;
+pub(crate) use engine_sieve::dialect::scripts::RULES_SCRIPT;
+use engine_sieve::dialect::{
+    include::{included_scripts, includes_script, without_include},
+    read_rules,
+    reply::unnamed_vacation,
+    scripts::{Choice, Listed, rules_script},
+};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -18,10 +33,6 @@ use super::{
     session::{ListedScript, Session},
 };
 
-/// The name of the script the engine creates when the account has none to edit, as on JMAP
-/// (`filters-and-out-of-office.md`, decision 3).
-pub(crate) const RULES_SCRIPT: &str = "rules";
-
 /// The account's scripts as listed, the one that holds the rules, and its text.
 pub(crate) struct State {
     pub(crate) listed: Vec<ListedScript>,
@@ -29,24 +40,69 @@ pub(crate) struct State {
     pub(crate) script: Option<ListedScript>,
     /// Its text; empty where there is none.
     pub(crate) text: String,
+    /// A server's own reply script that runs: the active one, or one the rules script includes.
+    pub(crate) server_reply: Option<ListedScript>,
 }
 
 impl State {
-    /// Lists the scripts and reads the one that holds the rules.
+    /// Lists the scripts, reads each, and chooses the one that holds the rules.
     pub(crate) async fn read<S: AsyncRead + AsyncWrite + Unpin + Send>(
         session: &mut Session<S>,
     ) -> SieveResult<Self> {
         let listed = session.list_scripts().await?;
-        let script = holding_rules(&listed).cloned();
-        let text = match &script {
-            Some(script) => session.get_script(&script.name).await?,
-            None => String::new(),
+        let mut texts = Vec::with_capacity(listed.len());
+        for script in &listed {
+            texts.push(session.get_script(&script.name).await?);
+        }
+        let servers: Vec<bool> = texts.iter().map(|text| unnamed_vacation(text)).collect();
+        let choice = rules_script(
+            &listed
+                .iter()
+                .zip(&servers)
+                .map(|(script, &server_reply)| Listed {
+                    name: script.name.as_str(),
+                    active: script.active,
+                    server_reply,
+                })
+                .collect::<Vec<_>>(),
+        );
+        let (script, text) = match choice {
+            Choice::Script(at) => (Some(listed[at].clone()), texts.swap_remove(at)),
+            _ => (None, String::new()),
         };
+        let included = included_scripts(&text);
+        let server_reply = listed
+            .iter()
+            .zip(&servers)
+            .filter(|(_, server)| **server)
+            .map(|(script, _)| script)
+            .find(|script| {
+                script.active || included.iter().any(|name| name == script.name.as_str())
+            })
+            .cloned();
         Ok(Self {
             listed,
             script,
             text,
+            server_reply,
         })
+    }
+
+    /// The user's rules: every rule of the script but the include of a server's reply script,
+    /// which is the reply's (`engine_sieve::dialect::include`).
+    pub(crate) fn rules(&self) -> Vec<MailRule> {
+        match self.included_reply() {
+            Some(name) => without_include(&self.text, name),
+            None => read_rules(&self.text),
+        }
+    }
+
+    /// The server's reply script the rules script includes, by name.
+    pub(crate) fn included_reply(&self) -> Option<&str> {
+        self.server_reply
+            .as_ref()
+            .map(|reply| reply.name.as_str())
+            .filter(|name| includes_script(&self.text, name))
     }
 
     /// The version of the rules and the reply: a hash of every script's name and whether it is
@@ -82,25 +138,6 @@ impl State {
             |script| script.name.clone(),
         )
     }
-}
-
-/// The script that holds the rules: the active one; else the engine's own `rules` script, or the
-/// only one. `None` where there is none, or several and none of them active or named `rules`: the
-/// engine cannot tell which the user means, and starts its own rather than pick one. The same
-/// choice the JMAP adapter makes, which has a reply script to set aside and ManageSieve does not.
-fn holding_rules(listed: &[ListedScript]) -> Option<&ListedScript> {
-    listed
-        .iter()
-        .find(|script| script.active)
-        .or_else(|| {
-            listed
-                .iter()
-                .find(|script| script.name.as_str() == RULES_SCRIPT)
-        })
-        .or(match listed {
-            [only] => Some(only),
-            _ => None,
-        })
 }
 
 #[cfg(test)]

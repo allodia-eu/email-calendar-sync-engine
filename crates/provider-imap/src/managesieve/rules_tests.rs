@@ -30,6 +30,7 @@ async fn read_set(answers: &[&[u8]]) -> RuleSet {
 async fn the_running_script_is_read_as_the_rules_with_a_version() {
     let (sieve, sessions) = scripted(&[
         &listing(&[("other", false), ("zfixture", true)]),
+        &script("keep;\r\n"),
         &script(RULE),
         LOGOUT,
     ]);
@@ -43,7 +44,7 @@ async fn the_running_script_is_read_as_the_rules_with_a_version() {
     );
     assert_eq!(
         sent(&sessions),
-        "LISTSCRIPTS\r\nGETSCRIPT \"zfixture\"\r\nLOGOUT\r\n"
+        "LISTSCRIPTS\r\nGETSCRIPT \"other\"\r\nGETSCRIPT \"zfixture\"\r\nLOGOUT\r\n"
     );
     assert_eq!(sieve.rules_write_guard(), WriteGuard::Absent);
 
@@ -242,15 +243,48 @@ async fn the_reply_s_rule_is_no_rule_and_is_kept_by_a_write_of_the_rules() {
 }
 
 #[tokio::test]
-async fn rules_are_not_written_into_a_script_a_server_keeps_its_reply_in() {
-    // Stalwart's own reply script, running: rules written there are undone by its next reply write.
+async fn rules_beside_a_running_server_reply_script_include_it_and_keep_it_running() {
+    // Stalwart's own reply script, running and alone: never the rules' script. The rules go in a
+    // new `rules` script that includes it first, made the active one, so the reply runs on.
     let base = read_set(&[
         &listing(&[("vacation", true)]),
         &script(STALWART_REPLY),
         LOGOUT,
     ])
     .await;
+    assert!(base.rules.is_empty(), "the server's reply is no rule");
     let rules = base_rules().await;
+    let after = "require [\"include\"];\r\ninclude :personal :optional \"vacation\";\r\n";
+    let (sieve, sessions) = scripted(&[
+        &capability("fileinto vacation include"),
+        &listing(&[("vacation", true)]),
+        &script(STALWART_REPLY),
+        b"OK\r\n",
+        b"OK\r\n",
+        &listing(&[("rules", true), ("vacation", false)]),
+        &script(after),
+        &script(STALWART_REPLY),
+        LOGOUT,
+    ]);
+    let receipt = sieve
+        .replace_rules(&account(), &base, &rules)
+        .await
+        .unwrap();
+    assert_eq!(receipt.stored, RulesStored::CreatedRunning);
+    assert_eq!(receipt.reply, engine_core::rules::ReplyEffect::Untouched);
+    let written = sent(&sessions);
+    assert!(
+        written.contains("PUTSCRIPT \"rules\" {")
+            && written.contains("include :personal :optional \"vacation\";"),
+        "{written}"
+    );
+    assert!(written.contains("SETACTIVE \"rules\""), "{written}");
+    assert!(
+        !written.contains("PUTSCRIPT \"vacation\""),
+        "the server's script is never written"
+    );
+
+    // Without `include`, new rules would stop the reply: refused before anything is sent.
     let (sieve, sessions) = scripted(&[
         &capability("fileinto vacation"),
         &listing(&[("vacation", true)]),
@@ -263,7 +297,53 @@ async fn rules_are_not_written_into_a_script_a_server_keeps_its_reply_in() {
         .unwrap_err();
     assert!(err.is_item_unavailable(), "{err:?}");
     assert!(!sent(&sessions).contains("PUTSCRIPT"));
+}
 
+#[tokio::test]
+async fn the_include_of_a_server_reply_script_is_no_rule_and_survives_a_write_of_no_rules() {
+    // The shape the JMAP adapter leaves: `rules` running and including the server's reply.
+    let including = format!(
+        "require [\"fileinto\",\"include\"];\r\ninclude :personal :optional \"vacation\";\r\n{}",
+        &RULE[23..]
+    );
+    let answers = |text: &str| -> Vec<Vec<u8>> {
+        vec![
+            listing(&[("rules", true), ("vacation", false)]),
+            script(text),
+            script(STALWART_REPLY),
+        ]
+    };
+    let read: Vec<Vec<u8>> = answers(&including)
+        .into_iter()
+        .chain([LOGOUT.to_vec()])
+        .collect();
+    let base = read_set(&read.iter().map(Vec::as_slice).collect::<Vec<_>>()).await;
+    assert_eq!(
+        base.rules.len(),
+        1,
+        "the include is the reply's, not a rule"
+    );
+    let mut write = vec![capability("fileinto include")];
+    write.extend(answers(&including));
+    write.push(b"OK\r\n".to_vec());
+    write.extend(answers(&including));
+    write.push(LOGOUT.to_vec());
+    let (sieve, sessions) = scripted(&write.iter().map(Vec::as_slice).collect::<Vec<_>>());
+    let receipt = sieve.replace_rules(&account(), &base, &[]).await.unwrap();
+    assert_eq!(receipt.reply, engine_core::rules::ReplyEffect::Untouched);
+    let sent = sent(&sessions);
+    assert!(
+        sent.contains("include :personal :optional \"vacation\";"),
+        "{sent}"
+    );
+    assert!(
+        !sent.contains("fileinto \"Archive\""),
+        "the one rule is gone: {sent}"
+    );
+}
+
+#[tokio::test]
+async fn rules_are_not_written_into_a_script_holding_a_vacation_no_rule_names() {
     // A Roundcube-named rule of the user's that replies does not stop a write.
     let boss = format!(
         "require [\"fileinto\",\"vacation\"];\r\n# rule:[Boss]\r\nif header :contains \
