@@ -43,17 +43,17 @@ impl From<CredentialFailure> for Failure {
 /// A token source that answers from a script and counts what it was asked.
 #[derive(Debug)]
 pub(super) struct Tokens {
-    subject: CredentialSubject,
-    permits: bool,
-    never: bool,
-    first: &'static str,
+    pub(super) subject: CredentialSubject,
+    pub(super) permits: bool,
+    pub(super) never: bool,
+    pub(super) first: &'static str,
     /// `replace` fails as retryable, as a token endpoint that is down does.
-    replace_fails: bool,
-    replacements: Mutex<VecDeque<&'static str>>,
-    asks: Mutex<Vec<CredentialProtocol>>,
-    replaced: Mutex<Vec<String>>,
+    pub(super) replace_fails: bool,
+    pub(super) replacements: Mutex<VecDeque<&'static str>>,
+    pub(super) asks: Mutex<Vec<CredentialProtocol>>,
+    pub(super) replaced: Mutex<Vec<String>>,
     /// Every origin `permits` was asked about.
-    checked: Mutex<Vec<engine_provider::Origin>>,
+    pub(super) checked: Mutex<Vec<engine_provider::Origin>>,
 }
 
 impl Tokens {

@@ -52,6 +52,7 @@
 //! `authenticated.rs`.
 
 mod authenticated;
+mod challenge;
 mod classify;
 mod deadline;
 mod error;
@@ -67,6 +68,7 @@ pub mod test_server;
 mod user_agent;
 
 pub use authenticated::{AuthenticatedClient, Unauthorized};
+pub use challenge::challenge_schemes;
 pub use classify::{StatusAlone, Throttle, ThrottleClassifier};
 pub use deadline::{Exchange, chunk_within, client};
 pub use error::{SendError, gateway_without_answer};
