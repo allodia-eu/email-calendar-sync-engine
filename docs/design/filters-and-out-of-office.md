@@ -603,7 +603,8 @@ it. Graph and Gmail do this (Graph's proven offline with its fake, no live Graph
 Gmail's live); the question "is the rule as read still there" has one answer,
 `engine_provider::RuleListing::left_as_read`, which both call. A rule whose write may have landed
 (an outcome-unknown failure: a timeout, a gateway's `502` or `504`) is not named, since its edit
-may have applied. The base check is one answer too: a base is the listing read when its version is
+may have applied; on Gmail that is conservative, since a failure before the filter was sent (a
+forwarding or label read) leaves the filter read certainly untouched. The base check is one answer too: a base is the listing read when its version is
 that of its raw form as the adapter parses it (`RuleListing::of_base`), so a host that re-encoded
 the raw form is still understood, and the listing read now is compared with it by version
 (`RuleListing::unchanged_since`). A rule written anew whose old copy
@@ -1246,6 +1247,11 @@ Each claim below is asserted by those suites, not only printed. Captured as
 - **An edit that is not kept leaves the filter as read**, and the receipt names it (section 4).
 
 **Follow-ups for Gmail.**
+
+- **An importer into Gmail must revisit what sends mail.** The reader marks every Gmail action but
+  `forward` as sending none, an action key Gmail adds later included. That holds only while no
+  `RulesImporter` targets Gmail: with one, such a key that sends mail would be armed with
+  forwarding off and missing from `held_forwarding`.
 
 - **Sent to me** (`to:me`), the recipients (`to:`), and a typed subject-or-body condition stay
   native for now; `larger:` with a unit (`10M`) stays native until its bytes are pinned.

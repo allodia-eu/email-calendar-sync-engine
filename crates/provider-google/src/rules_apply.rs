@@ -18,7 +18,12 @@
 //!    already gone is the state asked for).
 //! 5. **No orphan labels.** A label made for a keyword of a filter that was then not stored is
 //!    deleted again where it still holds no message (read first: another device's keyword write may
-//!    have put it to use since), as far as Gmail lets it.
+//!    have put it to use since), as far as Gmail lets it. The read narrows that race to one round
+//!    trip; it does not close it (a write between the read and the delete, a count that lags).
+//!
+//! The receipt's `left_as_read` is conservative here: a write that failed with its outcome unknown
+//! is left out of it even where the failure came before the filter was sent (a forwarding or label
+//! read), though the filter read is then certainly untouched.
 //!
 //! Each request's failure is a [`RuleWriteFailure`] in the receipt, by position and class, and the
 //! rest go ahead; the rule's outcome says so too ([`LossReason::NotWritten`]). The receipt carries
@@ -253,7 +258,9 @@ impl Write<'_> {
 
     /// Deletes the labels this write made for a filter it then did not store, where each still
     /// holds no message: one another device's keyword write put to use meanwhile stays. Best
-    /// effort: a label Gmail will not read or delete stays too, named in no filter.
+    /// effort: a label Gmail will not read or delete stays too, named in no filter. The read
+    /// narrows the race to one round trip and does not close it: a keyword write between the read
+    /// and the delete, or a `messagesTotal` that lags one, can still lose that label.
     async fn tidy_labels(&mut self) {
         let unused: Vec<String> = self
             .made

@@ -14,7 +14,8 @@
 //!   ([`ContactsInOrganization`](ReplyAudience::ContactsInOrganization)), or neither. The domain
 //!   restriction is a Workspace account's alone, so the vocabulary asks the account's affiliation
 //!   (`crate::affiliation`), and a write asks it only for a reply limited to the organization. A
-//!   token that may not ask gets the narrower, personal vocabulary.
+//!   grant that may not ask gets the narrower, personal vocabulary; a token that no longer signs in
+//!   fails a write limited to the organization as such.
 //! - **The window is never written wider than asked**: Gmail keeps milliseconds, so a start is
 //!   rounded up and an end down, and a window that then holds no whole millisecond is refused.
 //! - **No write guard on the server**: the setting carries no ETag. The version is a SHA-256 of the
@@ -64,24 +65,34 @@ pub(crate) fn vocabulary(workspace: bool) -> VacationVocabulary {
     }
 }
 
-/// Whether the account is a Workspace one, which alone can limit a reply to its domain. A token
-/// that may not ask (a `Permanent` or `Authentication` failure from `userinfo`: a grant without
-/// `userinfo.email`) answers `false`: the narrower vocabulary, so a reply limited to the
-/// organization is refused as one the account is not known to hold, rather than every vocabulary
-/// question failing. A throttled or failing ask stays an error.
-async fn workspace(client: &GoogleClient) -> ProviderResult<bool> {
+/// Who asks whether the account is a Workspace one: the vocabulary, or a write limited to the
+/// organization.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Asking {
+    Vocabulary,
+    Write,
+}
+
+/// Whether the account is a Workspace one, which alone can limit a reply to its domain.
+///
+/// A grant without `userinfo.email` (a `Permanent` failure: a `403` that is no rate limit) answers
+/// `false`: the narrower vocabulary, so a reply limited to the organization is refused as one the
+/// account is not known to hold, rather than every vocabulary question failing. An
+/// `Authentication` failure (`401`) also means a token that no longer signs in, expired or
+/// revoked: the vocabulary still answers the narrower one, but a write limited to the
+/// organization surfaces it, so the host asks the user to sign in again. A throttled or failing ask
+/// stays an error.
+async fn workspace(client: &GoogleClient, asking: Asking) -> ProviderResult<bool> {
     match client.affiliation().await {
         Ok(affiliation) => Ok(matches!(affiliation, Affiliation::Organization(_))),
-        // The grant falls short (`401`, or a `403` that is no rate limit): the narrower answer.
         Err(err)
-            if matches!(
-                err.failure_class(),
-                FailureClass::Permanent | FailureClass::Authentication
-            ) =>
+            if err.failure_class() == FailureClass::Permanent
+                || (err.failure_class() == FailureClass::Authentication
+                    && asking == Asking::Vocabulary) =>
         {
             Ok(false)
         }
-        // Throttled, or failing for a while: that says nothing of the account.
+        // Signed out, throttled, or failing for a while: that says nothing of the account.
         Err(err) => Err(err.into()),
     }
 }
@@ -89,7 +100,9 @@ async fn workspace(client: &GoogleClient) -> ProviderResult<bool> {
 #[async_trait]
 impl Vacation for GmailProvider {
     async fn vocabulary(&self, _account: &AccountId) -> ProviderResult<VacationVocabulary> {
-        Ok(vocabulary(workspace(self.client()).await?))
+        Ok(vocabulary(
+            workspace(self.client(), Asking::Vocabulary).await?,
+        ))
     }
 
     /// [`WriteGuard::Absent`]: the setting has no ETag. A guarded write still refuses a reply
@@ -113,7 +126,7 @@ impl Vacation for GmailProvider {
             new.audience,
             ReplyAudience::Organization | ReplyAudience::ContactsInOrganization
         );
-        let workspace = organization && workspace(client).await?;
+        let workspace = organization && workspace(client, Asking::Write).await?;
         refuse_unheld_vacation(&vocabulary(workspace), new)?;
         let body = setting(new)?;
         if let VacationPrecondition::IfUnchanged(read_as) = precondition {

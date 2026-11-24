@@ -660,7 +660,11 @@ scope, known only by asking. The mapping is the Gmail column of
   (`400 failedPrecondition`, observed). A label made for a keyword of a filter then not stored is
   deleted again, where a read of it shows it still holds no message (`messagesTotal: 0`; a label
   just made reads so, observed): another device's keyword write may have put it to use since, and
-  then it stays. A success whose body does not read counts as done.
+  then it stays. That narrows the race to one round trip and does not close it: a keyword write
+  between the read and the delete, or a `messagesTotal` that lags, can still lose such a label.
+  `left_as_read` is conservative: a rule whose write failed with its outcome unknown is left out of
+  it even where the failure came before the filter was sent, though its filter is then untouched.
+  A success whose body does not read counts as done.
 - **Guards.** Both are `Absent`: a filter and the reply carry no ETag. A write reads again and
   refuses a base that moved as `Conflict`, which narrows the race and does not close it, and
   neither receipt carries a version. Gmail showed every write on the next read (no lag observed).
@@ -671,9 +675,10 @@ scope, known only by asking. The mapping is the Gmail column of
   `ReplyBodies::One` and a reply with both is refused before sending. `restrictToContacts` is
   Contacts, `restrictToDomain` Organization, both ContactsInOrganization; the domain restriction is
   a Workspace account's alone, so the vocabulary asks the affiliation (`userinfo.email`); a token
-  whose grant falls short (a `Permanent` or `Authentication` failure) gets the personal
-  vocabulary, a throttled or failing ask stays an error, and a write asks only for a reply limited
-  to the organization.
+  whose grant falls short (a `Permanent` failure) gets the personal vocabulary, as does one that no
+  longer signs in (`Authentication`) when only the vocabulary is asked; a write limited to the
+  organization surfaces `Authentication`, so the host asks the user to sign in again. A throttled
+  or failing ask stays an error, and a write asks only for a reply limited to the organization.
 
 Live: `tests/live_rules.rs` (reads), `tests/live_rules_writes.rs` and `tests/live_reply_writes.rs`
 (writes, each behind a gate of its own, `GMAIL_RULES_WRITES=1` and `GMAIL_REPLY_WRITES=1`), all

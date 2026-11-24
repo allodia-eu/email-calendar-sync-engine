@@ -313,7 +313,9 @@ fn actions(action: &Map<String, Value>, named: &NamedLabels) -> Vec<Action> {
         if !known && !asks_nothing(value) {
             // Gmail documents three action keys, and `forward` is the one that sends. A key it adds
             // later is read as sending no mail: a Gmail action carries to Gmail alone, where only
-            // a forward is checked and counted.
+            // a forward is checked and counted. That holds only while no import targets Gmail: an
+            // importer into Gmail must revisit it, or such a key that sends mail would be armed
+            // with forwarding off and missing from `held_forwarding`.
             out.push(Action::Native(
                 NativeAction::new(NativeKind::Gmail, fragment([(key.as_str(), value)]))
                     .sending_no_mail(),

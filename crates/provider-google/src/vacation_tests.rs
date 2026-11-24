@@ -274,12 +274,20 @@ async fn a_token_that_may_not_ask_the_affiliation_gets_the_personal_vocabulary()
                 .contains(&ReplyAudience::Organization)
         );
         assert!(vocabulary.audiences().contains(&ReplyAudience::Contacts));
+        // Writing a reply limited to the organization: a grant without the scope is refused as a
+        // reply the account is not known to hold; a token that no longer signs in (`401`, an
+        // expired or revoked one) surfaces as such, so the host asks the user to sign in again.
         let org = VacationResponse::default().with_audience(ReplyAudience::Organization);
         let err = provider
             .set_vacation(&account(), VacationPrecondition::Unconditional, &org)
             .await
             .unwrap_err();
-        assert_eq!(err.class(), FailureClass::Permanent);
+        let expected = if status == 401 {
+            FailureClass::Authentication
+        } else {
+            FailureClass::Permanent
+        };
+        assert_eq!(err.class(), expected, "{status}");
         assert!(log.lock().unwrap().iter().all(|r| r.method == "GET"));
     }
     // Any other failure is still one: a throttled or failing ask says nothing of the account.
