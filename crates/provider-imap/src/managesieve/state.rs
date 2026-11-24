@@ -19,6 +19,7 @@ use core::fmt::Write as _;
 use engine_core::rules::MailRule;
 pub(crate) use engine_sieve::dialect::scripts::RULES_SCRIPT;
 use engine_sieve::dialect::{
+    folder_ids_carried,
     include::{included_scripts, includes_script, without_include},
     read_rules,
     scripts::{Choice, Listed, choose_rules_script, plainly_server_reply},
@@ -136,11 +137,14 @@ impl State {
 
     /// The user's rules: every rule of the script but the include of a server's reply script,
     /// which is the reply's (`engine_sieve::dialect::include`).
+    /// A rule filing by `:mailboxid` is carried whole (`folder_ids_carried`): this adapter knows a
+    /// folder by its name, not by the RFC 8474 `MAILBOXID` the rule names.
     pub(crate) fn rules(&self) -> Vec<MailRule> {
-        match self.included_reply() {
+        let read = match self.included_reply() {
             Some(name) => without_include(&self.text, name),
             None => read_rules(&self.text),
-        }
+        };
+        folder_ids_carried(&self.text, read)
     }
 
     /// The server's reply script the rules script includes, by name.

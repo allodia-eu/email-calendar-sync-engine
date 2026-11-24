@@ -127,6 +127,14 @@ impl RuleVocabulary {
         self
     }
 
+    /// Holds `feature` no longer (builder-style): for a transport that cannot use what its
+    /// language could say (filing by id where the account's folder ids are not the language's).
+    #[must_use]
+    pub fn without(mut self, feature: RuleFeature) -> Self {
+        self.features.remove(&feature);
+        self
+    }
+
     /// Lets one message be sent on to at most `max` addresses (builder-style): JMAP Sieve's
     /// `maxNumberRedirects`.
     #[must_use]

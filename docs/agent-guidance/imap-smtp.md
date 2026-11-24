@@ -943,6 +943,11 @@ connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "
   `engine_sieve::dialect`, the reply as Roundcube's reply rule (`dialect::reply`). The guard is
   `Absent`; a stale base is refused in the write's own session. The receipt says whether the
   rules written run (`RulesReceipt::activation`): a write never switches the script on or off.
+  **No rule files by id here**: `fileinto :mailboxid` names an RFC 8474 `MAILBOXID`, and this
+  adapter knows a folder by its name, so the vocabulary leaves `FileIntoId` out
+  (`RuleVocabulary::without`), and a rule another client wrote with `:mailboxid` is read carried
+  whole (`engine_sieve::dialect::folder_ids_carried`) and copied back as it was, never handed to a
+  host as one of its folder ids.
 - **Import** (`managesieve/import.rs`, the `import` feature): `RulesImporter` through
   `engine_provider::import::append_rules` and `import_reply` over the same service
   (`providers.md`, "Importing rules and the reply"), answered by `Provider::rules_importer`

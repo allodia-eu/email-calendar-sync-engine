@@ -220,3 +220,12 @@ fn a_receipt_says_whether_the_rules_it_wrote_run() {
     let receipt = receipt.with_activation(RulesActivation::Inactive);
     assert_eq!(receipt.activation, RulesActivation::Inactive);
 }
+
+#[test]
+fn a_feature_taken_out_is_held_no_longer() {
+    let vocabulary = RuleVocabulary::new()
+        .with_exact([RuleFeature::FileIntoId, RuleFeature::Stop])
+        .without(RuleFeature::FileIntoId);
+    assert_eq!(vocabulary.support(RuleFeature::FileIntoId), None);
+    assert_eq!(vocabulary.support(RuleFeature::Stop), Some(Support::Exact));
+}

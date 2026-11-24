@@ -75,6 +75,44 @@ pub fn read_rules(script: &str) -> Vec<MailRule> {
         .collect()
 }
 
+/// `rules`, read from `script` by [`read_rules`], with each typed rule that files into a folder by
+/// id carried whole instead, as its exact text, which a write copies as it was.
+///
+/// For a transport whose folder ids are not the RFC 8474 `MAILBOXID`s that `fileinto :mailboxid`
+/// (RFC 9042) names: an IMAP account over ManageSieve, whose adapter knows a folder by its name.
+/// Read typed, such an id would reach a host as one of its own folder ids, and a rule it wrote
+/// back would file into a folder it never named. A rule read from another script is left as it
+/// is.
+#[must_use]
+pub fn folder_ids_carried(script: &str, rules: Vec<MailRule>) -> Vec<MailRule> {
+    use engine_core::rules::{Action, RuleBody, RuleMailbox, RuleOrigin};
+    let Ok(segments) = crate::segment(script) else {
+        return rules;
+    };
+    let Ok(context) = self::script(script, &segments) else {
+        return rules;
+    };
+    let by_id = |rule: &MailRule| {
+        matches!(&rule.body, RuleBody::Typed(typed) if typed.actions.iter().any(|action| matches!(
+            action,
+            Action::FileInto { mailbox: RuleMailbox::Id(_), .. }
+        )))
+    };
+    rules
+        .into_iter()
+        .map(|rule| match rule.origin {
+            Some(RuleOrigin::ScriptSegment { script, index })
+                if script == context.fingerprint && by_id(&rule) =>
+            {
+                segments
+                    .get(index)
+                    .map_or(rule, |segment| read::whole(segment, index, &context))
+            }
+            _ => rule,
+        })
+        .collect()
+}
+
 /// A script the reader cannot split, as one rule: what it requires and whether it sends mail
 /// are not known, so the plan carries it nowhere and an import never.
 fn whole(script: &str) -> Vec<MailRule> {

@@ -47,20 +47,32 @@ pub(super) fn rule(segment: &Segment<'_>, index: usize, script: &Script) -> Opti
     if segment.kind() != SegmentKind::Command {
         return None;
     }
-    let named = name(segment.leading());
     let rule = match typed(segment.tokens(), script.literal) {
         Some((true, rule)) => rule,
         Some((false, rule)) => rule.disabled(),
-        None => MailRule::opaque(raw(segment, Some(script), named.clone())),
+        None => return Some(whole(segment, index, script)),
     };
-    let rule = match named {
+    Some(placed(rule, segment, index, script))
+}
+
+/// The rule segment `index` holds, carried whole as its exact text, whether or not the dialect
+/// could read it typed.
+pub(super) fn whole(segment: &Segment<'_>, index: usize, script: &Script) -> MailRule {
+    let named = name(segment.leading());
+    let rule = MailRule::opaque(raw(segment, Some(script), named));
+    placed(rule, segment, index, script)
+}
+
+/// `rule` with the name segment `index` gives it and its origin there.
+fn placed(rule: MailRule, segment: &Segment<'_>, index: usize, script: &Script) -> MailRule {
+    let rule = match name(segment.leading()) {
         Some(name) => rule.named(name),
         None => rule,
     };
-    Some(rule.with_origin(RuleOrigin::ScriptSegment {
+    rule.with_origin(RuleOrigin::ScriptSegment {
         script: script.fingerprint,
         index,
-    }))
+    })
 }
 
 /// A segment carried whole, with what its tokens say it needs and does. `script` is the script it
