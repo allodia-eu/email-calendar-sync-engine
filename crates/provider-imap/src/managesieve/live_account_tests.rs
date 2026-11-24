@@ -12,6 +12,7 @@ use engine_core::{
     vacation::{AutoReply, VacationResponse},
 };
 use engine_provider::{ConnectService, ConnectStep, Credential, VacationPrecondition};
+use engine_sieve::dialect::scripts::{Choice, Listed, rules_script};
 use tokio::io::AsyncWriteExt;
 
 use super::{
@@ -135,6 +136,46 @@ fn observed(imap: &str, sieve: &str) -> (ImapConfig, Steps) {
     (config, steps)
 }
 
+/// carol's Sieve scripts as JMAP lists them: name, active, blob.
+fn jmap_scripts(harness: &stalwart_harness::Harness, account: &str) -> Vec<(String, bool, String)> {
+    let listed = jmap(
+        harness,
+        "urn:ietf:params:jmap:sieve",
+        &format!(
+            "[\"SieveScript/get\",{{\"accountId\":\"{account}\",\"ids\":null,\
+             \"properties\":[\"name\",\"isActive\",\"blobId\"]}},\"0\"]"
+        ),
+    );
+    listed["list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|script| {
+            (
+                script["name"].as_str().unwrap().to_owned(),
+                script["isActive"].as_bool().unwrap(),
+                script["blobId"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// The script the JMAP adapter takes for the rules': it knows the server's reply by its name.
+fn jmap_chooses(scripts: &[(String, bool, String)]) -> Option<usize> {
+    let listed: Vec<Listed<'_>> = scripts
+        .iter()
+        .map(|(name, active, _)| Listed {
+            name,
+            active: *active,
+            server_reply: Some(name == "vacation"),
+        })
+        .collect();
+    match rules_script(&listed) {
+        Choice::Script(at) => Some(at),
+        _ => None,
+    }
+}
+
 /// One JMAP call as carol, answering its result's arguments.
 fn jmap(harness: &stalwart_harness::Harness, using: &str, call: &str) -> serde_json::Value {
     let body = format!(
@@ -240,39 +281,8 @@ async fn beside_a_jmap_server_s_reply_rules_go_in_a_script_that_includes_it() {
         .unwrap();
     // What JMAP sees: `rules` running and including the reply's script, which JMAP's choice,
     // made by the reply script's name, takes for the rules' script too.
-    let listed = jmap(
-        &harness,
-        "urn:ietf:params:jmap:sieve",
-        &format!(
-            "[\"SieveScript/get\",{{\"accountId\":\"{account}\",\"ids\":null,\
-             \"properties\":[\"name\",\"isActive\",\"blobId\"]}},\"0\"]"
-        ),
-    );
-    let scripts: Vec<(String, bool, String)> = listed["list"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|script| {
-            (
-                script["name"].as_str().unwrap().to_owned(),
-                script["isActive"].as_bool().unwrap(),
-                script["blobId"].as_str().unwrap().to_owned(),
-            )
-        })
-        .collect();
-    let jmap_choice = engine_sieve::dialect::scripts::rules_script(
-        &scripts
-            .iter()
-            .map(|(name, active, _)| engine_sieve::dialect::scripts::Listed {
-                name,
-                active: *active,
-                server_reply: Some(name == "vacation"),
-            })
-            .collect::<Vec<_>>(),
-    );
-    let engine_sieve::dialect::scripts::Choice::Script(at) = jmap_choice else {
-        panic!("JMAP chooses no script: {scripts:?}");
-    };
+    let scripts = jmap_scripts(&harness, &account);
+    let at = jmap_chooses(&scripts).expect("JMAP chooses a script");
     let (jmap_name, jmap_active, blob) = scripts[at].clone();
     let download = session["downloadUrl"]
         .as_str()
@@ -352,4 +362,109 @@ async fn beside_a_jmap_server_s_reply_rules_go_in_a_script_that_includes_it() {
         [(true, vec![true, true]), (true, vec![true, true])]
     );
     assert_eq!(after_reply, ours, "the server's reply script is untouched");
+}
+
+#[tokio::test]
+async fn beside_stalwart_s_reply_script_both_adapters_take_the_user_s_one_script() {
+    let _alone = ONE_AT_A_TIME.lock().await;
+    let (Some(harness), Some(imap), Some(sieve)) = (
+        stalwart_harness::Harness::from_env(),
+        address("stalwart", "STALWART_IMAP_ADDR"),
+        address("stalwart", "STALWART_MANAGESIEVE_ADDR"),
+    ) else {
+        return;
+    };
+    let config = ImapConfig::new(
+        imap.as_str(),
+        "localhost",
+        Credential::password("carol@test.local", "harness-carol-pw"),
+    )
+    .with_managesieve(sieve.as_str(), "localhost");
+    let mut admin = dial::connect(&config, config.managesieve.as_ref().unwrap(), &connector())
+        .await
+        .unwrap();
+    clean(&mut admin).await;
+    let session = harness
+        .jmap_session_as(("carol@test.local", "harness-carol-pw"))
+        .unwrap();
+    let using = "urn:ietf:params:jmap:vacationresponse";
+    let account = session["primaryAccounts"][using]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let set_reply = |update: &str| {
+        jmap(
+            &harness,
+            using,
+            &format!(
+                "[\"VacationResponse/set\",{{\"accountId\":\"{account}\",\
+                 \"update\":{{\"singleton\":{update}}}}},\"0\"]"
+            ),
+        )
+    };
+    // The reply switched on and off over JMAP: Stalwart keeps its script, inactive.
+    assert!(set_reply("{\"isEnabled\":true,\"textBody\":\"Away.\"}")["updated"].is_object());
+    assert!(set_reply("{\"isEnabled\":false}")["updated"].is_object());
+    // The user's own rules, in a script of their own, inactive.
+    let mine = ScriptName::new("myrules").unwrap();
+    let first = subject_rule("zlive-myrules", archived());
+    let text =
+        engine_sieve::dialect::include::compose("", std::slice::from_ref(&first), None, false)
+            .unwrap();
+    admin.put_script(&mine, &text).await.unwrap();
+    let listed: Vec<(String, bool)> = admin
+        .list_scripts()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|script| (script.name.as_str().to_owned(), script.active))
+        .collect();
+
+    let scripts = jmap_scripts(&harness, &account);
+    let jmap_name = jmap_chooses(&scripts).map(|at| scripts[at].0.clone());
+    let handle = ImapAccount::connect(&config, connector()).await.unwrap();
+    let provider = handle.provider(MailboxId::try_from("INBOX").unwrap());
+    let rules_of = engine_provider::Provider::mail_rules(&provider).unwrap();
+    let id = AccountId::try_from("live-managesieve").unwrap();
+    let base = rules_of.read_rules(&id).await.unwrap();
+    let second = subject_rule("zlive-myrules-second", archived());
+    let written = rules_of
+        .replace_rules(&id, &base, std::slice::from_ref(&second))
+        .await;
+    let after: Vec<String> = admin
+        .list_scripts()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|script| script.name.as_str().to_owned())
+        .collect();
+    let stored = admin.get_script(&mine).await.unwrap();
+
+    clean(&mut admin).await;
+    admin.logout().await;
+
+    let mut listed_sorted = listed;
+    listed_sorted.sort();
+    assert_eq!(
+        listed_sorted,
+        [
+            ("myrules".to_owned(), false),
+            ("vacation".to_owned(), false)
+        ]
+    );
+    assert_eq!(jmap_name.as_deref(), Some("myrules"), "{scripts:?}");
+    assert_eq!(unplaced(&base), [first], "ManageSieve reads myrules too");
+    assert!(written.is_ok(), "{written:?}");
+    let mut after_sorted = after;
+    after_sorted.sort();
+    assert_eq!(after_sorted, ["myrules", "vacation"], "no `rules` created");
+    assert!(stored.contains("zlive-myrules-second"), "{stored}");
+}
+
+/// Filing into `Archive`, the action the rules here take.
+fn archived() -> Vec<Action> {
+    vec![Action::FileInto {
+        mailbox: RuleMailbox::Path(MailboxPath::new("Archive").unwrap()),
+        copy: false,
+    }]
 }

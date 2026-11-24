@@ -462,14 +462,20 @@ as `Conflict`, which narrows the race to one round trip and does not close it. T
 as JMAP chooses it, by one function (`engine_sieve::dialect::scripts::rules_script`: the active
 one, else `rules`, else the only one, never a server's own reply script); a new one is `rules`,
 stored with `PUTSCRIPT` and switched on with `SETACTIVE`. JMAP knows the server's reply script by
-its name (`vacation`), ManageSieve by its text: a script holding nothing but one `vacation` no
-`# rule:[…]` name marks, inside `currentdate` tests, Stalwart's shape
-(`scripts::plainly_server_reply`); any other script with such a `vacation` (SOGo's, say) is
-someone's rules, refused rather than rewritten or routed around. ManageSieve reads only the
-scripts the choice asks about (the active one, `rules`, the one left, one the chosen script
-includes); one removed in between is a `Conflict`, and a script whose name RFC 5804 forbids
-still counts but is never read. So the two can choose differently for a user's script named `vacation` or a server's reply script under
-another name; on Stalwart both point at the same script, which the live suite pins. Where a
+its name (`vacation`), ManageSieve by its text, in exactly the shape Stalwart writes
+(`scripts::plainly_server_reply`, pinned by live captures of every window shape in
+`engine-sieve/tests/fixtures/stalwart/`): a `require` of exactly `vacation`, `relational` and
+`date`, then up to two nested `if currentdate :value "ge"|"le" "iso8601"` around one unnamed
+`vacation :mime`, and nothing else. `:mime` and that `require` are what a user's own script does
+not write. Any other script with an unnamed `vacation` (SOGo's, or a user's plain
+`vacation :days 7 "Away";`) is someone's rules, refused rather than rewritten or routed around.
+ManageSieve reads only the scripts the choice asks about: the active one, `rules`, every
+candidate left where several are (so a server's inactive reply beside one user script leaves
+that script, as JMAP chooses), and one the chosen script includes. One removed in between is a
+`Conflict`, and a script whose name RFC 5804 forbids still counts but is never read. So the two
+can choose differently only for a user's script named `vacation` or a server's reply script under
+another name; on Stalwart they agree, which the live suite pins (the reply's script active, and
+inactive beside a user's `myrules`). Where a
 server's reply script runs, as the active one or through the rules' `include`, ManageSieve writes
 the rules as JMAP does: the include is kept first, and a new `rules` script includes the running
 reply's and is made the active one, so the reply runs on; a server that lists no `include` is

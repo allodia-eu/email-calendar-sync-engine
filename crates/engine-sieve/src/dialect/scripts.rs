@@ -3,12 +3,12 @@
 //!
 //! Each adapter says which scripts are a server's own reply script with what its transport can
 //! see: JMAP knows the RFC 9661 §4 script by its name (`vacation` on Stalwart), ManageSieve only by
-//! its text (an unnamed `vacation`, [`unnamed_vacation`](super::reply::unnamed_vacation)). On
+//! its text, in the exact shape Stalwart writes ([`plainly_server_reply`]). On
 //! Stalwart both point at the same script. Where they would not (a user's script named
 //! `vacation` over JMAP; a server's reply script under another name over ManageSieve), the two
 //! adapters can choose differently.
 
-use crate::{TokenKind, segment::SegmentKind};
+use crate::{Token, TokenKind, segment::SegmentKind};
 
 /// The name of the script a host creates when the account has no rules script to edit.
 pub const RULES_SCRIPT: &str = "rules";
@@ -52,9 +52,9 @@ pub fn rules_script(listed: &[Listed<'_>]) -> Choice {
 /// A server's reply script is never chosen.
 ///
 /// Whether a script is a server's reply script is asked of `server_reply` only where the listing
-/// does not say and the order needs it: of the active script, of `rules`, of the one candidate
-/// left. A script never asked counts as a candidate, so two scripts never read as one. An error
-/// from `server_reply` ends the choice.
+/// does not say and the order needs it: of the active script, of `rules`, and of the candidates
+/// left (each of them, where several are), so a protocol that must read a script to tell
+/// chooses as one that knows by name does. An error from `server_reply` ends the choice.
 ///
 /// # Errors
 ///
@@ -84,9 +84,16 @@ pub fn choose_rules_script<E>(
     {
         return Ok(Choice::Script(at));
     }
-    let others: Vec<usize> = (0..listed.len())
+    let mut others: Vec<usize> = (0..listed.len())
         .filter(|&at| candidate(&known, at))
         .collect();
+    if others.len() > 1 {
+        // Several left: one of them may be a server's reply script, and the rest only one script.
+        for &at in &others {
+            is_server(&mut known, at)?;
+        }
+        others.retain(|&at| candidate(&known, at));
+    }
     if let [only] = others.as_slice()
         && !is_server(&mut known, *only)?
     {
@@ -95,38 +102,114 @@ pub fn choose_rules_script<E>(
     Ok(Choice::Create)
 }
 
-/// Whether `script` is plainly a server's own reply script: nothing but `require`s, comments and
-/// one top-level command no `# rule:[…]` name marks, made only of `if` tests on `currentdate` (or
-/// `true`) around one `vacation`. That is the shape Stalwart writes for its JMAP reply, captured in
-/// both its forms (one bound, two nested). Any other script, one with a filter beside its reply
-/// (as SOGo writes them), one written in Roundcube's dialect, or one that cannot be split, is no
-/// server's: a host does not route rules around it.
+/// The extensions a server's own reply script requires, in every window shape: Stalwart requires
+/// all three even with no window.
+const SERVER_REPLY_REQUIRES: [&str; 3] = ["vacation", "relational", "date"];
+
+/// Whether `script` is plainly a server's own reply script, in exactly the shape Stalwart writes
+/// for its JMAP `VacationResponse` (captured live in every window shape: none, a start, an end,
+/// both; `tests/fixtures/stalwart/`):
+///
+/// - one `require` of exactly `vacation`, `relational` and `date`;
+/// - one top-level command no `# rule:[…]` name marks: up to two nested `if currentdate :value
+///   "ge"|"le" "iso8601" "…" {`, the start outside the end, with no `else`, around one `vacation`
+///   that carries `:mime`;
+/// - nothing else.
+///
+/// Any other script is someone's rules: a user's own reply script (`vacation :days 7 "Away";`),
+/// one with filters beside its reply (as SOGo writes them), one in Roundcube's dialect, or one
+/// that cannot be split. A host does not route rules around it.
 #[must_use]
 pub fn plainly_server_reply(script: &str) -> bool {
     let Ok(segments) = crate::segment(script) else {
         return false;
     };
-    let commands: Vec<_> = segments
+    let mut requires = segments
         .iter()
-        .filter(|segment| segment.kind() == SegmentKind::Command)
-        .collect();
-    let [command] = commands.as_slice() else {
+        .filter(|segment| segment.kind() == SegmentKind::Require);
+    let mut commands = segments
+        .iter()
+        .filter(|segment| segment.kind() == SegmentKind::Command);
+    let (Some(require), None, Some(command), None) = (
+        requires.next(),
+        requires.next(),
+        commands.next(),
+        commands.next(),
+    ) else {
         return false;
     };
-    let identifiers: Vec<_> = command
-        .tokens()
-        .iter()
-        .filter(|token| token.kind() == TokenKind::Identifier)
-        .collect();
+    let Ok(mut names) = crate::require::capabilities(require) else {
+        return false;
+    };
+    names.sort_unstable();
+    let mut expected = SERVER_REPLY_REQUIRES.map(str::to_owned);
+    expected.sort_unstable();
     super::read::name(command.leading()).is_none()
-        && identifiers
+        && names == expected
+        && windowed_mime_vacation(&spoken(command.tokens()))
+}
+
+/// `tokens` without white space; a comment stays, so that it fails Stalwart's shape.
+fn spoken<'a>(tokens: &[Token<'a>]) -> Vec<Token<'a>> {
+    tokens
+        .iter()
+        .filter(|token| token.kind() != TokenKind::Whitespace)
+        .copied()
+        .collect()
+}
+
+/// Whether `tokens` are Stalwart's window around its reply: up to two `currentdate` bounds, the
+/// start (`ge`) outside the end (`le`), then a `vacation` with `:mime`, then the closing braces.
+fn windowed_mime_vacation(tokens: &[Token<'_>]) -> bool {
+    if tokens.iter().any(|token| token.kind().is_trivia()) {
+        return false;
+    }
+    let mut rest = tokens;
+    let mut bounds = Vec::new();
+    while let [if_, test, value, comparator, format, date, open, after @ ..] = rest
+        && if_.is_identifier("if")
+    {
+        let comparator = crate::string::value(comparator);
+        let bound = matches!(comparator.as_deref(), Some("ge" | "le"));
+        if !(test.is_identifier("currentdate")
+            && value.is_tag("value")
+            && bound
+            && crate::string::value(format).as_deref() == Some("iso8601")
+            && date.kind() == TokenKind::QuotedString
+            && open.kind() == TokenKind::LeftBrace)
+        {
+            return false;
+        }
+        bounds.push(comparator);
+        rest = after;
+    }
+    let ordered = matches!(
+        bounds
             .iter()
-            .filter(|token| token.is_identifier("vacation"))
-            .count()
-            == 1
-        && identifiers.iter().all(|token| {
-            ["if", "currentdate", "allof", "true", "vacation"]
-                .iter()
-                .any(|name| token.is_identifier(name))
-        })
+            .map(Option::as_deref)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        [] | [Some("ge" | "le")] | [Some("ge"), Some("le")]
+    );
+    let Some(end) = rest
+        .iter()
+        .position(|token| token.kind() == TokenKind::Semicolon)
+    else {
+        return false;
+    };
+    let (vacation, closing) = rest.split_at(end);
+    // What follows the reply: the braces its bounds opened, and nothing else (segmenting the
+    // script has already matched them).
+    let closing = &closing[1..];
+    ordered
+        && vacation
+            .first()
+            .is_some_and(|token| token.is_identifier("vacation"))
+        && vacation.iter().any(|token| token.is_tag("mime"))
+        && vacation[1..]
+            .iter()
+            .all(|token| token.kind() != TokenKind::Identifier)
+        && closing
+            .iter()
+            .all(|token| token.kind() == TokenKind::RightBrace)
 }

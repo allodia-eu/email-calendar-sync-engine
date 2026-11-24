@@ -133,34 +133,108 @@ fn the_include_of_a_reply_script_is_no_rule_and_is_kept_first_on_a_write() {
 }
 
 /// Stalwart's own reply script, as its JMAP `VacationResponse/set` wrote it and ManageSieve's
-/// `GETSCRIPT` answered on the harness (2026-11-24): with one bound, and with two nested.
-const STALWART_ONE: &str = "require [\"vacation\", \"relational\", \"date\"];\r\n\r\nif currentdate \
-    :value \"ge\" \"iso8601\" \"2030-01-02T09:00:00Z\" {\r\nvacation :mime \"Content-Type: text/plain; \
-    charset=\\\"utf-8\\\"\r\nContent-Transfer-Encoding: 7bit\r\n\r\nAway.\";\r\n}\r\n";
-const STALWART_TWO: &str = "require [\"vacation\", \"relational\", \"date\"];\r\n\r\nif currentdate \
-    :value \"ge\" \"iso8601\" \"2030-01-02T09:00:00Z\" {\r\nif currentdate :value \"le\" \"iso8601\" \
-    \"2030-01-09T17:30:00Z\" {\r\nvacation :mime :subject \"Away\" \"x\";\r\n}\r\n}\r\n";
+/// `GETSCRIPT` answered on the harness, in every window shape (`fixtures/stalwart/README.md`).
+const STALWART: [&str; 4] = [
+    include_str!("fixtures/stalwart/reply_none.sieve"),
+    include_str!("fixtures/stalwart/reply_start.sieve"),
+    include_str!("fixtures/stalwart/reply_end.sieve"),
+    include_str!("fixtures/stalwart/reply_both.sieve"),
+];
+const REQUIRE: &str = "require [\"vacation\", \"relational\", \"date\"];\r\n";
 
 #[test]
-fn only_a_script_plainly_a_server_s_reply_is_taken_for_one() {
-    assert!(plainly_server_reply(STALWART_ONE));
-    assert!(plainly_server_reply(STALWART_TWO));
+fn only_a_script_in_the_shape_stalwart_writes_is_taken_for_a_server_s_reply() {
+    for script in STALWART {
+        assert!(plainly_server_reply(script), "{script}");
+    }
+    // A user's own reply-only script: theirs, so writes into it are refused, not routed around.
+    assert!(!plainly_server_reply(
+        "require \"vacation\";\r\nvacation :days 7 \"Away\";\r\n"
+    ));
+    // Stalwart's requires and window, but no `:mime`: not what it writes.
+    assert!(!plainly_server_reply(&format!(
+        "{REQUIRE}if currentdate :value \"ge\" \"iso8601\" \"2030-01-02T09:00:00Z\" {{\r\n\
+         vacation :subject \"Away\" \"x\";\r\n}}\r\n"
+    )));
+    // Requires other than exactly Stalwart's three.
+    assert!(!plainly_server_reply(
+        "require [\"vacation\"];\r\nvacation :mime \"x\";\r\n"
+    ));
+    assert!(!plainly_server_reply(
+        "require [\"vacation\", \"relational\", \"date\", \"fileinto\"];\r\nvacation :mime \"x\";\r\n"
+    ));
+    // The end outside the start, a test on something else, a bound on another clock, an `else`.
+    for window in [
+        "if currentdate :value \"le\" \"iso8601\" \"b\" {\r\nif currentdate :value \"ge\" \"iso8601\" \
+         \"a\" {\r\nvacation :mime \"x\";\r\n}\r\n}\r\n",
+        "if header :contains \"from\" \"b\" {\r\nvacation :mime \"x\";\r\n}\r\n",
+        "if currentdate :value \"ge\" \"date\" \"a\" {\r\nvacation :mime \"x\";\r\n}\r\n",
+        "if currentdate :value \"eq\" \"iso8601\" \"a\" {\r\nvacation :mime \"x\";\r\n}\r\n",
+        "if currentdate :value \"ge\" \"iso8601\" \"a\" {\r\nvacation :mime \"x\";\r\n} else {\r\nkeep;\r\n}\r\n",
+        "vacation :mime \"x\";\r\nkeep;\r\n",
+        "if currentdate :value \"ge\" \"iso8601\" \"a\" {\r\nvacation :mime \"x\";\r\nkeep;\r\n}\r\n",
+        "vacation :mime \"x\" ;\r\n}\r\n",
+        "vacation :mime \"x\"\r\n",
+        "if currentdate :value \"ge\" \"iso8601\" \"a\" {\r\nkeep;\r\n}\r\n",
+    ] {
+        assert!(
+            !plainly_server_reply(&format!("{REQUIRE}{window}")),
+            "{window}"
+        );
+    }
     // A reply with filters beside it, as SOGo writes its script: someone's rules, not a server's.
     let sogo = "require [\"fileinto\",\"vacation\"];\r\nif header :contains \"subject\" \"x\" {\r\n\
                 fileinto \"X\";\r\n}\r\nvacation :days 7 :addresses [\"a@example.com\"] \"Away.\";\r\n";
     assert!(!plainly_server_reply(sogo));
-    // A reply rule in Roundcube's dialect is named: the user's.
-    let named = "# rule:[Out-of-Office]\r\nif true\r\n{\r\n\tvacation \"x\";\r\n}\r\n";
-    assert!(!plainly_server_reply(named));
-    // A test on anything but the date answers some senders: not a server's reply to everyone.
-    assert!(!plainly_server_reply(
-        "if header :contains \"from\" \"b\" { vacation \"x\"; }\r\n"
-    ));
-    assert!(!plainly_server_reply(
-        "if true { vacation \"x\"; vacation \"y\"; }\r\n"
-    ));
+    // Stalwart's script under a Roundcube rule name is the user's.
+    assert!(!plainly_server_reply(&STALWART[0].replacen(
+        "\r\n\r\nvacation",
+        "\r\n\r\n# rule:[Away]\r\nvacation",
+        1
+    )));
+    // A comment inside the command: Stalwart writes none.
+    assert!(!plainly_server_reply(&STALWART[0].replacen(
+        "vacation :mime",
+        "vacation /* mine */ :mime",
+        1
+    )));
     assert!(!plainly_server_reply(
         "if \"unterminated { vacation \"x\"; }"
     ));
     assert!(!plainly_server_reply(""));
+}
+
+#[test]
+fn several_scripts_left_are_each_read_so_a_server_s_reply_among_them_leaves_the_one_script() {
+    // Stalwart: the user's inactive `myrules` and the server's inactive reply script. JMAP knows
+    // the reply by name and takes `myrules`; reading both must take it too.
+    let unknown = |name| Listed {
+        name,
+        active: false,
+        server_reply: None,
+    };
+    let listed = [unknown("myrules"), unknown("vacation")];
+    let mut asked = Vec::new();
+    let choice = choose_rules_script(&listed, |at| {
+        asked.push(at);
+        Ok::<_, ()>(at == 1)
+    });
+    assert_eq!(choice, Ok(Choice::Script(0)));
+    assert_eq!(asked, [0, 1], "each asked once");
+    let known = [
+        Listed {
+            server_reply: Some(false),
+            ..listed[0]
+        },
+        Listed {
+            server_reply: Some(true),
+            ..listed[1]
+        },
+    ];
+    assert_eq!(rules_script(&known), Choice::Script(0), "as JMAP chooses");
+    // Two scripts of the user's: which one is meant cannot be told.
+    assert_eq!(
+        choose_rules_script(&listed, |_| Ok::<_, ()>(false)),
+        Ok(Choice::Create)
+    );
 }
