@@ -330,7 +330,7 @@ it. An adapter that can import implements the trait; there is no capability flag
 
   A throttle, a refused credential, or no credential at all ends the batch on every adapter,
   since it reaches every message after it; a refusal of one message never does. The rule is one
-  function, `import::ends_batch`, so a source that is down or hung is asked once per batch, not
+  function, `ProviderError::ends_batch`, so a source that is down or hung is asked once per batch, not
   once per message at a deadline each.
 
 ## Out-of-office (`Vacation`)
@@ -393,7 +393,10 @@ An account's rules are a setting too, written whole and directly, guarded by the
   add only what the server alone refuses: a script over its size limit or one it calls invalid
   (`item_unavailable`), an account with no room for it (`refused_by_target(StorageFull)`). A stale
   base is a `Conflict`; a lost answer is `requires_confirmation`. A transport that stores rules
-  one by one (Graph) goes on past a rule the server refuses, and lists each such rule in the
+  one by one (Graph, Gmail) goes on past a rule the server refuses, but not past a throttle, a
+  refused credential or no credential at all, which reach every later rule as they reach every
+  later message of an import (`ProviderError::ends_batch`, kept by `RuleWriteEnding`): each rule
+  after it is answered unsent, with that class. It lists each rule not written in the
   receipt's `failures` (`RuleWriteFailure`: which rule, its class, whether it may have landed, and
   whether no credential could be had for it, `credential_failure`);
   one that stores the set at once fails whole. A rule listed there says so on its outcome too

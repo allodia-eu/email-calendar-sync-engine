@@ -163,3 +163,34 @@ fn a_filter_written_without_a_credential_says_so_in_the_receipt() {
     let refused = failure(3, &crate::GoogleError::status(401, "{}"));
     assert!(!refused.credential_failure, "{refused:?}");
 }
+
+/// A throttle reaches every later rule, as it reaches every later message of an import: the
+/// write sends nothing more, and each rule it would have sent is in the receipt with the
+/// throttle's class.
+#[tokio::test]
+async fn a_throttle_ends_the_write_and_the_rules_after_it_are_not_sent() {
+    use engine_core::{
+        error::FailureClass,
+        rules::{FailedRule, RuleWriteFailure},
+    };
+
+    let mut filters = three();
+    filters.failing.insert(("POST", "new".to_owned()), 429);
+    let (client, state) = client(filters);
+    let base = read(&client).await;
+    let mut rules = base.rules.clone();
+    rules[0].body = discard("new one");
+    rules[1].body = discard("new two");
+
+    let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
+
+    assert_eq!(writes(&state), [("POST", "new".to_owned())]);
+    assert_eq!(
+        receipt.failures,
+        vec![
+            RuleWriteFailure::new(FailedRule::Written(0), FailureClass::RateLimited),
+            RuleWriteFailure::new(FailedRule::Written(1), FailureClass::RateLimited),
+        ]
+    );
+    assert_eq!(state.lock().unwrap().ids(), ["a", "b", "c"]);
+}

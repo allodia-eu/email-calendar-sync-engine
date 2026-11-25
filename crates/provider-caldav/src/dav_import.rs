@@ -146,12 +146,9 @@ pub(crate) fn max_size(props: &MultiStatus) -> Option<NonZeroU64> {
 }
 
 /// The failure in `answer` that ends a batch, if it is one: one every later object would meet
-/// too ([`ends_batch`](engine_provider::import::ends_batch); `providers.md` → "Import"). The rest
+/// too ([`ProviderError::ends_batch`]; `providers.md` → "Import"). The rest
 /// of the batch is then answered [`not_sent`](engine_provider::import::not_sent) without a
 /// request.
 pub(crate) fn ending<T>(answer: &ProviderResult<T>) -> Option<&ProviderError> {
-    answer
-        .as_ref()
-        .err()
-        .filter(|failed| engine_provider::import::ends_batch(failed))
+    answer.as_ref().err().filter(|failed| failed.ends_batch())
 }

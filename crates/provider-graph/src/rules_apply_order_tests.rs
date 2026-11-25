@@ -152,3 +152,38 @@ fn a_rule_written_without_a_credential_says_so_in_the_receipt() {
     assert_eq!(refused.class, FailureClass::Authentication);
     assert!(!refused.credential_failure, "{refused:?}");
 }
+
+/// A throttle reaches every later rule, as it reaches every later message of an import: the
+/// write sends nothing more, and each rule it would have sent is in the receipt with the
+/// throttle's class. A failure about one rule ends nothing
+/// (`each_failed_request_lands_in_the_receipt_and_the_rest_go_ahead`).
+#[tokio::test]
+async fn a_throttle_ends_the_write_and_the_rules_after_it_are_not_sent() {
+    let (client, log) = client(
+        CAPTURED,
+        vec![(
+            "messageRules/AQAAAAAAAAI%3D",
+            Err((429, super::tests::envelope("ApplicationThrottled"))),
+        )],
+    );
+    let base = base(&client).await;
+    let mut rules = base.rules.clone();
+    rules[1].name = Some(engine_core::rules::RuleName::new("Renamed").unwrap());
+    rules[4].name = Some(engine_core::rules::RuleName::new("Renamed too").unwrap());
+    rules.push(new_rule());
+    let added = rules.len() - 1;
+
+    let receipt = super::replace(&client, &base, &rules).await.unwrap();
+
+    let sent = writes(&log);
+    assert_eq!(sent.len(), 1, "only the throttled request: {sent:?}");
+    assert_eq!(
+        receipt.failures,
+        vec![
+            RuleWriteFailure::new(FailedRule::Written(1), FailureClass::RateLimited),
+            RuleWriteFailure::new(FailedRule::Written(4), FailureClass::RateLimited),
+            RuleWriteFailure::new(FailedRule::Written(added), FailureClass::RateLimited),
+        ]
+    );
+    assert_eq!(receipt.outcomes[4].kept, Kept::NotKept);
+}

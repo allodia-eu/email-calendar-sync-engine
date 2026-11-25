@@ -390,26 +390,3 @@ fn a_message_never_sent_for_want_of_a_credential_says_so() {
     }
     assert!(!super::not_sent(&ProviderError::authentication("401")).is_credential_failure());
 }
-
-/// A batch ends on what reaches every item after it: a throttle, a refused credential, or no
-/// credential at all, whatever the source's class. Nothing about one item or one exchange ends
-/// it.
-#[test]
-fn a_batch_ends_on_a_throttle_a_refused_credential_or_no_credential() {
-    for ending in [
-        ProviderError::rate_limited("429", None),
-        ProviderError::authentication("401"),
-        ProviderError::retryable("the broker is down").of_credential(),
-        ProviderError::permanent("not permitted").of_credential(),
-    ] {
-        assert!(super::ends_batch(&ending), "{ending:?}");
-    }
-    for one in [
-        ProviderError::retryable("connection reset"),
-        ProviderError::item_unavailable("too large"),
-        ProviderError::needs_confirmation("lost"),
-        ProviderError::permanent("403"),
-    ] {
-        assert!(!super::ends_batch(&one), "{one:?}");
-    }
-}

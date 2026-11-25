@@ -260,7 +260,11 @@ Implemented as sketched, with these differences, each for a reason the code met:
 - `RulesReceipt::failures` lists each rule a rule-by-rule write did not store or remove
   (`RuleWriteFailure`: `FailedRule::Written` or `Removed`, its class, whether it may have landed,
   and whether no credential could be had for it);
-  the rest of the write goes ahead. A transport that stores the set at once fails whole instead.
+  the rest of the write goes ahead, unless the failure reaches every later rule (a throttle, a
+  refused credential, no credential at all: `ProviderError::ends_batch`, the import's rule too),
+  when nothing more is sent and each later rule is listed with that class
+  (`engine_provider::RuleWriteEnding`). A transport that stores the set at once fails whole
+  instead.
 - `RuleLimit` says what a target holds part by part and not together (`RuleVocabulary::with_limit`):
   one test per kind among the conditions, and among the exceptions (where tests with values merge
   into one any-of) one only of a kind with a single value; one move, copy and importance per rule;

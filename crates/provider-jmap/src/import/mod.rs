@@ -35,9 +35,7 @@ use engine_core::{
 };
 use engine_provider::{
     ProviderError, ProviderResult,
-    import::{
-        ImportedMessage, MailImportLimits, MailImporter, MessageImport, ends_batch, not_sent,
-    },
+    import::{ImportedMessage, MailImportLimits, MailImporter, MessageImport, not_sent},
 };
 use futures_util::{StreamExt, stream};
 use plan::{Budget, Route};
@@ -290,7 +288,7 @@ async fn upload_all(
         .buffered(width);
     let mut answered = Uploads::new();
     while let Some((index, uploaded)) = uploads.next().await {
-        let ending = uploaded.as_ref().err().filter(|failed| ends_batch(failed));
+        let ending = uploaded.as_ref().err().filter(|failed| failed.ends_batch());
         let ending = ending.map(copy);
         answered.insert(index, uploaded);
         if ending.is_some() {

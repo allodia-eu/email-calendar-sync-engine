@@ -151,3 +151,26 @@ fn a_reworded_failure_keeps_every_fact_and_only_changes_its_words() {
         Some(TargetRefusal::NoSuchContainer)
     );
 }
+
+/// A batch ends on what reaches every item after it: a throttle, a refused credential, or no
+/// credential at all, whatever the source's class. Nothing about one item or one exchange ends
+/// it.
+#[test]
+fn a_batch_ends_on_a_throttle_a_refused_credential_or_no_credential() {
+    for ending in [
+        ProviderError::rate_limited("429", None),
+        ProviderError::authentication("401"),
+        ProviderError::retryable("the broker is down").of_credential(),
+        ProviderError::permanent("not permitted").of_credential(),
+    ] {
+        assert!(ending.ends_batch(), "{ending:?}");
+    }
+    for one in [
+        ProviderError::retryable("connection reset"),
+        ProviderError::item_unavailable("too large"),
+        ProviderError::needs_confirmation("lost"),
+        ProviderError::permanent("403"),
+    ] {
+        assert!(!one.ends_batch(), "{one:?}");
+    }
+}

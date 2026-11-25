@@ -67,7 +67,10 @@ impl Write<'_> {
         if !written.actions.iter().any(|a| forward_address(a).is_some()) {
             return Ok(Some(rule));
         }
-        let verified = self.verified().await.map_err(|err| failure(source, &err))?;
+        let verified = match self.verified().await {
+            Ok(verified) => verified,
+            Err(err) => return Err(self.ended_by(failure(source, &err), err)),
+        };
         let positions = action_positions(given, planned);
         let mut kept = Vec::with_capacity(written.actions.len());
         for (k, action) in written.actions.drain(..).enumerate() {
@@ -96,6 +99,19 @@ impl Write<'_> {
         }
         written.actions = kept;
         Ok(Some(rule))
+    }
+
+    /// `failed`, the failure `err` gave its rule, after noting whether it ends the write: a
+    /// failure that reaches every later rule
+    /// ([`ProviderError::ends_batch`](engine_provider::ProviderError::ends_batch)) stops every
+    /// later request.
+    pub(crate) fn ended_by(
+        &mut self,
+        failed: RuleWriteFailure,
+        err: GoogleError,
+    ) -> RuleWriteFailure {
+        self.ending
+            .note(failed, &engine_provider::ProviderError::from(err))
     }
 
     /// The addresses Gmail has verified for forwarding, lowercased; asked once per write.

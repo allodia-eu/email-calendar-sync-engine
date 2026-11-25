@@ -221,7 +221,7 @@ asked about. A refusal through `permits` is the same fact as a source answering 
 for this origin": in both, the credential side decided, nothing was sent, and the connection is
 sound. The engine's own reconnect rules follow it: IMAP's fetches, which ask once more on a new
 connection after a `Retryable` failure, do not for this one. An import ends its batch on it, as
-on a throttle (`import::ends_batch`), and answers the items it never sent with the failure whole,
+on a throttle (`ProviderError::ends_batch`), and answers the items it never sent with the failure whole,
 its class kept (`import::not_sent`), so a credential that may never go there stays `Permanent`. A
 rule-by-rule write of the rules records it per rule (`RuleWriteFailure::credential_failure`). A
 source's error carries over only its class, words, wait and source chain: the facts about a

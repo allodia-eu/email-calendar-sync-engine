@@ -219,6 +219,34 @@ impl ProviderError {
         self.credential_failure
     }
 
+    /// Whether this failure, met by one item of a batch, reaches every item after it, so the
+    /// batch ends here rather than send (or ask the credential source) again for each: a
+    /// throttle, a credential the server refused, or no credential at all
+    /// ([`is_credential_failure`](Self::is_credential_failure), whatever its class: a source
+    /// that is down or hung would cost every later item another ask and its deadline). A failure
+    /// about one item, or about one exchange, ends nothing.
+    ///
+    /// The one rule for every loop that sends item by item: an import's batch
+    /// (`import::not_sent` answers the items after it), and a
+    /// rule-by-rule write of an account's rules.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use engine_provider::ProviderError;
+    ///
+    /// assert!(ProviderError::rate_limited("429", None).ends_batch());
+    /// assert!(!ProviderError::item_unavailable("too large").ends_batch());
+    /// ```
+    #[must_use]
+    pub fn ends_batch(&self) -> bool {
+        self.credential_failure
+            || matches!(
+                self.class,
+                FailureClass::RateLimited | FailureClass::Authentication
+            )
+    }
+
     /// The same failure under `detail`, without its source: every fact a caller reads (the
     /// class, the wait, [`requires_confirmation`](Self::requires_confirmation),
     /// [`is_item_unavailable`](Self::is_item_unavailable),
