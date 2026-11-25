@@ -99,9 +99,11 @@ pub trait MailImporter: Send + Sync {
 ///
 /// Two endings reach every message of the account, and carry over: a throttle, with the wait
 /// it named, and a refused credential. A host then schedules the message with the rest of the
-/// batch, after the wait or after a new credential. Any other ending was about the exchange or
-/// another message (a connection lost, an answer that could not be read, a message that may
-/// be stored), so this one, never sent, is plainly retryable: it neither
+/// batch, after the wait or after a new credential. Where the ending was the credential source's
+/// (no credential could be had), the message says that, as
+/// [`is_credential_failure`](ProviderError::is_credential_failure) does. Any other ending was about
+/// the exchange or another message (a connection lost, an answer that could not be read, a message
+/// that may be stored), so this one, never sent, is plainly retryable: it neither
 /// [may be stored](ProviderError::requires_confirmation) nor is
 /// [unavailable](ProviderError::item_unavailable). Its detail never repeats the ending's text.
 ///
@@ -120,7 +122,7 @@ pub trait MailImporter: Send + Sync {
 #[must_use]
 pub fn not_sent(ending: &ProviderError) -> ProviderError {
     use engine_core::error::FailureClass;
-    match ending.class() {
+    let unsent = match ending.class() {
         FailureClass::RateLimited => ProviderError::rate_limited(
             "not sent: the target throttled the batch",
             ending.retry_after(),
@@ -129,6 +131,13 @@ pub fn not_sent(ending: &ProviderError) -> ProviderError {
             ProviderError::authentication("not sent: the target refused the credential")
         }
         _ => ProviderError::retryable("not sent: an earlier failure ended the batch"),
+    };
+    if ending.is_credential_failure() {
+        unsent
+            .reworded("not sent: no credential could be had for the batch")
+            .of_credential()
+    } else {
+        unsent
     }
 }
 

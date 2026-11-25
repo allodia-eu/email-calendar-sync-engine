@@ -31,6 +31,7 @@ pub struct ProviderError {
     confirmation_needed: bool,
     item_unavailable: bool,
     target_refusal: Option<TargetRefusal>,
+    credential_failure: bool,
     source: Option<BoxError>,
 }
 
@@ -88,6 +89,7 @@ impl ProviderError {
             confirmation_needed: false,
             item_unavailable: false,
             target_refusal: None,
+            credential_failure: false,
             source: None,
         }
     }
@@ -196,6 +198,72 @@ impl ProviderError {
         self.target_refusal
     }
 
+    /// Whether no credential could be had for the operation, so the failure lies with the
+    /// credential and not with the server or the way to it: the
+    /// [credential source](crate::CredentialSource) failed, or did not answer within the
+    /// engine's deadline; it did not [permit](crate::CredentialSource::permits) the origin; or
+    /// the engine refused to present the credential, to that origin or in that form. Nothing
+    /// went out with a credential, except a request the server had just refused, when the source
+    /// then failed to give a replacement.
+    ///
+    /// The [class](Self::class) is still the source's and still says what to do (a broker that
+    /// is down is `Retryable`, consent that is gone is `Authentication`); this says where the
+    /// failure lies. A host that renews its connection after a `Retryable` failure, for a
+    /// keep-alive socket that died in the meantime, does not renew it for this one: the
+    /// connection is sound, and repeating the request at once meets the same source. Set where
+    /// the engine asks the source ([`CredentialFailure`](crate::CredentialFailure)), and the
+    /// same on every adapter and every operation. A server refusing a credential, or offering
+    /// no way to present it, is the server's answer and is not this.
+    #[must_use]
+    pub fn is_credential_failure(&self) -> bool {
+        self.credential_failure
+    }
+
+    /// The same failure under `detail`, without its source: every fact a caller reads (the
+    /// class, the wait, [`requires_confirmation`](Self::requires_confirmation),
+    /// [`is_item_unavailable`](Self::is_item_unavailable),
+    /// [`target_refusal`](Self::target_refusal),
+    /// [`is_credential_failure`](Self::is_credential_failure)) is kept, and only the words
+    /// change. For an adapter that must not pass on a server's words, or that answers several
+    /// items with one failure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use engine_core::{error::FailureClass, time::Duration};
+    /// use engine_provider::ProviderError;
+    ///
+    /// let wait: Duration = "PT30S".parse().unwrap();
+    /// let throttled = ProviderError::rate_limited("the server's own words", Some(wait));
+    /// let reworded = throttled.reworded("not stored: HTTP 429");
+    /// assert_eq!(reworded.class(), FailureClass::RateLimited);
+    /// assert_eq!(reworded.retry_after(), Some(wait));
+    /// assert_eq!(reworded.detail(), "not stored: HTTP 429");
+    /// ```
+    #[must_use]
+    pub fn reworded(&self, detail: impl Into<String>) -> Self {
+        Self {
+            class: self.class,
+            detail: detail.into(),
+            retry_after: self.retry_after,
+            confirmation_needed: self.confirmation_needed,
+            item_unavailable: self.item_unavailable,
+            target_refusal: self.target_refusal,
+            credential_failure: self.credential_failure,
+            source: None,
+        }
+    }
+
+    /// This failure, as one where no credential could be had
+    /// ([`is_credential_failure`](Self::is_credential_failure)). Only
+    /// [`CredentialFailure`](crate::CredentialFailure) marks one, so the fact has one source.
+    pub(crate) fn of_credential(self) -> Self {
+        Self {
+            credential_failure: true,
+            ..self
+        }
+    }
+
     /// Attaches the underlying protocol/transport error as the
     /// [`source`](std::error::Error::source).
     #[must_use]
@@ -275,106 +343,5 @@ pub(crate) fn unsupported(what: &str) -> ProviderError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn class_named_constructors_set_the_right_class() {
-        assert_eq!(
-            ProviderError::authentication("no token").class(),
-            FailureClass::Authentication
-        );
-        assert_eq!(
-            ProviderError::needs_resync("cannotCalculateChanges").class(),
-            FailureClass::NeedsResync
-        );
-        assert!(ProviderError::retryable("503").is_retryable());
-        assert!(!ProviderError::permanent("notFound").is_retryable());
-        assert!(ProviderError::needs_resync("reset").requires_resync());
-    }
-
-    #[test]
-    fn rate_limited_carries_retry_after() {
-        let after: Duration = "PT30S".parse().unwrap();
-        let err = ProviderError::rate_limited("slow down", Some(after));
-        assert_eq!(err.class(), FailureClass::RateLimited);
-        assert_eq!(err.retry_after(), Some(after));
-        assert!(err.is_retryable());
-    }
-
-    #[test]
-    fn every_constructor_and_accessor_is_exercised() {
-        assert_eq!(
-            ProviderError::retryable("a").class(),
-            FailureClass::Retryable
-        );
-        assert_eq!(ProviderError::conflict("b").class(), FailureClass::Conflict);
-        let permanent = ProviderError::permanent("c");
-        assert_eq!(permanent.detail(), "c");
-        assert!(!permanent.requires_resync() && !permanent.is_retryable());
-        assert!(ProviderError::needs_resync("d").requires_resync());
-        assert!(
-            ProviderError::new(FailureClass::InvalidState, "e")
-                .retry_after()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn needs_confirmation_is_ambiguous_and_not_retryable() {
-        let err = ProviderError::needs_confirmation("post-DATA acknowledgement lost");
-        assert!(err.requires_confirmation());
-        // Ambiguity must never be plain-retried (it might have delivered).
-        assert!(!err.is_retryable());
-        assert_eq!(err.class(), FailureClass::InvalidState);
-        // An ordinary failure is not flagged for confirmation.
-        assert!(!ProviderError::permanent("550 rejected").requires_confirmation());
-    }
-
-    #[test]
-    fn an_unavailable_item_is_permanent_and_says_so_while_a_plain_permanent_does_not() {
-        let err = ProviderError::item_unavailable("the server cannot give this message back");
-        assert!(err.is_item_unavailable());
-        assert_eq!(err.class(), FailureClass::Permanent);
-        assert!(!ProviderError::permanent("403 Forbidden").is_item_unavailable());
-    }
-
-    #[test]
-    fn source_is_preserved_and_reachable() {
-        let io = std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timed out");
-        let err = ProviderError::retryable("transport").with_source(io);
-        // Display carries the class + detail; the source chain carries the cause.
-        assert!(err.to_string().contains("transport"));
-        assert!(std::error::Error::source(&err).is_some());
-    }
-
-    /// The target refused because of its own state, which waiting does not change: the class
-    /// is `InvalidState`, with no wait, and the reason is there to read back, under a detail
-    /// of the engine's own words.
-    #[test]
-    fn a_refusal_by_the_target_s_state_says_which_and_is_not_a_wait() {
-        let reasons = [
-            TargetRefusal::StorageFull,
-            TargetRefusal::NoSuchContainer,
-            TargetRefusal::ReadOnlyContainer,
-        ];
-        let mut details = std::collections::BTreeSet::new();
-        for reason in reasons {
-            let refused = ProviderError::refused_by_target(reason);
-            assert_eq!(refused.class(), FailureClass::InvalidState);
-            assert_eq!(refused.target_refusal(), Some(reason));
-            assert_eq!(refused.retry_after(), None);
-            assert!(!refused.is_retryable());
-            assert!(!refused.is_item_unavailable() && !refused.requires_confirmation());
-            details.insert(refused.detail().to_owned());
-        }
-        assert_eq!(details.len(), reasons.len(), "each reason says itself");
-        assert_eq!(ProviderError::invalid_state("x").target_refusal(), None);
-        assert_eq!(
-            ProviderError::refused_by_target(TargetRefusal::StorageFull)
-                .with_source(std::io::Error::other("x"))
-                .target_refusal(),
-            Some(TargetRefusal::StorageFull)
-        );
-    }
-}
+#[path = "error_tests.rs"]
+mod tests;
