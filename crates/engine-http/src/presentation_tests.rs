@@ -166,7 +166,10 @@ fn a_token_a_header_cannot_carry_is_refused_and_a_real_one_goes() {
         let refused = present_token(request(), token).expect_err("refused");
         let error = refused.into_error();
         assert_eq!(error.class(), FailureClass::Permanent, "{token:?}");
-        assert!(error.is_credential_failure());
+        assert_eq!(
+            error.credential_failure(),
+            Some(engine_provider::CredentialFailureKind::Form)
+        );
         assert!(!error.to_string().contains("sec"), "{error}");
     }
 }
@@ -178,7 +181,11 @@ fn basic_refuses_a_colon_in_the_username_and_a_control_character_anywhere() {
     for (username, password) in [("al:ice", "pw"), ("alice\r\n", "pw"), ("alice", "p\nw")] {
         let refused = present_basic(request(), username, password).expect_err("refused");
         let error = refused.into_error();
-        assert!(error.is_credential_failure(), "{username:?}");
+        assert_eq!(
+            error.credential_failure(),
+            Some(engine_provider::CredentialFailureKind::Form),
+            "{username:?}"
+        );
         assert_eq!(error.class(), FailureClass::Permanent);
         assert!(!error.to_string().contains("alice"), "{error}");
     }

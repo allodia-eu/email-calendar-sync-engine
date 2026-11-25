@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use engine_http::{AuthenticatedClient, ObservedConnection, RetryConfig};
-use engine_provider::{CredentialSource, FixedCredential};
+use engine_provider::{CredentialFailure, CredentialSource, FixedCredential};
 use engine_tls::TlsClientConfig;
 
 use super::DavClient;
@@ -95,7 +95,19 @@ impl DavClient {
     /// (`discovery::trusted_start`), so a configured server that may not receive the credential
     /// is never dialled, and of every origin it moves to.
     pub(super) fn admits(&self, url: &reqwest::Url) -> bool {
-        self.http.admits(url)
-            && credential_hosts::permitted(self.credential_hosts.as_ref(), url.as_str())
+        self.admission(url).is_ok()
+    }
+
+    /// [`admits`](Self::admits), with the refusal's kind: the engine's plaintext rule
+    /// (`Insecure`), the source's `permits` or the deprecated host policy (`NotPermitted`).
+    pub(super) fn admission(&self, url: &reqwest::Url) -> Result<(), CredentialFailure> {
+        self.http.admit(url)?;
+        if credential_hosts::permitted(self.credential_hosts.as_ref(), url.as_str()) {
+            Ok(())
+        } else {
+            Err(CredentialFailure::not_permitted(
+                "the host's credential-host policy does not permit this origin",
+            ))
+        }
     }
 }

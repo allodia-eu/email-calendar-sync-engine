@@ -140,7 +140,7 @@ async fn a_new_home_host_is_authenticated_before_its_classes_are_read() {
         let (base, _) = mock_server_capturing(vec![]);
         let client = client(&base);
         let home = format!("{home_host}/books/");
-        assert!(client.trust_origin(&home));
+        assert!(client.trust_origin(&home).is_ok());
 
         let classes = crate::carddav_ops::advertised_classes(&client, &home)
             .await

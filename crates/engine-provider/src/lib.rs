@@ -106,11 +106,11 @@ pub use contact::{
 };
 pub use credential::{
     Credential, CredentialFailure, CredentialProtocol, CredentialRequest, CredentialSource,
-    CredentialSubject, FixedCredential, Origin, Secret, with_credential,
+    CredentialSubject, FixedCredential, Origin, Secret, permitted, with_credential,
 };
 pub use deadline::Deadlines;
 pub use draft_receipt::DraftReceipt;
-pub use error::{ProviderError, ProviderResult, TargetRefusal};
+pub use error::{CredentialFailureKind, ProviderError, ProviderResult, TargetRefusal};
 pub use hand_over::{HandOver, HandOverLog, HandedOver, Unrecorded};
 pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};
 pub use keyword_name::{KeywordName, keyword_named};
@@ -124,7 +124,7 @@ pub use meeting::{
 pub use page::{PageToken, SyncKind, SyncPage};
 pub use provider::Provider;
 #[cfg(feature = "http")]
-pub use redirect::{redirect_refused, redirect_target};
+pub use redirect::{redirect_off_tls, redirect_refused, redirect_target};
 pub use report::{
     MessageReport, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
 };

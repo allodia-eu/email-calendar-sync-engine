@@ -231,6 +231,50 @@ dropped, since none went out. Two first IMAP dials racing, where the server took
 another account than the first, is not this fact: that credential went out, and the dial fails
 as `ImapError::SignedInAsAnotherAccount`, so `ImapError::Credential` always carries the fact.
 
+**Why no credential could be had is a fact too,** because a host words its answer by it and the
+class cannot say it: a refused origin, an unpresentable credential and another account are all
+`Permanent` or `InvalidState`, and each needs a different change from a different person.
+`ProviderError::credential_failure()` answers `Option<CredentialFailureKind>`, `None` exactly
+where `is_credential_failure()` is `false`:
+
+| Kind | Set by | What clears it |
+|---|---|---|
+| `Source` | the source's own error, and the ask deadline (`CredentialFailure::new`) | what the class says: wait (`Retryable`, `RateLimited`), or sign in or consent again (`Authentication`) |
+| `Insecure` | the engine's own rule, which no source can loosen (`CredentialFailure::refused_origin`): plaintext HTTP off loopback, whether configured, a CalDAV or CardDAV discovery start, href or redirect, or a JMAP session URL; a redirect from HTTPS to plaintext on another host or port, or back to the URL that issued it (`redirect_off_tls`, in CalDAV and CardDAV discovery and the JMAP session fetch) | where the configured address is the plaintext one, a secure address for the account; where the server led to plaintext, the server serving that address over TLS (the configured address may already be secure); never a new password |
+| `NotPermitted` | the host's policy: a `permits` refusal (`with_credential`, `AuthenticatedClient::admit`), the deprecated `CredentialHosts` policy (`CredentialFailure::not_permitted`), on the configured address or one discovery or a redirect leads to | the host's policy, or the configured address where that is the one refused; never a new password |
+| `Form` | `CredentialFailure::unpresentable`: a kind the protocol cannot present, a token or password with a byte it cannot frame (IMAP `LOGIN`, SASL, an HTTP header), a Basic username holding a colon | the stored credential; asking the source again gives the same one |
+| `Account` | `CredentialFailure::another_account`: the source answered for another account than the pool's | the host's account records: a source answering for the wrong subject |
+
+Each `CredentialFailure` constructor sets its kind where it marks the error, so no adapter
+decides it; `reworded`, `import::not_sent` and `ends_batch` carry it as they carry the mark.
+
+An origin is refused for one of two reasons, which a host words differently, so they are two
+kinds. `Insecure` is the engine's TLS rule: the credential would cross the wire in the clear.
+Where the configured address is the plaintext one, the person gives the account a secure
+address; where the server led there (a redirect off TLS, a discovery href naming plaintext), the
+configured address may already be secure and the server must serve that address over TLS, which
+is the server's operator's to change. `NotPermitted` is the host's policy: the
+address may already be secure, and may not be the person's at all (a CalDAV server naming a
+calendar home on a host of its own, a redirect to another host); the refused address is
+deliberately not in the error. CalDAV and CardDAV discovery ask `AuthenticatedClient::admit`,
+which checks the plaintext rule first and `permits` second, then the deprecated policy, so each
+refusal carries the kind of the rule that refused it; where both would refuse, it is `Insecure`.
+
+`Form` includes a password JMAP re-frames as a bearer token after a `Bearer` challenge that holds
+a space or a tab: the header cannot carry it as a token, though an address offering `Basic`
+would take the same password. The refusal says the form, not that the password is wrong.
+
+A `RuleWriteFailure` keeps `credential_failure` a `bool` and carries no kind. A rule-by-rule
+write reads the account's rules first through the same client and source, so an origin, a form or
+an account refused at that point fails the read, and the whole write, with the kind on its
+`ProviderError`. A receipt lists a credential failure for a later request only, and there the
+kind is lost: usually the source failing or not answering, whose class says what to do, but a
+source whose answer changes between requests can bring another kind (a refreshed token holding a
+byte a header cannot carry is `Form`; a `permits` answer that changes is `NotPermitted`), which
+the receipt reports as the flag alone. The next operation meets the same refusal on its first
+request, with its kind. Carrying the kind in the receipt would move the enum into `engine-core`;
+it stays possible, additively.
+
 **Each ask has a deadline.** An ask to the source (`credential` or `replace`) runs under the
 deadline of the step it belongs to: the dial deadline on IMAP and SMTP, where the ask is part of
 the dial, and the request's deadline on HTTP, where it is part of the request (`deadlines.md`,
@@ -662,7 +706,9 @@ record.
    classes"). Refined 2026-11-25: the class still decides what to do and no class was added, but
    it cannot say whether a `Retryable` failure lies with the source or with the connection, which
    a host's reconnect rule needs; `ProviderError::is_credential_failure()` says that, additively
-   ("Where the failure lies").
+   ("Where the failure lies"). Refined again the same day: `credential_failure()` says why, with
+   a `CredentialFailureKind` (source, insecure, not permitted, form, account), for a host to word
+   its answer by.
 5. **The engine refuses credentials over plaintext HTTP except to loopback origins.** It is an
    engine rule, not left to `permits`. Narrowed when step 3 landed: only for an account whose
    configured origin is itself plaintext loopback ("Host binding"). The harnesses all run on loopback, so nothing breaks

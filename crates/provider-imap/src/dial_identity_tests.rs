@@ -131,7 +131,10 @@ async fn a_pool_refuses_a_dial_for_another_account_and_opens_nothing_for_it() {
     assert_eq!(servers.opened(), 1, "nothing is opened for another account");
     assert!(!err.to_string().contains("example.com"), "{err}");
     // The source's mistake, not the server's: the pooled connections are sound.
-    assert!(ProviderError::from(err).is_credential_failure());
+    assert_eq!(
+        ProviderError::from(err).credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Account)
+    );
 }
 
 #[tokio::test]

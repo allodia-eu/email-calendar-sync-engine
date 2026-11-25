@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use engine_http::{AuthenticatedClient, Exchange, ObservedConnection, RetryConfig, send_retrying};
-use engine_provider::{HttpVersion, TlsVersion};
+use engine_provider::{CredentialFailure, HttpVersion, TlsVersion};
 use reqwest::Method;
 
 #[allow(deprecated)]
@@ -297,24 +297,22 @@ impl DavExecutor for DavClient {
             .is_ok_and(|url| self.scope.volunteer(&url))
     }
 
-    fn trust_origin(&self, url: &str) -> bool {
+    fn trust_origin(&self, url: &str) -> Result<(), CredentialFailure> {
         // A relative href, an opaque origin (`data:`, `blob:`) or an unparseable URL names
         // no host to trust.
         let Ok(next) = reqwest::Url::parse(url) else {
-            return true;
+            return Ok(());
         };
         if !next.origin().is_tuple() {
-            return true;
+            return Ok(());
         }
         // The engine's plaintext rule and the source's `permits`, and the deprecated host policy
         // where one is set: a connection that started on TLS never trusts a plaintext origin, so
         // the password never crosses the wire in the clear to a host nobody typed, and only an
         // account configured on loopback trusts plaintext loopback (the harnesses).
-        if !self.admits(&next) {
-            return false;
-        }
+        self.admission(&next)?;
         self.scope.trust(&next);
-        true
+        Ok(())
     }
 
     fn settle_on(&self, home: &str) -> String {
@@ -435,6 +433,10 @@ impl DavExecutor for DavClient {
 #[cfg(test)]
 #[path = "transport_tests.rs"]
 mod http_transport_tests;
+
+#[cfg(test)]
+#[path = "transport_trust_tests.rs"]
+mod transport_trust_tests;
 
 #[cfg(test)]
 #[path = "deadline_tests.rs"]

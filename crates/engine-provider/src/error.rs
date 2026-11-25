@@ -31,8 +31,60 @@ pub struct ProviderError {
     confirmation_needed: bool,
     item_unavailable: bool,
     target_refusal: Option<TargetRefusal>,
-    credential_failure: bool,
+    credential_failure: Option<CredentialFailureKind>,
     source: Option<BoxError>,
+}
+
+/// Where a failure to have a credential lies ([`ProviderError::credential_failure`]): what a
+/// host must change, which the [class](ProviderError::class) cannot say. One kind per situation,
+/// the same on every adapter and every protocol.
+///
+/// # Examples
+///
+/// ```
+/// use engine_provider::{CredentialFailure, CredentialFailureKind, ProviderError};
+///
+/// let refused: ProviderError = CredentialFailure::refused_origin("plaintext off loopback").into();
+/// assert_eq!(
+///     refused.credential_failure(),
+///     Some(CredentialFailureKind::Insecure)
+/// );
+/// assert!(refused.is_credential_failure());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum CredentialFailureKind {
+    /// The [credential source](crate::CredentialSource) failed, or did not answer within the
+    /// engine's deadline. Its [class](ProviderError::class) says what to do: a broker or token
+    /// endpoint that is down is `Retryable`, consent that is gone is `Authentication`, a
+    /// throttled token endpoint is `RateLimited`.
+    Source,
+    /// The credential would leave TLS: the request is for plaintext HTTP off loopback (or to
+    /// loopback from an account configured elsewhere), or a redirect would take it from HTTPS to
+    /// plaintext on another host or port, or back to the URL that issued it. The engine's own
+    /// rule, which no source can loosen. Where the plaintext address is the one the account is
+    /// configured with, a secure address for the account clears it. Where the server led there
+    /// (a redirect, or a discovery step naming a plaintext address), the configured address may
+    /// already be secure, and the server must serve that address over TLS; the address is not in
+    /// the error. No new password or sign-in can clear it.
+    Insecure,
+    /// The host's policy does not let the credential go to the origin the request is for: the
+    /// source did not [permit](crate::CredentialSource::permits) it, or a host's deprecated
+    /// credential-host policy refused it. The origin may be the address the account is
+    /// configured with, or one the server led to (a redirect, or a discovery step naming another
+    /// host, such as a calendar home on a host of its own); the refused address is not in the
+    /// error. Changing the host's policy, or the configured address where that is the one
+    /// refused, clears it; no new password or sign-in can.
+    NotPermitted,
+    /// The credential is in a form the protocol cannot carry: a kind it cannot present (an
+    /// administrator acting as another account over HTTP, a password to a token-only API, a
+    /// token without the account's username over SASL), or a byte it cannot frame (CR, LF or NUL
+    /// in an IMAP `LOGIN`, a token outside visible ASCII, a Basic username holding a colon).
+    /// Changing the stored credential clears it; asking again gives the same one.
+    Form,
+    /// The source answered for another account than the one the adapter's connections sign in
+    /// as: a host's mistake (a source answering for the wrong subject, or accounts mixed up).
+    Account,
 }
 
 /// Why a target refused to store something into a container, where the reason is the target's
@@ -89,7 +141,7 @@ impl ProviderError {
             confirmation_needed: false,
             item_unavailable: false,
             target_refusal: None,
-            credential_failure: false,
+            credential_failure: None,
             source: None,
         }
     }
@@ -216,6 +268,17 @@ impl ProviderError {
     /// no way to present it, is the server's answer and is not this.
     #[must_use]
     pub fn is_credential_failure(&self) -> bool {
+        self.credential_failure.is_some()
+    }
+
+    /// Where the failure to have a credential lies, where it is one
+    /// ([`is_credential_failure`](Self::is_credential_failure)): the source, the origin, the
+    /// credential's form, or the account. The class says what to do about the source's own
+    /// failure; the kind says what a person must change for the others, so a host can word its
+    /// answer without reading the detail. Set by the same
+    /// [`CredentialFailure`](crate::CredentialFailure) constructors that mark the failure.
+    #[must_use]
+    pub fn credential_failure(&self) -> Option<CredentialFailureKind> {
         self.credential_failure
     }
 
@@ -240,7 +303,7 @@ impl ProviderError {
     /// ```
     #[must_use]
     pub fn ends_batch(&self) -> bool {
-        self.credential_failure
+        self.credential_failure.is_some()
             || matches!(
                 self.class,
                 FailureClass::RateLimited | FailureClass::Authentication
@@ -251,7 +314,7 @@ impl ProviderError {
     /// class, the wait, [`requires_confirmation`](Self::requires_confirmation),
     /// [`is_item_unavailable`](Self::is_item_unavailable),
     /// [`target_refusal`](Self::target_refusal),
-    /// [`is_credential_failure`](Self::is_credential_failure)) is kept, and only the words
+    /// [`credential_failure`](Self::credential_failure)) is kept, and only the words
     /// change. For an adapter that must not pass on a server's words, or that answers several
     /// items with one failure of the whole request or session: since it keeps
     /// [`is_item_unavailable`](Self::is_item_unavailable) and
@@ -285,20 +348,20 @@ impl ProviderError {
         }
     }
 
-    /// This failure, as one where no credential could be had
-    /// ([`is_credential_failure`](Self::is_credential_failure)). Only
+    /// This failure, as one where no credential could be had, for the reason `kind` names
+    /// ([`credential_failure`](Self::credential_failure)). Only
     /// [`CredentialFailure`](crate::CredentialFailure) marks one, so the fact has one source.
     ///
     /// Only the class, the words, the wait and the source chain carry over. The other facts are
     /// about a request that went out (may it have been applied, will the target ever take this
     /// item, did its state refuse), and nothing went out: a source answering
     /// [`needs_confirmation`](Self::needs_confirmation) must not park a send that never left.
-    pub(crate) fn of_credential(self) -> Self {
+    pub(crate) fn of_credential(self, kind: CredentialFailureKind) -> Self {
         Self {
             confirmation_needed: false,
             item_unavailable: false,
             target_refusal: None,
-            credential_failure: true,
+            credential_failure: Some(kind),
             ..self
         }
     }

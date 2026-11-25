@@ -173,3 +173,20 @@ async fn an_unresolvable_redirect_location_is_reported() {
         "unexpected error: {err}"
     );
 }
+
+/// A redirect from HTTPS to plaintext on another host or port is not followed, and is the same
+/// refusal as a plaintext origin: the credential would leave TLS. One that does not resolve is the
+/// server's malformed answer, and no credential failure.
+#[test]
+fn a_redirect_off_tls_is_an_insecure_origin_and_an_unresolvable_one_is_not() {
+    let off_tls = super::refused_redirect(
+        "https://example.com/.well-known/jmap",
+        "http://x.example.net/",
+    );
+    assert_eq!(
+        engine_provider::ProviderError::from(off_tls).credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Insecure)
+    );
+    let malformed = super::refused_redirect("https://example.com/", "http://[::bad");
+    assert!(!engine_provider::ProviderError::from(malformed).is_credential_failure());
+}

@@ -211,7 +211,11 @@ async fn a_dial_without_a_credential_says_so_and_a_lost_connection_does_not() {
             .await
             .unwrap_err(),
     );
-    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Source),
+        "{err:?}"
+    );
     assert_eq!(err.class(), FailureClass::Retryable);
     assert_eq!(opened.lock().unwrap().len(), 0);
 
@@ -224,7 +228,11 @@ async fn a_dial_without_a_credential_says_so_and_a_lost_connection_does_not() {
             .await
             .unwrap_err(),
     );
-    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Form),
+        "{err:?}"
+    );
     assert_eq!(err.class(), FailureClass::Permanent);
     assert!(!written(&opened.lock().unwrap()[0]).contains("AUTHENTICATE"));
 

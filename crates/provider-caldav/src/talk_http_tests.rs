@@ -419,6 +419,10 @@ async fn a_source_that_fails_is_a_credential_failure_and_nothing_is_sent() {
 
     let err = talk.create_meeting(&request()).await.unwrap_err();
     assert_eq!(err.class(), FailureClass::Retryable, "{err}");
-    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Source),
+        "{err:?}"
+    );
     assert!(seen.lock().unwrap().is_empty());
 }

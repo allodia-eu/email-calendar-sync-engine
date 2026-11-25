@@ -405,7 +405,10 @@ async fn a_login_credential_a_quoted_string_cannot_carry_sends_nothing() {
         assert!(matches!(err, ImapError::Credential(_)), "{err:?}");
         assert_eq!(err.failure_class(), FailureClass::Permanent);
         assert!(!err.to_string().contains("pw"), "{err}");
-        assert!(engine_provider::ProviderError::from(err).is_credential_failure());
+        assert_eq!(
+            engine_provider::ProviderError::from(err).credential_failure(),
+            Some(engine_provider::CredentialFailureKind::Form)
+        );
         assert_eq!(written(&recorded), "", "nothing reaches the server");
     }
 }
