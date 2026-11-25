@@ -386,3 +386,39 @@ async fn a_refused_post_is_sent_again_once_and_makes_one_conversation() {
     );
     assert_eq!(*source.replaced.lock().unwrap(), 1);
 }
+
+#[tokio::test]
+async fn a_source_that_fails_is_a_credential_failure_and_nothing_is_sent() {
+    #[derive(Debug)]
+    struct Down(engine_provider::CredentialSubject);
+
+    #[async_trait::async_trait]
+    impl CredentialSource for Down {
+        fn subject(&self) -> &engine_provider::CredentialSubject {
+            &self.0
+        }
+
+        async fn credential(
+            &self,
+            _: &engine_provider::CredentialRequest<'_>,
+        ) -> Result<engine_provider::Credential, ProviderError> {
+            Err(ProviderError::retryable("the token endpoint is down"))
+        }
+    }
+
+    let (server, seen) = mock_server_capturing(vec![]);
+    let source = Down(engine_provider::CredentialSubject::new("acct-1"));
+    let talk = TalkMeetings::from_credential_source(
+        &server,
+        Arc::new(source),
+        &TlsClientConfig::default(),
+        &RetryConfig::default(),
+        &engine_http::test_server::user_agent(),
+    )
+    .unwrap();
+
+    let err = talk.create_meeting(&request()).await.unwrap_err();
+    assert_eq!(err.class(), FailureClass::Retryable, "{err}");
+    assert!(err.is_credential_failure(), "{err:?}");
+    assert!(seen.lock().unwrap().is_empty());
+}

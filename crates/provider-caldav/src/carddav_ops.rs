@@ -92,7 +92,7 @@ async fn principal_props(
             })?;
             observer.step(&ConnectStep::redirected(&href, &next));
             if !executor.trust_origin(&next) {
-                return Err(CalDavError::protocol(
+                return Err(crate::discovery::refused_origin(
                     "a discovery redirect left TLS or named a host the credential may not go to",
                 ));
             }
