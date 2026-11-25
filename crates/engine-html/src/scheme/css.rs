@@ -10,7 +10,7 @@ use cssparser::{Parser, Token};
 
 use super::{
     MessageScheme,
-    colour::{Component, Rgba, Role, darken},
+    colour::{ColourRole, Component, Rgba, darken},
 };
 
 /// One replacement: the bytes `start..end` of the input become `text`.
@@ -139,8 +139,8 @@ fn scheme_feature(p: &mut Parser) -> Option<bool> {
 /// Where a declaration list is in its grammar.
 enum State {
     Name,
-    Colon(Option<Role>, bool),
-    Value(Option<Role>, bool),
+    Colon(Option<ColourRole>, bool),
+    Value(Option<ColourRole>, bool),
     /// Junk until the next `;`.
     Skip,
 }
@@ -189,17 +189,17 @@ fn declarations(p: &mut Parser, edits: &mut Vec<Edit>) {
 
 /// The colour role a property paints in, or `None` for one that is left alone (a shadow, a fill
 /// inside an SVG, anything not a colour).
-fn role_of(property: &str) -> Option<Role> {
+fn role_of(property: &str) -> Option<ColourRole> {
     let property = property.trim_start_matches("-webkit-");
     if property.starts_with("background") {
-        Some(Role::Fill)
+        Some(ColourRole::Fill)
     } else if matches!(property, "color" | "text-fill-color" | "caret-color") {
-        Some(Role::Ink)
+        Some(ColourRole::Ink)
     } else if ["border", "outline", "text-decoration", "column-rule"]
         .iter()
         .any(|prefix| property.starts_with(prefix))
     {
-        Some(Role::Line)
+        Some(ColourRole::Line)
     } else {
         None
     }
@@ -223,45 +223,28 @@ fn value_token(
     p: &mut Parser,
     token: &Token,
     start: usize,
-    role: Role,
+    role: ColourRole,
     background: bool,
     edits: &mut Vec<Edit>,
     has_image: &mut bool,
 ) {
     *has_image |= background && is_image(token);
     let colour = match token {
-        Token::Hash(hex) | Token::IDHash(hex) => Rgba::from_hex(hex),
-        Token::Ident(name) => Rgba::from_name(name),
-        Token::Function(name) => {
-            let name = name.to_ascii_lowercase();
-            if matches!(name.as_str(), "rgb" | "rgba" | "hsl" | "hsla") {
-                let args = p
-                    .parse_nested_block(|p| Ok::<_, cssparser::ParseError<()>>(components(p)))
-                    .ok()
-                    .flatten();
-                args.and_then(|args| {
-                    if name.starts_with("rgb") {
-                        Rgba::from_rgb_args(&args)
-                    } else {
-                        Rgba::from_hsl_args(&args)
-                    }
-                })
-            } else {
-                let _ = p.parse_nested_block(|p| {
-                    loop {
-                        let start = p.position().byte_index();
-                        let Ok(inner) = p.next_including_whitespace_and_comments() else {
-                            break;
-                        };
-                        let inner = inner.clone();
-                        value_token(p, &inner, start, role, background, edits, has_image);
-                    }
-                    Ok::<_, cssparser::ParseError<()>>(())
-                });
-                None
-            }
+        Token::Function(name) if !is_colour_function(name) => {
+            let _ = p.parse_nested_block(|p| {
+                loop {
+                    let start = p.position().byte_index();
+                    let Ok(inner) = p.next_including_whitespace_and_comments() else {
+                        break;
+                    };
+                    let inner = inner.clone();
+                    value_token(p, &inner, start, role, background, edits, has_image);
+                }
+                Ok::<_, cssparser::ParseError<()>>(())
+            });
+            None
         }
-        _ => None,
+        token => colour_of(p, token),
     };
     if let Some(moved) = colour.and_then(|c| darken(c, role)) {
         edits.push(Edit {
@@ -269,6 +252,43 @@ fn value_token(
             end: p.position().byte_index(),
             text: moved.to_css(),
         });
+    }
+}
+
+/// The colour `value` names when it is one colour and nothing else: a hex, a name, `rgb()` or
+/// `hsl()`. Anything else (`var()`, `currentColor`, a list, a malformed value) is `None`.
+pub(super) fn colour_value(value: &str) -> Option<Rgba> {
+    let mut p = Parser::new(value);
+    let token = p.next().ok()?.clone();
+    let colour = colour_of(&mut p, &token)?;
+    p.is_exhausted().then_some(colour)
+}
+
+fn is_colour_function(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "rgb" | "rgba" | "hsl" | "hsla"
+    )
+}
+
+/// The colour one token is, reading the arguments of `rgb()` or `hsl()` from `p`.
+fn colour_of(p: &mut Parser, token: &Token) -> Option<Rgba> {
+    match token {
+        Token::Hash(hex) | Token::IDHash(hex) => Rgba::from_hex(hex),
+        Token::Ident(name) => Rgba::from_name(name),
+        Token::Function(name) if is_colour_function(name) => {
+            let rgb = name.to_ascii_lowercase().starts_with("rgb");
+            let args = p
+                .parse_nested_block(|p| Ok::<_, cssparser::ParseError<()>>(components(p)))
+                .ok()
+                .flatten()?;
+            if rgb {
+                Rgba::from_rgb_args(&args)
+            } else {
+                Rgba::from_hsl_args(&args)
+            }
+        }
+        _ => None,
     }
 }
 

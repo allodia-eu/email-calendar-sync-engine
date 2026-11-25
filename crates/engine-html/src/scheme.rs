@@ -19,7 +19,8 @@ mod named;
 
 use std::borrow::Cow;
 
-use colour::{Rgba, Role, darken};
+pub use colour::ColourRole;
+use colour::{Rgba, darken};
 use css::Edit;
 
 /// Which page a message is drawn on.
@@ -30,6 +31,58 @@ pub enum MessageScheme {
     Light,
     /// A dark page, with the message's colours moved to suit it.
     Dark,
+}
+
+/// The transform one piece at a time, for a host that holds a message's markup live and cannot
+/// re-render it whole: an editor, whose document is the one that will be sent and so must keep
+/// the colours it was written with. Each answers what [`render_document`](crate::render_document)
+/// writes for the same piece in the same scheme, and `None` where it writes the piece unchanged.
+impl MessageScheme {
+    /// `colour` as it paints `role` on this scheme's page: `#rrggbb`, or `rgba(…)` when it is
+    /// translucent. `None` on a light page, for a colour already right for a dark one, and for a
+    /// value that is not one colour the transform reads (`var()`, `currentColor`, a malformed
+    /// colour).
+    #[must_use]
+    pub fn adapt_colour(self, colour: &str, role: ColourRole) -> Option<String> {
+        if self == Self::Light {
+            return None;
+        }
+        darken(css::colour_value(colour.trim())?, role).map(Rgba::to_css)
+    }
+
+    /// The value of `element`'s `attribute` as a render in this scheme writes it: a `style`
+    /// attribute's declarations, a `bgcolor`, a `<font color>`. `value` is the attribute's value
+    /// itself, not escaped for markup. `None` when the render leaves it as it is, which it does
+    /// with every other attribute.
+    #[must_use]
+    pub fn adapt_attribute(self, element: &str, attribute: &str, value: &str) -> Option<String> {
+        if self == Self::Light {
+            return None;
+        }
+        let element = element.to_ascii_lowercase();
+        let role = match (element.as_str(), attribute.to_ascii_lowercase().as_str()) {
+            (_, "style") => {
+                let edits = css::declaration_edits(value);
+                return (!edits.is_empty()).then(|| apply(value, &edits));
+            }
+            (_, "bgcolor") => ColourRole::Fill,
+            ("font", "color") => ColourRole::Ink,
+            _ => return None,
+        };
+        let value = value.trim();
+        let colour =
+            Rgba::from_name(value).or_else(|| Rgba::from_hex(value.trim_start_matches('#')))?;
+        darken(colour, role).map(Rgba::to_css)
+    }
+
+    /// A `<style>` sheet's text as a render in this scheme writes it: its colours moved on a dark
+    /// page, and its `prefers-color-scheme` queries pinned to this scheme on either. `None` when
+    /// the render leaves it as it is.
+    #[must_use]
+    pub fn adapt_style_sheet(self, sheet: &str) -> Option<String> {
+        let edits = css::sheet_edits(sheet, self);
+        (!edits.is_empty()).then(|| apply(sheet, &edits))
+    }
 }
 
 /// `fragment` adapted to `scheme`. A light render of a message without colour-scheme queries is
@@ -140,21 +193,9 @@ fn attributes(
 
 /// An attribute's value on a dark page, escaped as it was found, or `None` when it stays.
 fn attribute(tag: &str, name: &str, escaped: &str) -> Option<String> {
-    let role = match (tag, name) {
-        (_, "style") => {
-            let value = unescape(escaped);
-            let edits = css::declaration_edits(&value);
-            return (!edits.is_empty()).then(|| escape(&apply(&value, &edits)));
-        }
-        (_, "bgcolor") => Role::Fill,
-        ("font", "color") => Role::Ink,
-        _ => return None,
-    };
-    let value = unescape(escaped);
-    let value = value.trim();
-    let colour =
-        Rgba::from_name(value).or_else(|| Rgba::from_hex(value.trim_start_matches('#')))?;
-    darken(colour, role).map(Rgba::to_css)
+    MessageScheme::Dark
+        .adapt_attribute(tag, name, &unescape(escaped))
+        .map(|value| escape(&value))
 }
 
 /// The byte offset of the first ASCII-case-insensitive match of `needle`, which is ASCII.
@@ -213,3 +254,7 @@ mod tests;
 #[cfg(test)]
 #[path = "scheme/colour_tests.rs"]
 mod colour_tests;
+
+#[cfg(test)]
+#[path = "scheme/piece_tests.rs"]
+mod piece_tests;

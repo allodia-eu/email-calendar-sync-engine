@@ -206,6 +206,15 @@ every designed background. Moving lightness and keeping hue is what Outlook and 
 transform reads every message correctly (a dark logo on a transparent background, text baked into
 a picture), so a host should keep the light page one press away.
 
+**One piece at a time.** A host that holds markup live, an editor whose document is the one that
+will be sent, cannot replace it with a dark render: the colours it sends are the ones it was
+written with. `MessageScheme` therefore offers the same transform piece by piece, so the host
+can show each element moved and keep what it was: `adapt_colour` (one colour, by its
+`ColourRole`), `adapt_attribute` (a `style`, a `bgcolor`, a `<font color>`) and
+`adapt_style_sheet`. Each answers exactly what `render_document` writes for that piece in that
+scheme (`piece_tests`), and `None` where the render leaves it as it is, so there is one transform
+and the host's page cannot drift from the reading view's.
+
 ## Sizing a message
 
 The width a message lays out against decides which of its own `@media` rules apply, so it decides

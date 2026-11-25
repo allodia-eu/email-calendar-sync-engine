@@ -39,4 +39,4 @@ pub use document::{Canvas, RemoteImages, render_document};
 pub use sanitize::{
     Sanitized, sanitize, sanitize_for_composer, sanitize_inert, should_open_external_link,
 };
-pub use scheme::MessageScheme;
+pub use scheme::{ColourRole, MessageScheme};
