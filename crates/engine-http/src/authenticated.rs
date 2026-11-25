@@ -21,7 +21,9 @@
 //!   naming `http://127.0.0.1:…` would otherwise hand it, in cleartext, to whatever listens on the
 //!   worker's own loopback, which a multi-tenant host shares. It is an engine rule, not a default
 //!   of [`permits`](CredentialSource::permits), and a host can still refuse loopback plaintext
-//!   through its source.
+//!   through its source. The refusal says whose address is at fault: `Insecure` where the
+//!   configured origin breaks the rule itself, `LedToInsecure` where the rule accepts it and the
+//!   server named the refused origin (a session, a discovery href, a redirect).
 //! - **The source must [permit](CredentialSource::permits) the origin**, before the first byte goes
 //!   to it.
 //! - **An ask has the request's deadline**, [`Deadlines::reply`]: nothing has been sent yet, so a
@@ -163,8 +165,11 @@ impl AuthenticatedClient {
     }
 
     /// [`admits`](Self::admits), with the reason where `url` may not receive the credential: a
-    /// [`CredentialFailure`] whose kind says which rule refused it,
-    /// [`Insecure`](engine_provider::CredentialFailureKind::Insecure) for the plaintext rule or
+    /// [`CredentialFailure`] whose kind says which rule refused it: for the plaintext rule,
+    /// [`Insecure`](engine_provider::CredentialFailureKind::Insecure) where the configured
+    /// address breaks it itself, or
+    /// [`LedToInsecure`](engine_provider::CredentialFailureKind::LedToInsecure) where the rule
+    /// accepts the configured address and `url` is one the server named; or
     /// [`NotPermitted`](engine_provider::CredentialFailureKind::NotPermitted) for the source's
     /// [`permits`](CredentialSource::permits). Asks the source for nothing.
     ///
@@ -272,22 +277,37 @@ impl AuthenticatedClient {
 
 /// Where a request carrying a credential is going, once the plaintext rule has allowed it.
 ///
+/// A refusal says whose address is at fault, the one place that knows both: where the configured
+/// address breaks the rule itself, it is the account's
+/// ([`Insecure`](engine_provider::CredentialFailureKind::Insecure)); where the rule accepts the
+/// configured address, the server named the refused one
+/// ([`LedToInsecure`](engine_provider::CredentialFailureKind::LedToInsecure)).
+///
 /// reqwest builds a request only for an `http` or `https` URL, and those always name a host
 /// and have a known default port, so the fallbacks below never apply.
 fn credential_origin(url: &Url, configured: &Url) -> Result<Origin, CredentialFailure> {
-    match url.scheme() {
-        "https" => {}
-        "http" if plaintext_loopback(url) && plaintext_loopback(configured) => {}
-        _ => {
-            return Err(CredentialFailure::refused_origin(
-                "a credential goes over plaintext HTTP only to loopback, from an account \
-                 configured there",
-            ));
-        }
+    if !plaintext_rule_admits(url, configured) {
+        return Err(if plaintext_rule_admits(configured, configured) {
+            CredentialFailure::led_to_insecure(
+                "the server led the credential to plaintext HTTP, which it goes over only to \
+                 loopback, from an account configured there",
+            )
+        } else {
+            CredentialFailure::refused_origin(
+                "the account's address is plaintext HTTP off loopback, which a credential never \
+                 goes over",
+            )
+        });
     }
     let host = url.host_str().unwrap_or_default();
     let port = url.port_or_known_default().unwrap_or_default();
     Ok(Origin::new(url.scheme(), host, port))
+}
+
+/// The engine's plaintext rule: a credential goes to `url` over `https`, or over `http` to
+/// loopback from an account whose `configured` address is plaintext loopback too.
+fn plaintext_rule_admits(url: &Url, configured: &Url) -> bool {
+    url.scheme() == "https" || (plaintext_loopback(url) && plaintext_loopback(configured))
 }
 
 /// Whether `url` is plaintext HTTP to a loopback host.

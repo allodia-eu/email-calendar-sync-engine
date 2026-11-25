@@ -145,7 +145,7 @@ async fn an_origin_or_a_kind_the_credential_may_not_go_to_is_a_credential_failur
     for (err, kind) in [
         (not_permitted, CredentialFailureKind::NotPermitted),
         (a_password, CredentialFailureKind::Form),
-        (plaintext, CredentialFailureKind::Insecure),
+        (plaintext, CredentialFailureKind::LedToInsecure),
     ] {
         let err: ProviderError = err;
         assert_eq!(err.credential_failure(), Some(kind), "{err:?}");

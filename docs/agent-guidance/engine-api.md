@@ -420,11 +420,11 @@ facade"*).
   permanent failure may be about the account or the request, and says nothing about the item.
   Whether no credential could be had, and why (`ProviderError::is_credential_failure` and
   `credential_failure`, a `CredentialFailureKind`: the source failed or did not answer, the
-  credential would leave TLS, the host's policy refuses the origin, it cannot be presented in its
-  form, or it names another account) is a provider fact a host that drives adapters reads
-  directly, for its reconnect rule and its wording; through the facade it is reachable on the
-  `ProviderError` inside `ApiError::Sync`, and the facade adds no accessor for it until a host
-  needs one.
+  credential would leave TLS on the configured address or where the server led it, the host's policy
+  refuses the origin, it cannot be presented in its form, or it names another account) is a provider
+  fact a host that drives adapters reads directly, for its reconnect rule and its wording; through
+  the facade it is reachable on the `ProviderError` inside `ApiError::Sync`, and the facade adds no
+  accessor for it until a host needs one.
   The one deliberate exception is `ScopeHeld`,
   which `map_sync_error` classifies as `ApiError::Busy` (a retryable race, not a
   failure) — classification, not restringing. Add similar classifications there if

@@ -647,11 +647,15 @@ server's answer, and a host reads its class.
 **Why no credential could be had is said too,** for a host to word its answer:
 `ProviderError::credential_failure()` is a `CredentialFailureKind`, set by the same constructor
 that marks the failure and the same on every adapter. `Source`: the source failed or missed its
-deadline, and the class says what to do. `Insecure`: the credential would leave TLS (plaintext
-off loopback, configured or reached by discovery, or a redirect from HTTPS to plaintext on
-another host or port, or back to the URL that issued it); where the configured address is the
-plaintext one the person gives the account a secure address, and where the server led there the
-server must serve that address over TLS; no password prompt can help.
+deadline, and the class says what to do. `Insecure`: the credential would leave TLS because the
+configured address is plaintext off loopback; the person gives the account a secure address.
+`LedToInsecure`: the credential would leave TLS on another address, from a configured address
+the rule accepts (plaintext off loopback reached by discovery, a session or a link, or a CalDAV
+shared principal the host stored in plaintext; plaintext loopback named to an account on
+`https`; or a redirect from HTTPS to plaintext on another host or port, or back to the URL that
+issued it); usually the server's operator serves that address over TLS, or the account is
+pointed straight at a secure address for the same service where one exists, or the host replaces
+a stored principal by discovering again. No password prompt can help either.
 `NotPermitted`: the host's policy refuses the origin (`permits`, the deprecated credential-host
 policy), on the configured address or one the server led to; the policy or the address changes.
 `Form`: the credential cannot be presented as it is (a kind the protocol cannot carry, a byte it

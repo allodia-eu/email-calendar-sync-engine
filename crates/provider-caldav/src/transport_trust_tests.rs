@@ -124,10 +124,10 @@ async fn a_url_that_names_no_origin_trusts_and_moves_nothing() {
 async fn an_origin_that_leaves_tls_is_not_trusted() {
     let client = basic_client("https://dav.example.com");
     let plaintext = client.trust_origin("http://evil.test/principals/u/");
-    let insecure = Some(engine_provider::CredentialFailureKind::Insecure);
+    let led = Some(engine_provider::CredentialFailureKind::LedToInsecure);
     assert_eq!(
         plaintext.unwrap_err().into_error().credential_failure(),
-        insecure
+        led
     );
     assert!(
         client

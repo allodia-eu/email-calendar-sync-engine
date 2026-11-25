@@ -37,11 +37,12 @@ impl CredentialFailure {
     }
 
     /// The engine refusing to present any credential to an origin, whatever the source would
-    /// permit, because the credential would leave TLS: [`Permanent`], with `reason`
-    /// ([`CredentialFailureKind::Insecure`]). For a rule no source can loosen, such as
-    /// `engine_http`'s refusal of plaintext HTTP to anything but loopback, or a redirect from
-    /// HTTPS to plaintext on another host or port, or back to the URL that issued it
-    /// ([`redirect_off_tls`](crate::redirect_off_tls)).
+    /// permit, because the credential would leave TLS and the address the account is configured
+    /// with is the reason: [`Permanent`], with `reason` ([`CredentialFailureKind::Insecure`]).
+    /// For a rule no source can loosen, such as `engine_http`'s refusal of plaintext HTTP to
+    /// anything but loopback, met on an account configured with a plaintext address off
+    /// loopback. Where the server led the credential off TLS from an address the rule accepts,
+    /// the refusal is [`led_to_insecure`](Self::led_to_insecure).
     ///
     /// [`Permanent`]: engine_core::error::FailureClass::Permanent
     #[must_use]
@@ -49,6 +50,24 @@ impl CredentialFailure {
         Self::of(
             ProviderError::permanent(reason),
             CredentialFailureKind::Insecure,
+        )
+    }
+
+    /// The engine refusing to present any credential on an address other than the configured
+    /// one, off TLS, from an account whose configured address the rule accepts: [`Permanent`],
+    /// with `reason` ([`CredentialFailureKind::LedToInsecure`]). For the same rule as
+    /// [`refused_origin`](Self::refused_origin), met on an address the server named (a redirect
+    /// from HTTPS to plaintext on another host or port, or back to the URL that issued it
+    /// ([`redirect_off_tls`](crate::redirect_off_tls)), or a discovery step, a session or a link
+    /// naming plaintext) or one the host stored from an earlier answer. Usually the server's
+    /// operator changes it; the kind says what else can.
+    ///
+    /// [`Permanent`]: engine_core::error::FailureClass::Permanent
+    #[must_use]
+    pub fn led_to_insecure(reason: &'static str) -> Self {
+        Self::of(
+            ProviderError::permanent(reason),
+            CredentialFailureKind::LedToInsecure,
         )
     }
 

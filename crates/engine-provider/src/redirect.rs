@@ -103,9 +103,9 @@ fn resolve(current: &str, location: &str) -> Result<String, Refused> {
 /// Where [`redirect_target`] refused `location` because the hop would take the credential from
 /// HTTPS to plaintext (to another host or port, or back to the URL that issued it), that
 /// refusal as a credential failure: `Permanent`,
-/// [`CredentialFailureKind::Insecure`](crate::CredentialFailureKind::Insecure), the same as a
-/// plaintext origin the credential is refused on. `None` where the hop resolves, or is refused
-/// for not resolving at all, which is the server's malformed answer and
+/// [`CredentialFailureKind::LedToInsecure`](crate::CredentialFailureKind::LedToInsecure), since
+/// the server led the credential there from a URL on TLS. `None` where the hop resolves, or is
+/// refused for not resolving at all, which is the server's malformed answer and
 /// [`redirect_refused`]'s to say.
 ///
 /// # Examples
@@ -117,14 +117,14 @@ fn resolve(current: &str, location: &str) -> Result<String, Refused> {
 /// let error = ProviderError::from(refused.expect("it leaves TLS"));
 /// assert_eq!(
 ///     error.credential_failure(),
-///     Some(CredentialFailureKind::Insecure)
+///     Some(CredentialFailureKind::LedToInsecure)
 /// );
 /// assert!(redirect_off_tls("https://example.com/x", "/y").is_none());
 /// ```
 #[must_use]
 pub fn redirect_off_tls(current: &str, location: &str) -> Option<crate::CredentialFailure> {
     matches!(resolve(current, location), Err(Refused::LeavesTls)).then(|| {
-        crate::CredentialFailure::refused_origin(
+        crate::CredentialFailure::led_to_insecure(
             "a redirect would take the credential from HTTPS to plaintext",
         )
     })
@@ -277,9 +277,9 @@ mod tests {
         );
     }
 
-    /// Only a hop that would take the credential off TLS is an insecure origin: to another host
-    /// or port, or back over TLS to the URL that issued it. A hop that resolves, one kept on TLS,
-    /// and a `Location` that does not resolve are not.
+    /// Only a hop that would take the credential off TLS is one the server led to insecurity: to
+    /// another host or port, or back over TLS to the URL that issued it. A hop that resolves, one
+    /// kept on TLS, and a `Location` that does not resolve are not.
     #[test]
     fn only_a_hop_off_tls_is_a_credential_refused_an_insecure_origin() {
         use crate::{CredentialFailureKind, ProviderError};
@@ -287,18 +287,18 @@ mod tests {
             super::redirect_off_tls(current, location)
                 .map(|failure| ProviderError::from(failure).credential_failure())
         };
-        let insecure = Some(Some(CredentialFailureKind::Insecure));
+        let led = Some(Some(CredentialFailureKind::LedToInsecure));
         assert_eq!(
             kind("https://a.example.com/x", "http://b.example.com/y"),
-            insecure
+            led
         );
         assert_eq!(
             kind("https://a.example.com:8443/x", "http://a.example.com/y"),
-            insecure
+            led
         );
         assert_eq!(
             kind("https://a.example.com/x", "http://a.example.com/x"),
-            insecure
+            led
         );
         assert_eq!(
             kind("https://a.example.com/x", "http://a.example.com/y"),

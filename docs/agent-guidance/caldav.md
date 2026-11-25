@@ -236,8 +236,10 @@ are split escape-aware so the writer and the parser agree.
   (`docs/design/credential-source.md`). The configured start and every origin discovery is led
   to must be admitted (`AuthenticatedClient::admits`): plaintext only from a loopback account to
   loopback, and only where the source's `permits` agrees, or the connect fails before anything
-  is sent there, as a `Permanent` credential failure (`CredentialFailure::refused_origin`, so
-  `ProviderError::is_credential_failure` says so, as on JMAP). Which hosts qualify is the host's
+  is sent there, as a `Permanent` credential failure (so `ProviderError::is_credential_failure`
+  says so, as on JMAP): `Insecure` where the configured server is plaintext off loopback,
+  `LedToInsecure` where discovery was led to plaintext from one the rule accepts, `NotPermitted`
+  where the source refuses. Which hosts qualify is the host's
   decision; for an OAuth token it is the token issuer's resources, which this adapter knows
   nothing of. The older `CredentialHosts` policy (`with_credential_hosts`) is deprecated and
   still consulted beside `permits`; both must agree.

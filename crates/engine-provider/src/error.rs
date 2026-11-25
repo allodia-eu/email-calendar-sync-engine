@@ -59,15 +59,23 @@ pub enum CredentialFailureKind {
     /// endpoint that is down is `Retryable`, consent that is gone is `Authentication`, a
     /// throttled token endpoint is `RateLimited`.
     Source,
-    /// The credential would leave TLS: the request is for plaintext HTTP off loopback (or to
-    /// loopback from an account configured elsewhere), or a redirect would take it from HTTPS to
-    /// plaintext on another host or port, or back to the URL that issued it. The engine's own
-    /// rule, which no source can loosen. Where the plaintext address is the one the account is
-    /// configured with, a secure address for the account clears it. Where the server led there
-    /// (a redirect, or a discovery step naming a plaintext address), the configured address may
-    /// already be secure, and the server must serve that address over TLS; the address is not in
-    /// the error. No new password or sign-in can clear it.
+    /// The credential would leave TLS because the address the account is configured with is
+    /// plaintext HTTP off loopback. The engine's own rule, which no source can loosen. A secure
+    /// (`https`) address for the account clears it; no new password or sign-in can.
     Insecure,
+    /// The credential would leave TLS on an address other than the configured one, from an
+    /// account whose configured address the rule accepts (`https`, or plaintext loopback): a
+    /// redirect from HTTPS to plaintext on another host or port, or back to the URL that issued
+    /// it; a discovery step, a session or a link naming plaintext HTTP off loopback, or a
+    /// CalDAV shared calendar's principal the host stored in plaintext; or plaintext loopback
+    /// named to an account not configured there. The engine's own rule, as for
+    /// [`Insecure`](Self::Insecure), but the configured address itself passes it. Usually the
+    /// server's operator clears it, by serving that address over TLS (the address is not in the
+    /// error). Pointing the account straight at a secure address for the same service, where
+    /// one exists (the `https` form of a host a well-known address redirects to in plaintext),
+    /// or replacing a stored principal (by discovering again), clears it too. No new password
+    /// or sign-in can.
+    LedToInsecure,
     /// The host's policy does not let the credential go to the origin the request is for: the
     /// source did not [permit](crate::CredentialSource::permits) it, or a host's deprecated
     /// credential-host policy refused it. The origin may be the address the account is

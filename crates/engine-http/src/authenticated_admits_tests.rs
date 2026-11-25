@@ -61,3 +61,48 @@ fn plaintext_is_admitted_only_from_loopback_to_loopback() {
         "the source is asked only about origins the plaintext rule let through"
     );
 }
+
+/// The plaintext rule's refusal says whose address is at fault: the account's, where its
+/// configured address is itself plaintext off loopback (`Insecure`), or the server's, where it
+/// led an account whose address the rule accepts to plaintext (`LedToInsecure`).
+#[test]
+fn a_plaintext_refusal_says_whether_the_configured_address_or_the_server_is_at_fault() {
+    use engine_provider::CredentialFailureKind::{Insecure, LedToInsecure};
+    let source = Arc::new(Tokens::new("A", &[]));
+    let kind = |configured: &str, to: &str| {
+        account(&source, configured)
+            .admit(&url(to))
+            .map_err(|refused| refused.into_error().credential_failure())
+    };
+    // Configured in clear off loopback: wherever it goes in clear, the address is the fault.
+    assert_eq!(
+        kind("http://dav.example.com/", "http://dav.example.com/x"),
+        Err(Some(Insecure))
+    );
+    assert_eq!(
+        kind("http://dav.example.com/", "http://127.0.0.1:9/"),
+        Err(Some(Insecure))
+    );
+    assert_eq!(
+        kind("http://dav.example.com/", "http://p1.example.net/"),
+        Err(Some(Insecure))
+    );
+    // Configured on TLS, led to plaintext, loopback included.
+    assert_eq!(
+        kind("https://dav.example.com/", "http://dav.example.com/"),
+        Err(Some(LedToInsecure))
+    );
+    assert_eq!(
+        kind("https://dav.example.com/", "http://127.0.0.1:9/"),
+        Err(Some(LedToInsecure))
+    );
+    // Configured on plaintext loopback, led off it.
+    assert_eq!(
+        kind("http://127.0.0.1:9/", "http://dav.example.com/"),
+        Err(Some(LedToInsecure))
+    );
+    assert_eq!(
+        kind("http://[::1]:9/", "http://dav.example.com/"),
+        Err(Some(LedToInsecure))
+    );
+}

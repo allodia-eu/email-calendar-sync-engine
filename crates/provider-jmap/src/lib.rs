@@ -382,8 +382,8 @@ impl fmt::Debug for JmapClient {
 
 /// Why a session redirect from `current` to `location` is not followed. Every one of these
 /// requests carries the account's credentials, so a hop off TLS that `redirect_target` cannot
-/// take over TLS is the credential refused an insecure origin, as a plaintext origin is
-/// (`CredentialFailureKind::Insecure`); any other is a `Location` that does not resolve.
+/// take over TLS is the credential refused where the server led it
+/// (`CredentialFailureKind::LedToInsecure`); any other is a `Location` that does not resolve.
 fn refused_redirect(current: &str, location: &str) -> JmapError {
     match engine_provider::redirect_off_tls(current, location) {
         Some(insecure) => JmapError::from(insecure),

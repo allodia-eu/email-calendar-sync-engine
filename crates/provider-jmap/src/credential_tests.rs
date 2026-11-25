@@ -301,6 +301,11 @@ async fn a_redirect_to_plaintext_off_loopback_is_not_followed_with_the_credentia
     let source = Arc::new(Rotating::tokens("a", &[]));
     let err = connect_error(config(&base, &source)).await;
     assert_eq!(err.class(), FailureClass::Permanent, "{err}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::LedToInsecure),
+        "the server led there from an address the rule accepts"
+    );
     assert_eq!(seen.lock().unwrap().len(), 1, "only the loopback hop");
     assert_eq!(source.asks(), 1);
 }
@@ -337,6 +342,10 @@ async fn origins_the_session_advertises_in_plaintext_off_loopback_are_sent_nothi
         let err = result.expect_err("refused before sending");
         assert!(matches!(err, JmapError::Credential(_)), "{err:?}");
         assert_eq!(err.failure_class(), FailureClass::Permanent);
+        assert_eq!(
+            engine_provider::ProviderError::from(err).credential_failure(),
+            Some(engine_provider::CredentialFailureKind::LedToInsecure)
+        );
     }
     assert_eq!(seen.lock().unwrap().len(), 1, "only the session request");
     assert_eq!(source.asks(), 1, "the source is asked for loopback only");

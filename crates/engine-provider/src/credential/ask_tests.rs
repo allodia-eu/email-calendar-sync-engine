@@ -384,6 +384,20 @@ fn an_origin_the_engine_refuses_is_a_permanent_failure_with_its_reason() {
 }
 
 #[test]
+fn an_origin_the_server_led_off_tls_is_a_permanent_failure_of_its_own_kind() {
+    let error = CredentialFailure::led_to_insecure("a redirect to plaintext").into_error();
+    assert_eq!(error.class(), FailureClass::Permanent);
+    assert_eq!(
+        error.credential_failure(),
+        Some(CredentialFailureKind::LedToInsecure)
+    );
+    assert!(
+        error.to_string().contains("a redirect to plaintext"),
+        "{error}"
+    );
+}
+
+#[test]
 fn a_kind_the_adapter_cannot_present_is_a_permanent_failure_with_its_reason() {
     let failure = CredentialFailure::unpresentable("a password to a token-only API");
     let error = failure.into_error();
