@@ -384,3 +384,28 @@ async fn a_literal_announced_with_a_bare_lf_is_still_read_as_one() {
     let line = connection.read_line().await.unwrap();
     assert_eq!(line, b"* 1 FETCH (BODY[] {3}\nabc)\r\n");
 }
+
+/// A quoted string cannot carry CR, LF or NUL (RFC 3501 §9 `quoted`, RFC 9051 §9): a password
+/// holding CRLF would end the `LOGIN` line early and send what follows as a command of its own.
+/// Such a credential is refused as one that cannot be presented, and nothing is written.
+#[tokio::test]
+async fn a_login_credential_a_quoted_string_cannot_carry_sends_nothing() {
+    for (user, password) in [
+        ("alice@test.local", "pw\r\na2 DELETE INBOX"),
+        ("alice@test.local", "pw\nx"),
+        ("alice@test.local\r\n", "pw"),
+        ("alice\0@test.local", "pw"),
+    ] {
+        let server = script(&[GREETING, "a1 OK LOGIN completed\r\n"]);
+        let (stream, recorded) = MockStream::new(server);
+        let mut conn = Connection::open(stream).await.unwrap();
+
+        let err = conn.login(user, password).await.unwrap_err();
+
+        assert!(matches!(err, ImapError::Credential(_)), "{err:?}");
+        assert_eq!(err.failure_class(), FailureClass::Permanent);
+        assert!(!err.to_string().contains("pw"), "{err}");
+        assert!(engine_provider::ProviderError::from(err).is_credential_failure());
+        assert_eq!(written(&recorded), "", "nothing reaches the server");
+    }
+}

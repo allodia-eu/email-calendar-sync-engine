@@ -9,6 +9,7 @@
 
 use std::time::Duration;
 
+use engine_provider::CredentialFailure;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 
 use crate::{
@@ -179,7 +180,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// Not sent through [`command`](Self::command), whose `format!` would copy the password:
     /// the line is built once, at its final length, and zeroed when dropped
     /// ([`crate::secret_line`]).
+    ///
+    /// # Errors
+    ///
+    /// [`ImapError::Credential`] (`Permanent`, [`CredentialFailure::unpresentable`]) before
+    /// anything is written, for a username or password holding CR, LF or NUL: a quoted string
+    /// cannot carry them (RFC 3501 §9, RFC 9051 §9), and a CRLF would end the line early and
+    /// send the rest as a command of its own.
     pub(crate) async fn login(&mut self, user: &str, password: &str) -> ImapResult<()> {
+        if [user, password]
+            .iter()
+            .any(|part| part.contains(['\r', '\n', '\0']))
+        {
+            return Err(CredentialFailure::unpresentable(
+                "a LOGIN credential holds CR, LF or NUL, which a quoted string cannot carry",
+            )
+            .into());
+        }
         self.drain_pending().await?;
         let tag = self.next_tag();
         let line = secret_line(&[

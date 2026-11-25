@@ -602,7 +602,11 @@ would exercise it rested on a documentation claim the server disproves.
 - **Credential components are screened before encoding.** `%x01` is the key/value
   separator itself, so a token carrying one could append its own `auth=` pair; CR/LF/NUL
   would break out of the command line the base64 rides on. Rejected up front — the same
-  guard `smtp.rs` applies to envelope addresses and `engine-rfc5322` to header values.
+  guard `smtp.rs` applies to envelope addresses and `engine-rfc5322` to header values. `LOGIN`
+  is screened too: its username and password go as quoted strings, which cannot carry CR, LF or
+  NUL (RFC 3501 §9), and a CRLF in a password would end the line and send the rest as a command
+  of its own. Each is a credential that cannot be presented (`Permanent`, a credential failure),
+  refused before anything is written.
 - **The pre-auth `CAPABILITY` is a third call, not a duplicate of the other two.** The
   session already asks before `STARTTLS` (is the upgrade offered?) and again after
   authenticating (what does *this* session get — servers advertise a different set once
