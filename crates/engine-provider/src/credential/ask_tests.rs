@@ -429,3 +429,22 @@ async fn a_throttled_source_keeps_its_wait() {
     assert_eq!(error.retry_after(), "PT30S".parse().ok());
     assert!(error.is_credential_failure());
 }
+
+/// A source's error keeps its class, words and wait, and nothing that speaks of a request that
+/// went out: none did.
+#[test]
+fn a_source_s_failure_says_nothing_of_a_request_that_went_out() {
+    for answered in [
+        ProviderError::needs_confirmation("the broker lost its answer"),
+        ProviderError::item_unavailable("the broker has no such mailbox"),
+        ProviderError::refused_by_target(crate::TargetRefusal::StorageFull),
+    ] {
+        let class = answered.class();
+        let error = CredentialFailure::new(answered).into_error();
+        assert!(error.is_credential_failure());
+        assert_eq!(error.class(), class);
+        assert!(!error.requires_confirmation(), "{error:?}");
+        assert!(!error.is_item_unavailable(), "{error:?}");
+        assert_eq!(error.target_refusal(), None, "{error:?}");
+    }
+}

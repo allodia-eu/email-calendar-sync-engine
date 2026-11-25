@@ -225,7 +225,10 @@ impl ProviderError {
     /// [`target_refusal`](Self::target_refusal),
     /// [`is_credential_failure`](Self::is_credential_failure)) is kept, and only the words
     /// change. For an adapter that must not pass on a server's words, or that answers several
-    /// items with one failure.
+    /// items with one failure of the whole request or session: since it keeps
+    /// [`is_item_unavailable`](Self::is_item_unavailable) and
+    /// [`requires_confirmation`](Self::requires_confirmation), a failure about one item is never
+    /// fanned out to the others with it.
     ///
     /// # Examples
     ///
@@ -257,8 +260,16 @@ impl ProviderError {
     /// This failure, as one where no credential could be had
     /// ([`is_credential_failure`](Self::is_credential_failure)). Only
     /// [`CredentialFailure`](crate::CredentialFailure) marks one, so the fact has one source.
+    ///
+    /// Only the class, the words, the wait and the source chain carry over. The other facts are
+    /// about a request that went out (may it have been applied, will the target ever take this
+    /// item, did its state refuse), and nothing went out: a source answering
+    /// [`needs_confirmation`](Self::needs_confirmation) must not park a send that never left.
     pub(crate) fn of_credential(self) -> Self {
         Self {
+            confirmation_needed: false,
+            item_unavailable: false,
+            target_refusal: None,
             credential_failure: true,
             ..self
         }

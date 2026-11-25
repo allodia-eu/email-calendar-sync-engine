@@ -99,9 +99,11 @@ pub trait MailImporter: Send + Sync {
 ///
 /// Two endings reach every message of the account, and carry over: a throttle, with the wait
 /// it named, and a refused credential. A host then schedules the message with the rest of the
-/// batch, after the wait or after a new credential. Where the ending was the credential source's
-/// (no credential could be had), the message says that, as
-/// [`is_credential_failure`](ProviderError::is_credential_failure) does. Any other ending was about
+/// batch, after the wait or after a new credential. An ending where no credential could be had
+/// ([`is_credential_failure`](ProviderError::is_credential_failure)) reaches every message too,
+/// and carries over whole, with its class and wait: a source that is down is `Retryable`, and a
+/// credential that may not go there or cannot be presented stays `Permanent` (or
+/// `InvalidState`), so a host does not retry it for ever. Any other ending was about
 /// the exchange or another message (a connection lost, an answer that could not be read, a message
 /// that may be stored), so this one, never sent, is plainly retryable: it neither
 /// [may be stored](ProviderError::requires_confirmation) nor is
@@ -122,7 +124,10 @@ pub trait MailImporter: Send + Sync {
 #[must_use]
 pub fn not_sent(ending: &ProviderError) -> ProviderError {
     use engine_core::error::FailureClass;
-    let unsent = match ending.class() {
+    if ending.is_credential_failure() {
+        return ending.reworded("not sent: no credential could be had for the batch");
+    }
+    match ending.class() {
         FailureClass::RateLimited => ProviderError::rate_limited(
             "not sent: the target throttled the batch",
             ending.retry_after(),
@@ -131,13 +136,6 @@ pub fn not_sent(ending: &ProviderError) -> ProviderError {
             ProviderError::authentication("not sent: the target refused the credential")
         }
         _ => ProviderError::retryable("not sent: an earlier failure ended the batch"),
-    };
-    if ending.is_credential_failure() {
-        unsent
-            .reworded("not sent: no credential could be had for the batch")
-            .of_credential()
-    } else {
-        unsent
     }
 }
 

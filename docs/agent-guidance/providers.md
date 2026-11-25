@@ -325,7 +325,7 @@ it. An adapter that can import implements the trait; there is no capability flag
   | A refused credential | `Authentication` |
   | No credential could be had (the source failed, or the credential may not go there) | the source's class, and `is_credential_failure` |
   | Sent, and the answer lost | `requires_confirmation`: find it from the import cursor before sending again |
-  | Not sent, because an earlier failure ended the batch | `import::not_sent(ending)`: a throttle (with its wait) or a refused credential carries over, and so does `is_credential_failure`; anything else is `Retryable` |
+  | Not sent, because an earlier failure ended the batch | `import::not_sent(ending)`: a throttle (with its wait) or a refused credential carries over, and an ending where no credential could be had carries over whole (its class, its wait, `is_credential_failure`), so a credential that may never go there stays `Permanent`; anything else is `Retryable` |
   | A transient fault | `Retryable` |
 
   A throttle or a refused credential ends the batch on every adapter, since it reaches every

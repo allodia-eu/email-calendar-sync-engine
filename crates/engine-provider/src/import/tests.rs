@@ -376,6 +376,10 @@ fn a_message_never_sent_for_want_of_a_credential_says_so() {
     for ending in [
         ProviderError::authentication("consent is gone").of_credential(),
         ProviderError::rate_limited("token endpoint 429", wait.map(Into::into)).of_credential(),
+        // A credential that may not go there, or cannot be presented: never sendable as it is.
+        ProviderError::permanent("not permitted").of_credential(),
+        // A source answering for another account.
+        ProviderError::invalid_state("another account").of_credential(),
     ] {
         let unsent = super::not_sent(&ending);
         assert!(unsent.is_credential_failure(), "{unsent}");
