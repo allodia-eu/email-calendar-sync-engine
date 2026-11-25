@@ -20,10 +20,10 @@ use provider_imap::{
 
 use crate::{GmailProvider, imap_mail::ImapMail, test_support::fake_client};
 
-/// Hands out `bodies` in the order given, then fails with `then_fail` if set.
+/// Hands out `bodies` in the order given, then fails as `then_fail` does if set.
 struct Bodies {
     bodies: Vec<(u64, &'static str)>,
-    then_fail: Option<FailureClass>,
+    then_fail: Option<ProviderError>,
 }
 
 #[async_trait]
@@ -66,14 +66,15 @@ impl ImapMail for Bodies {
             .filter(|(id, _)| gmail_ids.contains(id))
             .map(|(id, body)| Ok((*id, RawMime::new(body.as_bytes().to_vec()))))
             .collect();
-        if let Some(class) = self.then_fail {
-            items.push(Err(ProviderError::new(class, "the connection dropped")));
+        if let Some(failure) = &self.then_fail {
+            items.push(Err(failure.reworded("the connection dropped")));
         }
         Box::pin(futures_util::stream::iter(items))
     }
 }
 
 fn provider(bodies: Vec<(u64, &'static str)>, then_fail: Option<FailureClass>) -> GmailProvider {
+    let then_fail = then_fail.map(|class| ProviderError::new(class, "the connection dropped"));
     GmailProvider::new(fake_client(Vec::new()))
         .with_imap_mail(Arc::new(Bodies { bodies, then_fail }))
 }
@@ -153,4 +154,57 @@ async fn one_body_is_read_the_same_way() {
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::RateLimited);
+}
+
+/// No credential could be had for the IMAP half: every message not yet answered says so.
+#[tokio::test]
+async fn a_failure_for_want_of_a_credential_says_so_on_every_message() {
+    #[derive(Debug)]
+    struct Down(engine_provider::CredentialSubject);
+
+    #[async_trait]
+    impl engine_provider::CredentialSource for Down {
+        fn subject(&self) -> &engine_provider::CredentialSubject {
+            &self.0
+        }
+
+        async fn credential(
+            &self,
+            _: &engine_provider::CredentialRequest<'_>,
+        ) -> ProviderResult<engine_provider::Credential> {
+            Err(ProviderError::retryable("the token endpoint is down"))
+        }
+    }
+
+    let origin = engine_provider::Origin::new("imaps", "imap.example.com", 993);
+    let request =
+        engine_provider::CredentialRequest::new(engine_provider::CredentialProtocol::Imap, &origin);
+    let source = Down(engine_provider::CredentialSubject::new("acct-1"));
+    let attempt = |_| async { Ok::<(), ProviderError>(()) };
+    let limit = std::time::Duration::from_secs(1);
+    let no_credential =
+        engine_provider::with_credential(&source, &request, limit, |_| false, attempt)
+            .await
+            .expect_err("the source failed");
+    let bodies = Bodies {
+        bodies: vec![(0xa, "first")],
+        then_fail: Some(no_credential),
+    };
+    let provider = GmailProvider::new(fake_client(Vec::new())).with_imap_mail(Arc::new(bodies));
+    let messages = [message("a"), message("b"), message("c")];
+
+    let got: Vec<(usize, ProviderResult<RawMime>)> = provider
+        .fetch_message_sources(&account(), &messages)
+        .collect()
+        .await;
+
+    for (index, outcome) in got.iter().filter(|(_, outcome)| outcome.is_err()) {
+        let err = outcome.as_ref().unwrap_err();
+        assert!(err.is_credential_failure(), "{index}: {err:?}");
+        assert_eq!(err.class(), FailureClass::Retryable);
+    }
+    assert_eq!(
+        got.iter().filter(|(_, outcome)| outcome.is_err()).count(),
+        2
+    );
 }

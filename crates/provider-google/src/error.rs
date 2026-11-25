@@ -77,6 +77,8 @@ pub enum GoogleError {
     /// nothing was sent. When the source fails as it is asked to replace a token Google refused
     /// with a `401`, a request was sent and refused, and this takes the `401`'s place.
     /// Classified as the source classified it, and `Permanent` for a refusal.
+    /// As a [`ProviderError`] it is the source's own, which says that no credential could be had
+    /// ([`ProviderError::is_credential_failure`]).
     #[error("no credential to present: {0}")]
     Credential(ProviderError),
 }

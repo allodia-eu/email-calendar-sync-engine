@@ -451,3 +451,7 @@ mod tests;
 #[cfg(test)]
 #[path = "credential_source_tests.rs"]
 mod credential_source_tests;
+
+#[cfg(test)]
+#[path = "credential_failure_tests.rs"]
+mod credential_failure_tests;
