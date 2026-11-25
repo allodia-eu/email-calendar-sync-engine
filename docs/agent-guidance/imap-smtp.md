@@ -612,6 +612,9 @@ would exercise it rested on a documentation claim the server disproves.
   `saslname` (RFC 7628 §3.1, RFC 5801 §4), where `,` would end the field and `=` starts an escape:
   both are legal in a username, so they go escaped as `=2C` and `=3D`. `XOAUTH2` frames the name
   with `^A`, which the screen refuses, and `PLAIN` with NUL, likewise refused, so neither splits.
+  Stalwart takes the escaped header (`live_imap_oauthbearer_name.rs`), but reads no
+  authorization identity from it (STALWART-9), so the escaping is checked offline only; a server
+  that reads the field is still needed to prove it live.
 - **The pre-auth `CAPABILITY` is a third call, not a duplicate of the other two.** The
   session already asks before `STARTTLS` (is the upgrade offered?) and again after
   authenticating (what does *this* session get — servers advertise a different set once

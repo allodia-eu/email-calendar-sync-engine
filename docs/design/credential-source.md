@@ -223,9 +223,9 @@ sound. The engine's own reconnect rules follow it: IMAP's fetches, which ask onc
 connection after a `Retryable` failure, do not for this one. An import ends its batch on it, as
 on a throttle (`ProviderError::ends_batch`), and answers the items it never sent with the
 failure whole, its class kept (`import::not_sent`), so a credential that may never go there
-stays `Permanent`. A
-rule-by-rule write of the rules records it per rule (`RuleWriteFailure::credential_failure`). A
-source's error carries over only its class, words, wait and source chain: the facts about a
+stays `Permanent`. A rule-by-rule write of the rules records it per rule
+(`RuleWriteFailure::credential_failure`). A source's error carries over only its class, words,
+wait and source chain: the facts about a
 request that went out (`requires_confirmation`, `is_item_unavailable`, `target_refusal`) are
 dropped, since none went out. Two first IMAP dials racing, where the server took a credential for
 another account than the first, is not this fact: that credential went out, and the dial fails

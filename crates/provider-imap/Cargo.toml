@@ -82,6 +82,10 @@ engine-sync = { workspace = true }
 store-sqlite = { workspace = true }
 # The process-kill suite's store files, one directory per case.
 tempfile = { workspace = true }
+# The Stalwart harness's own OAuth endpoints mint the tokens `live_imap_oauthbearer_name.rs`
+# signs in with (`provider-jmap/tests/stalwart_oauth`, included by path).
+engine-http = { workspace = true, features = ["test-server"] }
+reqwest = { workspace = true }
 
 [lints]
 workspace = true
