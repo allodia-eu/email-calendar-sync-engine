@@ -186,3 +186,77 @@ async fn a_failure_that_judged_no_credential_asks_for_no_replacement() {
     assert_eq!(source.renewals.load(Ordering::SeqCst), 0);
     assert_eq!(servers.opened(), 1);
 }
+
+/// A source that fails with `class`: a broker down, a grant revoked, a token endpoint
+/// throttling.
+#[derive(Debug)]
+struct FailingSource(CredentialSubject, FailureClass);
+
+#[async_trait]
+impl CredentialSource for FailingSource {
+    fn subject(&self) -> &CredentialSubject {
+        &self.0
+    }
+
+    async fn credential(
+        &self,
+        _request: &CredentialRequest<'_>,
+    ) -> Result<Credential, ProviderError> {
+        Err(ProviderError::new(self.1, "the source failed"))
+    }
+}
+
+/// Every way a dial can be without a credential reaches the provider's error marked as a
+/// credential failure with the class it had, and no connection is opened for it; a dial the
+/// connection failed is not marked, whatever its class.
+#[tokio::test(start_paused = true)]
+async fn a_dial_without_a_credential_says_so_and_a_lost_connection_does_not() {
+    let subject = || CredentialSubject::new("alice");
+    let without: Vec<(ImapConfig, FailureClass)> = vec![
+        (
+            token_config(Arc::new(FailingSource(subject(), FailureClass::Retryable))),
+            FailureClass::Retryable,
+        ),
+        (
+            token_config(Arc::new(FailingSource(
+                subject(),
+                FailureClass::Authentication,
+            ))),
+            FailureClass::Authentication,
+        ),
+        (
+            token_config(Arc::new(HungSource(subject()))),
+            FailureClass::Retryable,
+        ),
+        (
+            token_config(Arc::new(ElsewhereSource(subject()))),
+            FailureClass::Permanent,
+        ),
+        (
+            ImapConfig::new(format!("{HOST}:993"), HOST, Credential::bearer("a-token")),
+            FailureClass::Permanent,
+        ),
+    ];
+    for (config, class) in without {
+        let servers = Servers::new(vec![accepting()]);
+        let err = dial_with(&config, &PresentedIdentity::default(), || servers.open())
+            .await
+            .expect_err("no credential, no session");
+        let err = ProviderError::from(err);
+        assert!(err.is_credential_failure(), "{err:?}");
+        assert_eq!(err.class(), class, "{err:?}");
+        assert_eq!(servers.opened(), 0, "{err:?}");
+    }
+
+    // The server hung up before its greeting: the connection's failure, not the credential's.
+    let servers = Servers::new(vec![Vec::new()]);
+    let source = TokenSource::new("a-token", None);
+    let err = dial_with(&token_config(source), &PresentedIdentity::default(), || {
+        servers.open()
+    })
+    .await
+    .expect_err("no greeting");
+    let err = ProviderError::from(err);
+    assert_eq!(err.class(), FailureClass::Retryable, "{err:?}");
+    assert!(!err.is_credential_failure(), "{err:?}");
+}

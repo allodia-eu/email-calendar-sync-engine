@@ -42,9 +42,13 @@ pub enum ImapError {
     #[error("server is limiting sign-ins for this account: {0}")]
     RateLimited(String),
 
-    /// The account's [`CredentialSource`](crate::CredentialSource) did not permit the server,
-    /// had no credential to give, or did not answer within the dial deadline, so nothing was
-    /// dialled. Classified as the source classified it; an unanswered ask is retryable.
+    /// No credential could be had: the account's [`CredentialSource`](crate::CredentialSource)
+    /// did not permit the server, had no credential to give, or did not answer within the dial
+    /// deadline, so nothing was dialled; or it gave one the protocol cannot present, or one for
+    /// another account than the pool's, so nothing was sent with it. Classified as the source
+    /// classified it, an unanswered ask retryable; as a [`ProviderError`] it is the source's
+    /// own, which says it is a credential failure
+    /// ([`ProviderError::is_credential_failure`]).
     #[error("no credential to sign in with: {0}")]
     Credential(ProviderError),
 
@@ -150,6 +154,11 @@ impl ImapError {
 
 impl From<ImapError> for ProviderError {
     fn from(err: ImapError) -> Self {
+        // The source's own failure, passed through as it gave it: its class, its wait, and that no
+        // credential could be had.
+        if let ImapError::Credential(source) = err {
+            return source;
+        }
         if let Some(reason) = err.target_refusal() {
             return ProviderError::refused_by_target(reason).with_source(err);
         }

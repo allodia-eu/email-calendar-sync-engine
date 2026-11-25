@@ -213,9 +213,10 @@ where
 }
 
 /// Whether to ask once more after `err`: only for a failure that may pass (a lost connection,
-/// a refusal the server called temporary), and only once.
+/// a refusal the server called temporary), and only once. Not when no credential could be had:
+/// a new connection would ask the same source at once.
 fn again(retried: &mut bool, err: &ProviderError) -> bool {
-    if *retried || err.class() != FailureClass::Retryable {
+    if *retried || err.class() != FailureClass::Retryable || err.is_credential_failure() {
         return false;
     }
     *retried = true;
@@ -223,9 +224,9 @@ fn again(retried: &mut bool, err: &ProviderError) -> bool {
 }
 
 /// The same failure for another message of the batch; a `ProviderError` carries its source
-/// and is not `Clone`, and the class and detail are what a caller reads.
+/// and is not `Clone`, and its facts and detail are what a caller reads.
 fn copy(err: &ProviderError) -> ProviderError {
-    ProviderError::new(err.class(), err.to_string())
+    err.reworded(err.to_string())
 }
 
 #[cfg(test)]

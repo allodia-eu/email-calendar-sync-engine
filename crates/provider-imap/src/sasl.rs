@@ -16,6 +16,7 @@
 //! engine leaking its job outward
 //! (`docs/agent-guidance/imap-smtp.md`).
 
+use engine_provider::CredentialFailure;
 use zeroize::Zeroizing;
 
 use crate::{
@@ -33,9 +34,10 @@ use crate::{
 ///
 /// # Errors
 ///
-/// [`ImapError::Bad`] if any component holds a NUL, `PLAIN`'s field separator: it would move
-/// the field boundaries, so that part of one identity is read as another. That is the host's
-/// mistake, so nothing is sent. Every other byte is the server's to judge.
+/// [`ImapError::Credential`] (`Permanent`, [`CredentialFailure::unpresentable`]) if any
+/// component holds a NUL, `PLAIN`'s field separator: it would move the field boundaries, so that
+/// part of one identity is read as another. That is the host's mistake, so nothing is sent.
+/// Every other byte is the server's to judge.
 pub(crate) fn plain_response(
     authzid: Option<&str>,
     username: &str,
@@ -46,9 +48,10 @@ pub(crate) fn plain_response(
         .iter()
         .any(|component| component.contains('\0'))
     {
-        return Err(ImapError::bad(
+        return Err(CredentialFailure::unpresentable(
             "a SASL PLAIN credential contains a NUL, which would forge its field boundaries",
-        ));
+        )
+        .into());
     }
     let blob = secret_line(&[
         Part::Text(authzid),
@@ -122,8 +125,9 @@ impl Mechanism {
     ///
     /// # Errors
     ///
-    /// [`ImapError::Protocol`] if any component carries a byte that would forge the
-    /// frame — see [`clean`].
+    /// [`ImapError::Credential`] (`Permanent`, [`CredentialFailure::unpresentable`]) if the
+    /// username or the token carries a byte that would forge the frame, and
+    /// [`ImapError::Protocol`] if the host does — see [`clean`].
     pub(crate) fn initial_response(
         self,
         username: &str,
@@ -131,8 +135,11 @@ impl Mechanism {
         host: &str,
         port: Option<u16>,
     ) -> ImapResult<Zeroizing<String>> {
-        let username = clean("username", username)?;
-        let access_token = clean("access token", access_token)?;
+        let username = clean("username", username)
+            .map_err(|_| unpresentable("the username holds a byte forbidden in a SASL response"))?;
+        let access_token = clean("access token", access_token).map_err(|_| {
+            unpresentable("the access token holds a byte forbidden in a SASL response")
+        })?;
         let host = clean("host", host)?;
         // Built at its final length, so no grown buffer leaves a copy of the token behind
         // (`crate::secret_line`).
@@ -234,6 +241,11 @@ pub(crate) fn describe_challenge(challenge: &str) -> String {
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+/// A credential the SASL frame cannot carry, as the source's failure: nothing is sent.
+fn unpresentable(reason: &'static str) -> ImapError {
+    CredentialFailure::unpresentable(reason).into()
 }
 
 /// Rejects a credential component carrying a byte that would forge the SASL frame.

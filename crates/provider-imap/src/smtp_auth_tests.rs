@@ -299,7 +299,7 @@ async fn a_credential_acting_as_another_account_is_never_presented_over_smtp() {
     .await;
 
     let err = outcome.expect_err("refused");
-    assert!(matches!(err, ImapError::Bad(_)), "{err:?}");
+    assert!(matches!(err, ImapError::Credential(_)), "{err:?}");
     assert_eq!(err.failure_class(), FailureClass::Permanent);
     assert!(!sent.contains("AUTH"), "{sent}");
 }

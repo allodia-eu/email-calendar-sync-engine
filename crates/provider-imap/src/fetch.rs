@@ -52,7 +52,9 @@ where
     }
     .await;
     match first {
-        Err(err) if err.class() == FailureClass::Retryable => {
+        // A failure that may pass on a new connection; not one where no credential could be had,
+        // which a new connection would ask the same source for at once.
+        Err(err) if err.class() == FailureClass::Retryable && !err.is_credential_failure() => {
             let mut connection = pool.acquire_checked().await?;
             let result = fetch_message_source(&mut connection, key).await;
             connection.settle(result)

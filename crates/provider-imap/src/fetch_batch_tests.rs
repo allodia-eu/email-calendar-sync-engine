@@ -2,7 +2,10 @@
 
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -250,4 +253,70 @@ async fn an_unparseable_key_is_refused_before_the_wire() {
 
     assert_eq!(outcomes, vec![(0, Err(FailureClass::InvalidState))]);
     assert_eq!(sent(&recordings), "");
+}
+
+/// A source whose broker is down.
+#[derive(Debug)]
+struct BrokerDown(engine_provider::CredentialSubject);
+
+#[async_trait::async_trait]
+impl engine_provider::CredentialSource for BrokerDown {
+    fn subject(&self) -> &engine_provider::CredentialSubject {
+        &self.0
+    }
+
+    async fn credential(
+        &self,
+        _request: &engine_provider::CredentialRequest<'_>,
+    ) -> Result<engine_provider::Credential, engine_provider::ProviderError> {
+        Err(engine_provider::ProviderError::retryable(
+            "the broker is down",
+        ))
+    }
+}
+
+/// A pool whose every dial asks a source that fails, and how many dials it made.
+fn pool_without_a_credential() -> (Arc<ImapPool<MockStream>>, Arc<AtomicUsize>) {
+    let dials = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&dials);
+    let source: Arc<BrokerDown> =
+        Arc::new(BrokerDown(engine_provider::CredentialSubject::new("alice")));
+    let dial: Dial<MockStream> = Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        let source = Arc::clone(&source);
+        Box::pin(async move {
+            let origin = engine_provider::Origin::new("imaps", "imap.example.com", 993);
+            let imap = engine_provider::CredentialProtocol::Imap;
+            crate::credentials::with_credential(source.as_ref(), imap, &origin, |_| async {
+                unreachable!("there is no credential to sign in with")
+            })
+            .await
+        })
+    });
+    (ImapPool::new(dial, 5, Duration::from_hours(1)), dials)
+}
+
+/// No credential could be had: every message says so, with the source's class, and the
+/// connection that was never made is not made again, since it would ask the same source at once.
+#[tokio::test]
+async fn a_batch_without_a_credential_says_so_on_every_message_and_dials_once() {
+    let (pool, dials) = pool_without_a_credential();
+    let messages = [message("imap:v7:u42@INBOX"), message("imap:v7:u43@INBOX")];
+
+    let outcomes: Vec<_> = fetch_batch(&pool, &messages).collect().await;
+
+    assert_eq!(outcomes.len(), 2);
+    for (_, outcome) in outcomes {
+        let err = outcome.expect_err("no credential");
+        assert_eq!(err.class(), FailureClass::Retryable);
+        assert!(err.is_credential_failure(), "{err:?}");
+    }
+    assert_eq!(dials.load(Ordering::SeqCst), 1);
+
+    let (pool, dials) = pool_without_a_credential();
+    let err = crate::fetch::fetch_from_pool(&pool, messages[0].id.key())
+        .await
+        .expect_err("no credential");
+    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(dials.load(Ordering::SeqCst), 1);
 }

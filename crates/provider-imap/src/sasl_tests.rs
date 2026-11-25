@@ -66,25 +66,29 @@ fn a_credential_carrying_a_frame_byte_is_refused_before_encoding() {
     // line. Each is rejected on each component, on both mechanisms.
     for mechanism in [Mechanism::OAuthBearer, Mechanism::XOAuth2] {
         for hostile in ["a\x01b", "a\rb", "a\nb", "a\0b"] {
+            // A credential that cannot be presented, which the source gave: nothing is sent.
             assert!(
-                mechanism
-                    .initial_response(hostile, "tok", "h", Some(1))
-                    .is_err(),
+                matches!(
+                    mechanism.initial_response(hostile, "tok", "h", Some(1)),
+                    Err(ImapError::Credential(_))
+                ),
                 "{mechanism:?} accepted {hostile:?} as a username"
             );
             assert!(
-                mechanism
-                    .initial_response("u", hostile, "h", Some(1))
-                    .is_err(),
+                matches!(
+                    mechanism.initial_response("u", hostile, "h", Some(1)),
+                    Err(ImapError::Credential(_))
+                ),
                 "{mechanism:?} accepted {hostile:?} as a token"
             );
         }
         // The host reaches only the OAUTHBEARER blob, but it is screened either way so
         // the guard cannot rot if XOAUTH2 ever grows a field.
         assert!(
-            mechanism
-                .initial_response("u", "tok", "h\x01port=1", Some(1))
-                .is_err(),
+            matches!(
+                mechanism.initial_response("u", "tok", "h\x01port=1", Some(1)),
+                Err(ImapError::Protocol(_))
+            ),
             "{mechanism:?} accepted a forged host"
         );
     }
@@ -236,7 +240,7 @@ fn plain_refuses_a_nul_in_any_component_before_encoding() {
         let Err(err) = plain_response(authzid, username, password) else {
             panic!("a NUL in {authzid:?}/{username:?}/{password:?} was encoded");
         };
-        assert!(matches!(err, ImapError::Bad(_)), "{err:?}");
+        assert!(matches!(err, ImapError::Credential(_)), "{err:?}");
         assert!(!err.to_string().contains('\0'), "{err}");
     }
     // Bytes that frame the OAuth mechanisms are ordinary password bytes here.
