@@ -398,11 +398,19 @@ fn failure(source: usize, err: &GraphError) -> RuleWriteFailure {
     )
 }
 
+/// `failed`, with what `err` says beyond its class: whether the change may have landed, and
+/// whether no credential could be had for it.
 fn with_outcome(failed: RuleWriteFailure, err: &GraphError) -> RuleWriteFailure {
-    if err.leaves_outcome_unknown() {
+    let failed = if err.leaves_outcome_unknown() {
         failed.outcome_unknown()
     } else {
         failed
+    };
+    match err {
+        GraphError::Credential(source) if source.is_credential_failure() => {
+            failed.credential_failure()
+        }
+        _ => failed,
     }
 }
 

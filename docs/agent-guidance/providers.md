@@ -392,7 +392,8 @@ An account's rules are a setting too, written whole and directly, guarded by the
   (`item_unavailable`), an account with no room for it (`refused_by_target(StorageFull)`). A stale
   base is a `Conflict`; a lost answer is `requires_confirmation`. A transport that stores rules
   one by one (Graph) goes on past a rule the server refuses, and lists each such rule in the
-  receipt's `failures` (`RuleWriteFailure`: which rule, its class, and whether it may have landed);
+  receipt's `failures` (`RuleWriteFailure`: which rule, its class, whether it may have landed, and
+  whether no credential could be had for it, `credential_failure`);
   one that stores the set at once fails whole. A rule listed there says so on its outcome too
   (`LossReason::NotWritten`). What a target holds part by part but not together is a `RuleLimit`
   of its vocabulary, so the plan, not the writer, decides it.

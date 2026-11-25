@@ -145,3 +145,21 @@ async fn a_base_re_encoded_by_the_host_is_accepted() {
     assert_eq!(receipt.failures, Vec::new());
     assert_eq!(state.lock().unwrap().ids(), ["a", "c", "new4"]);
 }
+
+/// A filter not written because no credential could be had says so in the receipt, beside the
+/// source's class; one the server refused does not.
+#[test]
+fn a_filter_written_without_a_credential_says_so_in_the_receipt() {
+    use crate::rules_apply_support::failure;
+
+    let no_credential = crate::GoogleError::from(
+        engine_provider::CredentialFailure::refused_origin("refused"),
+    );
+    let failed = failure(3, &no_credential);
+    assert_eq!(failed.class, engine_core::error::FailureClass::Permanent);
+    assert!(failed.credential_failure, "{failed:?}");
+    assert!(!failed.outcome_unknown);
+
+    let refused = failure(3, &crate::GoogleError::status(401, "{}"));
+    assert!(!refused.credential_failure, "{refused:?}");
+}

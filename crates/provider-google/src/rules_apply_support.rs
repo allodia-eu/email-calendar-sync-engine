@@ -162,11 +162,19 @@ pub(crate) fn failure(source: usize, err: &GoogleError) -> RuleWriteFailure {
     )
 }
 
+/// `failed`, with what `err` says beyond its class: whether the change may have landed, and
+/// whether no credential could be had for it.
 pub(crate) fn with_outcome(failed: RuleWriteFailure, err: &GoogleError) -> RuleWriteFailure {
-    if err.leaves_outcome_unknown() {
+    let failed = if err.leaves_outcome_unknown() {
         failed.outcome_unknown()
     } else {
         failed
+    };
+    match err {
+        GoogleError::Credential(source) if source.is_credential_failure() => {
+            failed.credential_failure()
+        }
+        _ => failed,
     }
 }
 

@@ -135,3 +135,20 @@ async fn a_rule_id_is_one_percent_encoded_path_segment() {
         vec![("DELETE", "messageRules/AQ%2BAAAAAAAE%3D".to_owned(), None)]
     );
 }
+
+/// A rule not written because no credential could be had says so in the receipt, beside the
+/// source's class; one the server refused does not.
+#[test]
+fn a_rule_written_without_a_credential_says_so_in_the_receipt() {
+    let no_credential = crate::GraphError::from(
+        engine_provider::CredentialFailure::refused_origin("refused"),
+    );
+    let failed = super::failure(3, &no_credential);
+    assert_eq!(failed.class, FailureClass::Permanent);
+    assert!(failed.credential_failure, "{failed:?}");
+    assert!(!failed.outcome_unknown);
+
+    let refused = super::failure(3, &crate::GraphError::status(401, "{}"));
+    assert_eq!(refused.class, FailureClass::Authentication);
+    assert!(!refused.credential_failure, "{refused:?}");
+}

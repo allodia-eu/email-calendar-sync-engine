@@ -258,7 +258,8 @@ Implemented as sketched, with these differences, each for a reason the code met:
   or does not keep it where the target cannot store a disabled rule, and an edit writes it as given.
   A write never sends a read-only rule.
 - `RulesReceipt::failures` lists each rule a rule-by-rule write did not store or remove
-  (`RuleWriteFailure`: `FailedRule::Written` or `Removed`, its class, whether it may have landed);
+  (`RuleWriteFailure`: `FailedRule::Written` or `Removed`, its class, whether it may have landed,
+  and whether no credential could be had for it);
   the rest of the write goes ahead. A transport that stores the set at once fails whole instead.
 - `RuleLimit` says what a target holds part by part and not together (`RuleVocabulary::with_limit`):
   one test per kind among the conditions, and among the exceptions (where tests with values merge
