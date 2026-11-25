@@ -118,6 +118,16 @@ impl NamedLabels {
     }
 }
 
+/// What the labels already known say of a keyword, without a request.
+pub(crate) enum KnownLabel {
+    /// The host registered no name for it: it is filed under no label.
+    Unnamed,
+    /// Its label, already known.
+    Known(String),
+    /// Finding or making its label would need a request.
+    Unknown,
+}
+
 /// The names a host registered, and the labels the account was last seen to have for them.
 #[derive(Debug, Default)]
 pub(crate) struct Labels {
@@ -225,6 +235,17 @@ impl Labels {
     ) -> Option<Result<(String, bool), GoogleError>> {
         let named = self.names.iter().find(|named| named.keyword() == keyword)?;
         Some(self.label_made(client, named).await)
+    }
+
+    /// What [`label_id`](Self::label_id) would answer without a request.
+    pub(crate) fn known_label(&self, keyword: &Keyword) -> KnownLabel {
+        if !self.names.iter().any(|named| named.keyword() == keyword) {
+            return KnownLabel::Unnamed;
+        }
+        self.known()
+            .as_ref()
+            .and_then(|known| known.id_for(keyword))
+            .map_or(KnownLabel::Unknown, |id| KnownLabel::Known(id.to_owned()))
     }
 
     /// The keywords a name is registered for, which a filter can add.

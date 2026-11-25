@@ -367,3 +367,26 @@ fn a_message_the_batch_never_sent_carries_the_batch_s_reason_and_wait() {
     assert!(unsent.detail().starts_with("not sent"), "{unsent}");
     assert!(!unsent.detail().contains("secret"), "{unsent}");
 }
+
+/// A batch ended because no credential could be had says so on every message it never sent,
+/// with the source's class and wait, and does not blame the target.
+#[test]
+fn a_message_never_sent_for_want_of_a_credential_says_so() {
+    let wait = Some(std::time::Duration::from_secs(30));
+    for ending in [
+        ProviderError::authentication("consent is gone").of_credential(),
+        ProviderError::rate_limited("token endpoint 429", wait.map(Into::into)).of_credential(),
+        // A credential that may not go there, or cannot be presented: never sendable as it is.
+        ProviderError::permanent("not permitted").of_credential(),
+        // A source answering for another account.
+        ProviderError::invalid_state("another account").of_credential(),
+    ] {
+        let unsent = super::not_sent(&ending);
+        assert!(unsent.is_credential_failure(), "{unsent}");
+        assert_eq!(unsent.class(), ending.class());
+        assert_eq!(unsent.retry_after(), ending.retry_after());
+        assert!(!unsent.detail().contains("target"), "{unsent}");
+        assert!(super::not_sent(&unsent).is_credential_failure(), "{unsent}");
+    }
+    assert!(!super::not_sent(&ProviderError::authentication("401")).is_credential_failure());
+}

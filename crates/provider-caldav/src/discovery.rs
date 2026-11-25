@@ -165,9 +165,9 @@ pub(crate) fn trusted_start(
     if exec.trust_origin(&start) {
         Ok(start)
     } else {
-        Err(CalDavError::protocol(format!(
-            "the configured start {start:?} is a host the credential may not go to"
-        )))
+        Err(refused_origin(
+            "the configured start is a host the credential may not go to",
+        ))
     }
 }
 
@@ -191,10 +191,18 @@ pub(crate) fn follow(exec: &dyn DavExecutor, at: &str, href: &str) -> Result<Str
     if exec.trust_origin(&href) {
         Ok(href)
     } else {
-        Err(CalDavError::protocol(format!(
-            "the server named {href:?}, a host the credential may not go to"
-        )))
+        Err(refused_origin(
+            "the server named a host the credential may not go to",
+        ))
     }
+}
+
+/// An origin the credential may not go to, which discovery would have moved it to: the
+/// engine's plaintext rule, the source's `permits` or the deprecated host policy refused it.
+/// Nothing is sent there, and the failure says no credential could be had
+/// ([`engine_provider::ProviderError::is_credential_failure`]).
+pub(crate) fn refused_origin(reason: &'static str) -> CalDavError {
+    engine_provider::CredentialFailure::refused_origin(reason).into()
 }
 
 /// Asks `principal` for the addresses the server schedules as for this user.
@@ -244,7 +252,7 @@ async fn propfind_principal(
                 // credential once it asks (`DavExecutor::trust_origin`), and is refused
                 // outright when it would leave TLS or the credential policy refuses it.
                 if !exec.trust_origin(&next) {
-                    return Err(CalDavError::protocol(
+                    return Err(refused_origin(
                         "a discovery redirect left TLS or named a host the credential may not go to",
                     ));
                 }

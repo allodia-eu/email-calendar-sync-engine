@@ -66,25 +66,29 @@ fn a_credential_carrying_a_frame_byte_is_refused_before_encoding() {
     // line. Each is rejected on each component, on both mechanisms.
     for mechanism in [Mechanism::OAuthBearer, Mechanism::XOAuth2] {
         for hostile in ["a\x01b", "a\rb", "a\nb", "a\0b"] {
+            // A credential that cannot be presented, which the source gave: nothing is sent.
             assert!(
-                mechanism
-                    .initial_response(hostile, "tok", "h", Some(1))
-                    .is_err(),
+                matches!(
+                    mechanism.initial_response(hostile, "tok", "h", Some(1)),
+                    Err(ImapError::Credential(_))
+                ),
                 "{mechanism:?} accepted {hostile:?} as a username"
             );
             assert!(
-                mechanism
-                    .initial_response("u", hostile, "h", Some(1))
-                    .is_err(),
+                matches!(
+                    mechanism.initial_response("u", hostile, "h", Some(1)),
+                    Err(ImapError::Credential(_))
+                ),
                 "{mechanism:?} accepted {hostile:?} as a token"
             );
         }
         // The host reaches only the OAUTHBEARER blob, but it is screened either way so
         // the guard cannot rot if XOAUTH2 ever grows a field.
         assert!(
-            mechanism
-                .initial_response("u", "tok", "h\x01port=1", Some(1))
-                .is_err(),
+            matches!(
+                mechanism.initial_response("u", "tok", "h\x01port=1", Some(1)),
+                Err(ImapError::Protocol(_))
+            ),
             "{mechanism:?} accepted a forged host"
         );
     }
@@ -236,9 +240,34 @@ fn plain_refuses_a_nul_in_any_component_before_encoding() {
         let Err(err) = plain_response(authzid, username, password) else {
             panic!("a NUL in {authzid:?}/{username:?}/{password:?} was encoded");
         };
-        assert!(matches!(err, ImapError::Bad(_)), "{err:?}");
+        assert!(matches!(err, ImapError::Credential(_)), "{err:?}");
         assert!(!err.to_string().contains('\0'), "{err}");
     }
     // Bytes that frame the OAuth mechanisms are ordinary password bytes here.
     assert!(plain_response(None, "u", "p\x01\r\n").is_ok());
+}
+
+/// The GS2 header names the account as a `saslname` (RFC 7628 §3.1, RFC 5801 §4), where `,` ends
+/// the field and `=` starts an escape: both are legal in a username, so they go escaped as `=2C`
+/// and `=3D`, never refused. `XOAUTH2` frames the name with `^A`, which the screen refuses, so it
+/// has no such split.
+#[test]
+fn oauthbearer_escapes_a_comma_and_an_equals_sign_in_the_username() {
+    let built = Mechanism::OAuthBearer
+        .initial_response("a,b=c@example.com", "tok", "h", None)
+        .expect("legal username");
+    let decoded = String::from_utf8(crate::base64::decode(built.as_str()).unwrap()).unwrap();
+    assert!(
+        decoded.starts_with("n,a=a=2Cb=3Dc@example.com,\u{1}"),
+        "{decoded:?}"
+    );
+
+    let built = Mechanism::XOAuth2
+        .initial_response("a,b=c@example.com", "tok", "h", None)
+        .expect("legal username");
+    let decoded = String::from_utf8(crate::base64::decode(built.as_str()).unwrap()).unwrap();
+    assert!(
+        decoded.starts_with("user=a,b=c@example.com\u{1}"),
+        "{decoded:?}"
+    );
 }

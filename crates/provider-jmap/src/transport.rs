@@ -16,7 +16,7 @@ use std::sync::Arc;
 use engine_http::{
     AuthenticatedClient, Exchange, ObservedConnection, RetryConfig, Sent, Unauthorized,
 };
-use engine_provider::{Credential, CredentialSource, HttpVersion, ProviderError, TlsVersion};
+use engine_provider::{Credential, CredentialFailure, CredentialSource, HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
 use reqwest::{RequestBuilder, Url};
 use serde_json::Value;
@@ -105,17 +105,20 @@ impl Transport {
             framing.used.set(scheme);
         }
         match (credential, scheme) {
-            (Credential::Password { username, password }, Some(AuthScheme::Basic)) => {
-                Ok(builder.basic_auth(username, Some(password.expose())))
-            }
+            (Credential::Password { username, password }, Some(AuthScheme::Basic)) => Ok(
+                engine_http::present_basic(builder, username, password.expose())?,
+            ),
             // The same secret framed bare, where a server asked for bearer tokens.
             (Credential::Password { password, .. }, Some(AuthScheme::Bearer)) => {
-                Ok(builder.bearer_auth(password.expose()))
+                Ok(engine_http::present_token(builder, password.expose())?)
             }
-            (Credential::Bearer { token, .. }, Some(_)) => Ok(builder.bearer_auth(token.expose())),
-            _ => Err(JmapError::Credential(ProviderError::permanent(
+            (Credential::Bearer { token, .. }, Some(_)) => {
+                Ok(engine_http::present_token(builder, token.expose())?)
+            }
+            _ => Err(CredentialFailure::unpresentable(
                 "this kind of credential cannot be presented over JMAP",
-            ))),
+            )
+            .into()),
         }
     }
 
@@ -280,6 +283,10 @@ mod transport_tests;
 #[cfg(test)]
 #[path = "credential_tests.rs"]
 mod credential_tests;
+
+#[cfg(test)]
+#[path = "credential_failure_tests.rs"]
+mod credential_failure_tests;
 
 #[cfg(test)]
 #[path = "credential_origin_tests.rs"]

@@ -7,7 +7,7 @@
 //! sends are built in `crate::sasl`, once for every protocol here; this module is only the
 //! framing, where strings are quoted rather than bare.
 
-use engine_provider::Credential;
+use engine_provider::{Credential, CredentialFailure};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{
@@ -64,8 +64,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
     ///   `AUTH-TOO-WEAK`, `ENCRYPT-NEEDED`): another credential of the kind would meet the same.
     /// - [`ImapError::Auth`] when it refuses the credential, so a replacement may be asked for.
     /// - [`SieveError::Refused`] with `TRYLATER` when it cannot judge the credential now.
-    /// - [`ImapError::Bad`] for a credential no mechanism can carry (no username on a token, a NUL
-    ///   in a password): nothing is sent.
+    /// - [`ImapError::Credential`] for a credential ManageSieve cannot present (no username on a
+    ///   token, a NUL or a SASL frame byte in it, an administrator acting as another account):
+    ///   nothing is sent.
     pub(crate) async fn authenticate(
         &mut self,
         credential: &Credential,
@@ -87,7 +88,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
             // Not over ManageSieve yet: `AUTHENTICATE "PLAIN"` with an authorization identity is a
             // request shape no harness server has answered here.
             SignIn::ActingAs { .. } => {
-                return Err(ImapError::bad(
+                return Err(CredentialFailure::unpresentable(
                     "a credential acting as another account is presented over IMAP only",
                 )
                 .into());

@@ -458,6 +458,9 @@ pub fn fuzz_parse(data: &[u8]) {
 }
 
 #[cfg(test)]
+mod credential_test_support;
+
+#[cfg(test)]
 mod process_kill_tests;
 
 #[cfg(test)]

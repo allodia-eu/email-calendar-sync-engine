@@ -145,3 +145,87 @@ async fn a_base_re_encoded_by_the_host_is_accepted() {
     assert_eq!(receipt.failures, Vec::new());
     assert_eq!(state.lock().unwrap().ids(), ["a", "c", "new4"]);
 }
+
+/// A filter not written because no credential could be had says so in the receipt, beside the
+/// source's class; one the server refused does not.
+#[test]
+fn a_filter_written_without_a_credential_says_so_in_the_receipt() {
+    use crate::rules_apply_support::failure;
+
+    let no_credential = crate::GoogleError::from(
+        engine_provider::CredentialFailure::refused_origin("refused"),
+    );
+    let failed = failure(3, &no_credential);
+    assert_eq!(failed.class, engine_core::error::FailureClass::Permanent);
+    assert!(failed.credential_failure, "{failed:?}");
+    assert!(!failed.outcome_unknown);
+
+    let refused = failure(3, &crate::GoogleError::status(401, "{}"));
+    assert!(!refused.credential_failure, "{refused:?}");
+}
+
+/// A throttle reaches every later rule, as it reaches every later message of an import: the
+/// write sends nothing more, and each rule it would have sent is in the receipt with the
+/// throttle's class.
+#[tokio::test]
+async fn a_throttle_ends_the_write_and_the_rules_after_it_are_not_sent() {
+    use engine_core::{
+        error::FailureClass,
+        rules::{FailedRule, RuleWriteFailure},
+    };
+
+    let mut filters = three();
+    filters.failing.insert(("POST", "new".to_owned()), 429);
+    let (client, state) = client(filters);
+    let base = read(&client).await;
+    let mut rules = base.rules.clone();
+    rules[0].body = discard("new one");
+    rules[1].body = discard("new two");
+
+    let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
+
+    assert_eq!(writes(&state), [("POST", "new".to_owned())]);
+    assert_eq!(
+        receipt.failures,
+        vec![
+            RuleWriteFailure::new(FailedRule::Written(0), FailureClass::RateLimited),
+            RuleWriteFailure::new(FailedRule::Written(1), FailureClass::RateLimited),
+        ]
+    );
+    assert_eq!(state.lock().unwrap().ids(), ["a", "b", "c"]);
+}
+
+/// After a throttle ends the write, a later rule whose filter Gmail already holds needs no
+/// request: it takes that filter, is not listed as unwritten, and the filter is not deleted as
+/// one no rule names. Only a request is refused after an ending, never a rule.
+#[tokio::test]
+async fn after_an_ending_a_rule_gmail_already_holds_keeps_its_filter() {
+    use engine_core::{
+        error::FailureClass,
+        rules::{FailedRule, RuleWriteFailure},
+    };
+
+    let mut filters = three();
+    filters.failing.insert(("POST", "new".to_owned()), 429);
+    let (client, state) = client(filters);
+    let base = read(&client).await;
+    let mut changed = base.rules[0].clone();
+    changed.body = discard("new one");
+    let mut built = MailRule::typed(Match::all(Vec::new()), Vec::new());
+    built.body = trash("two");
+    let rules = vec![changed, base.rules[2].clone(), built];
+
+    let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
+
+    assert_eq!(writes(&state), [("POST", "new".to_owned())]);
+    assert_eq!(
+        receipt.failures,
+        vec![RuleWriteFailure::new(
+            FailedRule::Written(0),
+            FailureClass::RateLimited
+        )]
+    );
+    assert_eq!(state.lock().unwrap().ids(), ["a", "b", "c"]);
+    assert_eq!(receipt.outcomes[2].kept, Kept::Whole);
+    assert_eq!(receipt.left_as_read, [0]);
+}

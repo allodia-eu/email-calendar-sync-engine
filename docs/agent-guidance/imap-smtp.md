@@ -480,7 +480,12 @@ outlives the token that opened it, so nothing replaces an open one.
   `ImapError::Credential`, classified as the source classified it: a revoked grant is
   `Authentication`, an unreachable token endpoint is retryable. It is not a session refusal, so
   the pool's ceiling does not move. A bearer credential without a username dials nothing either
-  (`Permanent`): both SASL mechanisms name the account.
+  (`Permanent`): both SASL mechanisms name the account. As a `ProviderError` it is the source's
+  error as it came, its wait included, and `is_credential_failure()` says no credential could be
+  had; so does every credential the protocol cannot carry (a missing username, a kind or a byte
+  SASL cannot frame, an administrator acting as another account over SMTP or ManageSieve) and one
+  for another account than the pool's. A fetch does not dial again after one: a new connection
+  would ask the same source at once.
 - **Copies of the secret this crate makes are zeroed.** Every buffer the crate builds around a
   password or token is `Zeroizing` and allocated once at its final length (`secret_line.rs`),
   because a `String` that grows frees its old buffer unzeroed: the IMAP `LOGIN` line (built and
@@ -528,7 +533,9 @@ boundaries.
   the wrong subject cannot put another mailbox's session in the pool. Within one dial, a
   replacement must name the account the refused credential named, so a refusal cannot switch
   accounts even on the first dial; a dial whose credentials were all refused fixes nothing. A
-  second identity reaching `remember` (two first dials racing) fails that dial too. The
+  second identity reaching `remember` (two first dials racing) fails that dial too, as
+  `ImapError::SignedInAsAnotherAccount` (`InvalidState`, and no credential failure: the server
+  took the credential). The
   comparison is exact, byte for byte: `Alice@example.com` and `alice@example.com` are two
   accounts to it, even on a server that folds case. Proof: `dial_identity_tests.rs`.
 
@@ -597,7 +604,17 @@ would exercise it rested on a documentation claim the server disproves.
 - **Credential components are screened before encoding.** `%x01` is the key/value
   separator itself, so a token carrying one could append its own `auth=` pair; CR/LF/NUL
   would break out of the command line the base64 rides on. Rejected up front — the same
-  guard `smtp.rs` applies to envelope addresses and `engine-rfc5322` to header values.
+  guard `smtp.rs` applies to envelope addresses and `engine-rfc5322` to header values. `LOGIN`
+  is screened too: its username and password go as quoted strings, which cannot carry CR, LF or
+  NUL (RFC 3501 §9), and a CRLF in a password would end the line and send the rest as a command
+  of its own. Each is a credential that cannot be presented (`Permanent`, a credential failure),
+  refused before anything is written. `OAUTHBEARER`'s GS2 header names the account as a
+  `saslname` (RFC 7628 §3.1, RFC 5801 §4), where `,` would end the field and `=` starts an escape:
+  both are legal in a username, so they go escaped as `=2C` and `=3D`. `XOAUTH2` frames the name
+  with `^A`, which the screen refuses, and `PLAIN` with NUL, likewise refused, so neither splits.
+  Stalwart takes the escaped header (`live_imap_oauthbearer_name.rs`), but reads no
+  authorization identity from it (STALWART-9), so the escaping is checked offline only; a server
+  that reads the field is still needed to prove it live.
 - **The pre-auth `CAPABILITY` is a third call, not a duplicate of the other two.** The
   session already asks before `STARTTLS` (is the upgrade offered?) and again after
   authenticating (what does *this* session get — servers advertise a different set once
@@ -928,10 +945,10 @@ connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "
   session dials, signs in (`AUTHENTICATE "PLAIN"` with `sasl::plain_response`, or
   `OAUTHBEARER`/`XOAUTH2`) and works, within `SESSION_DEADLINE` (2 min); past it, after a write
   went out, the call answers needs-confirmation. `LOGOUT` then goes out outside the deadline,
-  unawaited, so a slow answer to it never puts a finished write in doubt. The credential is asked as
-  `CredentialProtocol::ManageSieve` for `sieve://<server name>:<port>`. A `Credential::ActingAs` is refused
-  before sending (`ImapError::Bad`), as SMTP refuses it: `PLAIN` with an authorization identity
-  over ManageSieve has not been proven on a harness server yet.
+  unawaited, so a slow answer to it never puts a finished write in doubt. The credential is asked
+  as `CredentialProtocol::ManageSieve` for `sieve://<server name>:<port>`. A `Credential::ActingAs`
+  is refused before sending (`ImapError::Credential`, `Permanent`), as SMTP refuses it: `PLAIN`
+  with an authorization identity over ManageSieve has not been proven on a harness server yet.
 - **The wire.** No tags: one command at a time, its response ends at `OK`, `NO` or `BYE`. Strings
   are quoted where they can be, else sent as `{n+}` literals (a script always is). A refusal keeps
   its response code (`NONEXISTENT`, `ACTIVE`, `QUOTA/…`, `TRYLATER`) and never the prose, which

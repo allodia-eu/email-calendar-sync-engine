@@ -41,9 +41,9 @@ pub(crate) struct SmtpAuth<'a> {
 /// [`ImapError::AuthUnsupported`] for any other failure that judged no credential, including a
 /// token offered to a server that advertises no OAuth mechanism (the message names what it did
 /// offer, because the usual cause is a token pointed at an account that only takes a password);
-/// [`ImapError::Bad`] for a credential SMTP cannot present, or one holding a NUL (which would
-/// forge `PLAIN`'s fields); [`ImapError::RateLimited`] if it
-/// defers the attempt with a 4xx other than `432`.
+/// [`ImapError::Credential`] (`Permanent`) for a credential SMTP cannot present, or one holding
+/// a NUL (which would forge `PLAIN`'s fields) or a SASL frame byte; [`ImapError::RateLimited`]
+/// if it defers the attempt with a 4xx other than `432`.
 pub(crate) async fn authenticate<S>(
     smtp: &mut SmtpStream<S>,
     auth: &SmtpAuth<'_>,

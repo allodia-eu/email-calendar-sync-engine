@@ -194,10 +194,42 @@ says "no consent for this mailbox", is `Authentication`. An unreachable token en
 `Retryable`. A `429` from the token endpoint is `RateLimited`. "No credential for this origin" is
 `Permanent`. The adapter passes the source's error through with its class unchanged (IMAP already
 does, through `ImapError::Credential`). A server refusing a credential that was just replaced is
-`Authentication`. The class is all a host needs to tell "the source failed" from "the server
-refused": a broker that is down is `Retryable`, and consent that is gone is `Authentication`,
-which is also what a server's refusal is and needs the same answer (sign in or consent again). No
-separate variant or flag is added for it.
+`Authentication`. The class is all a host needs to decide *what to do*: a broker that is down is
+`Retryable`, and consent that is gone is `Authentication`, which is also what a server's refusal
+is and needs the same answer (sign in or consent again). No new class is added.
+
+**Where the failure lies is a fact beside the class.** The class cannot say it: a token endpoint
+that cannot be reached and a keep-alive socket that died while the machine slept are both
+`Retryable`, and only the second is repaired by dropping the connection. A host whose reconnect
+rule drops its client and repeats a read after a `Retryable` transport failure would drop a sound
+client for the first and repeat a request certain to fail again. So
+`ProviderError::is_credential_failure()` says that no credential could be had: the source
+failed or did not answer within its deadline, it did not `permits` the origin, or the engine
+refused to present the credential (to that origin, in that form, or for another account than
+the connection's). Nothing went out with a credential, except one the server had just refused
+(an HTTP `401`, an IMAP `NO` to the sign-in, an SMTP `535`), when the source then failed to
+replace it. It is set in one place: every
+failure of this kind is a `CredentialFailure`, whose one constructor marks the error it carries,
+and each adapter passes that error through as the source gave it (IMAP, SMTP and ManageSieve
+through `ImapError::Credential`; JMAP, CalDAV, CardDAV, Talk, Graph and Google through their
+`Credential` variants). A path that rewords an error, to keep a server's text out or to answer
+several items with one failure, uses `ProviderError::reworded`, which keeps every fact. A server
+refusing a credential, or offering no way to present one (a `Digest`-only challenge, no SASL
+mechanism for a token), is the server's answer and is not this fact; neither is a `401` CalDAV's
+anonymous first request draws from an origin the credential may not go to, which no source was
+asked about. A refusal through `permits` is the same fact as a source answering "no credential
+for this origin": in both, the credential side decided, nothing was sent, and the connection is
+sound. The engine's own reconnect rules follow it: IMAP's fetches, which ask once more on a new
+connection after a `Retryable` failure, do not for this one. An import ends its batch on it, as
+on a throttle (`ProviderError::ends_batch`), and answers the items it never sent with the
+failure whole, its class kept (`import::not_sent`), so a credential that may never go there
+stays `Permanent`. A rule-by-rule write of the rules records it per rule
+(`RuleWriteFailure::credential_failure`). A source's error carries over only its class, words,
+wait and source chain: the facts about a
+request that went out (`requires_confirmation`, `is_item_unavailable`, `target_refusal`) are
+dropped, since none went out. Two first IMAP dials racing, where the server took a credential for
+another account than the first, is not this fact: that credential went out, and the dial fails
+as `ImapError::SignedInAsAnotherAccount`, so `ImapError::Credential` always carries the fact.
 
 **Each ask has a deadline.** An ask to the source (`credential` or `replace`) runs under the
 deadline of the step it belongs to: the dial deadline on IMAP and SMTP, where the ask is part of
@@ -627,7 +659,10 @@ record.
    is `Retryable`** ("The trait", "Each ask has a deadline").
 4. **The failure class is enough** to tell "the source failed" (broker down: `Retryable`; consent
    gone: `Authentication`) from "the server refused". No extra variant ("The trait", "Error
-   classes").
+   classes"). Refined 2026-11-25: the class still decides what to do and no class was added, but
+   it cannot say whether a `Retryable` failure lies with the source or with the connection, which
+   a host's reconnect rule needs; `ProviderError::is_credential_failure()` says that, additively
+   ("Where the failure lies").
 5. **The engine refuses credentials over plaintext HTTP except to loopback origins.** It is an
    engine rule, not left to `permits`. Narrowed when step 3 landed: only for an account whose
    configured origin is itself plaintext loopback ("Host binding"). The harnesses all run on loopback, so nothing breaks

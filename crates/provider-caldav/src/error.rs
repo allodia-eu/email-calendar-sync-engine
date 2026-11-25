@@ -56,11 +56,14 @@ pub enum CalDavError {
     /// The credential could not be presented, or not replaced: the account's
     /// [`CredentialSource`](engine_provider::CredentialSource) did not permit the origin, had no
     /// credential to give, or did not answer within the request's deadline; the engine refused
-    /// the origin (plaintext HTTP, except to loopback from an account configured there); or the
-    /// credential is of a kind HTTP cannot present (an administrator acting as another account).
-    /// In each of those nothing was sent. When the source fails as it is asked to replace a
-    /// credential the server refused with a `401`, a request was sent and refused, and this takes
-    /// the `401`'s place. Classified as the source classified it, and `Permanent` for a refusal.
+    /// the origin (plaintext HTTP, except to loopback from an account configured there), whether
+    /// configured or one discovery would move to; or the credential is of a kind HTTP cannot
+    /// present (an administrator acting as another account). In each of those nothing was sent.
+    /// When the source fails as it is asked to replace a credential the server refused with a
+    /// `401`, a request was sent and refused, and this takes the `401`'s place. Classified as the
+    /// source classified it, and `Permanent` for a refusal. As a [`ProviderError`] it is the
+    /// source's own, which says that no credential could be had
+    /// ([`ProviderError::is_credential_failure`]).
     #[error("no credential to present: {0}")]
     Credential(ProviderError),
 
@@ -288,15 +291,11 @@ impl CalDavError {
                 format!("{what}: no answer came back, so it may have been applied")
             }
         };
-        // The source's class and, for a rate limit, its instant; its words are its own, and
-        // stay out of a report that must carry no server or broker text.
+        // The source's facts (its class, a rate limit's instant, that no credential could be
+        // had); its words are its own, and stay out of a report that must carry no server or
+        // broker text.
         if let Self::Credential(source) = &self {
-            return match source.class() {
-                FailureClass::RateLimited => {
-                    ProviderError::rate_limited(detail, source.retry_after())
-                }
-                class => ProviderError::new(class, detail),
-            };
+            return source.reworded(detail);
         }
         if matches!(self, Self::Unconfirmed(_)) {
             return ProviderError::needs_confirmation(detail);

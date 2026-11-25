@@ -143,6 +143,7 @@ async fn a_submission_server_the_source_does_not_permit_is_never_dialled() {
     let err = submit_to(port, Arc::new(Elsewhere(CredentialSubject::new("alice")))).await;
 
     assert_eq!(err.class(), FailureClass::Permanent);
+    assert!(err.is_credential_failure(), "{err:?}");
     assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing reaches it");
 }
 
@@ -154,6 +155,7 @@ async fn a_token_without_the_accounts_username_is_never_submitted() {
     let err = submit_to(port, Arc::new(source)).await;
 
     assert_eq!(err.class(), FailureClass::Permanent);
+    assert!(err.is_credential_failure(), "{err:?}");
     assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing is dialled");
 }
 
@@ -168,5 +170,43 @@ async fn a_credential_acting_as_another_account_is_never_submitted() {
     let err = submit_to(port, Arc::new(source)).await;
 
     assert_eq!(err.class(), FailureClass::Permanent);
+    assert!(err.is_credential_failure(), "{err:?}");
     assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing is dialled");
+}
+
+/// A source whose token endpoint cannot be reached.
+#[derive(Debug)]
+struct Unreachable(CredentialSubject);
+
+#[async_trait]
+impl CredentialSource for Unreachable {
+    fn subject(&self) -> &CredentialSubject {
+        &self.0
+    }
+
+    async fn credential(
+        &self,
+        _request: &CredentialRequest<'_>,
+    ) -> Result<Credential, ProviderError> {
+        Err(ProviderError::retryable(
+            "the token endpoint cannot be reached",
+        ))
+    }
+}
+
+#[tokio::test]
+async fn a_submission_without_a_credential_says_so_and_a_closed_connection_does_not() {
+    let (port, accepted) = counting_listener().await;
+    let err = submit_to(port, Arc::new(Unreachable(CredentialSubject::new("alice")))).await;
+    assert_eq!(err.class(), FailureClass::Retryable);
+    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing is dialled");
+
+    // The server closes the connection at once: the connection's failure, not the credential's.
+    let (port, accepted) = counting_listener().await;
+    let credential = Credential::bearer_for("alice@test.local", "a-token");
+    let source = engine_provider::FixedCredential::unique(credential);
+    let err = submit_to(port, Arc::new(source)).await;
+    assert!(!err.is_credential_failure(), "{err:?}");
+    assert_eq!(accepted.load(Ordering::SeqCst), 1);
 }

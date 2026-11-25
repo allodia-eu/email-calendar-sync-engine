@@ -173,3 +173,72 @@ async fn an_oauthbearer_response_names_the_port_rfc_5804_assigns_where_the_addre
     let decoded = String::from_utf8(crate::base64::decode(blob).unwrap()).unwrap();
     assert!(decoded.contains("\u{1}port=4190\u{1}"), "{decoded:?}");
 }
+
+/// A source whose broker is down.
+#[derive(Debug)]
+struct BrokerDown(CredentialSubject);
+
+#[async_trait]
+impl CredentialSource for BrokerDown {
+    fn subject(&self) -> &CredentialSubject {
+        &self.0
+    }
+
+    async fn credential(
+        &self,
+        _request: &CredentialRequest<'_>,
+    ) -> Result<Credential, engine_provider::ProviderError> {
+        Err(engine_provider::ProviderError::retryable(
+            "the broker is down",
+        ))
+    }
+}
+
+#[tokio::test]
+async fn a_dial_without_a_credential_says_so_and_a_lost_connection_does_not() {
+    use engine_core::error::FailureClass;
+    use engine_provider::ProviderError;
+
+    // The source failed: nothing is opened, and the class is the source's.
+    let config = ImapConfig::from_credential_source(
+        "h:993",
+        "h",
+        Arc::new(BrokerDown(CredentialSubject::new("alice"))),
+    );
+    let (opened, open) = servers(vec![]);
+    let err = ProviderError::from(
+        dial_with(&config, &endpoint("h:4190"), open)
+            .await
+            .unwrap_err(),
+    );
+    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(err.class(), FailureClass::Retryable);
+    assert_eq!(opened.lock().unwrap().len(), 0);
+
+    // A credential ManageSieve cannot present: nothing is sent with it.
+    let acting_as = Credential::acting_as("master@example.com", "pw", "alice@example.com");
+    let config = ImapConfig::new("h:993", "h", acting_as);
+    let (opened, open) = servers(vec![fixture!("stalwart_authenticate")]);
+    let err = ProviderError::from(
+        dial_with(&config, &endpoint("h:4190"), open)
+            .await
+            .unwrap_err(),
+    );
+    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(err.class(), FailureClass::Permanent);
+    assert!(!written(&opened.lock().unwrap()[0]).contains("AUTHENTICATE"));
+
+    // The server hung up after its greeting: the connection's failure.
+    let config = ImapConfig::new(
+        "h:993",
+        "h",
+        Credential::password("alice@example.com", "pw"),
+    );
+    let (_, open) = servers(vec![b""]);
+    let err = ProviderError::from(
+        dial_with(&config, &endpoint("h:4190"), open)
+            .await
+            .unwrap_err(),
+    );
+    assert!(!err.is_credential_failure(), "{err:?}");
+}

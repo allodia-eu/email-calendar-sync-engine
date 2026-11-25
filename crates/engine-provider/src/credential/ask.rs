@@ -14,14 +14,22 @@ use crate::ProviderError;
 /// server refused a credential, its failure is this too, and then a request was sent and
 /// refused: this failure takes the refusal's place.
 ///
-/// An adapter turns it into its own error with `From`, keeping the class the source gave. The
-/// class alone tells a host which failed and what to do: a broker that is down is
-/// `Retryable`, and consent that is gone is `Authentication`, which is also what a server's
-/// refusal is and needs the same answer.
+/// An adapter turns it into its own error with `From`, keeping the class the source gave, and
+/// that into a [`ProviderError`] that says it is this
+/// ([`ProviderError::is_credential_failure`]). The class says what to do: a broker that is down
+/// is `Retryable`, and consent that is gone is `Authentication`, which is also what a server's
+/// refusal is and needs the same answer. The fact says where the failure lies, which the class
+/// cannot: a `Retryable` source and a `Retryable` transport need different repairs.
 #[derive(Debug)]
-pub struct CredentialFailure(pub(super) ProviderError);
+pub struct CredentialFailure(ProviderError);
 
 impl CredentialFailure {
+    /// `error`, as the failure to have a credential. Every constructor goes through here, so
+    /// every one is marked.
+    pub(super) fn new(error: ProviderError) -> Self {
+        Self(error.of_credential())
+    }
+
     /// The engine refusing to present any credential to an origin, whatever the source would
     /// permit: [`Permanent`], with `reason`. For a rule no source can loosen, such as
     /// `engine_http`'s refusal of plaintext HTTP to anything but loopback.
@@ -29,7 +37,7 @@ impl CredentialFailure {
     /// [`Permanent`]: engine_core::error::FailureClass::Permanent
     #[must_use]
     pub fn refused_origin(reason: &'static str) -> Self {
-        Self(ProviderError::permanent(reason))
+        Self::new(ProviderError::permanent(reason))
     }
 
     /// The adapter refusing to present a kind of credential its protocol cannot carry, such as
@@ -39,7 +47,19 @@ impl CredentialFailure {
     /// [`Permanent`]: engine_core::error::FailureClass::Permanent
     #[must_use]
     pub fn unpresentable(reason: &'static str) -> Self {
-        Self(ProviderError::permanent(reason))
+        Self::new(ProviderError::permanent(reason))
+    }
+
+    /// The source answering with a credential for another account than the one the adapter
+    /// signs in as, such as one connection pool's account: [`InvalidState`], with `reason`.
+    /// Nothing is presented, because a connection signed in as another account would serve that
+    /// account's data to whoever borrowed it. It is a host's mistake (a source answering for the
+    /// wrong subject), and asking again gives the same answer.
+    ///
+    /// [`InvalidState`]: engine_core::error::FailureClass::InvalidState
+    #[must_use]
+    pub fn another_account(reason: &'static str) -> Self {
+        Self::new(ProviderError::invalid_state(reason))
     }
 
     /// The source's error, with the class it gave.
@@ -111,7 +131,7 @@ where
     Fut: Future<Output = Result<T, E>>,
 {
     if !source.permits(request.origin) {
-        return Err(CredentialFailure(ProviderError::permanent(
+        return Err(CredentialFailure::new(ProviderError::permanent(
             "the credential source does not permit this origin",
         ))
         .into());
@@ -134,8 +154,8 @@ async fn ask<T>(
     answer: impl Future<Output = Result<T, ProviderError>>,
 ) -> Result<T, CredentialFailure> {
     match tokio::time::timeout(limit, answer).await {
-        Ok(answer) => answer.map_err(CredentialFailure),
-        Err(_) => Err(CredentialFailure(ProviderError::retryable(format!(
+        Ok(answer) => answer.map_err(CredentialFailure::new),
+        Err(_) => Err(CredentialFailure::new(ProviderError::retryable(format!(
             "the credential source did not answer within {}s",
             limit.as_secs()
         )))),

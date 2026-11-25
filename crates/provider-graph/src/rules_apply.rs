@@ -43,7 +43,7 @@ use engine_core::{
         RulesReceipt, plan_rules,
     },
 };
-use engine_provider::{ProviderResult, RuleListing};
+use engine_provider::{ProviderError, ProviderResult, RuleListing, RuleWriteEnding};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -99,6 +99,7 @@ pub(crate) async fn replace(
         live: (0..now.rules.len()).map(Slot::Read).collect(),
         placed: 0,
         pending: keep.clone(),
+        ending: RuleWriteEnding::default(),
     };
     for index in (0..len).filter(|index| !keep.contains(index) && !left.contains(index)) {
         write.remove(index).await;
@@ -136,6 +137,8 @@ struct Write<'a> {
     placed: usize,
     /// The rules read that are still to be written.
     pending: BTreeSet<usize>,
+    /// The failure that reaches every later rule, once one is met: nothing more is sent.
+    ending: RuleWriteEnding,
 }
 
 /// One entry of the server's list.
@@ -245,19 +248,27 @@ impl Write<'_> {
             self.placed += 1;
             return;
         }
-        match self
-            .client
-            .patch(&url, "application/json", None, encode(&patch))
-            .await
-        {
-            Ok(_) => {
+        let answer = if let Some(unsent) = self.ending.unsent(FailedRule::Written(source)) {
+            Err(unsent)
+        } else {
+            let client = self.client;
+            match client
+                .patch(&url, "application/json", None, encode(&patch))
+                .await
+            {
+                Ok(_) => Ok(()),
+                Err(err) => Err(self.ended_by(failure(source, &err), err)),
+            }
+        };
+        match answer {
+            Ok(()) => {
                 let slot = self.live.remove(at);
                 self.live.insert(self.placed, slot);
                 self.placed += 1;
             }
-            Err(err) => {
+            Err(failed) => {
                 let cost = if unchanged { Cost::Place } else { Cost::Rule };
-                self.failed(source, cost, failure(source, &err));
+                self.failed(source, cost, failed);
                 if !moved {
                     self.placed += 1;
                 }
@@ -280,6 +291,10 @@ impl Write<'_> {
 
     /// `POST`s a new rule at the next position; whether Graph took it.
     async fn create(&mut self, source: usize, mut body: Map<String, Value>) -> bool {
+        if let Some(unsent) = self.ending.unsent(FailedRule::Written(source)) {
+            self.failed(source, Cost::Rule, unsent);
+            return false;
+        }
         body.insert("sequence".to_owned(), json!(self.placed + 1));
         let url = self.client.url(RULES);
         match self
@@ -289,10 +304,18 @@ impl Write<'_> {
         {
             Ok(_) => true,
             Err(err) => {
-                self.failed(source, Cost::Rule, failure(source, &err));
+                let failed = self.ended_by(failure(source, &err), err);
+                self.failed(source, Cost::Rule, failed);
                 false
             }
         }
+    }
+
+    /// `failed`, the failure `err` gave its rule, after noting whether it ends the write: a
+    /// failure that reaches every later rule ([`ProviderError::ends_batch`]) stops every later
+    /// request.
+    fn ended_by(&mut self, failed: RuleWriteFailure, err: GraphError) -> RuleWriteFailure {
+        self.ending.note(failed, &ProviderError::from(err))
     }
 
     /// Records `failure`, and on the rule's outcome what it cost.
@@ -331,9 +354,14 @@ impl Write<'_> {
                 .push(RuleWriteFailure::new(rule, FailureClass::Permanent));
             return false;
         };
+        if let Some(unsent) = self.ending.unsent(rule) {
+            self.failures.push(unsent);
+            return false;
+        }
         match self.client.delete(&url, None).await {
             Err(err) if !is_not_found(&err) => {
                 let failed = with_outcome(RuleWriteFailure::new(rule, err.failure_class()), &err);
+                let failed = self.ended_by(failed, err);
                 self.failures.push(failed);
                 false
             }
@@ -363,11 +391,18 @@ impl Write<'_> {
             }
             let found = match well_known(&role) {
                 None => None,
+                // A lookup is a request, which an ended write no longer sends.
+                Some(_) if self.ending.has_ended() => {
+                    let unsent = self.ending.unsent(FailedRule::Written(source));
+                    self.failed(source, Cost::Rule, unsent.expect("the write has ended"));
+                    return None;
+                }
                 Some(alias) => match well_known_id(self.client, alias).await {
                     Ok(id) => Some(id),
                     Err(err) if is_not_found(&err) => None,
                     Err(err) => {
-                        self.failed(source, Cost::Rule, failure(source, &err));
+                        let failed = self.ended_by(failure(source, &err), err);
+                        self.failed(source, Cost::Rule, failed);
                         return None;
                     }
                 },
@@ -398,11 +433,19 @@ fn failure(source: usize, err: &GraphError) -> RuleWriteFailure {
     )
 }
 
+/// `failed`, with what `err` says beyond its class: whether the change may have landed, and
+/// whether no credential could be had for it.
 fn with_outcome(failed: RuleWriteFailure, err: &GraphError) -> RuleWriteFailure {
-    if err.leaves_outcome_unknown() {
+    let failed = if err.leaves_outcome_unknown() {
         failed.outcome_unknown()
     } else {
         failed
+    };
+    match err {
+        GraphError::Credential(source) if source.is_credential_failure() => {
+            failed.credential_failure()
+        }
+        _ => failed,
     }
 }
 

@@ -134,7 +134,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// # Errors
     ///
     /// [`ImapError::AuthUnsupported`] when the server does not advertise `AUTH=PLAIN` (the
-    /// message names what it did offer), [`ImapError::Bad`] for a component holding a NUL, and a
+    /// message names what it did offer), [`ImapError::Credential`] (`Permanent`) for a component
+    /// holding a NUL, and a
     /// refusal classed as for `LOGIN` ([`ImapError::refused_sign_in`]): Dovecot answers a wrong
     /// password and an account the administrator may not act as with the same
     /// `NO [AUTHENTICATIONFAILED]`.

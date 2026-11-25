@@ -342,8 +342,7 @@ impl Provider for GmailProvider {
                         for (index, done) in answered.iter_mut().enumerate() {
                             if !*done {
                                 *done = true;
-                                let err =
-                                    engine_provider::ProviderError::new(err.class(), err.detail());
+                                let err = err.reworded(err.detail());
                                 yield (index, Err(err));
                             }
                         }

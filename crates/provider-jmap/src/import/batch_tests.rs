@@ -274,3 +274,49 @@ async fn an_inline_blob_over_the_upload_quota_sends_nothing_after_it() {
             .starts_with("not sent")
     );
 }
+
+/// No credential could be had for an upload: the batch ends as on a refused credential, and every
+/// message says that no credential could be had, not that the target refused one.
+#[tokio::test]
+async fn an_upload_without_a_credential_ends_the_batch_and_says_so() {
+    let no_credential =
+        crate::credential_test_support::no_credential(FailureClass::Authentication).await;
+    let (provider, scripted) = target(
+        session(one_upload_at_a_time),
+        vec![],
+        vec![Err(no_credential), Ok("U1".to_owned())],
+    );
+    let batch = [message(8_000_000, 1), message(8_000_000, 1)];
+    let answers = provider.import_messages(&account(), &batch).await;
+
+    assert!(scripted.sent.lock().unwrap().is_empty());
+    for answer in &answers {
+        let err = answer.as_ref().unwrap_err();
+        assert_eq!(err.class(), FailureClass::Authentication);
+        assert!(err.is_credential_failure(), "{err:?}");
+        assert!(!err.detail().contains("target"), "{err}");
+    }
+}
+
+/// A source that is down fails each upload as `Retryable`; it reaches every later message as a
+/// throttle does, so the uploads stop rather than ask it again for each.
+#[tokio::test]
+async fn an_upload_whose_source_is_down_ends_the_batch_before_any_import() {
+    let no_credential =
+        crate::credential_test_support::no_credential(FailureClass::Retryable).await;
+    let (provider, scripted) = target(
+        session(one_upload_at_a_time),
+        vec![Ok(stored(&[1], &[1]))],
+        vec![Err(no_credential), Ok("U1".to_owned())],
+    );
+    let batch = [message(8_000_000, 1), message(8_000_000, 1)];
+    let answers = provider.import_messages(&account(), &batch).await;
+
+    assert_eq!(scripted.uploaded.lock().unwrap().len(), 1);
+    assert!(scripted.sent.lock().unwrap().is_empty());
+    for answer in &answers {
+        let err = answer.as_ref().unwrap_err();
+        assert_eq!(err.class(), FailureClass::Retryable);
+        assert!(err.is_credential_failure(), "{err:?}");
+    }
+}

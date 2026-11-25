@@ -98,6 +98,8 @@ mod carddav_unit_tests;
 #[cfg(test)]
 mod carddav_write_tests;
 #[cfg(test)]
+mod credential_failure_tests;
+#[cfg(test)]
 mod credential_source_tests;
 #[cfg(test)]
 mod ctag_sync_tests;

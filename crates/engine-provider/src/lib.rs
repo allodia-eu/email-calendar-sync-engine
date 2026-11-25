@@ -72,6 +72,7 @@ mod provider;
 mod redirect;
 mod report;
 mod rule_listing;
+mod rule_write_ending;
 mod shared;
 mod sources;
 mod stream;
@@ -128,6 +129,7 @@ pub use report::{
     MessageReport, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
 };
 pub use rule_listing::{RuleListing, digest_hex};
+pub use rule_write_ending::RuleWriteEnding;
 pub use shared::{SharedAccount, SharedAccounts, StoreDomains};
 pub use sources::{SourceStream, one_at_a_time};
 pub use stream::{EmailChunk, EmailStream, PassMode, split_page};

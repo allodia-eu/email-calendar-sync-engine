@@ -258,8 +258,15 @@ Implemented as sketched, with these differences, each for a reason the code met:
   or does not keep it where the target cannot store a disabled rule, and an edit writes it as given.
   A write never sends a read-only rule.
 - `RulesReceipt::failures` lists each rule a rule-by-rule write did not store or remove
-  (`RuleWriteFailure`: `FailedRule::Written` or `Removed`, its class, whether it may have landed);
-  the rest of the write goes ahead. A transport that stores the set at once fails whole instead.
+  (`RuleWriteFailure`: `FailedRule::Written` or `Removed`, its class, whether it may have landed,
+  whether no credential could be had for it, and a throttle's wait);
+  the rest of the write goes ahead, unless the failure reaches every later rule (a throttle, a
+  refused credential, no credential at all: `ProviderError::ends_batch`, the import's rule too),
+  when nothing more is sent and each later rule is listed with that class
+  (`engine_provider::RuleWriteEnding`). Only a request is refused after the ending: a rule whose
+  filter the server already holds needs none, and keeps it. On Gmail the tidying of labels is
+  skipped too, so a label the write made for a filter it then never stored stays behind. A
+  transport that stores the set at once fails whole instead.
 - `RuleLimit` says what a target holds part by part and not together (`RuleVocabulary::with_limit`):
   one test per kind among the conditions, and among the exceptions (where tests with values merge
   into one any-of) one only of a kind with a single value; one move, copy and importance per rule;

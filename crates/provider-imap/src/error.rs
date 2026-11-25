@@ -42,11 +42,23 @@ pub enum ImapError {
     #[error("server is limiting sign-ins for this account: {0}")]
     RateLimited(String),
 
-    /// The account's [`CredentialSource`](crate::CredentialSource) did not permit the server,
-    /// had no credential to give, or did not answer within the dial deadline, so nothing was
-    /// dialled. Classified as the source classified it; an unanswered ask is retryable.
+    /// No credential could be had: the account's [`CredentialSource`](crate::CredentialSource)
+    /// did not permit the server, had no credential to give, or did not answer within the dial
+    /// deadline, so nothing was dialled; or it gave one the protocol cannot present, or one for
+    /// another account than the pool's, so nothing was sent with it. Classified as the source
+    /// classified it, an unanswered ask retryable; as a [`ProviderError`] it is the source's
+    /// own, which says it is a credential failure
+    /// ([`ProviderError::is_credential_failure`]).
     #[error("no credential to sign in with: {0}")]
     Credential(ProviderError),
+
+    /// A dial signed in, and the server took the credential, but as another account than the
+    /// one the pool's connections already sign in as: two first dials raced, each with a
+    /// credential naming another account. The connection is closed and never joins the pool.
+    /// Classed `InvalidState`. A credential was had and went out, so this is not a credential
+    /// failure; the check before a dial, which sends nothing, is ([`Self::Credential`]).
+    #[error("a dial signed in as another account than this account's connections sign in as")]
+    SignedInAsAnotherAccount,
 
     /// A command returned a tagged `NO`, leaving the session usable. Its response code
     /// decides the class: one RFC 5530 calls temporary (`UNAVAILABLE`, `INUSE`,
@@ -140,7 +152,7 @@ impl ImapError {
             Self::Credential(source) => source.class(),
             Self::No(detail) if opens_with_temporary_code(detail) => FailureClass::Retryable,
             // Any other `NO` means "not in this state": recompute, do not blind-retry.
-            Self::No(_) => FailureClass::InvalidState,
+            Self::No(_) | Self::SignedInAsAnotherAccount => FailureClass::InvalidState,
             // `BAD`/malformed is a protocol-level incompatibility: the same request
             // will not start working.
             Self::Bad(_) | Self::Protocol(_) => FailureClass::Permanent,
@@ -150,6 +162,11 @@ impl ImapError {
 
 impl From<ImapError> for ProviderError {
     fn from(err: ImapError) -> Self {
+        // The source's own failure, passed through as it gave it: its class, its wait, and that no
+        // credential could be had.
+        if let ImapError::Credential(source) = err {
+            return source;
+        }
         if let Some(reason) = err.target_refusal() {
             return ProviderError::refused_by_target(reason).with_source(err);
         }

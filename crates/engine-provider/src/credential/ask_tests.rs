@@ -276,7 +276,7 @@ async fn the_sources_failures_keep_their_class() {
         let server = Server::accepting("good");
         let err = run(&source, &server).await.expect_err("no credential");
         assert!(
-            matches!(&err, Failure::Source(e) if e.class() == class),
+            matches!(&err, Failure::Source(e) if e.class() == class && e.is_credential_failure()),
             "{err:?}"
         );
         assert_eq!(server.presented(), Vec::<String>::new());
@@ -287,7 +287,7 @@ async fn the_sources_failures_keep_their_class() {
             .await
             .expect_err("no replacement");
         assert!(
-            matches!(&err, Failure::Source(e) if e.class() == class),
+            matches!(&err, Failure::Source(e) if e.class() == class && e.is_credential_failure()),
             "{err:?}"
         );
     }
@@ -310,7 +310,11 @@ async fn a_source_that_never_answers_fails_as_retryable_once_the_limit_passes() 
             .expect_err("no answer");
 
         assert!(
-            matches!(&err, Failure::Source(e) if e.class() == FailureClass::Retryable),
+            matches!(
+                &err,
+                Failure::Source(e)
+                    if e.class() == FailureClass::Retryable && e.is_credential_failure()
+            ),
             "{err:?}"
         );
         assert_eq!(
@@ -332,7 +336,10 @@ async fn an_origin_the_source_does_not_permit_is_sent_nothing() {
     let err = run(&source, &server).await.expect_err("refused origin");
 
     assert!(
-        matches!(&err, Failure::Source(e) if e.class() == FailureClass::Permanent),
+        matches!(
+            &err,
+            Failure::Source(e) if e.class() == FailureClass::Permanent && e.is_credential_failure()
+        ),
         "{err:?}"
     );
     assert_eq!(source.asks("credential"), 0, "the source is not even asked");
@@ -345,7 +352,7 @@ async fn an_origin_the_source_does_not_permit_is_sent_nothing() {
 
 #[test]
 fn a_source_failure_converts_into_the_provider_error_it_carries() {
-    let failure = CredentialFailure(ProviderError::authentication("consent is gone"));
+    let failure = CredentialFailure::new(ProviderError::authentication("consent is gone"));
     assert_eq!(
         failure.to_string(),
         ProviderError::authentication("consent is gone").to_string()
@@ -353,6 +360,7 @@ fn a_source_failure_converts_into_the_provider_error_it_carries() {
     assert!(std::error::Error::source(&failure).is_some());
     let error: ProviderError = failure.into();
     assert_eq!(error.class(), FailureClass::Authentication);
+    assert!(error.is_credential_failure());
 }
 
 #[test]
@@ -360,6 +368,7 @@ fn an_origin_the_engine_refuses_is_a_permanent_failure_with_its_reason() {
     let failure = CredentialFailure::refused_origin("plaintext to a remote host");
     let error = failure.into_error();
     assert_eq!(error.class(), FailureClass::Permanent);
+    assert!(error.is_credential_failure());
     assert!(
         error.to_string().contains("plaintext to a remote host"),
         "{error}"
@@ -371,8 +380,71 @@ fn a_kind_the_adapter_cannot_present_is_a_permanent_failure_with_its_reason() {
     let failure = CredentialFailure::unpresentable("a password to a token-only API");
     let error = failure.into_error();
     assert_eq!(error.class(), FailureClass::Permanent);
+    assert!(error.is_credential_failure());
     assert!(
         error.to_string().contains("a password to a token-only API"),
         "{error}"
     );
+}
+
+#[test]
+fn a_credential_for_another_account_is_invalid_state_with_its_reason() {
+    let error = CredentialFailure::another_account("signed in as another account").into_error();
+    assert_eq!(error.class(), FailureClass::InvalidState);
+    assert!(error.is_credential_failure());
+    assert!(
+        error.to_string().contains("signed in as another account"),
+        "{error}"
+    );
+}
+
+/// A source's rate limit keeps its instant through the failure, as every other fact it gave.
+#[tokio::test]
+async fn a_throttled_source_keeps_its_wait() {
+    #[derive(Debug)]
+    struct Throttled(CredentialSubject);
+
+    #[async_trait]
+    impl CredentialSource for Throttled {
+        fn subject(&self) -> &CredentialSubject {
+            &self.0
+        }
+
+        async fn credential(
+            &self,
+            _request: &CredentialRequest<'_>,
+        ) -> Result<Credential, ProviderError> {
+            let wait = "PT30S".parse().ok();
+            Err(ProviderError::rate_limited("token endpoint 429", wait))
+        }
+    }
+
+    let source = Throttled(CredentialSubject::new("acct-1"));
+    let err = run(&source, &Server::accepting("good"))
+        .await
+        .expect_err("throttled");
+    let Failure::Source(error) = err else {
+        panic!("{err:?}")
+    };
+    assert_eq!(error.retry_after(), "PT30S".parse().ok());
+    assert!(error.is_credential_failure());
+}
+
+/// A source's error keeps its class, words and wait, and nothing that speaks of a request that
+/// went out: none did.
+#[test]
+fn a_source_s_failure_says_nothing_of_a_request_that_went_out() {
+    for answered in [
+        ProviderError::needs_confirmation("the broker lost its answer"),
+        ProviderError::item_unavailable("the broker has no such mailbox"),
+        ProviderError::refused_by_target(crate::TargetRefusal::StorageFull),
+    ] {
+        let class = answered.class();
+        let error = CredentialFailure::new(answered).into_error();
+        assert!(error.is_credential_failure());
+        assert_eq!(error.class(), class);
+        assert!(!error.requires_confirmation(), "{error:?}");
+        assert!(!error.is_item_unavailable(), "{error:?}");
+        assert_eq!(error.target_refusal(), None, "{error:?}");
+    }
 }

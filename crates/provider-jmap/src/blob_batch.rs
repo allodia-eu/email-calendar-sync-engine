@@ -98,7 +98,7 @@ pub(crate) fn fetch_batch<'a>(
                 }
                 Err(err) if held_back(&err) => {
                     for (index, _blob) in call {
-                        yield (index, Err(ProviderError::new(err.class(), err.to_string())));
+                        yield (index, Err(err.reworded(err.to_string())));
                     }
                 }
                 Err(_) => alone.extend(call.into_iter().map(|(index, _blob)| index)),

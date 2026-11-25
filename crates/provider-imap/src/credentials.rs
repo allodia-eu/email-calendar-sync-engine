@@ -17,10 +17,8 @@
 
 use std::{future::Future, sync::OnceLock};
 
-use engine_core::error::FailureClass;
 use engine_provider::{
     Credential, CredentialFailure, CredentialProtocol, CredentialRequest, CredentialSource, Origin,
-    ProviderError,
 };
 
 use crate::{
@@ -61,10 +59,11 @@ pub(crate) enum SubmitAs<'a> {
 ///
 /// # Errors
 ///
-/// [`ImapError::Bad`] for a bearer token without the account's username, which both SASL
-/// mechanisms need; for a credential acting as another account that names no account to act
-/// as; and for a kind of credential IMAP cannot present. Each is the host's mistake, so nothing
-/// is sent and no retry will help.
+/// [`ImapError::Credential`], classed `Permanent`
+/// ([`CredentialFailure::unpresentable`]), for a bearer token without the account's username,
+/// which both SASL mechanisms need; for a credential acting as another account that names no
+/// account to act as; and for a kind of credential IMAP cannot present. Each is the host's
+/// mistake, so nothing is sent and no retry will help.
 pub(crate) fn sign_in(credential: &Credential) -> ImapResult<SignIn<'_>> {
     match credential {
         Credential::Password { username, password } => Ok(SignIn::Password {
@@ -73,9 +72,12 @@ pub(crate) fn sign_in(credential: &Credential) -> ImapResult<SignIn<'_>> {
         }),
         // An empty authorization identity means "the authentication identity's own" (RFC 4616
         // §2), which would open the administrator's mailbox in place of the one asked for.
-        Credential::ActingAs { acting_as, .. } if acting_as.is_empty() => Err(ImapError::bad(
-            "a credential acting as another account names no account to act as",
-        )),
+        Credential::ActingAs { acting_as, .. } if acting_as.is_empty() => {
+            Err(CredentialFailure::unpresentable(
+                "a credential acting as another account names no account to act as",
+            )
+            .into())
+        }
         Credential::ActingAs {
             username,
             password,
@@ -92,12 +94,14 @@ pub(crate) fn sign_in(credential: &Credential) -> ImapResult<SignIn<'_>> {
             username,
             token: token.expose(),
         }),
-        Credential::Bearer { username: None, .. } => Err(ImapError::bad(
+        Credential::Bearer { username: None, .. } => Err(CredentialFailure::unpresentable(
             "a bearer credential for IMAP or SMTP needs the account's username",
-        )),
-        _ => Err(ImapError::bad(
+        )
+        .into()),
+        _ => Err(CredentialFailure::unpresentable(
             "this kind of credential cannot be presented over IMAP or SMTP",
-        )),
+        )
+        .into()),
     }
 }
 
@@ -105,27 +109,30 @@ pub(crate) fn sign_in(credential: &Credential) -> ImapResult<SignIn<'_>> {
 ///
 /// # Errors
 ///
-/// As [`sign_in`], and [`ImapError::Bad`] for a credential acting as another account:
+/// As [`sign_in`], and [`ImapError::Credential`] (`Permanent`) for a credential acting as
+/// another account:
 /// submitting mail as another account is a different grant from reading its mailbox, and no
 /// server has been seen to take it, so it is refused rather than guessed at.
 pub(crate) fn submit_as(credential: &Credential) -> ImapResult<SubmitAs<'_>> {
     match sign_in(credential)? {
         SignIn::Password { username, password } => Ok(SubmitAs::Password { username, password }),
         SignIn::Token { username, token } => Ok(SubmitAs::Token { username, token }),
-        SignIn::ActingAs { .. } => Err(ImapError::bad(
+        SignIn::ActingAs { .. } => Err(CredentialFailure::unpresentable(
             "a credential acting as another account is presented over IMAP only",
-        )),
+        )
+        .into()),
     }
 }
 
 /// The failure of a dial whose credential names another account than the one it must sign in
-/// as: [`ImapError::Credential`], classed [`FailureClass::InvalidState`]. It names neither.
+/// as: [`ImapError::Credential`], classed `InvalidState`
+/// ([`CredentialFailure::another_account`]). It names neither.
 pub(crate) fn another_account() -> ImapError {
-    ImapError::Credential(ProviderError::new(
-        FailureClass::InvalidState,
+    CredentialFailure::another_account(
         "the credential source answered for another account than the one this account signs in \
          as",
-    ))
+    )
+    .into()
 }
 
 /// Runs `attempt` with a credential from `source` for `origin`, and once more with a
@@ -183,7 +190,7 @@ impl PresentedIdentity {
     ///
     /// # Errors
     ///
-    /// [`ImapError::Credential`], classed [`FailureClass::InvalidState`], for another account.
+    /// [`ImapError::Credential`], classed `InvalidState`, for another account.
     /// It names neither account.
     pub(crate) fn check(&self, identity: &str) -> ImapResult<()> {
         match self.0.get() {
@@ -196,14 +203,16 @@ impl PresentedIdentity {
     ///
     /// # Errors
     ///
-    /// As [`check`](Self::check), when another dial signed in first as another account, so
-    /// that two first dials racing each other cannot both join the pool.
+    /// [`ImapError::SignedInAsAnotherAccount`], classed `InvalidState`, when another dial signed
+    /// in first as another account, so that two first dials racing each other cannot both join
+    /// the pool. It is not a credential failure: the server took this credential, so one was had
+    /// and went out.
     pub(crate) fn remember(&self, identity: &str) -> ImapResult<()> {
         let known = self.0.get_or_init(|| identity.into());
         if **known == *identity {
             Ok(())
         } else {
-            Err(another_account())
+            Err(ImapError::SignedInAsAnotherAccount)
         }
     }
 }
@@ -223,6 +232,8 @@ impl core::fmt::Debug for PresentedIdentity {
 
 #[cfg(test)]
 mod tests {
+    use engine_provider::ProviderError;
+
     use super::*;
 
     #[test]
@@ -278,7 +289,7 @@ mod tests {
         let Err(err) = sign_in(&Credential::bearer("ya29.secret")) else {
             panic!("a token without a username must not sign in");
         };
-        assert!(matches!(err, ImapError::Bad(_)), "{err:?}");
+        assert!(matches!(err, ImapError::Credential(_)), "{err:?}");
         assert_eq!(
             err.failure_class(),
             engine_core::error::FailureClass::Permanent
@@ -309,7 +320,7 @@ mod tests {
         let nobody = sign_in(&Credential::acting_as(MASTER, "master-pw", "")).err();
         for err in [over_smtp, nobody] {
             let err = err.expect("refused");
-            assert!(matches!(err, ImapError::Bad(_)), "{err:?}");
+            assert!(matches!(err, ImapError::Credential(_)), "{err:?}");
             assert_eq!(
                 err.failure_class(),
                 engine_core::error::FailureClass::Permanent
@@ -367,6 +378,15 @@ mod tests {
             err.failure_class(),
             engine_core::error::FailureClass::InvalidState
         );
+        // The server took the credential, so it is not one that could not be had; the check
+        // before a dial, which sends nothing, is.
+        assert!(
+            matches!(err, ImapError::SignedInAsAnotherAccount),
+            "{err:?}"
+        );
+        assert!(!ProviderError::from(err).is_credential_failure());
+        let err = presented.check("bob@example.com").expect_err("another");
+        assert!(ProviderError::from(err).is_credential_failure());
         presented.remember(ALICE).expect("the first one again");
         presented.check(ALICE).expect("still the first one");
     }

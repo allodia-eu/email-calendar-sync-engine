@@ -37,13 +37,13 @@ use engine_core::rules::{
     FailedRule, Kept, MailRule, PlanMode, RuleOutcome, RulePart, RuleSet, RuleWriteFailure,
     RulesReceipt, plan_rules,
 };
-use engine_provider::{ProviderResult, RuleListing};
+use engine_provider::{ProviderResult, RuleListing, RuleWriteEnding};
 use serde_json::Value;
 
 use crate::{
     error::GoogleError,
     json::opt_str,
-    named_labels::Labels,
+    named_labels::{KnownLabel, Labels},
     rules::{FILTERS, Listing, vocabulary},
     rules_apply_support::{Held, failure, refused, same_filter, with_outcome},
     transport::{GoogleClient, encode_query_value},
@@ -94,6 +94,7 @@ pub(crate) async fn replace(
         unchanged,
         created: Vec::new(),
         made: BTreeMap::new(),
+        ending: RuleWriteEnding::default(),
     };
     for (source, rule, existing) in order {
         if !existing.is_some_and(|index| write.unchanged.contains(&index)) {
@@ -137,6 +138,8 @@ pub(crate) struct Write<'a> {
     pub(crate) created: Vec<Value>,
     /// The labels this write made for a keyword, and whether a stored filter adds one.
     pub(crate) made: BTreeMap<String, bool>,
+    /// The failure that reaches every later rule, once one is met: nothing more is sent.
+    pub(crate) ending: RuleWriteEnding,
 }
 
 impl Write<'_> {
@@ -149,6 +152,8 @@ impl Write<'_> {
         planned: &MailRule,
         existing: Option<usize>,
     ) {
+        // After an ending, only a request is refused: a rule whose filter Gmail already holds
+        // needs none, and keeps that filter.
         let rule = match self.forwardable(source, given, planned).await {
             Ok(Some(rule)) => rule,
             Ok(None) => return,
@@ -164,11 +169,15 @@ impl Write<'_> {
             }
             Held::Kept => {}
             Held::Nowhere => {
+                if let Some(unsent) = self.ending.unsent(FailedRule::Written(source)) {
+                    return self.unwritten(source, unsent);
+                }
                 let url = self.client.url(FILTERS);
                 let body = filter.to_string().into_bytes();
                 let posted = self.client.post(&url, "application/json", body).await;
                 if let Err(err) = GoogleError::readable(posted) {
-                    return self.unwritten(source, failure(source, &err));
+                    let failed = self.ended_by(failure(source, &err), err);
+                    return self.unwritten(source, failed);
                 }
                 self.stored(&filter);
             }
@@ -235,6 +244,22 @@ impl Write<'_> {
     async fn filter(&mut self, source: usize, rule: &MailRule) -> Option<Value> {
         let mut label = BTreeMap::new();
         for keyword in crate::rules_apply_support::named_keywords(rule) {
+            // A label already known needs no request; finding or making one does, which an
+            // ended write no longer sends.
+            if self.ending.has_ended() {
+                match self.labels.known_label(&keyword) {
+                    KnownLabel::Unnamed => continue,
+                    KnownLabel::Known(id) => {
+                        label.insert(keyword, id);
+                        continue;
+                    }
+                    KnownLabel::Unknown => {
+                        let unsent = self.ending.unsent(FailedRule::Written(source));
+                        self.unwritten(source, unsent.expect("the write has ended"));
+                        return None;
+                    }
+                }
+            }
             match self.labels.label_id(self.client, &keyword).await {
                 Some(Ok((id, made))) => {
                     if made {
@@ -243,7 +268,8 @@ impl Write<'_> {
                     label.insert(keyword, id);
                 }
                 Some(Err(err)) => {
-                    self.unwritten(source, failure(source, &err));
+                    let failed = self.ended_by(failure(source, &err), err);
+                    self.unwritten(source, failed);
                     return None;
                 }
                 None => {}
@@ -262,6 +288,10 @@ impl Write<'_> {
     /// narrows the race to one round trip and does not close it: a keyword write between the read
     /// and the delete, or a `messagesTotal` that lags one, can still lose that label.
     async fn tidy_labels(&mut self) {
+        if self.ending.has_ended() {
+            // These deletes would meet what ended the write.
+            return;
+        }
         let unused: Vec<String> = self
             .made
             .iter()
@@ -282,6 +312,10 @@ impl Write<'_> {
             ));
             return false;
         };
+        if let Some(unsent) = self.ending.unsent(FailedRule::Removed(index)) {
+            self.failures.push(unsent);
+            return false;
+        }
         let url = self
             .client
             .url(&format!("{FILTERS}/{}", encode_query_value(id)));
@@ -292,6 +326,7 @@ impl Write<'_> {
                     RuleWriteFailure::new(FailedRule::Removed(index), err.failure_class()),
                     &err,
                 );
+                let failed = self.ended_by(failed, err);
                 self.failures.push(failed);
                 false
             }
