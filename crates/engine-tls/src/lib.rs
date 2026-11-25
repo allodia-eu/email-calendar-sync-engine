@@ -16,7 +16,9 @@
 //! hermetic and identical on every platform. A host may instead (or additionally)
 //! trust the OS store, mirroring Firefox's *bundled ∪ OS* union, or pin an explicit
 //! set of roots. See `docs/agent-guidance/tls.md` for the full policy and the
-//! per-platform guidance.
+//! per-platform guidance. A read of the OS store serves the configs built in the ten
+//! minutes after it, so an anchor added to it, or removed or distrusted, takes effect
+//! within ten minutes.
 //!
 //! # Crypto provider
 //!
@@ -39,6 +41,8 @@ mod error;
 mod exception;
 mod policy;
 mod summary;
+#[cfg(feature = "tls-native-certs")]
+mod system_roots;
 
 #[cfg(feature = "dangerous-testing")]
 mod dangerous;

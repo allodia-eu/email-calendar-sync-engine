@@ -33,6 +33,45 @@ PlatformVerifier { extra_roots: Vec<CertificateDer> }               // OS verifi
 Presets: `bundled()`, `bundled_and_system()`, `system_only()`, `pinned(roots)`,
 `platform_verifier()`.
 
+**A read of the OS store serves the configs built in the ten minutes after it**
+(`system_roots.rs`, `REREAD_AFTER`). A read is `rustls-native-certs`'s: the certificate files
+under the OpenSSL paths on Linux and the BSDs (or `SSL_CERT_FILE` and `SSL_CERT_DIR`, which are
+read again at each read), the Keychain and its trust settings on macOS, the `ROOT` store on
+Windows; the interval applies to each. It opens and parses every certificate: 243 under
+`/etc/ssl/certs` on one Linux machine, about 7 ms a read idle (36.6 ms measured in a host's debug
+build) and 130 to 1,340 ms under load, while a config from the bundled roots alone takes
+microseconds. A host that builds a config per connection (so a config's record of refused
+certificates belongs to that connection) or per request paid it on every dial. Now a read serves
+the configs built after it for ten minutes, and the first config built after that reads again,
+on the thread that builds it (measured, release build: 145 configs a second before, about 57,000
+after). Builders that arrive while a read runs wait for it and share it, so many configs built at
+once after the interval (a host reconnecting its accounts after a sleep) cost one read under the
+load that makes a read slow; the clocks are read once the cache's lock is held, so a builder that
+read the time before the reader but got the lock after it does not look like a wall clock set
+back and read again. Nothing else changed: the same anchors are accepted in the same
+order, a certificate that does not parse is skipped, and the read's errors are dropped as before,
+with the final "no roots at all" check (`EmptyRootStore`) the only gate.
+
+**Both directions of a change to the OS store take effect within ten minutes:** an anchor an
+administrator adds is trusted, and one removed or distrusted (a compromised root pulled by a
+`ca-certificates` update, a CA set to never be trusted in the Keychain, a root an MDM removes from
+the Windows `ROOT` store) stops being trusted, by the configs built at most ten minutes later.
+Before, the next config honoured either at once. Ten minutes keeps the speed-up (at most six reads
+an hour for a host building a config per connection) and bounds the exposure to a pulled root
+well within the time such an update takes to roll out. The interval is measured by both clocks: the
+monotonic one stops while the machine sleeps (`CLOCK_MONOTONIC` on Linux and Android, an uptime
+clock on macOS and iOS), so a read taken a minute before a night's sleep would look a minute old on
+waking, just when a host reconnects its accounts; the wall clock counts the sleep, and a read is
+stale once either says the interval has passed, or once the wall clock has been set back before
+it. A read that found anchors is kept for the interval whatever errors it met beside them (a file
+the OS keeps but no one can read would meet them again on every config). A read that found none
+serves five seconds only (`UNREAD_RETRY_AFTER`): builders arriving together share one read of a
+store that fails slowly (a Keychain or `ROOT` store that hangs and returns nothing), and a store
+unreadable for a moment is read again seconds later, not ten minutes. A read that panics keeps
+nothing, and the next config reads again. There is no knob: no host needs another interval now, and
+a CA a host adds while running belongs in `custom` (or an exception), which every config reads
+afresh. `PlatformVerifier` is unaffected: it asks the OS at verify time.
+
 ## Defaults: the Firefox model, split by layer
 
 We mirror Firefox: bundled Mozilla roots as the base, **augmented** by the OS store

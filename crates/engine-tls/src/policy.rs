@@ -23,6 +23,12 @@ pub enum TlsPolicy {
         /// Include the OS trust store via `rustls-native-certs` (feature
         /// `tls-native-certs`). On Android this sees system CAs but not
         /// user/MDM-installed ones — use [`TlsPolicy::PlatformVerifier`] for those.
+        ///
+        /// A read of the store serves the configs built in the ten minutes after it, and the
+        /// first config built after that reads it again: an anchor added to the OS store, and
+        /// one removed or distrusted, takes effect within ten minutes, by the wall clock as well
+        /// as the monotonic one, so a sleep counts. A read that found no anchor serves five
+        /// seconds only. `custom` roots are read per config, as ever.
         system: bool,
         /// Additional explicit roots, e.g. a private/enterprise CA. Composes with
         /// `bundled`/`system`, or use it alone (via [`TlsPolicy::pinned`]) to trust
