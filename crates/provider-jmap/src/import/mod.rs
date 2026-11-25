@@ -30,13 +30,14 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 use async_trait::async_trait;
 use engine_core::{
-    error::FailureClass,
     ids::{AccountId, BlobId, MailboxId},
     sync::SyncState,
 };
 use engine_provider::{
     ProviderError, ProviderResult,
-    import::{ImportedMessage, MailImportLimits, MailImporter, MessageImport, not_sent},
+    import::{
+        ImportedMessage, MailImportLimits, MailImporter, MessageImport, ends_batch, not_sent,
+    },
 };
 use futures_util::{StreamExt, stream};
 use plan::{Budget, Route};
@@ -289,12 +290,7 @@ async fn upload_all(
         .buffered(width);
     let mut answered = Uploads::new();
     while let Some((index, uploaded)) = uploads.next().await {
-        let ending = uploaded.as_ref().err().filter(|failed| {
-            matches!(
-                failed.class(),
-                FailureClass::RateLimited | FailureClass::Authentication
-            )
-        });
+        let ending = uploaded.as_ref().err().filter(|failed| ends_batch(failed));
         let ending = ending.map(copy);
         answered.insert(index, uploaded);
         if ending.is_some() {

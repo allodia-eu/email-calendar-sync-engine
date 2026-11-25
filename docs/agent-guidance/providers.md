@@ -328,8 +328,10 @@ it. An adapter that can import implements the trait; there is no capability flag
   | Not sent, because an earlier failure ended the batch | `import::not_sent(ending)`: a throttle (with its wait) or a refused credential carries over, and an ending where no credential could be had carries over whole (its class, its wait, `is_credential_failure`), so a credential that may never go there stays `Permanent`; anything else is `Retryable` |
   | A transient fault | `Retryable` |
 
-  A throttle or a refused credential ends the batch on every adapter, since it reaches every
-  message after it; a refusal of one message never does.
+  A throttle, a refused credential, or no credential at all ends the batch on every adapter,
+  since it reaches every message after it; a refusal of one message never does. The rule is one
+  function, `import::ends_batch`, so a source that is down or hung is asked once per batch, not
+  once per message at a deadline each.
 
 ## Out-of-office (`Vacation`)
 

@@ -145,14 +145,13 @@ pub(crate) fn max_size(props: &MultiStatus) -> Option<NonZeroU64> {
         .and_then(NonZeroU64::new)
 }
 
-/// The failure in `answer` that ends a batch, if it is one: a throttle or a refused credential,
-/// which every later object would meet too (`providers.md` → "Import"). The rest of the batch is
-/// then answered [`not_sent`](engine_provider::import::not_sent) without a request.
+/// The failure in `answer` that ends a batch, if it is one: one every later object would meet
+/// too ([`ends_batch`](engine_provider::import::ends_batch); `providers.md` → "Import"). The rest
+/// of the batch is then answered [`not_sent`](engine_provider::import::not_sent) without a
+/// request.
 pub(crate) fn ending<T>(answer: &ProviderResult<T>) -> Option<&ProviderError> {
-    answer.as_ref().err().filter(|failed| {
-        matches!(
-            failed.class(),
-            FailureClass::RateLimited | FailureClass::Authentication
-        )
-    })
+    answer
+        .as_ref()
+        .err()
+        .filter(|failed| engine_provider::import::ends_batch(failed))
 }

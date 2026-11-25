@@ -93,6 +93,31 @@ pub trait MailImporter: Send + Sync {
     ) -> Vec<ProviderResult<ImportedMessage>>;
 }
 
+/// Whether `failed`, one item's failure, reaches every item after it, so an importer ends its
+/// batch there and answers the rest [`not_sent`] without a request: a throttle, a credential
+/// the target refused, or no credential at all
+/// ([`is_credential_failure`](ProviderError::is_credential_failure), whatever its class: a
+/// source that is down or hung would cost every later item another ask and its deadline). A
+/// failure about one item, or about one exchange, ends nothing.
+///
+/// # Examples
+///
+/// ```
+/// use engine_provider::{ProviderError, import::ends_batch};
+///
+/// assert!(ends_batch(&ProviderError::rate_limited("429", None)));
+/// assert!(!ends_batch(&ProviderError::item_unavailable("too large")));
+/// ```
+#[must_use]
+pub fn ends_batch(failed: &ProviderError) -> bool {
+    use engine_core::error::FailureClass;
+    failed.is_credential_failure()
+        || matches!(
+            failed.class(),
+            FailureClass::RateLimited | FailureClass::Authentication
+        )
+}
+
 /// The answer for a message a batch never sent, because `ending` ended the batch first: an
 /// importer answers every message after the failure that ended its batch with this, so the
 /// count of answers still matches.

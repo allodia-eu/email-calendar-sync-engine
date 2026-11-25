@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use engine_core::error::FailureClass;
 use engine_provider::{
     Credential, CredentialRequest, CredentialSource, CredentialSubject, FixedCredential, Origin,
-    ProviderError,
+    ProviderError, ProviderResult,
 };
 
 use crate::{
@@ -220,4 +220,20 @@ async fn a_failed_exchange_or_a_server_s_answer_is_not_a_credential_failure() {
     let err = ProviderError::from(err);
     assert_eq!(err.class(), FailureClass::Authentication, "{err:?}");
     assert!(!err.is_credential_failure(), "{err:?}");
+}
+
+/// An object without a credential ends the batch whatever the source's class, so a source that is
+/// down or hung is not asked again, at a deadline each, for every later object.
+#[tokio::test]
+async fn an_object_without_a_credential_ends_the_import_batch() {
+    let origin = Origin::new("https", "dav.example.com", 443);
+    let request = CredentialRequest::new(engine_provider::CredentialProtocol::Http, &origin);
+    let source = Failing(subject(), FailureClass::Retryable);
+    let attempt = |_| async { Ok::<(), ProviderError>(()) };
+    let limit = std::time::Duration::from_secs(1);
+    let answer =
+        engine_provider::with_credential(&source, &request, limit, |_| false, attempt).await;
+    assert!(crate::dav_import::ending(&answer).is_some());
+    let transport: ProviderResult<()> = Err(ProviderError::retryable("connection reset"));
+    assert!(crate::dav_import::ending(&transport).is_none());
 }
