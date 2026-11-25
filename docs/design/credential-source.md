@@ -206,8 +206,9 @@ client for the first and repeat a request certain to fail again. So
 `ProviderError::is_credential_failure()` says that no credential could be had: the source
 failed or did not answer within its deadline, it did not `permits` the origin, or the engine
 refused to present the credential (to that origin, in that form, or for another account than
-the connection's). Nothing went out with a credential, except a request the server had just
-refused with a `401`, when the source then failed to replace it. It is set in one place: every
+the connection's). Nothing went out with a credential, except one the server had just refused
+(an HTTP `401`, an IMAP `NO` to the sign-in, an SMTP `535`), when the source then failed to
+replace it. It is set in one place: every
 failure of this kind is a `CredentialFailure`, whose one constructor marks the error it carries,
 and each adapter passes that error through as the source gave it (IMAP, SMTP and ManageSieve
 through `ImapError::Credential`; JMAP, CalDAV, CardDAV, Talk, Graph and Google through their

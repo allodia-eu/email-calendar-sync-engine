@@ -65,8 +65,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Session<S> {
     /// - [`ImapError::Auth`] when it refuses the credential, so a replacement may be asked for.
     /// - [`SieveError::Refused`] with `TRYLATER` when it cannot judge the credential now.
     /// - [`ImapError::Credential`] for a credential ManageSieve cannot present (no username on a
-    ///   token, an administrator acting as another account), and [`ImapError::Bad`] for a NUL in a
-    ///   password: nothing is sent.
+    ///   token, a NUL or a SASL frame byte in it, an administrator acting as another account):
+    ///   nothing is sent.
     pub(crate) async fn authenticate(
         &mut self,
         credential: &Credential,
