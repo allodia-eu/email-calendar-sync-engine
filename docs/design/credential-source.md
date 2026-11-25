@@ -227,7 +227,8 @@ rule-by-rule write of the rules records it per rule (`RuleWriteFailure::credenti
 source's error carries over only its class, words, wait and source chain: the facts about a
 request that went out (`requires_confirmation`, `is_item_unavailable`, `target_refusal`) are
 dropped, since none went out. Two first IMAP dials racing, where the server took a credential for
-another account than the first, is not this fact: that credential went out.
+another account than the first, is not this fact: that credential went out, and the dial fails
+as `ImapError::SignedInAsAnotherAccount`, so `ImapError::Credential` always carries the fact.
 
 **Each ask has a deadline.** An ask to the source (`credential` or `replace`) runs under the
 deadline of the step it belongs to: the dial deadline on IMAP and SMTP, where the ask is part of

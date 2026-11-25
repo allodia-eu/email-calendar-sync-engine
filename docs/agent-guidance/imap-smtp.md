@@ -533,7 +533,9 @@ boundaries.
   the wrong subject cannot put another mailbox's session in the pool. Within one dial, a
   replacement must name the account the refused credential named, so a refusal cannot switch
   accounts even on the first dial; a dial whose credentials were all refused fixes nothing. A
-  second identity reaching `remember` (two first dials racing) fails that dial too. The
+  second identity reaching `remember` (two first dials racing) fails that dial too, as
+  `ImapError::SignedInAsAnotherAccount` (`InvalidState`, and no credential failure: the server
+  took the credential). The
   comparison is exact, byte for byte: `Alice@example.com` and `alice@example.com` are two
   accounts to it, even on a server that folds case. Proof: `dial_identity_tests.rs`.
 
