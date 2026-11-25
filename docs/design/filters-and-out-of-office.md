@@ -259,7 +259,7 @@ Implemented as sketched, with these differences, each for a reason the code met:
   A write never sends a read-only rule.
 - `RulesReceipt::failures` lists each rule a rule-by-rule write did not store or remove
   (`RuleWriteFailure`: `FailedRule::Written` or `Removed`, its class, whether it may have landed,
-  and whether no credential could be had for it);
+  whether no credential could be had for it, and a throttle's wait);
   the rest of the write goes ahead, unless the failure reaches every later rule (a throttle, a
   refused credential, no credential at all: `ProviderError::ends_batch`, the import's rule too),
   when nothing more is sent and each later rule is listed with that class

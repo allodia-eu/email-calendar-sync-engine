@@ -330,8 +330,8 @@ it. An adapter that can import implements the trait; there is no capability flag
 
   A throttle, a refused credential, or no credential at all ends the batch on every adapter,
   since it reaches every message after it; a refusal of one message never does. The rule is one
-  function, `ProviderError::ends_batch`, so a source that is down or hung is asked once per batch, not
-  once per message at a deadline each.
+  function, `ProviderError::ends_batch`, so a source that is down or hung is asked once per batch,
+  not once per message at a deadline each.
 
 ## Out-of-office (`Vacation`)
 
@@ -398,7 +398,8 @@ An account's rules are a setting too, written whole and directly, guarded by the
   later message of an import (`ProviderError::ends_batch`, kept by `RuleWriteEnding`): each rule
   after it is answered unsent, with that class. It lists each rule not written in the
   receipt's `failures` (`RuleWriteFailure`: which rule, its class, whether it may have landed, and
-  whether no credential could be had for it, `credential_failure`);
+  whether no credential could be had for it, `credential_failure`, and a throttle's wait,
+  `retry_after`);
   one that stores the set at once fails whole. A rule listed there says so on its outcome too
   (`LossReason::NotWritten`). What a target holds part by part but not together is a `RuleLimit`
   of its vocabulary, so the plan, not the writer, decides it.

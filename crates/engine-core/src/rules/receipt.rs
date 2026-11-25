@@ -1,7 +1,7 @@
 //! What a write of the rules answers.
 
 use super::{Kept, Loss, LossReason, RuleOutcome, RulePart, RulesActivation};
-use crate::{error::FailureClass, version::RuleSetVersion};
+use crate::{error::FailureClass, time::Duration, version::RuleSetVersion};
 
 /// What a transport that stores rules one by one records on a planned outcome when the server
 /// did not do what it was asked: one answer for every such adapter, so no outcome reads whole for
@@ -185,6 +185,9 @@ pub struct RuleWriteFailure {
     /// the source's; this says the failure lies with the credential, not with the server or the
     /// connection (`ProviderError::is_credential_failure` in `engine-provider`).
     pub credential_failure: bool,
+    /// How long to wait before trying again, where the server (or the credential source) named
+    /// a time: a throttle's wait.
+    pub retry_after: Option<Duration>,
 }
 
 impl RuleWriteFailure {
@@ -196,6 +199,7 @@ impl RuleWriteFailure {
             class,
             outcome_unknown: false,
             credential_failure: false,
+            retry_after: None,
         }
     }
 
@@ -203,6 +207,13 @@ impl RuleWriteFailure {
     #[must_use]
     pub fn outcome_unknown(mut self) -> Self {
         self.outcome_unknown = true;
+        self
+    }
+
+    /// Records the wait the server or the source named before trying again (builder-style).
+    #[must_use]
+    pub fn retry_after(mut self, wait: Duration) -> Self {
+        self.retry_after = Some(wait);
         self
     }
 
