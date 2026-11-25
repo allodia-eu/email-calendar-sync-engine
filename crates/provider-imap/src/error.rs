@@ -48,7 +48,10 @@ pub enum ImapError {
     /// another account than the pool's, so nothing was sent with it. Classified as the source
     /// classified it, an unanswered ask retryable; as a [`ProviderError`] it is the source's
     /// own, which says it is a credential failure
-    /// ([`ProviderError::is_credential_failure`]).
+    /// ([`ProviderError::is_credential_failure`]). One case is not: two first dials racing,
+    /// where the server took a credential for another account than the one that signed in
+    /// first. That credential went out, so the dial fails `InvalidState` without the fact, and its
+    /// connection is closed.
     #[error("no credential to sign in with: {0}")]
     Credential(ProviderError),
 

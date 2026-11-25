@@ -19,6 +19,7 @@ use std::{future::Future, sync::OnceLock};
 
 use engine_provider::{
     Credential, CredentialFailure, CredentialProtocol, CredentialRequest, CredentialSource, Origin,
+    ProviderError,
 };
 
 use crate::{
@@ -203,14 +204,19 @@ impl PresentedIdentity {
     ///
     /// # Errors
     ///
-    /// As [`check`](Self::check), when another dial signed in first as another account, so
-    /// that two first dials racing each other cannot both join the pool.
+    /// [`ImapError::Credential`], classed `InvalidState`, when another dial signed in first as
+    /// another account, so that two first dials racing each other cannot both join the pool. It
+    /// is not a credential failure ([`ProviderError::is_credential_failure`]): the server took
+    /// this credential, so one was had and went out.
     pub(crate) fn remember(&self, identity: &str) -> ImapResult<()> {
         let known = self.0.get_or_init(|| identity.into());
         if **known == *identity {
             Ok(())
         } else {
-            Err(another_account())
+            Err(ImapError::Credential(ProviderError::invalid_state(
+                "a dial signed in as another account than the one this account's connections \
+                 sign in as",
+            )))
         }
     }
 }
@@ -374,6 +380,11 @@ mod tests {
             err.failure_class(),
             engine_core::error::FailureClass::InvalidState
         );
+        // The server took the credential, so it is not one that could not be had; the check
+        // before a dial, which sends nothing, is.
+        assert!(!ProviderError::from(err).is_credential_failure());
+        let err = presented.check("bob@example.com").expect_err("another");
+        assert!(ProviderError::from(err).is_credential_failure());
         presented.remember(ALICE).expect("the first one again");
         presented.check(ALICE).expect("still the first one");
     }
