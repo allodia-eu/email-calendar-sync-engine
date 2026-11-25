@@ -367,7 +367,8 @@ mod tests {
             Memberships::of_one(MailboxId::try_from("INBOX").expect("mailbox")),
         );
 
-        let source = engine
+        // Named through the facade: a host holding the export names it without `engine-core`.
+        let source: crate::RawMime = engine
             .message_source(&provider, &account, &message)
             .await
             .expect("source");
