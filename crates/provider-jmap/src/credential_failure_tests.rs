@@ -93,7 +93,11 @@ async fn a_source_that_fails_is_a_credential_failure_with_its_class_and_nothing_
     ] {
         let (base, seen) = mock_server(vec![ok("{}")]);
         let err = failed(Arc::new(Failing(subject(), class)), &base).await;
-        assert!(err.is_credential_failure(), "{err:?}");
+        assert_eq!(
+            err.credential_failure(),
+            Some(engine_provider::CredentialFailureKind::Source),
+            "{err:?}"
+        );
         assert_eq!(err.class(), class);
         assert_eq!(seen.lock().unwrap().len(), 0, "nothing was sent");
     }
@@ -102,7 +106,11 @@ async fn a_source_that_fails_is_a_credential_failure_with_its_class_and_nothing_
     // refusal, and the server saw only the refused request.
     let (base, seen) = mock_server(vec![unauthorized(BEARER_CHALLENGE)]);
     let err = failed(Arc::new(NoReplacement(subject())), &base).await;
-    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Source),
+        "{err:?}"
+    );
     assert_eq!(err.class(), FailureClass::Retryable);
     assert_eq!(seen.lock().unwrap().len(), 1);
 }
@@ -110,7 +118,11 @@ async fn a_source_that_fails_is_a_credential_failure_with_its_class_and_nothing_
 #[tokio::test(start_paused = true)]
 async fn a_source_that_never_answers_is_a_credential_failure_at_the_deadline() {
     let err = failed(Arc::new(Hung(subject())), "http://127.0.0.1:9/").await;
-    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Source),
+        "{err:?}"
+    );
     assert_eq!(err.class(), FailureClass::Retryable);
 }
 
@@ -119,14 +131,22 @@ async fn an_origin_or_a_kind_the_credential_may_not_go_to_is_a_credential_failur
     // Plaintext off loopback, configured.
     let source = Arc::new(Rotating::tokens("a", &[]));
     let err = connect_error(config("http://jmap.example.com", &source)).await;
-    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Insecure),
+        "{err:?}"
+    );
 
     // An origin the source does not permit.
     let (base, _) = mock_server(vec![ok("{}")]);
     let mut source = Rotating::tokens("a", &[]);
     source.permitted = Some(vec![Origin::new("https", "jmap.example.com", 443)]);
     let err = connect_error(config(&base, &Arc::new(source))).await;
-    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::NotPermitted),
+        "{err:?}"
+    );
 
     // A kind JMAP cannot present.
     let (base, seen) = mock_server(vec![ok("{}")]);
@@ -138,7 +158,11 @@ async fn an_origin_or_a_kind_the_credential_may_not_go_to_is_a_credential_failur
         panic!("refused")
     };
     let err = ProviderError::from(err);
-    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Form),
+        "{err:?}"
+    );
     assert_eq!(err.class(), FailureClass::Permanent);
     assert_eq!(seen.lock().unwrap().len(), 0);
 }
@@ -174,7 +198,11 @@ async fn a_credential_a_header_cannot_carry_is_a_credential_failure_and_nothing_
             panic!("refused")
         };
         let err = ProviderError::from(err);
-        assert!(err.is_credential_failure(), "{err:?}");
+        assert_eq!(
+            err.credential_failure(),
+            Some(engine_provider::CredentialFailureKind::Form),
+            "{err:?}"
+        );
         assert_eq!(err.class(), FailureClass::Permanent);
         assert!(!format!("{err:?}").contains("cret"), "{err:?}");
         assert_eq!(seen.lock().unwrap().len(), 0, "nothing was sent");

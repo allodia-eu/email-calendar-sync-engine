@@ -430,11 +430,12 @@ async fn a_source_that_never_answers_fails_retryable_at_the_requests_deadline() 
     let failure = get(&source, "http://127.0.0.1:9/")
         .await
         .expect_err("timed out");
+    let kind = Some(engine_provider::CredentialFailureKind::Source);
     assert!(
-        matches!(&failure, Failure::Source(err) if err.class() == FailureClass::Retryable),
+        matches!(&failure, Failure::Source(err)
+            if err.class() == FailureClass::Retryable && err.credential_failure() == kind),
         "{failure:?}"
     );
-    assert!(matches!(&failure, Failure::Source(err) if err.is_credential_failure()));
     assert_eq!(
         started.elapsed(),
         engine_provider::Deadlines::STANDARD.reply(),
@@ -472,11 +473,12 @@ async fn an_account_configured_over_https_sends_nothing_over_plaintext_loopback(
     let failure = send(&source, "https://jmap.example.com/", client().get(&url))
         .await
         .expect_err("refused before sending");
+    let kind = Some(engine_provider::CredentialFailureKind::Insecure);
     assert!(
-        matches!(&failure, Failure::Source(err) if err.class() == FailureClass::Permanent),
+        matches!(&failure, Failure::Source(err)
+            if err.class() == FailureClass::Permanent && err.credential_failure() == kind),
         "{failure:?}"
     );
-    assert!(matches!(&failure, Failure::Source(err) if err.is_credential_failure()));
     assert_eq!(*seen.lock().unwrap(), NONE, "nothing reached loopback");
     assert_eq!(source.asks(), 0);
 }

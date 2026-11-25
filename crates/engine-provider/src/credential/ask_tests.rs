@@ -10,7 +10,7 @@ use super::{
     Credential, CredentialFailure, CredentialProtocol, CredentialRequest, CredentialSource,
     CredentialSubject, FixedCredential, Origin, with_credential,
 };
-use crate::ProviderError;
+use crate::{CredentialFailureKind, ProviderError};
 
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -276,7 +276,7 @@ async fn the_sources_failures_keep_their_class() {
         let server = Server::accepting("good");
         let err = run(&source, &server).await.expect_err("no credential");
         assert!(
-            matches!(&err, Failure::Source(e) if e.class() == class && e.is_credential_failure()),
+            matches!(&err, Failure::Source(e) if e.class() == class && e.credential_failure() == Some(CredentialFailureKind::Source)),
             "{err:?}"
         );
         assert_eq!(server.presented(), Vec::<String>::new());
@@ -287,7 +287,7 @@ async fn the_sources_failures_keep_their_class() {
             .await
             .expect_err("no replacement");
         assert!(
-            matches!(&err, Failure::Source(e) if e.class() == class && e.is_credential_failure()),
+            matches!(&err, Failure::Source(e) if e.class() == class && e.credential_failure() == Some(CredentialFailureKind::Source)),
             "{err:?}"
         );
     }
@@ -313,7 +313,8 @@ async fn a_source_that_never_answers_fails_as_retryable_once_the_limit_passes() 
             matches!(
                 &err,
                 Failure::Source(e)
-                    if e.class() == FailureClass::Retryable && e.is_credential_failure()
+                    if e.class() == FailureClass::Retryable
+                        && e.credential_failure() == Some(CredentialFailureKind::Source)
             ),
             "{err:?}"
         );
@@ -338,7 +339,8 @@ async fn an_origin_the_source_does_not_permit_is_sent_nothing() {
     assert!(
         matches!(
             &err,
-            Failure::Source(e) if e.class() == FailureClass::Permanent && e.is_credential_failure()
+            Failure::Source(e) if e.class() == FailureClass::Permanent
+                && e.credential_failure() == Some(CredentialFailureKind::NotPermitted)
         ),
         "{err:?}"
     );
@@ -360,7 +362,10 @@ fn a_source_failure_converts_into_the_provider_error_it_carries() {
     assert!(std::error::Error::source(&failure).is_some());
     let error: ProviderError = failure.into();
     assert_eq!(error.class(), FailureClass::Authentication);
-    assert!(error.is_credential_failure());
+    assert_eq!(
+        error.credential_failure(),
+        Some(CredentialFailureKind::Source)
+    );
 }
 
 #[test]
@@ -368,7 +373,10 @@ fn an_origin_the_engine_refuses_is_a_permanent_failure_with_its_reason() {
     let failure = CredentialFailure::refused_origin("plaintext to a remote host");
     let error = failure.into_error();
     assert_eq!(error.class(), FailureClass::Permanent);
-    assert!(error.is_credential_failure());
+    assert_eq!(
+        error.credential_failure(),
+        Some(CredentialFailureKind::Insecure)
+    );
     assert!(
         error.to_string().contains("plaintext to a remote host"),
         "{error}"
@@ -380,7 +388,10 @@ fn a_kind_the_adapter_cannot_present_is_a_permanent_failure_with_its_reason() {
     let failure = CredentialFailure::unpresentable("a password to a token-only API");
     let error = failure.into_error();
     assert_eq!(error.class(), FailureClass::Permanent);
-    assert!(error.is_credential_failure());
+    assert_eq!(
+        error.credential_failure(),
+        Some(CredentialFailureKind::Form)
+    );
     assert!(
         error.to_string().contains("a password to a token-only API"),
         "{error}"
@@ -391,7 +402,10 @@ fn a_kind_the_adapter_cannot_present_is_a_permanent_failure_with_its_reason() {
 fn a_credential_for_another_account_is_invalid_state_with_its_reason() {
     let error = CredentialFailure::another_account("signed in as another account").into_error();
     assert_eq!(error.class(), FailureClass::InvalidState);
-    assert!(error.is_credential_failure());
+    assert_eq!(
+        error.credential_failure(),
+        Some(CredentialFailureKind::Account)
+    );
     assert!(
         error.to_string().contains("signed in as another account"),
         "{error}"
@@ -427,7 +441,10 @@ async fn a_throttled_source_keeps_its_wait() {
         panic!("{err:?}")
     };
     assert_eq!(error.retry_after(), "PT30S".parse().ok());
-    assert!(error.is_credential_failure());
+    assert_eq!(
+        error.credential_failure(),
+        Some(CredentialFailureKind::Source)
+    );
 }
 
 /// A source's error keeps its class, words and wait, and nothing that speaks of a request that
@@ -441,7 +458,10 @@ fn a_source_s_failure_says_nothing_of_a_request_that_went_out() {
     ] {
         let class = answered.class();
         let error = CredentialFailure::new(answered).into_error();
-        assert!(error.is_credential_failure());
+        assert_eq!(
+            error.credential_failure(),
+            Some(CredentialFailureKind::Source)
+        );
         assert_eq!(error.class(), class);
         assert!(!error.requires_confirmation(), "{error:?}");
         assert!(!error.is_item_unavailable(), "{error:?}");

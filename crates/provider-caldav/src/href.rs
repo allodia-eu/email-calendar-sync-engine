@@ -38,6 +38,16 @@ pub(crate) fn redirect_href(current: &str, location: &str) -> Option<String> {
     Some(location.to_owned())
 }
 
+/// Why [`redirect_href`] refused `location`: a hop off TLS, as the insecure credential failure it
+/// is (every discovery request carries the credential), or else a `Location` that does not
+/// resolve.
+pub(crate) fn redirect_refusal(current: &str, location: &str) -> crate::CalDavError {
+    match engine_provider::redirect_off_tls(current, location) {
+        Some(insecure) => insecure.into(),
+        None => crate::CalDavError::protocol(engine_provider::redirect_refused(location)),
+    }
+}
+
 /// Resolves `reference`, an href a response carried, against `at`, the URL of the request
 /// that returned it (RFC 4918 §8.3; RFC 3986 §5).
 ///

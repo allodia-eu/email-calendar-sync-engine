@@ -118,7 +118,8 @@ fn no_failure_of_the_server_or_the_transport_is_a_credential_failure() {
     ] {
         assert!(!error.is_credential_failure(), "{error}");
     }
-    let marked = ProviderError::retryable("broker down").of_credential();
+    let marked =
+        ProviderError::retryable("broker down").of_credential(crate::CredentialFailureKind::Source);
     assert!(marked.is_credential_failure());
     assert_eq!(marked.class(), FailureClass::Retryable);
 }
@@ -128,13 +129,16 @@ fn no_failure_of_the_server_or_the_transport_is_a_credential_failure() {
 fn a_reworded_failure_keeps_every_fact_and_only_changes_its_words() {
     let after: Duration = "PT30S".parse().unwrap();
     let throttled = ProviderError::rate_limited("server text", Some(after))
-        .of_credential()
+        .of_credential(crate::CredentialFailureKind::Source)
         .with_source(std::io::Error::other("x"));
     let reworded = throttled.reworded("not stored: RateLimited");
     assert_eq!(reworded.detail(), "not stored: RateLimited");
     assert_eq!(reworded.class(), FailureClass::RateLimited);
     assert_eq!(reworded.retry_after(), Some(after));
-    assert!(reworded.is_credential_failure());
+    assert_eq!(
+        reworded.credential_failure(),
+        Some(crate::CredentialFailureKind::Source)
+    );
     assert!(std::error::Error::source(&reworded).is_none());
 
     let lost = ProviderError::needs_confirmation("lost").reworded("x");
@@ -160,8 +164,10 @@ fn a_batch_ends_on_a_throttle_a_refused_credential_or_no_credential() {
     for ending in [
         ProviderError::rate_limited("429", None),
         ProviderError::authentication("401"),
-        ProviderError::retryable("the broker is down").of_credential(),
-        ProviderError::permanent("not permitted").of_credential(),
+        ProviderError::retryable("the broker is down")
+            .of_credential(crate::CredentialFailureKind::Source),
+        ProviderError::permanent("not permitted")
+            .of_credential(crate::CredentialFailureKind::NotPermitted),
     ] {
         assert!(ending.ends_batch(), "{ending:?}");
     }

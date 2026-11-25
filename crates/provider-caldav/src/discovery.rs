@@ -162,13 +162,8 @@ pub(crate) fn trusted_start(
     start_href: &str,
 ) -> Result<String, CalDavError> {
     let start = exec.absolute(start_href);
-    if exec.trust_origin(&start) {
-        Ok(start)
-    } else {
-        Err(refused_origin(
-            "the configured start is a host the credential may not go to",
-        ))
-    }
+    exec.trust_origin(&start)?;
+    Ok(start)
 }
 
 /// Resolves `href`, which the response to a request at `at` named (a principal or a home),
@@ -188,21 +183,8 @@ pub(crate) fn trusted_start(
 /// about the account.
 pub(crate) fn follow(exec: &dyn DavExecutor, at: &str, href: &str) -> Result<String, CalDavError> {
     let href = resolve_reference(at, href)?;
-    if exec.trust_origin(&href) {
-        Ok(href)
-    } else {
-        Err(refused_origin(
-            "the server named a host the credential may not go to",
-        ))
-    }
-}
-
-/// An origin the credential may not go to, which discovery would have moved it to: the
-/// engine's plaintext rule, the source's `permits` or the deprecated host policy refused it.
-/// Nothing is sent there, and the failure says no credential could be had
-/// ([`engine_provider::ProviderError::is_credential_failure`]).
-pub(crate) fn refused_origin(reason: &'static str) -> CalDavError {
-    engine_provider::CredentialFailure::refused_origin(reason).into()
+    exec.trust_origin(&href)?;
+    Ok(href)
 }
 
 /// Asks `principal` for the addresses the server schedules as for this user.
@@ -244,18 +226,13 @@ async fn propfind_principal(
             // without one the loop re-requests `href` and exhausts [`MAX_REDIRECTS`],
             // exactly as before.
             if let Some(location) = &response.location {
-                let next = redirect_href(&href, location).ok_or_else(|| {
-                    CalDavError::protocol(engine_provider::redirect_refused(location))
-                })?;
+                let next = redirect_href(&href, location)
+                    .ok_or_else(|| crate::href::redirect_refusal(&href, location))?;
                 observer.step(&ConnectStep::redirected(&href, &next));
                 // The account's own server moved the chain, so its target may receive the
                 // credential once it asks (`DavExecutor::trust_origin`), and is refused
                 // outright when it would leave TLS or the credential policy refuses it.
-                if !exec.trust_origin(&next) {
-                    return Err(refused_origin(
-                        "a discovery redirect left TLS or named a host the credential may not go to",
-                    ));
-                }
+                exec.trust_origin(&next)?;
                 href = next;
             }
             continue;
@@ -424,6 +401,10 @@ fn current_user_principal(multistatus: &MultiStatus) -> Option<String> {
 #[cfg(test)]
 #[path = "discovery_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "discovery_scheduling_tests.rs"]
+mod scheduling_tests;
 
 #[cfg(test)]
 #[path = "home_origin_tests.rs"]

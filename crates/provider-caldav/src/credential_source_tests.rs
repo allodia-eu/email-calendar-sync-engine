@@ -269,8 +269,19 @@ async fn an_origin_the_source_does_not_permit_is_not_trusted() {
     });
     let client = client(&base, &source);
 
-    assert!(client.trust_origin("http://127.0.0.1:1/principals/"));
-    assert!(!client.trust_origin("http://localhost:1/principals/"));
+    assert!(
+        client
+            .trust_origin("http://127.0.0.1:1/principals/")
+            .is_ok()
+    );
+    assert_eq!(
+        client
+            .trust_origin("http://localhost:1/principals/")
+            .unwrap_err()
+            .into_error()
+            .credential_failure(),
+        Some(engine_provider::CredentialFailureKind::NotPermitted)
+    );
     assert_eq!(
         source.asks(),
         0,
@@ -283,9 +294,27 @@ async fn a_connection_on_tls_never_trusts_plaintext_loopback() {
     let source = Arc::new(Rotating::passwords("pw", &[]));
     let client = client("https://dav.example.com/", &source);
 
-    assert!(client.trust_origin("https://p1.dav.example.com/home/"));
-    assert!(!client.trust_origin("http://127.0.0.1:18082/home/"));
-    assert!(!client.trust_origin("http://dav.example.com/home/"));
+    assert!(
+        client
+            .trust_origin("https://p1.dav.example.com/home/")
+            .is_ok()
+    );
+    assert_eq!(
+        client
+            .trust_origin("http://127.0.0.1:18082/home/")
+            .unwrap_err()
+            .into_error()
+            .credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Insecure)
+    );
+    assert_eq!(
+        client
+            .trust_origin("http://dav.example.com/home/")
+            .unwrap_err()
+            .into_error()
+            .credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Insecure)
+    );
 }
 
 #[tokio::test]

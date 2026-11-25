@@ -159,7 +159,21 @@ impl AuthenticatedClient {
     /// that skips this sends nothing it should not.
     #[must_use]
     pub fn admits(&self, url: &Url) -> bool {
-        credential_origin(url, &self.configured).is_ok_and(|origin| self.source.permits(&origin))
+        self.admit(url).is_ok()
+    }
+
+    /// [`admits`](Self::admits), with the reason where `url` may not receive the credential: a
+    /// [`CredentialFailure`] whose kind says which rule refused it,
+    /// [`Insecure`](engine_provider::CredentialFailureKind::Insecure) for the plaintext rule or
+    /// [`NotPermitted`](engine_provider::CredentialFailureKind::NotPermitted) for the source's
+    /// [`permits`](CredentialSource::permits). Asks the source for nothing.
+    ///
+    /// # Errors
+    ///
+    /// The refusal, `Permanent`, for an origin the credential may not go to.
+    pub fn admit(&self, url: &Url) -> Result<(), CredentialFailure> {
+        let origin = credential_origin(url, &self.configured)?;
+        engine_provider::permitted(self.source.as_ref(), &origin)
     }
 
     /// Sends `request` on this client with a credential from the source, presented by

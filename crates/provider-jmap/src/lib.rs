@@ -380,6 +380,17 @@ impl fmt::Debug for JmapClient {
     }
 }
 
+/// Why a session redirect from `current` to `location` is not followed. Every one of these
+/// requests carries the account's credentials, so a hop off TLS that `redirect_target` cannot
+/// take over TLS is the credential refused an insecure origin, as a plaintext origin is
+/// (`CredentialFailureKind::Insecure`); any other is a `Location` that does not resolve.
+fn refused_redirect(current: &str, location: &str) -> JmapError {
+    match engine_provider::redirect_off_tls(current, location) {
+        Some(insecure) => JmapError::from(insecure),
+        None => JmapError::session(engine_provider::redirect_refused(location)),
+    }
+}
+
 /// Fetches the session document, following the well-known redirect chain itself.
 /// Reports one [`ConnectStep::Redirected`] per hop and, once the server serves a
 /// success, [`ConnectStep::Authenticated`].
@@ -415,10 +426,8 @@ async fn fetch_session(
                 .get(reqwest::header::LOCATION)
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| JmapError::session("redirect without Location"))?;
-            // Unparseable, or a hop off TLS that `redirect_target` cannot take over TLS: every
-            // one of these requests carries the account's credentials.
             let next = engine_provider::redirect_target(&url, location)
-                .ok_or_else(|| JmapError::session(engine_provider::redirect_refused(location)))?;
+                .ok_or_else(|| refused_redirect(&url, location))?;
             // Both sides resolved, so a host sees the hop it can actually replay —
             // not a bare `Location` path whose origin it would have to reconstruct.
             observer.step(&ConnectStep::redirected(&url, &next));

@@ -90,7 +90,8 @@ mod tests {
             .credential_failure();
         ending.note(
             no_credential,
-            &ProviderError::retryable("the broker is down").of_credential(),
+            &ProviderError::retryable("the broker is down")
+                .of_credential(crate::CredentialFailureKind::Source),
         );
         // A later failure does not replace the ending.
         let throttled = RuleWriteFailure::new(FailedRule::Written(2), FailureClass::RateLimited);

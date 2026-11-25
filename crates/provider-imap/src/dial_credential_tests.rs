@@ -8,8 +8,8 @@ use std::sync::{Arc, atomic::Ordering};
 use async_trait::async_trait;
 use engine_core::error::FailureClass;
 use engine_provider::{
-    Credential, CredentialProtocol, CredentialRequest, CredentialSource, CredentialSubject, Origin,
-    ProviderError,
+    Credential, CredentialFailureKind, CredentialProtocol, CredentialRequest, CredentialSource,
+    CredentialSubject, Origin, ProviderError,
 };
 
 use super::{
@@ -212,10 +212,11 @@ impl CredentialSource for FailingSource {
 #[tokio::test(start_paused = true)]
 async fn a_dial_without_a_credential_says_so_and_a_lost_connection_does_not() {
     let subject = || CredentialSubject::new("alice");
-    let without: Vec<(ImapConfig, FailureClass)> = vec![
+    let without: Vec<(ImapConfig, FailureClass, CredentialFailureKind)> = vec![
         (
             token_config(Arc::new(FailingSource(subject(), FailureClass::Retryable))),
             FailureClass::Retryable,
+            CredentialFailureKind::Source,
         ),
         (
             token_config(Arc::new(FailingSource(
@@ -223,27 +224,31 @@ async fn a_dial_without_a_credential_says_so_and_a_lost_connection_does_not() {
                 FailureClass::Authentication,
             ))),
             FailureClass::Authentication,
+            CredentialFailureKind::Source,
         ),
         (
             token_config(Arc::new(HungSource(subject()))),
             FailureClass::Retryable,
+            CredentialFailureKind::Source,
         ),
         (
             token_config(Arc::new(ElsewhereSource(subject()))),
             FailureClass::Permanent,
+            CredentialFailureKind::NotPermitted,
         ),
         (
             ImapConfig::new(format!("{HOST}:993"), HOST, Credential::bearer("a-token")),
             FailureClass::Permanent,
+            CredentialFailureKind::Form,
         ),
     ];
-    for (config, class) in without {
+    for (config, class, kind) in without {
         let servers = Servers::new(vec![accepting()]);
         let err = dial_with(&config, &PresentedIdentity::default(), || servers.open())
             .await
             .expect_err("no credential, no session");
         let err = ProviderError::from(err);
-        assert!(err.is_credential_failure(), "{err:?}");
+        assert_eq!(err.credential_failure(), Some(kind), "{err:?}");
         assert_eq!(err.class(), class, "{err:?}");
         assert_eq!(servers.opened(), 0, "{err:?}");
     }

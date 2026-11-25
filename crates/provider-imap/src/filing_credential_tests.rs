@@ -143,7 +143,11 @@ async fn a_submission_server_the_source_does_not_permit_is_never_dialled() {
     let err = submit_to(port, Arc::new(Elsewhere(CredentialSubject::new("alice")))).await;
 
     assert_eq!(err.class(), FailureClass::Permanent);
-    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::NotPermitted),
+        "{err:?}"
+    );
     assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing reaches it");
 }
 
@@ -155,7 +159,11 @@ async fn a_token_without_the_accounts_username_is_never_submitted() {
     let err = submit_to(port, Arc::new(source)).await;
 
     assert_eq!(err.class(), FailureClass::Permanent);
-    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Form),
+        "{err:?}"
+    );
     assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing is dialled");
 }
 
@@ -170,7 +178,11 @@ async fn a_credential_acting_as_another_account_is_never_submitted() {
     let err = submit_to(port, Arc::new(source)).await;
 
     assert_eq!(err.class(), FailureClass::Permanent);
-    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Form),
+        "{err:?}"
+    );
     assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing is dialled");
 }
 
@@ -199,7 +211,11 @@ async fn a_submission_without_a_credential_says_so_and_a_closed_connection_does_
     let (port, accepted) = counting_listener().await;
     let err = submit_to(port, Arc::new(Unreachable(CredentialSubject::new("alice")))).await;
     assert_eq!(err.class(), FailureClass::Retryable);
-    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Source),
+        "{err:?}"
+    );
     assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing is dialled");
 
     // The server closes the connection at once: the connection's failure, not the credential's.

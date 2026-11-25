@@ -644,6 +644,24 @@ failure lies"):
 A server refusing a credential, or offering no way to present one, is not this fact: it is the
 server's answer, and a host reads its class.
 
+**Why no credential could be had is said too,** for a host to word its answer:
+`ProviderError::credential_failure()` is a `CredentialFailureKind`, set by the same constructor
+that marks the failure and the same on every adapter. `Source`: the source failed or missed its
+deadline, and the class says what to do. `Insecure`: the credential would leave TLS (plaintext
+off loopback, configured or reached by discovery, or a redirect from HTTPS to plaintext on
+another host or port, or back to the URL that issued it); where the configured address is the
+plaintext one the person gives the account a secure address, and where the server led there the
+server must serve that address over TLS; no password prompt can help.
+`NotPermitted`: the host's policy refuses the origin (`permits`, the deprecated credential-host
+policy), on the configured address or one the server led to; the policy or the address changes.
+`Form`: the credential cannot be presented as it is (a kind the protocol cannot carry, a byte it
+cannot frame, a Basic username with a colon, a password JMAP re-frames as a token that holds a
+space); the person changes the stored credential. `Account`: the source answered for another
+account than the pool's, a host's mistake. A rules receipt's `RuleWriteFailure::credential_failure`
+stays a flag: the write reads the rules first with the same credential, so a refusal there ends
+it with its kind, and a later request's refusal is reported by the flag alone
+(`docs/design/credential-source.md`).
+
 Placeholder substitution into a URL **template** (RFC 8620 §6.2 `downloadUrl`) has the
 same shape of hazard: percent-encode every substituted value (RFC 6570 level-1 simple
 expansion) so a payload-supplied media type cannot introduce `?`, `#`, `&`, or `/../`

@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use engine_core::error::FailureClass;
 use engine_http::test_server::scripted;
 use engine_provider::{
-    Credential, CredentialRequest, CredentialSource, CredentialSubject, FixedCredential, HandOver,
-    Origin, ProviderError, Unrecorded,
+    Credential, CredentialFailureKind, CredentialRequest, CredentialSource, CredentialSubject,
+    FixedCredential, HandOver, Origin, ProviderError, Unrecorded,
 };
 
 use crate::{
@@ -86,7 +86,11 @@ async fn a_source_that_fails_is_a_credential_failure_with_its_class_on_a_read_an
     ] {
         let (base, seen) = scripted(vec![reply("200 OK", "{}")]);
         let err = read(&base, Arc::new(Source::Fails(subject(), class))).await;
-        assert!(err.is_credential_failure(), "{err:?}");
+        assert_eq!(
+            err.credential_failure(),
+            Some(engine_provider::CredentialFailureKind::Source),
+            "{err:?}"
+        );
         assert_eq!(err.class(), class);
 
         let client = client(&base, Arc::new(Source::Fails(subject(), class)));
@@ -100,7 +104,11 @@ async fn a_source_that_fails_is_a_credential_failure_with_its_class_on_a_read_an
             .await
             .expect_err("not sent");
         let err = err.into_submission_error();
-        assert!(err.is_credential_failure(), "{err:?}");
+        assert_eq!(
+            err.credential_failure(),
+            Some(engine_provider::CredentialFailureKind::Source),
+            "{err:?}"
+        );
         assert!(!err.requires_confirmation(), "nothing was sent");
         assert!(seen.lock().unwrap().is_empty(), "nothing was sent");
     }
@@ -110,7 +118,11 @@ async fn a_source_that_fails_is_a_credential_failure_with_its_class_on_a_read_an
 async fn a_source_that_never_answers_is_a_credential_failure_at_the_deadline() {
     let (base, _) = scripted(vec![reply("200 OK", "{}")]);
     let err = read(&base, Arc::new(Source::Hangs(subject()))).await;
-    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(
+        err.credential_failure(),
+        Some(engine_provider::CredentialFailureKind::Source),
+        "{err:?}"
+    );
     assert_eq!(err.class(), FailureClass::Retryable);
 }
 
@@ -131,9 +143,13 @@ async fn an_origin_or_a_kind_the_credential_may_not_go_to_is_a_credential_failur
         .await
         .expect_err("refused")
         .into();
-    for err in [not_permitted, a_password, plaintext] {
+    for (err, kind) in [
+        (not_permitted, CredentialFailureKind::NotPermitted),
+        (a_password, CredentialFailureKind::Form),
+        (plaintext, CredentialFailureKind::Insecure),
+    ] {
         let err: ProviderError = err;
-        assert!(err.is_credential_failure(), "{err:?}");
+        assert_eq!(err.credential_failure(), Some(kind), "{err:?}");
         assert_eq!(err.class(), FailureClass::Permanent);
     }
     assert!(

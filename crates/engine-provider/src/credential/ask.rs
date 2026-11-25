@@ -3,8 +3,8 @@
 
 use core::{future::Future, time::Duration};
 
-use super::{Credential, CredentialRequest, CredentialSource};
-use crate::ProviderError;
+use super::{Credential, CredentialRequest, CredentialSource, Origin};
+use crate::{CredentialFailureKind, ProviderError};
 
 /// The credential source failed, or the origin may not receive a credential, as opposed to the
 /// server refusing one: the source did not permit the origin, or an engine rule such as HTTP's
@@ -24,20 +24,46 @@ use crate::ProviderError;
 pub struct CredentialFailure(ProviderError);
 
 impl CredentialFailure {
-    /// `error`, as the failure to have a credential. Every constructor goes through here, so
-    /// every one is marked.
+    /// `error`, as the source's own failure to give a credential, or to answer in time
+    /// ([`CredentialFailureKind::Source`]).
     pub(super) fn new(error: ProviderError) -> Self {
-        Self(error.of_credential())
+        Self::of(error, CredentialFailureKind::Source)
+    }
+
+    /// `error`, as a failure to have a credential where `kind` says. Every constructor goes
+    /// through here, so every one is marked, with its kind.
+    fn of(error: ProviderError, kind: CredentialFailureKind) -> Self {
+        Self(error.of_credential(kind))
     }
 
     /// The engine refusing to present any credential to an origin, whatever the source would
-    /// permit: [`Permanent`], with `reason`. For a rule no source can loosen, such as
-    /// `engine_http`'s refusal of plaintext HTTP to anything but loopback.
+    /// permit, because the credential would leave TLS: [`Permanent`], with `reason`
+    /// ([`CredentialFailureKind::Insecure`]). For a rule no source can loosen, such as
+    /// `engine_http`'s refusal of plaintext HTTP to anything but loopback, or a redirect from
+    /// HTTPS to plaintext on another host or port, or back to the URL that issued it
+    /// ([`redirect_off_tls`](crate::redirect_off_tls)).
     ///
     /// [`Permanent`]: engine_core::error::FailureClass::Permanent
     #[must_use]
     pub fn refused_origin(reason: &'static str) -> Self {
-        Self::new(ProviderError::permanent(reason))
+        Self::of(
+            ProviderError::permanent(reason),
+            CredentialFailureKind::Insecure,
+        )
+    }
+
+    /// The host's policy refusing an origin the credential would go to: [`Permanent`], with
+    /// `reason` ([`CredentialFailureKind::NotPermitted`]). The source's own
+    /// [`permits`](super::CredentialSource::permits) refusal is built by [`permitted`]; this is
+    /// also for a policy beside it, such as a host's deprecated credential-host policy.
+    ///
+    /// [`Permanent`]: engine_core::error::FailureClass::Permanent
+    #[must_use]
+    pub fn not_permitted(reason: &'static str) -> Self {
+        Self::of(
+            ProviderError::permanent(reason),
+            CredentialFailureKind::NotPermitted,
+        )
     }
 
     /// The adapter refusing to present a kind of credential its protocol cannot carry, such as
@@ -47,7 +73,10 @@ impl CredentialFailure {
     /// [`Permanent`]: engine_core::error::FailureClass::Permanent
     #[must_use]
     pub fn unpresentable(reason: &'static str) -> Self {
-        Self::new(ProviderError::permanent(reason))
+        Self::of(
+            ProviderError::permanent(reason),
+            CredentialFailureKind::Form,
+        )
     }
 
     /// The source answering with a credential for another account than the one the adapter
@@ -59,7 +88,10 @@ impl CredentialFailure {
     /// [`InvalidState`]: engine_core::error::FailureClass::InvalidState
     #[must_use]
     pub fn another_account(reason: &'static str) -> Self {
-        Self::new(ProviderError::invalid_state(reason))
+        Self::of(
+            ProviderError::invalid_state(reason),
+            CredentialFailureKind::Account,
+        )
     }
 
     /// The source's error, with the class it gave.
@@ -130,12 +162,7 @@ where
     F: FnMut(Credential) -> Fut,
     Fut: Future<Output = Result<T, E>>,
 {
-    if !source.permits(request.origin) {
-        return Err(CredentialFailure::new(ProviderError::permanent(
-            "the credential source does not permit this origin",
-        ))
-        .into());
-    }
+    permitted(source, request.origin)?;
     let credential = ask(ask_limit, source.credential(request)).await?;
     match attempt(credential.clone()).await {
         Err(refusal) if is_refusal(&refusal) => {
@@ -145,6 +172,25 @@ where
             }
         }
         outcome => outcome,
+    }
+}
+
+/// Whether `source` [permits](CredentialSource::permits) the credential to go to `origin`, and
+/// its refusal where it does not: `Permanent`,
+/// [`NotPermitted`](crate::CredentialFailureKind::NotPermitted). Asks the source for nothing.
+/// The one place the source's refusal is built, for [`with_credential`] and for an adapter that
+/// decides before it sends whether an origin may ever receive the credential.
+///
+/// # Errors
+///
+/// The refusal, where the source does not permit `origin`.
+pub fn permitted(source: &dyn CredentialSource, origin: &Origin) -> Result<(), CredentialFailure> {
+    if source.permits(origin) {
+        Ok(())
+    } else {
+        Err(CredentialFailure::not_permitted(
+            "the credential source does not permit this origin",
+        ))
     }
 }
 

@@ -374,15 +374,20 @@ fn a_message_the_batch_never_sent_carries_the_batch_s_reason_and_wait() {
 fn a_message_never_sent_for_want_of_a_credential_says_so() {
     let wait = Some(std::time::Duration::from_secs(30));
     for ending in [
-        ProviderError::authentication("consent is gone").of_credential(),
-        ProviderError::rate_limited("token endpoint 429", wait.map(Into::into)).of_credential(),
+        ProviderError::authentication("consent is gone")
+            .of_credential(crate::CredentialFailureKind::Source),
+        ProviderError::rate_limited("token endpoint 429", wait.map(Into::into))
+            .of_credential(crate::CredentialFailureKind::Source),
         // A credential that may not go there, or cannot be presented: never sendable as it is.
-        ProviderError::permanent("not permitted").of_credential(),
+        ProviderError::permanent("not permitted")
+            .of_credential(crate::CredentialFailureKind::NotPermitted),
         // A source answering for another account.
-        ProviderError::invalid_state("another account").of_credential(),
+        ProviderError::invalid_state("another account")
+            .of_credential(crate::CredentialFailureKind::Account),
     ] {
         let unsent = super::not_sent(&ending);
         assert!(unsent.is_credential_failure(), "{unsent}");
+        assert_eq!(unsent.credential_failure(), ending.credential_failure());
         assert_eq!(unsent.class(), ending.class());
         assert_eq!(unsent.retry_after(), ending.retry_after());
         assert!(!unsent.detail().contains("target"), "{unsent}");

@@ -64,25 +64,70 @@
 /// ```
 #[must_use]
 pub fn redirect_target(current: &str, location: &str) -> Option<String> {
-    let current = url::Url::parse(current).ok()?;
-    let mut next = current.join(location).ok()?;
+    resolve(current, location).ok()
+}
+
+/// Why [`resolve`] refused a hop.
+enum Refused {
+    /// `current` or the target will not parse, or the target is not `http`/`https`.
+    Unresolvable,
+    /// The hop would take the credential from HTTPS to plaintext.
+    LeavesTls,
+}
+
+/// [`redirect_target`], with the reason for a refusal.
+fn resolve(current: &str, location: &str) -> Result<String, Refused> {
+    let current = url::Url::parse(current).map_err(|_| Refused::Unresolvable)?;
+    let mut next = current.join(location).map_err(|_| Refused::Unresolvable)?;
     if !matches!(next.scheme(), "http" | "https") {
-        return None;
+        return Err(Refused::Unresolvable);
     }
     if current.scheme() == "https" && next.scheme() != "https" {
         if next.host() != current.host() || next.port() != current.port() {
-            return None;
+            return Err(Refused::LeavesTls);
         }
-        next.set_scheme("https").ok()?;
+        next.set_scheme("https")
+            .map_err(|()| Refused::Unresolvable)?;
         if next == current {
-            return None;
+            return Err(Refused::LeavesTls);
         }
     }
     // Both setters only fail on a URL that cannot be a base, which the scheme check
     // above has already excluded.
-    next.set_username("").ok()?;
-    next.set_password(None).ok()?;
-    Some(next.into())
+    next.set_username("").map_err(|()| Refused::Unresolvable)?;
+    next.set_password(None)
+        .map_err(|()| Refused::Unresolvable)?;
+    Ok(next.into())
+}
+
+/// Where [`redirect_target`] refused `location` because the hop would take the credential from
+/// HTTPS to plaintext (to another host or port, or back to the URL that issued it), that
+/// refusal as a credential failure: `Permanent`,
+/// [`CredentialFailureKind::Insecure`](crate::CredentialFailureKind::Insecure), the same as a
+/// plaintext origin the credential is refused on. `None` where the hop resolves, or is refused
+/// for not resolving at all, which is the server's malformed answer and
+/// [`redirect_refused`]'s to say.
+///
+/// # Examples
+///
+/// ```
+/// use engine_provider::{CredentialFailureKind, ProviderError, redirect_off_tls};
+///
+/// let refused = redirect_off_tls("https://example.com/x", "http://mail.example.com/y");
+/// let error = ProviderError::from(refused.expect("it leaves TLS"));
+/// assert_eq!(
+///     error.credential_failure(),
+///     Some(CredentialFailureKind::Insecure)
+/// );
+/// assert!(redirect_off_tls("https://example.com/x", "/y").is_none());
+/// ```
+#[must_use]
+pub fn redirect_off_tls(current: &str, location: &str) -> Option<crate::CredentialFailure> {
+    matches!(resolve(current, location), Err(Refused::LeavesTls)).then(|| {
+        crate::CredentialFailure::refused_origin(
+            "a redirect would take the credential from HTTPS to plaintext",
+        )
+    })
 }
 
 /// What a host says of a `Location` [`redirect_target`] refused, so every adapter says it the
@@ -230,5 +275,37 @@ mod tests {
                 .as_deref(),
             Some("https://mail.example.com/y")
         );
+    }
+
+    /// Only a hop that would take the credential off TLS is an insecure origin: to another host
+    /// or port, or back over TLS to the URL that issued it. A hop that resolves, one kept on TLS,
+    /// and a `Location` that does not resolve are not.
+    #[test]
+    fn only_a_hop_off_tls_is_a_credential_refused_an_insecure_origin() {
+        use crate::{CredentialFailureKind, ProviderError};
+        let kind = |current: &str, location: &str| {
+            super::redirect_off_tls(current, location)
+                .map(|failure| ProviderError::from(failure).credential_failure())
+        };
+        let insecure = Some(Some(CredentialFailureKind::Insecure));
+        assert_eq!(
+            kind("https://a.example.com/x", "http://b.example.com/y"),
+            insecure
+        );
+        assert_eq!(
+            kind("https://a.example.com:8443/x", "http://a.example.com/y"),
+            insecure
+        );
+        assert_eq!(
+            kind("https://a.example.com/x", "http://a.example.com/x"),
+            insecure
+        );
+        assert_eq!(
+            kind("https://a.example.com/x", "http://a.example.com/y"),
+            None
+        );
+        assert_eq!(kind("https://a.example.com/x", "/y"), None);
+        assert_eq!(kind("https://a.example.com/x", "http://[::bad"), None);
+        assert_eq!(kind("http://127.0.0.1/x", "http://b.example.com/y"), None);
     }
 }

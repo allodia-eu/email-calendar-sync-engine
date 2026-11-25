@@ -87,15 +87,10 @@ async fn principal_props(
         {
             // Same rule as the CalDAV walk (`href::redirect_href`): a bare path after
             // an origin change belongs to the new origin, not to the connection base.
-            let next = redirect_href(&href, &location).ok_or_else(|| {
-                CalDavError::protocol(engine_provider::redirect_refused(&location))
-            })?;
+            let next = redirect_href(&href, &location)
+                .ok_or_else(|| crate::href::redirect_refusal(&href, &location))?;
             observer.step(&ConnectStep::redirected(&href, &next));
-            if !executor.trust_origin(&next) {
-                return Err(crate::discovery::refused_origin(
-                    "a discovery redirect left TLS or named a host the credential may not go to",
-                ));
-            }
+            executor.trust_origin(&next)?;
             href = next;
             continue;
         }

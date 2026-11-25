@@ -24,7 +24,7 @@ mod ask;
 mod secret;
 mod source;
 
-pub use ask::{CredentialFailure, with_credential};
+pub use ask::{CredentialFailure, permitted, with_credential};
 pub use secret::{Credential, Secret};
 pub use source::{
     CredentialProtocol, CredentialRequest, CredentialSource, CredentialSubject, FixedCredential,
