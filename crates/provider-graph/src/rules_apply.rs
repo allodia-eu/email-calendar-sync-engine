@@ -389,12 +389,14 @@ impl Write<'_> {
             if self.folders.contains_key(&role) {
                 continue;
             }
-            if let Some(unsent) = self.ending.unsent(FailedRule::Written(source)) {
-                self.failed(source, Cost::Rule, unsent);
-                return None;
-            }
             let found = match well_known(&role) {
                 None => None,
+                // A lookup is a request, which an ended write no longer sends.
+                Some(_) if self.ending.has_ended() => {
+                    let unsent = self.ending.unsent(FailedRule::Written(source));
+                    self.failed(source, Cost::Rule, unsent.expect("the write has ended"));
+                    return None;
+                }
                 Some(alias) => match well_known_id(self.client, alias).await {
                     Ok(id) => Some(id),
                     Err(err) if is_not_found(&err) => None,

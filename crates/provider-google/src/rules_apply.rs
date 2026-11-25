@@ -43,7 +43,7 @@ use serde_json::Value;
 use crate::{
     error::GoogleError,
     json::opt_str,
-    named_labels::Labels,
+    named_labels::{KnownLabel, Labels},
     rules::{FILTERS, Listing, vocabulary},
     rules_apply_support::{Held, failure, refused, same_filter, with_outcome},
     transport::{GoogleClient, encode_query_value},
@@ -152,9 +152,8 @@ impl Write<'_> {
         planned: &MailRule,
         existing: Option<usize>,
     ) {
-        if let Some(unsent) = self.ending.unsent(FailedRule::Written(source)) {
-            return self.unwritten(source, unsent);
-        }
+        // After an ending, only a request is refused: a rule whose filter Gmail already holds
+        // needs none, and keeps that filter.
         let rule = match self.forwardable(source, given, planned).await {
             Ok(Some(rule)) => rule,
             Ok(None) => return,
@@ -170,6 +169,9 @@ impl Write<'_> {
             }
             Held::Kept => {}
             Held::Nowhere => {
+                if let Some(unsent) = self.ending.unsent(FailedRule::Written(source)) {
+                    return self.unwritten(source, unsent);
+                }
                 let url = self.client.url(FILTERS);
                 let body = filter.to_string().into_bytes();
                 let posted = self.client.post(&url, "application/json", body).await;
@@ -242,6 +244,22 @@ impl Write<'_> {
     async fn filter(&mut self, source: usize, rule: &MailRule) -> Option<Value> {
         let mut label = BTreeMap::new();
         for keyword in crate::rules_apply_support::named_keywords(rule) {
+            // A label already known needs no request; finding or making one does, which an
+            // ended write no longer sends.
+            if self.ending.has_ended() {
+                match self.labels.known_label(&keyword) {
+                    KnownLabel::Unnamed => continue,
+                    KnownLabel::Known(id) => {
+                        label.insert(keyword, id);
+                        continue;
+                    }
+                    KnownLabel::Unknown => {
+                        let unsent = self.ending.unsent(FailedRule::Written(source));
+                        self.unwritten(source, unsent.expect("the write has ended"));
+                        return None;
+                    }
+                }
+            }
             match self.labels.label_id(self.client, &keyword).await {
                 Some(Ok((id, made))) => {
                     if made {

@@ -172,6 +172,15 @@ async fn a_throttle_ends_the_write_and_the_rules_after_it_are_not_sent() {
     rules[4].name = Some(engine_core::rules::RuleName::new("Renamed too").unwrap());
     rules.push(new_rule());
     let added = rules.len() - 1;
+    // A rule filing into a role needs a folder lookup, a request too.
+    rules.push(engine_core::rules::MailRule::typed(
+        engine_core::rules::Match::all(vec![super::tests::subject("j")]),
+        vec![engine_core::rules::Action::FileInto {
+            mailbox: engine_core::rules::RuleMailbox::Role(engine_core::mail::MailboxRole::Junk),
+            copy: false,
+        }],
+    ));
+    let filed = rules.len() - 1;
 
     let receipt = super::replace(&client, &base, &rules).await.unwrap();
 
@@ -183,7 +192,15 @@ async fn a_throttle_ends_the_write_and_the_rules_after_it_are_not_sent() {
             RuleWriteFailure::new(FailedRule::Written(1), FailureClass::RateLimited),
             RuleWriteFailure::new(FailedRule::Written(4), FailureClass::RateLimited),
             RuleWriteFailure::new(FailedRule::Written(added), FailureClass::RateLimited),
+            RuleWriteFailure::new(FailedRule::Written(filed), FailureClass::RateLimited),
         ]
     );
     assert_eq!(receipt.outcomes[4].kept, Kept::NotKept);
+    let lookups = log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, url, _)| url.contains("junkemail"))
+        .count();
+    assert_eq!(lookups, 0, "no lookup after the ending");
 }

@@ -67,6 +67,12 @@ impl Write<'_> {
         if !written.actions.iter().any(|a| forward_address(a).is_some()) {
             return Ok(Some(rule));
         }
+        if self.forwarding.is_none()
+            && let Some(unsent) = self.ending.unsent(FailedRule::Written(source))
+        {
+            // Reading the addresses would be a request, which an ended write no longer sends.
+            return Err(unsent);
+        }
         let verified = match self.verified().await {
             Ok(verified) => verified,
             Err(err) => return Err(self.ended_by(failure(source, &err), err)),

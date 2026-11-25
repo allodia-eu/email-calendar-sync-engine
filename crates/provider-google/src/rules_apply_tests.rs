@@ -380,3 +380,41 @@ async fn a_label_made_but_used_meanwhile_stays() {
             .any(|(method, _)| *method == "DELETE label")
     );
 }
+
+/// After a throttle ends the write, a rule that would need a request (a label to find or make,
+/// the forwarding addresses to read, a filter to create) is listed unsent and sends nothing, and
+/// so is the delete of a filter no rule names.
+#[tokio::test]
+async fn after_an_ending_a_rule_that_needs_a_request_sends_nothing() {
+    let mut filters = three();
+    filters.failing.insert(("POST", "new".to_owned()), 429);
+    let (client, state) = client(filters);
+    let base = read(&client).await;
+    let mut changed = base.rules[0].clone();
+    changed.body = discard("new one");
+    let rules = vec![
+        changed,
+        tagged(),
+        forward(&base.rules[1], "kept@example.net"),
+    ];
+
+    let receipt = replace(&client, &work_labels(), &base, &rules)
+        .await
+        .unwrap();
+
+    let throttled = |rule| RuleWriteFailure::new(rule, FailureClass::RateLimited);
+    assert_eq!(
+        receipt.failures,
+        [
+            throttled(FailedRule::Written(0)),
+            throttled(FailedRule::Written(1)),
+            throttled(FailedRule::Written(2)),
+            throttled(FailedRule::Removed(2)),
+        ]
+    );
+    let state = state.lock().unwrap();
+    assert_eq!(state.writes, [("POST", "new".to_owned())]);
+    assert_eq!(state.forwarding_reads, 0);
+    assert_eq!(state.labels, Vec::<Value>::new());
+    assert_eq!(state.ids(), ["a", "b", "c"]);
+}

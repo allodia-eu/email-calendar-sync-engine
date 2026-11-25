@@ -194,3 +194,38 @@ async fn a_throttle_ends_the_write_and_the_rules_after_it_are_not_sent() {
     );
     assert_eq!(state.lock().unwrap().ids(), ["a", "b", "c"]);
 }
+
+/// After a throttle ends the write, a later rule whose filter Gmail already holds needs no
+/// request: it takes that filter, is not listed as unwritten, and the filter is not deleted as
+/// one no rule names. Only a request is refused after an ending, never a rule.
+#[tokio::test]
+async fn after_an_ending_a_rule_gmail_already_holds_keeps_its_filter() {
+    use engine_core::{
+        error::FailureClass,
+        rules::{FailedRule, RuleWriteFailure},
+    };
+
+    let mut filters = three();
+    filters.failing.insert(("POST", "new".to_owned()), 429);
+    let (client, state) = client(filters);
+    let base = read(&client).await;
+    let mut changed = base.rules[0].clone();
+    changed.body = discard("new one");
+    let mut built = MailRule::typed(Match::all(Vec::new()), Vec::new());
+    built.body = trash("two");
+    let rules = vec![changed, base.rules[2].clone(), built];
+
+    let receipt = replace(&client, &no_names(), &base, &rules).await.unwrap();
+
+    assert_eq!(writes(&state), [("POST", "new".to_owned())]);
+    assert_eq!(
+        receipt.failures,
+        vec![RuleWriteFailure::new(
+            FailedRule::Written(0),
+            FailureClass::RateLimited
+        )]
+    );
+    assert_eq!(state.lock().unwrap().ids(), ["a", "b", "c"]);
+    assert_eq!(receipt.outcomes[2].kept, Kept::Whole);
+    assert_eq!(receipt.left_as_read, [0]);
+}
