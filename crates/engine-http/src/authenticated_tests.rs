@@ -434,6 +434,7 @@ async fn a_source_that_never_answers_fails_retryable_at_the_requests_deadline() 
         matches!(&failure, Failure::Source(err) if err.class() == FailureClass::Retryable),
         "{failure:?}"
     );
+    assert!(matches!(&failure, Failure::Source(err) if err.is_credential_failure()));
     assert_eq!(
         started.elapsed(),
         engine_provider::Deadlines::STANDARD.reply(),
@@ -475,6 +476,7 @@ async fn an_account_configured_over_https_sends_nothing_over_plaintext_loopback(
         matches!(&failure, Failure::Source(err) if err.class() == FailureClass::Permanent),
         "{failure:?}"
     );
+    assert!(matches!(&failure, Failure::Source(err) if err.is_credential_failure()));
     assert_eq!(*seen.lock().unwrap(), NONE, "nothing reached loopback");
     assert_eq!(source.asks(), 0);
 }
