@@ -202,8 +202,8 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   (`AccountId`, `MailboxId`, `TimeZoneId`, `Horizon`, the sync reports, `Provider`, and the
   streaming vocabulary — `StreamTuning`, `SyncObserver`, `SyncCommit`, `IgnoreCommits`,
   `AccountProgress`, `ProgressSnapshot`, `SyncScope`, `SyncWindow`, `MailboxWindows`,
-  `CalendarDate`) are
-  re-exported so a host depends on `engine-api` alone. The concrete provider still
+  `CalendarDate`, and `MessageMetadata` and `RawMime` for a draft's save and a message's
+  source) are re-exported so a host depends on `engine-api` alone. The concrete provider still
   comes from the adapter crate.
 - **Display-side timezone resolution.** `resolve_instant` / `resolve_instant_in` /
   `is_supported_zone` (with `ExpandError`) are re-exported from `engine-recurrence`

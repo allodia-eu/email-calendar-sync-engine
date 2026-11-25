@@ -96,7 +96,7 @@ pub use engine_core::{
     mail::{
         AttachmentPartId, EmailAddress, Importance, InlinePart, Keyword, Mailbox, MailboxAccess,
         MailboxRole, Message, MessageAttachment, MessageAttachmentContent, MessageBody,
-        SystemKeyword, ThreadProvenance, ThreadRef,
+        MessageMetadata, SystemKeyword, ThreadProvenance, ThreadRef,
     },
     // The set-of-containers type an `Event`'s `calendars` and a `Message`'s mailbox memberships
     // are expressed in.
@@ -108,8 +108,9 @@ pub use engine_core::{
     people::{CanonicalEmail, PeopleSnapshot, Person, PersonSource, PersonSourceId, SourcedValue},
     // The event's verbatim iCalendar, preserved beside the lossy projection. An RSVP is
     // applied *to the raw* by targeted patch, so a host that inspects or round-trips a
-    // scheduling payload needs to be able to name it.
-    raw::RawIcal,
+    // scheduling payload needs to be able to name it. `RawMime` is what
+    // `Engine::message_source` hands over.
+    raw::{RawIcal, RawMime},
     recipient::{RecipientCoverage, RecipientInteraction, RecipientSuggestion},
     // `MailboxWindows` is what `StreamTuning::within` and the local prune take when a mailbox
     // is held further back than its account; `SearchDomain` names what

@@ -3,8 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use engine_api::{ApiError, DrainOutcome, Engine, PendingOpKind, PendingOpState};
-use engine_core::mail::MessageMetadata;
+use engine_api::{ApiError, DrainOutcome, Engine, MessageMetadata, PendingOpKind, PendingOpState};
 
 use super::*;
 
