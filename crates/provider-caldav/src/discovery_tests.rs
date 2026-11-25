@@ -467,4 +467,5 @@ async fn a_home_on_a_host_the_connection_may_not_move_to_fails_the_walk() {
         err.to_string().contains("may not go to"),
         "unexpected: {err}"
     );
+    assert!(engine_provider::ProviderError::from(err).is_credential_failure());
 }
