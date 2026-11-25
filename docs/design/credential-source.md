@@ -220,7 +220,14 @@ anonymous first request draws from an origin the credential may not go to, which
 asked about. A refusal through `permits` is the same fact as a source answering "no credential
 for this origin": in both, the credential side decided, nothing was sent, and the connection is
 sound. The engine's own reconnect rules follow it: IMAP's fetches, which ask once more on a new
-connection after a `Retryable` failure, do not for this one.
+connection after a `Retryable` failure, do not for this one. An import ends its batch on it, as
+on a throttle (`import::ends_batch`), and answers the items it never sent with the failure whole,
+its class kept (`import::not_sent`), so a credential that may never go there stays `Permanent`. A
+rule-by-rule write of the rules records it per rule (`RuleWriteFailure::credential_failure`). A
+source's error carries over only its class, words, wait and source chain: the facts about a
+request that went out (`requires_confirmation`, `is_item_unavailable`, `target_refusal`) are
+dropped, since none went out. Two first IMAP dials racing, where the server took a credential for
+another account than the first, is not this fact: that credential went out.
 
 **Each ask has a deadline.** An ask to the source (`credential` or `replace`) runs under the
 deadline of the step it belongs to: the dial deadline on IMAP and SMTP, where the ask is part of
