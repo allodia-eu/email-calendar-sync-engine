@@ -95,10 +95,10 @@ impl DavExecutor for RefusesToMove {
 
     fn trust_origin(&self, url: &str) -> Result<(), engine_provider::CredentialFailure> {
         // A bare path names no host, so the live client accepts it too. A connection on TLS
-        // refuses plaintext as the live client does (`Insecure`), and here every other host as
-        // a host's policy would (`NotPermitted`).
+        // refuses plaintext the server led it to as the live client does (`LedToInsecure`), and
+        // here every other host as a host's policy would (`NotPermitted`).
         if url.starts_with("http://") {
-            Err(engine_provider::CredentialFailure::refused_origin(
+            Err(engine_provider::CredentialFailure::led_to_insecure(
                 "plaintext",
             ))
         } else if url.contains("://") {
@@ -123,7 +123,7 @@ async fn a_refused_origin_change_fails_the_walk_rather_than_following_it() {
         .unwrap_err();
     assert_eq!(
         engine_provider::ProviderError::from(err).credential_failure(),
-        Some(engine_provider::CredentialFailureKind::Insecure)
+        Some(engine_provider::CredentialFailureKind::LedToInsecure)
     );
     // And nothing was sent to the plaintext host.
     assert_eq!(exec.0.seen().len(), 1);
@@ -157,10 +157,10 @@ async fn a_plaintext_redirect_to_another_host_says_why_it_is_not_followed() {
     )
     .await
     .unwrap_err();
-    // The credential would leave TLS: the same refusal as a plaintext origin.
+    // The server led the credential off TLS: not the account's address, the server's.
     assert_eq!(
         engine_provider::ProviderError::from(err).credential_failure(),
-        Some(engine_provider::CredentialFailureKind::Insecure)
+        Some(engine_provider::CredentialFailureKind::LedToInsecure)
     );
     assert_eq!(exec.seen().len(), 1);
 }
@@ -309,7 +309,7 @@ async fn a_home_on_a_host_the_connection_may_not_move_to_fails_the_walk() {
         .unwrap_err();
     assert_eq!(
         engine_provider::ProviderError::from(err).credential_failure(),
-        Some(engine_provider::CredentialFailureKind::Insecure)
+        Some(engine_provider::CredentialFailureKind::LedToInsecure)
     );
 }
 

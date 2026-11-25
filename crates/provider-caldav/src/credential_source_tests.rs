@@ -305,7 +305,7 @@ async fn a_connection_on_tls_never_trusts_plaintext_loopback() {
             .unwrap_err()
             .into_error()
             .credential_failure(),
-        Some(engine_provider::CredentialFailureKind::Insecure)
+        Some(engine_provider::CredentialFailureKind::LedToInsecure)
     );
     assert_eq!(
         client
@@ -313,7 +313,7 @@ async fn a_connection_on_tls_never_trusts_plaintext_loopback() {
             .unwrap_err()
             .into_error()
             .credential_failure(),
-        Some(engine_provider::CredentialFailureKind::Insecure)
+        Some(engine_provider::CredentialFailureKind::LedToInsecure)
     );
 }
 

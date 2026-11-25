@@ -240,7 +240,8 @@ where `is_credential_failure()` is `false`:
 | Kind | Set by | What clears it |
 |---|---|---|
 | `Source` | the source's own error, and the ask deadline (`CredentialFailure::new`) | what the class says: wait (`Retryable`, `RateLimited`), or sign in or consent again (`Authentication`) |
-| `Insecure` | the engine's own rule, which no source can loosen (`CredentialFailure::refused_origin`): plaintext HTTP off loopback, whether configured, a CalDAV or CardDAV discovery start, href or redirect, or a JMAP session URL; a redirect from HTTPS to plaintext on another host or port, or back to the URL that issued it (`redirect_off_tls`, in CalDAV and CardDAV discovery and the JMAP session fetch) | where the configured address is the plaintext one, a secure address for the account; where the server led to plaintext, the server serving that address over TLS (the configured address may already be secure); never a new password |
+| `Insecure` | the engine's own rule, which no source can loosen, on the account's own address (`CredentialFailure::refused_origin`): the configured origin is plaintext HTTP off loopback, so every request to an `http://` origin is refused, its own included | a secure (`https`) address for the account; never a new password |
+| `LedToInsecure` | the same rule, on an address the server led to from a configured origin the rule accepts (`https`, or plaintext loopback) (`CredentialFailure::led_to_insecure`): a redirect from HTTPS to plaintext on another host or port, or back to the URL that issued it (`redirect_off_tls`, in CalDAV and CardDAV discovery and the JMAP session fetch); plaintext HTTP off loopback named by a CalDAV or CardDAV discovery href or redirect, a JMAP session or redirect, or a link; a CalDAV shared calendar's principal the host stored in plaintext, on an account configured over `https`; plaintext loopback named to an account configured over `https` | usually the server's operator serving that address over TLS; or the account pointed straight at a secure address for the same service where one exists (the `https` form of a host a well-known or apex address redirects to in plaintext), or a stored CalDAV shared principal replaced (by discovering again); never a new password |
 | `NotPermitted` | the host's policy: a `permits` refusal (`with_credential`, `AuthenticatedClient::admit`), the deprecated `CredentialHosts` policy (`CredentialFailure::not_permitted`), on the configured address or one discovery or a redirect leads to | the host's policy, or the configured address where that is the one refused; never a new password |
 | `Form` | `CredentialFailure::unpresentable`: a kind the protocol cannot present, a token or password with a byte it cannot frame (IMAP `LOGIN`, SASL, an HTTP header), a Basic username holding a colon | the stored credential; asking the source again gives the same one |
 | `Account` | `CredentialFailure::another_account`: the source answered for another account than the pool's | the host's account records: a source answering for the wrong subject |
@@ -248,17 +249,28 @@ where `is_credential_failure()` is `false`:
 Each `CredentialFailure` constructor sets its kind where it marks the error, so no adapter
 decides it; `reworded`, `import::not_sent` and `ends_batch` carry it as they carry the mark.
 
-An origin is refused for one of two reasons, which a host words differently, so they are two
-kinds. `Insecure` is the engine's TLS rule: the credential would cross the wire in the clear.
-Where the configured address is the plaintext one, the person gives the account a secure
-address; where the server led there (a redirect off TLS, a discovery href naming plaintext), the
-configured address may already be secure and the server must serve that address over TLS, which
-is the server's operator's to change. `NotPermitted` is the host's policy: the
+An origin is refused for one of two reasons, which a host words differently, so they are
+different kinds. The engine's TLS rule (the credential would cross the wire in the clear) is two
+kinds, by whose address is at fault, because the person who can fix it differs. `Insecure`: the
+configured address breaks the rule itself, and the person gives the account a secure address.
+`LedToInsecure`: the rule accepts the configured address and the credential was led to
+plaintext elsewhere (a redirect off TLS, a discovery href, session URL or link naming plaintext,
+or a CalDAV shared principal the host stored in plaintext). Usually that is the server's
+operator's to change, by serving the address over TLS; where a secure address for the same
+service exists (a well-known or apex address that redirects to `http://dav.example.com/` while
+that host also serves `https://`), pointing the account straight at it clears it, and a stored
+principal is the host's to replace, typically by discovering again. The engine
+decides it where it refuses, in `engine_http`'s `credential_origin`, which holds both the
+refused URL and the configured one, and in `redirect_off_tls`, whose hop always starts on TLS, so
+a host never re-implements the loopback rule to tell them apart. Where the configured address is
+itself refused, it is `Insecure` whatever the server named, since the account's address must
+change first. `NotPermitted` is the host's policy: the
 address may already be secure, and may not be the person's at all (a CalDAV server naming a
 calendar home on a host of its own, a redirect to another host); the refused address is
 deliberately not in the error. CalDAV and CardDAV discovery ask `AuthenticatedClient::admit`,
 which checks the plaintext rule first and `permits` second, then the deprecated policy, so each
-refusal carries the kind of the rule that refused it; where both would refuse, it is `Insecure`.
+refusal carries the kind of the rule that refused it; where both would refuse, it is the
+plaintext rule's (`Insecure` or `LedToInsecure`).
 
 `Form` includes a password JMAP re-frames as a bearer token after a `Bearer` challenge that holds
 a space or a tab: the header cannot carry it as a token, though an address offering `Basic`
@@ -535,10 +547,11 @@ These live in `mail-calendar/crates/mailcal-account`, read-only here:
    so a submission refused is never "may have been sent"). The funnel is built on
    `engine_provider::with_credential`, so `permits`, the single replacement and the source's
    classes are the IMAP path's; the plaintext rule fails as `Permanent` through
-   `CredentialFailure::refused_origin`. Every JMAP request goes through it: discovery and each
-   redirect hop, method calls, blob download and upload, and the push stream, so each origin
-   is checked as it is used. `JmapConfig::from_credential_source` is new; `JmapConfig::new`
-   wraps its `Credentials` in `FixedCredential::unique`. Proven live on Stalwart
+   `CredentialFailure::refused_origin` (a configured origin in clear) or
+   `CredentialFailure::led_to_insecure` (one the server led to). Every JMAP request goes through it:
+   discovery and each redirect hop, method calls, blob download and upload, and the push stream, so
+   each origin is checked as it is used. `JmapConfig::from_credential_source` is new;
+   `JmapConfig::new` wraps its `Credentials` in `FixedCredential::unique`. Proven live on Stalwart
    (`provider-jmap/tests/live_credential_source.rs`): a wrong password replaced (Stalwart's
    `401` offers `Bearer` and `Basic` in two headers, so the password is refused as it stands
    and not re-framed), and a revoked bearer token replaced by a fresh one, both minted through
@@ -708,7 +721,9 @@ record.
    a host's reconnect rule needs; `ProviderError::is_credential_failure()` says that, additively
    ("Where the failure lies"). Refined again the same day: `credential_failure()` says why, with
    a `CredentialFailureKind` (source, insecure, not permitted, form, account), for a host to word
-   its answer by.
+   its answer by. Refined once more: the TLS rule's refusal is `Insecure` only where the
+   configured address is at fault, and `LedToInsecure` where the server led there, so a host
+   need not re-implement the loopback rule to tell whose address to fix.
 5. **The engine refuses credentials over plaintext HTTP except to loopback origins.** It is an
    engine rule, not left to `permits`. Narrowed when step 3 landed: only for an account whose
    configured origin is itself plaintext loopback ("Host binding"). The harnesses all run on loopback, so nothing breaks

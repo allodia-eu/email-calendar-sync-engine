@@ -225,6 +225,38 @@ async fn an_origin_or_a_kind_the_credential_may_not_go_to_is_a_credential_failur
     );
 }
 
+/// Plaintext off loopback the server led to, from an account configured where the rule accepts
+/// it (here loopback): not the account's address, so not the account's to fix.
+#[tokio::test]
+async fn plaintext_the_server_leads_to_is_led_to_insecure_not_insecure() {
+    let led = Some(engine_provider::CredentialFailureKind::LedToInsecure);
+    // TEST-NET-1, never reached.
+    let off_loopback = "http://192.0.2.1:9/dav/";
+
+    // A redirect, on CalDAV and on CardDAV.
+    let (base, _) = mock_server_capturing(vec![redirect(off_loopback)]);
+    let err = CalDavProvider::connect(caldav(&base, password()))
+        .await
+        .expect_err("refused");
+    assert_eq!(ProviderError::from(err).credential_failure(), led);
+    let (base, _) = mock_server_capturing(vec![redirect(off_loopback)]);
+    let config = CardDavConfig::from_credential_source(
+        base,
+        password(),
+        engine_http::test_server::user_agent(),
+    );
+    let err = CardDavProvider::connect(config).await.expect_err("refused");
+    assert_eq!(ProviderError::from(err).credential_failure(), led);
+
+    // A calendar home a discovery answer names.
+    let home = r#"<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:response><d:href>/u/</d:href><d:propstat><d:prop><c:calendar-home-set><d:href>http://192.0.2.1:9/u/calendars/</d:href></c:calendar-home-set></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+    let (base, _) = mock_server_capturing(vec![multistatus(home)]);
+    let err = CalDavProvider::connect(caldav(&base, password()))
+        .await
+        .expect_err("refused");
+    assert_eq!(ProviderError::from(err).credential_failure(), led);
+}
+
 #[tokio::test]
 async fn a_failed_exchange_or_a_server_s_answer_is_not_a_credential_failure() {
     // Nothing listens on the discard port.

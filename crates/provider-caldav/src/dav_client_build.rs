@@ -99,7 +99,9 @@ impl DavClient {
     }
 
     /// [`admits`](Self::admits), with the refusal's kind: the engine's plaintext rule
-    /// (`Insecure`), the source's `permits` or the deprecated host policy (`NotPermitted`).
+    /// (`Insecure` on a configured server in clear, `LedToInsecure` on an origin discovery was
+    /// led to from one the rule accepts), the source's `permits` or the deprecated host policy
+    /// (`NotPermitted`).
     pub(super) fn admission(&self, url: &reqwest::Url) -> Result<(), CredentialFailure> {
         self.http.admit(url)?;
         if credential_hosts::permitted(self.credential_hosts.as_ref(), url.as_str()) {

@@ -473,7 +473,7 @@ async fn an_account_configured_over_https_sends_nothing_over_plaintext_loopback(
     let failure = send(&source, "https://jmap.example.com/", client().get(&url))
         .await
         .expect_err("refused before sending");
-    let kind = Some(engine_provider::CredentialFailureKind::Insecure);
+    let kind = Some(engine_provider::CredentialFailureKind::LedToInsecure);
     assert!(
         matches!(&failure, Failure::Source(err)
             if err.class() == FailureClass::Permanent && err.credential_failure() == kind),

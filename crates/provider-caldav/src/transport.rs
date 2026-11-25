@@ -144,7 +144,8 @@ pub(crate) trait DavExecutor: Send + Sync {
     ///
     /// Answers the refusal when the origin is **refused**, as a credential failure of the kind
     /// that refused it: plaintext HTTP, unless both it and the configured server are loopback
-    /// (`Insecure`); an origin the account's source does not
+    /// (`Insecure` where the configured server breaks that rule itself, `LedToInsecure` where
+    /// discovery was led there from one it accepts); an origin the account's source does not
     /// [permit](engine_provider::CredentialSource::permits), or a host the deprecated
     /// [`CredentialHosts`] policy, where one is set, does not permit (`NotPermitted`). The
     /// caller fails discovery rather than going on without the credential. A relative `url`
