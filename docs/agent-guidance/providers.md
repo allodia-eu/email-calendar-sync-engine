@@ -323,8 +323,9 @@ it. An adapter that can import implements the trait; there is no capability flag
   | The target's own state (above) | `refused_by_target`, `InvalidState` |
   | Throttled, an upload quota included | `RateLimited`, with the server's wait |
   | A refused credential | `Authentication` |
+  | No credential could be had (the source failed, or the credential may not go there) | the source's class, and `is_credential_failure` |
   | Sent, and the answer lost | `requires_confirmation`: find it from the import cursor before sending again |
-  | Not sent, because an earlier failure ended the batch | `import::not_sent(ending)`: a throttle (with its wait) or a refused credential carries over, anything else is `Retryable` |
+  | Not sent, because an earlier failure ended the batch | `import::not_sent(ending)`: a throttle (with its wait) or a refused credential carries over, and so does `is_credential_failure`; anything else is `Retryable` |
   | A transient fault | `Retryable` |
 
   A throttle or a refused credential ends the batch on every adapter, since it reaches every
@@ -607,6 +608,28 @@ taken over TLS instead: a server behind a TLS-terminating proxy builds its redir
 were served in plaintext, and the host has just answered over TLS. Resolving a redirect against the *configured base* instead
 is what one of these adapters shipped: it turned a provider whose apex redirects to its
 mail host into an unconnectable account.
+
+**When no credential could be had, the error says so, on every adapter and every operation.**
+`ProviderError::is_credential_failure()` is `true` when the credential source failed or did not
+answer within its deadline, did not permit the origin, or the engine refused to present the
+credential (plaintext off loopback, an origin discovery would move to that the credential may not
+go to, a kind or a byte the protocol cannot carry, another account than the connection pool's).
+The class stays the source's. A host tells a source's `Retryable` (a token endpoint or broker
+that cannot be reached) from a transport's this way, and does not drop a sound connection for
+it. It is set once, by `CredentialFailure` (`engine-provider`, `credential/ask.rs`), never by an
+adapter; the adapters only pass it through (`docs/design/credential-source.md`, "Where the
+failure lies"):
+
+| Adapter | Where it reaches `ProviderError` | Paths that reword and keep it |
+|---|---|---|
+| IMAP, SMTP, ManageSieve | `ImapError::Credential`, passed through as the source gave it | a fetch batch's copy for each message (`fetch_batch.rs`); a fetch is not repeated on a new connection after one |
+| JMAP | `JmapError::Credential` | an import's failure for each message and the batch's `not_sent`; a held-back `Blob/get`'s answer for each message |
+| CalDAV, CardDAV, Talk | `CalDavError::Credential`, discovery's refused origins included | `content_free` on the import and collection paths |
+| Graph | `GraphError::Credential`, a submission's and a write's included | none |
+| Google | `GoogleError::Credential`; the Gmail IMAP half as IMAP | the IMAP bodies' copy for each message not yet answered |
+
+A server refusing a credential, or offering no way to present one, is not this fact: it is the
+server's answer, and a host reads its class.
 
 Placeholder substitution into a URL **template** (RFC 8620 §6.2 `downloadUrl`) has the
 same shape of hazard: percent-encode every substituted value (RFC 6570 level-1 simple

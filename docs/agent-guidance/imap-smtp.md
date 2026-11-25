@@ -480,7 +480,12 @@ outlives the token that opened it, so nothing replaces an open one.
   `ImapError::Credential`, classified as the source classified it: a revoked grant is
   `Authentication`, an unreachable token endpoint is retryable. It is not a session refusal, so
   the pool's ceiling does not move. A bearer credential without a username dials nothing either
-  (`Permanent`): both SASL mechanisms name the account.
+  (`Permanent`): both SASL mechanisms name the account. As a `ProviderError` it is the source's
+  error as it came, its wait included, and `is_credential_failure()` says no credential could be
+  had; so does every credential the protocol cannot carry (a missing username, a kind or a byte
+  SASL cannot frame, an administrator acting as another account over SMTP or ManageSieve) and one
+  for another account than the pool's. A fetch does not dial again after one: a new connection
+  would ask the same source at once.
 - **Copies of the secret this crate makes are zeroed.** Every buffer the crate builds around a
   password or token is `Zeroizing` and allocated once at its final length (`secret_line.rs`),
   because a `String` that grows frees its old buffer unzeroed: the IMAP `LOGIN` line (built and
@@ -930,7 +935,7 @@ connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "
   went out, the call answers needs-confirmation. `LOGOUT` then goes out outside the deadline,
   unawaited, so a slow answer to it never puts a finished write in doubt. The credential is asked as
   `CredentialProtocol::ManageSieve` for `sieve://<server name>:<port>`. A `Credential::ActingAs` is refused
-  before sending (`ImapError::Bad`), as SMTP refuses it: `PLAIN` with an authorization identity
+  before sending (`ImapError::Credential`, `Permanent`), as SMTP refuses it: `PLAIN` with an authorization identity
   over ManageSieve has not been proven on a harness server yet.
 - **The wire.** No tags: one command at a time, its response ends at `OK`, `NO` or `BYE`. Strings
   are quoted where they can be, else sent as `{n+}` literals (a script always is). A refusal keeps
