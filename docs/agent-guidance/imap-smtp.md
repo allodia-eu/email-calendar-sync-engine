@@ -608,7 +608,10 @@ would exercise it rested on a documentation claim the server disproves.
   is screened too: its username and password go as quoted strings, which cannot carry CR, LF or
   NUL (RFC 3501 §9), and a CRLF in a password would end the line and send the rest as a command
   of its own. Each is a credential that cannot be presented (`Permanent`, a credential failure),
-  refused before anything is written.
+  refused before anything is written. `OAUTHBEARER`'s GS2 header names the account as a
+  `saslname` (RFC 7628 §3.1, RFC 5801 §4), where `,` would end the field and `=` starts an escape:
+  both are legal in a username, so they go escaped as `=2C` and `=3D`. `XOAUTH2` frames the name
+  with `^A`, which the screen refuses, and `PLAIN` with NUL, likewise refused, so neither splits.
 - **The pre-auth `CAPABILITY` is a third call, not a duplicate of the other two.** The
   session already asks before `STARTTLS` (is the upgrade offered?) and again after
   authenticating (what does *this* session get — servers advertise a different set once

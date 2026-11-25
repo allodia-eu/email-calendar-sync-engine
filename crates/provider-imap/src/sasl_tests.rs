@@ -246,3 +246,28 @@ fn plain_refuses_a_nul_in_any_component_before_encoding() {
     // Bytes that frame the OAuth mechanisms are ordinary password bytes here.
     assert!(plain_response(None, "u", "p\x01\r\n").is_ok());
 }
+
+/// The GS2 header names the account as a `saslname` (RFC 7628 §3.1, RFC 5801 §4), where `,` ends
+/// the field and `=` starts an escape: both are legal in a username, so they go escaped as `=2C`
+/// and `=3D`, never refused. `XOAUTH2` frames the name with `^A`, which the screen refuses, so it
+/// has no such split.
+#[test]
+fn oauthbearer_escapes_a_comma_and_an_equals_sign_in_the_username() {
+    let built = Mechanism::OAuthBearer
+        .initial_response("a,b=c@example.com", "tok", "h", None)
+        .expect("legal username");
+    let decoded = String::from_utf8(crate::base64::decode(built.as_str()).unwrap()).unwrap();
+    assert!(
+        decoded.starts_with("n,a=a=2Cb=3Dc@example.com,\u{1}"),
+        "{decoded:?}"
+    );
+
+    let built = Mechanism::XOAuth2
+        .initial_response("a,b=c@example.com", "tok", "h", None)
+        .expect("legal username");
+    let decoded = String::from_utf8(crate::base64::decode(built.as_str()).unwrap()).unwrap();
+    assert!(
+        decoded.starts_with("user=a,b=c@example.com\u{1}"),
+        "{decoded:?}"
+    );
+}

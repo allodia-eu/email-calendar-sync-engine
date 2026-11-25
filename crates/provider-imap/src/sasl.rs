@@ -149,9 +149,10 @@ impl Mechanism {
                 let port = port
                     .map(|port| format!("port={port}\x01"))
                     .unwrap_or_default();
+                let username = saslname(username);
                 secret_line(&[
                     Part::Text("n,a="),
-                    Part::Text(username),
+                    Part::Text(&username),
                     Part::Text(",\x01host="),
                     Part::Text(host),
                     Part::Text("\x01"),
@@ -241,6 +242,18 @@ pub(crate) fn describe_challenge(challenge: &str) -> String {
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+/// `username` as a GS2 `saslname` (RFC 5801 §4, which RFC 7628 §3.1 uses for `OAUTHBEARER`'s
+/// authorization identity): `,` would end the field and `=` starts an escape, so they go as `=2C`
+/// and `=3D`. Both are legal in an account name, so they are escaped, never refused. The `=` is
+/// replaced first, so the escapes it writes for `,` are not escaped again.
+fn saslname(username: &str) -> std::borrow::Cow<'_, str> {
+    if username.contains([',', '=']) {
+        username.replace('=', "=3D").replace(',', "=2C").into()
+    } else {
+        username.into()
+    }
 }
 
 /// A credential the SASL frame cannot carry, as the source's failure: nothing is sent.
