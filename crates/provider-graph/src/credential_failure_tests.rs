@@ -157,3 +157,19 @@ async fn a_failed_exchange_or_a_refused_token_is_not_a_credential_failure() {
     assert_eq!(err.class(), FailureClass::Authentication, "{err:?}");
     assert!(!err.is_credential_failure(), "{err:?}");
 }
+
+/// A token holding a byte a header cannot carry is refused before anything is sent, as a
+/// credential failure no retry can mend, and the error does not repeat it.
+#[tokio::test]
+async fn a_token_a_header_cannot_carry_is_a_credential_failure_and_nothing_is_sent() {
+    let (base, seen) = scripted(vec![reply("200 OK", "{}")]);
+    let token = Credential::bearer("secret\r\nX-Injected: 1");
+    let err = read(&base, Arc::new(FixedCredential::unique(token))).await;
+    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(err.class(), FailureClass::Permanent);
+    assert!(!format!("{err:?}").contains("secret"), "{err:?}");
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "nothing reached the server"
+    );
+}

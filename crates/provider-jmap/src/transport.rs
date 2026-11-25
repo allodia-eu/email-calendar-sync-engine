@@ -105,14 +105,16 @@ impl Transport {
             framing.used.set(scheme);
         }
         match (credential, scheme) {
-            (Credential::Password { username, password }, Some(AuthScheme::Basic)) => {
-                Ok(builder.basic_auth(username, Some(password.expose())))
-            }
+            (Credential::Password { username, password }, Some(AuthScheme::Basic)) => Ok(
+                engine_http::present_basic(builder, username, password.expose())?,
+            ),
             // The same secret framed bare, where a server asked for bearer tokens.
             (Credential::Password { password, .. }, Some(AuthScheme::Bearer)) => {
-                Ok(builder.bearer_auth(password.expose()))
+                Ok(engine_http::present_token(builder, password.expose())?)
             }
-            (Credential::Bearer { token, .. }, Some(_)) => Ok(builder.bearer_auth(token.expose())),
+            (Credential::Bearer { token, .. }, Some(_)) => {
+                Ok(engine_http::present_token(builder, token.expose())?)
+            }
             _ => Err(CredentialFailure::unpresentable(
                 "this kind of credential cannot be presented over JMAP",
             )

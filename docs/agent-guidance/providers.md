@@ -617,6 +617,12 @@ mail host into an unconnectable account.
 answer within its deadline, did not permit the origin, or the engine refused to present the
 credential (plaintext off loopback, an origin discovery would move to that the credential may not
 go to, a kind or a byte the protocol cannot carry, another account than the connection pool's).
+Every HTTP adapter checks its credential before it goes on a header, in one place:
+`engine_http::present_token` takes a token of visible ASCII only (RFC 6750's `b64token` and the
+wider tokens real issuers mint), and `present_basic` refuses a username holding a colon (RFC 7617
+§2) or a control character in either part. Without the check a token holding CR, LF or a byte
+past ASCII failed every send as a `Retryable` transport error. IMAP's `LOGIN` checks its quoted
+strings the same way (`imap-smtp.md`).
 The class stays the source's. A host tells a source's `Retryable` (a token endpoint or broker
 that cannot be reached) from a transport's this way, and does not drop a sound connection for
 it. It is set once, by `CredentialFailure` (`engine-provider`, `credential/ask.rs`), never by an

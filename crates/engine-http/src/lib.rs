@@ -80,7 +80,9 @@ pub use gate::{GatePermit, RequestGate};
 pub use observed::ObservedConnection;
 pub use observer::{IgnoreThrottles, ThrottleEvent, ThrottleObserver};
 pub use policy::RetryPolicy;
-pub use presentation::{judge_by_scheme, present_bearer, present_credential};
+pub use presentation::{
+    judge_by_scheme, present_basic, present_bearer, present_credential, present_token,
+};
 pub use send::{RetryConfig, Sent, send_retrying};
 pub use user_agent::{InvalidUserAgent, UserAgent};
 

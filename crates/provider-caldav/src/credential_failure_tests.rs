@@ -237,3 +237,16 @@ async fn an_object_without_a_credential_ends_the_import_batch() {
     let transport: ProviderResult<()> = Err(ProviderError::retryable("connection reset"));
     assert!(crate::dav_import::ending(&transport).is_none());
 }
+
+/// A username holding a colon cannot go in Basic (RFC 7617 §2): it is refused once the server
+/// asks, before the credential is sent, as a credential failure no retry can mend.
+#[tokio::test]
+async fn a_username_basic_cannot_carry_is_a_credential_failure_and_is_never_sent() {
+    let (base, seen) = mock_server_capturing(vec![CHALLENGE.to_owned()]);
+    let colon = Credential::password("al:ice", "secret");
+    let err = ProviderError::from(propfind(&base, Arc::new(FixedCredential::unique(colon))).await);
+    assert!(err.is_credential_failure(), "{err:?}");
+    assert_eq!(err.class(), FailureClass::Permanent);
+    assert!(!format!("{err:?}").contains("secret"), "{err:?}");
+    assert_eq!(seen.lock().unwrap().len(), 1, "only the anonymous request");
+}

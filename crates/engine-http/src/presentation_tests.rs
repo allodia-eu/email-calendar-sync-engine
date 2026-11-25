@@ -5,7 +5,7 @@ use engine_core::error::FailureClass;
 use engine_provider::{Credential, CredentialFailure};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue, WWW_AUTHENTICATE};
 
-use super::{judge_challenge, present_bearer, present_credential};
+use super::{judge_challenge, present_basic, present_bearer, present_credential, present_token};
 use crate::Unauthorized;
 
 fn administrator() -> Credential {
@@ -137,4 +137,55 @@ fn a_challenge_only_for_other_schemes_is_final() {
         Unauthorized::Final,
         "a kind HTTP cannot carry is never refused, and so never replaced"
     );
+}
+
+/// A token goes only when every byte is visible ASCII: what a header can carry, and what real
+/// issuers mint. Anything else is refused as a credential that cannot be presented, naming
+/// none of it.
+#[test]
+fn a_token_a_header_cannot_carry_is_refused_and_a_real_one_goes() {
+    for token in [
+        "ya29.a0AfH6SM-_~+/=",
+        "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln",
+        "EwB!A*$y",
+    ] {
+        assert_eq!(
+            authorization(present_token(request(), token)),
+            Ok(format!("Bearer {token}"))
+        );
+    }
+    for token in [
+        "",
+        "sec ret",
+        "sec\r\nret",
+        "sec\0ret",
+        "sec\tret",
+        "sec\x7fret",
+        "sécret",
+    ] {
+        let refused = present_token(request(), token).expect_err("refused");
+        let error = refused.into_error();
+        assert_eq!(error.class(), FailureClass::Permanent, "{token:?}");
+        assert!(error.is_credential_failure());
+        assert!(!error.to_string().contains("sec"), "{error}");
+    }
+}
+
+/// Basic takes any user-id but one holding a colon (RFC 7617 §2), which would move the
+/// boundary to the password, and no control character in either part.
+#[test]
+fn basic_refuses_a_colon_in_the_username_and_a_control_character_anywhere() {
+    for (username, password) in [("al:ice", "pw"), ("alice\r\n", "pw"), ("alice", "p\nw")] {
+        let refused = present_basic(request(), username, password).expect_err("refused");
+        let error = refused.into_error();
+        assert!(error.is_credential_failure(), "{username:?}");
+        assert_eq!(error.class(), FailureClass::Permanent);
+        assert!(!error.to_string().contains("alice"), "{error}");
+    }
+    // A colon in the password, and a name past ASCII, go.
+    assert_eq!(
+        authorization(present_basic(request(), "alice", "o:ld")),
+        Ok("Basic YWxpY2U6bzpsZA==".to_owned()) // alice:o:ld
+    );
+    assert!(present_basic(request(), "ålice", "pw").is_ok());
 }

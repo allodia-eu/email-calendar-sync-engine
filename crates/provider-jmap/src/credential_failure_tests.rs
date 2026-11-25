@@ -158,3 +158,25 @@ async fn a_failed_exchange_or_a_refused_credential_is_not_a_credential_failure()
     assert_eq!(err.class(), FailureClass::Authentication, "{err:?}");
     assert!(!err.is_credential_failure(), "{err:?}");
 }
+
+/// A token holding a byte a header cannot carry, and a password framed under Basic whose
+/// username holds a colon, are refused before anything is sent, as credential failures that no
+/// retry can mend, and the error repeats neither.
+#[tokio::test]
+async fn a_credential_a_header_cannot_carry_is_a_credential_failure_and_nothing_is_sent() {
+    for credential in [
+        Credential::bearer("secret\r\nX-Injected: 1"),
+        Credential::bearer("sécret"),
+    ] {
+        let (base, seen) = mock_server(vec![ok("{}")]);
+        let source = Arc::new(Rotating::new(credential, Vec::new()));
+        let Err(err) = transport(&source).get(&base).await else {
+            panic!("refused")
+        };
+        let err = ProviderError::from(err);
+        assert!(err.is_credential_failure(), "{err:?}");
+        assert_eq!(err.class(), FailureClass::Permanent);
+        assert!(!format!("{err:?}").contains("cret"), "{err:?}");
+        assert_eq!(seen.lock().unwrap().len(), 0, "nothing was sent");
+    }
+}
