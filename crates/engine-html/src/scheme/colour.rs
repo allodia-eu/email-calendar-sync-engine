@@ -2,7 +2,7 @@
 //!
 //! The move keeps the colour's hue and changes only its perceived lightness, in OKLab, so a
 //! brand's blue stays blue and a red warning stays red. What it moves to depends on what the
-//! colour is *for* ([`Role`]): a light fill becomes a dark one, dark ink becomes light, and a
+//! colour is *for* ([`ColourRole`]): a light fill becomes a dark one, dark ink becomes light, and a
 //! rule or border swaps its lightness end for end. A fill or ink already right for a dark page is
 //! left where it is, which is what lets a sender's own dark styling through untouched; a line has
 //! no such colour, because what it carries is its contrast with the page.
@@ -11,7 +11,7 @@ use super::named::named_colour;
 
 /// What a colour paints, which decides where it moves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Role {
+pub enum ColourRole {
     /// A fill text sits on: `background`, `bgcolor`.
     Fill,
     /// Text: `color`, `<font color>`.
@@ -40,23 +40,23 @@ const INK_L: f32 = 0.9158;
 const FILL_CEILING: f32 = 0.42;
 
 /// The darkest ink gets on a dark page: 4.5:1 against the canvas, and comfortably more against
-/// any fill [`Role::Fill`] produces.
+/// any fill [`ColourRole::Fill`] produces.
 const INK_FLOOR: f32 = 0.72;
 
 /// Below this a colour reads as dark, above it as light.
 const MIDPOINT: f32 = 0.5;
 
 /// The colour `role` should become on a dark page, or `None` when it is already right for one.
-pub(super) fn darken(colour: Rgba, role: Role) -> Option<Rgba> {
+pub(super) fn darken(colour: Rgba, role: ColourRole) -> Option<Rgba> {
     let lab = Lab::from_rgb(colour);
     let l = match role {
-        Role::Fill if lab.l > MIDPOINT => {
+        ColourRole::Fill if lab.l > MIDPOINT => {
             CANVAS_L + (1.0 - lab.l) / (1.0 - MIDPOINT) * (FILL_CEILING - CANVAS_L)
         }
-        Role::Ink if lab.l < MIDPOINT => INK_L - lab.l / MIDPOINT * (INK_L - INK_FLOOR),
-        Role::Ink if lab.l < INK_FLOOR => INK_FLOOR,
-        Role::Line => CANVAS_L + (1.0 - lab.l) * (INK_L - CANVAS_L),
-        Role::Fill | Role::Ink => return None,
+        ColourRole::Ink if lab.l < MIDPOINT => INK_L - lab.l / MIDPOINT * (INK_L - INK_FLOOR),
+        ColourRole::Ink if lab.l < INK_FLOOR => INK_FLOOR,
+        ColourRole::Line => CANVAS_L + (1.0 - lab.l) * (INK_L - CANVAS_L),
+        ColourRole::Fill | ColourRole::Ink => return None,
     };
     let moved = Lab { l, ..lab }.to_rgb_in_gamut(colour.a);
     (moved.to_hex() != colour.to_hex()).then_some(moved)
