@@ -26,8 +26,21 @@ each over its own `GraphClient` on the same token. The mail layers:
   unit-tested against captured fixtures.
 - **`transport`** — a `GraphTransport` seam over bearer HTTP. `HttpTransport`
   (reqwest + rustls, built from the caller-supplied `TlsClientConfig` passed to
-  `GraphClient::connect`/`for_mailbox`/`with_base` — `tls.md`) is production; the
-  seam lets the fetch/provider orchestration run offline against fixtures. There is **no session discovery**
+  `GraphClient::connect_with_source`/`with_base_and_source`, or `connect`/`for_mailbox`/
+  `with_base` for a fixed token — `tls.md`) is production; the
+  seam lets the fetch/provider orchestration run offline against fixtures. **The token is
+  asked for, not held**: every authenticated request goes through the account's
+  `engine_http::AuthenticatedClient`, which asks its `CredentialSource` (`credential-source.md`).
+  No redirect is followed; a token goes over plaintext only to loopback from a base on
+  loopback, and only to an origin the source permits. A `401` whose challenge offers `Bearer`
+  is replaced once and the request sent again (a `sendMail` included: a `401` says it was not
+  processed), and so is one with no challenge at all (YAHOO-1), except on the directory's
+  delta (`/users/delta`), which Graph answers that way on a personal account with a good token
+  (MICROSOFT-2, `spec-deviations.md`): only that read takes a bare `401` as final. Only a token is presented (`engine_http::present_bearer`): a source
+  answering a password fails the request as `Permanent` before it is sent. Content URLs keep
+  their anonymous client and never ask. `GraphClient` is a cheap clone whose clones share the
+  transport, so one client per account serves every folder-bound `GraphProvider`; a token with
+  application permissions reaches another mailbox through `with_principal`. There is **no session discovery**
   (the v1.0 root is fixed); requests carry `Prefer: IdType="ImmutableId"`.
   Having no connect-time request, Graph is the one adapter whose
   `ConnectionInfo::http_version` is `None` until its first fetch — the transport

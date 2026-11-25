@@ -26,6 +26,8 @@ engine-sieve = { workspace = true }
 # so the offline tests drive it over an in-memory duplex with no socket or TLS.
 tokio = { workspace = true, features = ["io-util", "net", "sync", "time"] }
 tokio-rustls = { workspace = true }
+# The self-signed certificate `test_server` presents; only with the `test-server` feature.
+rcgen = { version = "0.13", optional = true }
 # `try_stream!` builds the resumable, incremental email chunk stream; `futures-util`
 # drives the inner streamed FETCH loop.
 async-stream = { workspace = true }
@@ -50,6 +52,9 @@ time = { workspace = true }
 import = ["engine-provider/import"]
 # Exposes `fuzz_parse` for the `fuzz/` cargo-fuzz target; off in normal builds.
 fuzzing = []
+# TEST BUILDS ONLY: `test_server`, an in-process Gmail IMAP server over TLS, for another crate's
+# suite to connect a real account to. Only dev-dependencies turn it on.
+test-server = ["dep:rcgen"]
 
 [dev-dependencies]
 # Tests add the blocking/macro pieces and `test-util` for `start_paused` — so the

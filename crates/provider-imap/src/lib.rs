@@ -146,6 +146,8 @@ mod integration;
 mod mock;
 #[cfg(test)]
 mod process_kill_tests;
+#[cfg(any(test, feature = "test-server"))]
+pub mod test_server;
 #[cfg(test)]
 mod uidonly_tests;
 #[cfg(test)]

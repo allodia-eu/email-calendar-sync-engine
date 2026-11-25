@@ -231,7 +231,7 @@ impl DavClient {
                     build()?,
                     Exchange::Ordinary,
                     presentation::present,
-                    presentation::judge,
+                    engine_http::judge_by_scheme,
                 )
                 .await;
         }
@@ -255,18 +255,19 @@ impl DavClient {
                 build()?,
                 Exchange::Ordinary,
                 |builder, credential| {
-                    let scheme = engine_http::credential_scheme(credential)
-                        .ok_or_else(presentation::unpresentable)?;
-                    // A trusted origin that asked only for the method this kind of credential
-                    // is not (Basic, for a token): say so, rather than leave a `401` that reads
-                    // as the credential being refused.
-                    if let Some(offered) = self.scope.unanswerable(url, &challenge, scheme) {
-                        return Err(CalDavError::UnsupportedAuthentication(offered));
+                    // A kind HTTP cannot carry has no scheme, and `present` refuses it.
+                    if let Some(scheme) = engine_http::credential_scheme(credential) {
+                        // A trusted origin that asked only for the method this kind of
+                        // credential is not (Basic, for a token): say so, rather than leave a
+                        // `401` that reads as the credential being refused.
+                        if let Some(offered) = self.scope.unanswerable(url, &challenge, scheme) {
+                            return Err(CalDavError::UnsupportedAuthentication(offered));
+                        }
+                        self.scope.answers(url, &challenge, scheme);
                     }
-                    self.scope.answers(url, &challenge, scheme);
                     presentation::present(builder, credential)
                 },
-                presentation::judge,
+                engine_http::judge_by_scheme,
             )
             .await
     }

@@ -16,9 +16,14 @@
 //! offline against captured fixtures; the production reqwest implementation
 //! ([`HttpTransport`](crate::http_transport)) lives in `http_transport`.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use engine_http::RetryConfig;
-use engine_provider::{HandOver, HttpVersion, TlsVersion};
+use engine_provider::{
+    Credential, CredentialSource, CredentialSubject, FixedCredential, HandOver, HttpVersion,
+    TlsVersion,
+};
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
 
@@ -138,13 +143,21 @@ pub(crate) trait GoogleTransport: Send + Sync {
 
 /// A connected Google client: an authenticated transport plus the API root.
 ///
-/// Built with [`GoogleClient::connect`] (an OAuth bearer access token; the engine
-/// stays OAuth-agnostic, so token acquisition/refresh is the host's job —
-/// `north-star.md`). The fetch layer builds API-relative paths and issues them
-/// through the crate-internal `url`/`get`/… methods.
+/// Built with [`GoogleClient::connect_with_source`], which asks the account's
+/// [`CredentialSource`] for its token on every request, or with [`GoogleClient::connect`] for a
+/// token that never changes. The engine stays OAuth-agnostic: acquiring and refreshing the token
+/// is the source's job (`docs/design/credential-source.md`). The fetch layer builds API-relative
+/// paths and issues them through the crate-internal `url`/`get`/… methods.
+///
+/// Cheap to clone, and the clones share one transport: one HTTP connection pool, one source,
+/// one request gate, and the versions it observed. A host builds one client per account and
+/// hands each of the account's providers a clone.
+#[derive(Clone)]
 pub struct GoogleClient {
-    transport: Box<dyn GoogleTransport>,
+    transport: Arc<dyn GoogleTransport>,
     base: String,
+    /// Who the source signs in as; `None` only for a transport a test builds.
+    subject: Option<CredentialSubject>,
 }
 
 impl core::fmt::Debug for GoogleClient {
@@ -177,7 +190,10 @@ pub(crate) fn encode_query_value(value: &str) -> String {
 }
 
 impl GoogleClient {
-    /// Connects with an OAuth bearer access token, targeting the Google APIs root.
+    /// Connects with an OAuth bearer access token that never changes and is never replaced
+    /// ([`FixedCredential`] under a subject of its own), targeting the Google APIs root. A host
+    /// whose token is refreshed, or whose account also reads mail over IMAP, uses
+    /// [`connect_with_source`](Self::connect_with_source).
     ///
     /// # Errors
     ///
@@ -192,8 +208,36 @@ impl GoogleClient {
         retry: &RetryConfig,
         user_agent: &engine_http::UserAgent,
     ) -> Result<Self, GoogleError> {
-        let transport = Box::new(HttpTransport::new(token.into(), tls, retry, user_agent)?);
-        Ok(Self::with_transport(transport, GOOGLE_BASE.to_owned()))
+        Self::connect_with_source(fixed(token), tls, retry, user_agent)
+    }
+
+    /// Connects to the Google APIs, asking `source` for the token on every request
+    /// (`docs/design/credential-source.md`). Nothing is sent until the first request.
+    ///
+    /// Requests follow no redirect, so the token goes only where a request is addressed; it goes
+    /// over plaintext only to loopback from a base on loopback, and only to an origin the source
+    /// [permits](CredentialSource::permits) (Gmail and Calendar at `www.googleapis.com`, People
+    /// and Meet at hosts of their own). A `401` whose challenge offers `Bearer` asks the source
+    /// once for a replacement and sends the request once more; a request with no answer is never
+    /// sent again. The source must answer a token
+    /// ([`Credential::Bearer`](engine_provider::Credential::Bearer)): the APIs sign in with
+    /// nothing else, so any other kind fails the request as `Permanent` before it is sent. A
+    /// domain-wide-delegation token minted for one user is one such token.
+    ///
+    /// The account's IMAP half, where there is one, asks the same source
+    /// ([`GmailProvider::with_imap`](crate::GmailProvider::with_imap)); a token answered with
+    /// the account's address ([`Credential::bearer_for`]) serves both.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GoogleError::Transport`] if the HTTP client cannot be built.
+    pub fn connect_with_source(
+        source: Arc<dyn CredentialSource>,
+        tls: &TlsClientConfig,
+        retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
+    ) -> Result<Self, GoogleError> {
+        Self::with_base_and_source(source, GOOGLE_BASE, tls, retry, user_agent)
     }
 
     /// Connects a real client to a custom base origin instead of the Google root —
@@ -212,15 +256,44 @@ impl GoogleClient {
         retry: &RetryConfig,
         user_agent: &engine_http::UserAgent,
     ) -> Result<Self, GoogleError> {
-        Ok(Self::with_transport(
-            Box::new(HttpTransport::new(token.into(), tls, retry, user_agent)?),
-            base.into(),
-        ))
+        Self::with_base_and_source(fixed(token), &base.into(), tls, retry, user_agent)
+    }
+
+    /// [`with_base`](Self::with_base), asking `source` for the token on every request as
+    /// [`connect_with_source`](Self::connect_with_source) does. The base is the account's
+    /// configured origin: the token goes over plaintext only when it is on loopback.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GoogleError::Protocol`] if `base` is not an absolute URL, and
+    /// [`GoogleError::Transport`] if the HTTP client cannot be built.
+    pub fn with_base_and_source(
+        source: Arc<dyn CredentialSource>,
+        base: &str,
+        tls: &TlsClientConfig,
+        retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
+    ) -> Result<Self, GoogleError> {
+        let subject = source.subject().clone();
+        let transport = HttpTransport::new(base, source, tls, retry, user_agent)?;
+        Ok(Self {
+            subject: Some(subject),
+            ..Self::with_transport(Box::new(transport), base.to_owned())
+        })
     }
 
     /// Wraps a transport and API root (the seam offline tests construct).
     pub(crate) fn with_transport(transport: Box<dyn GoogleTransport>, base: String) -> Self {
-        Self { transport, base }
+        Self {
+            transport: Arc::from(transport),
+            base,
+            subject: None,
+        }
+    }
+
+    /// Who the account's source signs in as; `None` only for a transport a test builds.
+    pub(crate) fn subject(&self) -> Option<&CredentialSubject> {
+        self.subject.as_ref()
     }
 
     /// Builds an absolute URL from an API-relative path (`/gmail/v1/…`).
@@ -366,100 +439,15 @@ impl GoogleClient {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn client_roots_urls_at_the_base_and_redacts_debug() {
-        let client = GoogleClient::connect(
-            "super-secret-token",
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap();
-        assert_eq!(
-            client.url("/gmail/v1/users/me/labels"),
-            format!("{GOOGLE_BASE}/gmail/v1/users/me/labels")
-        );
-        // A custom base roots every path there (a replay server / proxy).
-        let custom = GoogleClient::with_base(
-            "t",
-            "http://127.0.0.1:9",
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap();
-        assert_eq!(
-            custom.url("/calendar/v3/users/me/calendarList"),
-            "http://127.0.0.1:9/calendar/v3/users/me/calendarList"
-        );
-        // The Debug rendering must not leak the bearer token.
-        assert!(!format!("{client:?}").contains("super-secret-token"));
-    }
-
-    /// Gmail bills a user's calls against 6,000 units a minute, and the account's gate is the
-    /// one place every provider and every core of that account spends through, so the client
-    /// states its pace there as it connects.
-    #[test]
-    fn connecting_holds_the_account_to_gmails_quota() {
-        let retry = crate::test_support::retry();
-        GoogleClient::connect(
-            "t",
-            crate::test_support::tls(),
-            &retry,
-            &crate::test_support::user_agent(),
-        )
-        .unwrap();
-        assert_eq!(
-            retry.gate().pace(),
-            Some((crate::quota::UNITS_PER_MINUTE, crate::quota::WINDOW))
-        );
-    }
-
-    /// People is the one API not served from [`GOOGLE_BASE`]: a contact path rooted
-    /// there answers an HTML `404`, so `people_url` must retarget it — while a custom
-    /// base (replay server / proxy) still wins.
-    #[test]
-    fn people_paths_root_at_the_people_host_unless_a_custom_base_is_set() {
-        let client = GoogleClient::connect(
-            "t",
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap();
-        assert_eq!(
-            client.people_url("/v1/people/me/connections"),
-            format!("{PEOPLE_BASE}/v1/people/me/connections")
-        );
-        assert_eq!(
-            client.meet_url("/v2/spaces"),
-            format!("{MEET_BASE}/v2/spaces")
-        );
-        // Gmail and Calendar are unaffected — they stay on the universal host.
-        assert_eq!(
-            client.url("/gmail/v1/users/me/labels"),
-            format!("{GOOGLE_BASE}/gmail/v1/users/me/labels")
-        );
-        // A custom base wins, so the offline fixture-replay tests are unchanged.
-        let custom = GoogleClient::with_base(
-            "t",
-            "http://127.0.0.1:9",
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap();
-        assert_eq!(
-            custom.people_url("/v1/people/me/connections"),
-            "http://127.0.0.1:9/v1/people/me/connections"
-        );
-        assert_eq!(
-            custom.meet_url("/v2/spaces"),
-            "http://127.0.0.1:9/v2/spaces"
-        );
-    }
+/// `token` as a source that never changes and is never replaced, under a subject of its own.
+fn fixed(token: impl Into<String>) -> Arc<dyn CredentialSource> {
+    Arc::new(FixedCredential::unique(Credential::bearer(token)))
 }
+
+#[cfg(test)]
+#[path = "transport_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "credential_source_tests.rs"]
+mod credential_source_tests;

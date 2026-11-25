@@ -437,7 +437,7 @@ is authoritative for the `provider-caldav` calendar client.
 `Password` (IMAP `LOGIN`, SMTP `AUTH PLAIN`), `Bearer` (an access token over SASL, with the
 account's username, which both SASL mechanisms carry: `Credential::bearer_for`), or `ActingAs`
 (an administrator's password signing in as another account, IMAP only: below). It is the
-engine's one credential type, which every adapter is moving onto
+engine's one credential type, which every adapter now asks for through a source
 (`docs/design/credential-source.md`). The posture is the same as Graph and Google: **the engine
 stays OAuth-agnostic**: acquiring, storing and refreshing the token is the host's job
 (`north-star.md`). `provider_imap::Credentials` remains as a deprecated alias, and its
@@ -1224,6 +1224,11 @@ object. `ImapAccount::gmail` (offered only on a session advertising `X-GM-EXT-1`
 `GmailMail` instead: a reader of All Mail (`\All`), Spam (`\Junk`) and Trash (`\Trash`), the
 three folders that between them hold every message once. It reads and never writes; what a
 label means is `provider-google`'s (`google.md`, "Mail read over IMAP"), which is the only user.
+`GmailMail::credential_subject` says who it signs in as (the subject of its config's source,
+recorded by `ImapAccount::connect`), so the Gmail adapter can refuse a reader that does not sign
+in as the same credential subject as its API half. `test_server::gmail` (the `test-server`
+feature, which only dev-dependencies turn on) serves an in-process Gmail over TLS, so another
+crate's suite can connect a real `ImapAccount` offline.
 
 - **Gmail's items.** `X-GM-MSGID`, `X-GM-THRID` and `X-GM-LABELS` (`parse_gmail`) are the same
   for a message in every folder; a message moving between the three keeps its Gmail id under a

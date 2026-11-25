@@ -126,10 +126,10 @@ Each HTTP provider starts from it through `engine_http::client(tls, user_agent)`
 the dial bound (`deadlines.md`) and the host's `User-Agent`, and then adds its own non-TLS
 settings, e.g. redirect policy. It advertises ALPN `h2` then `http/1.1`, so the HTTP providers
 negotiate HTTP/2 where
-the server supports it (Google does; `graph.microsoft.com` answers HTTP/1.1 even when
-`h2` is offered — measured 2026-09-11 against the live account and confirmed with an
-independent `curl --http2`, so this is the server's choice, not a missing ALPN offer)
-and fall back to HTTP/1.1 —
+the server supports it (Google does, and so does `graph.microsoft.com` since about
+November 2026: it answered HTTP/1.1 to the same `h2` offer when measured on 2026-09-11, and
+HTTP/2 on 2026-11-24 with the client unchanged, an independent `curl` agreeing both times, so
+the version is the server's choice) and fall back to HTTP/1.1 —
 reqwest's preconfigured-TLS path keeps the config's ALPN rather than deriving its
 own, so it is set here. The shared connector (IMAP/SMTP) carries no ALPN.
 

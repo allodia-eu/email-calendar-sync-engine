@@ -1,6 +1,13 @@
 //! The production reqwest [`GoogleTransport`]: bearer auth over the standard HTTP
 //! stack.
 //!
+//! Every request that carries the token goes through one [`AuthenticatedClient`], which asks
+//! the account's [`CredentialSource`] for it each time (`docs/design/credential-source.md`): a
+//! token the host refreshed is the one presented, and a token Google refuses with a `401` is
+//! replaced once and the request sent once more. A content URL is fetched on a plain client,
+//! with no token and no ask. The account's IMAP half signs in as the same credential subject
+//! ([`GmailProvider::with_imap`](crate::GmailProvider::with_imap)).
+//!
 //! The one funnel every request flows through records the negotiated HTTP and TLS
 //! versions, so no path forgets them. Google needs no request-shaping preference header
 //! (unlike Graph's immutable-id `Prefer`): reads are plain bearer `GET`s. The write
@@ -8,18 +15,26 @@
 //! they land. The offline tests drive it over a blocking single-shot mock server (no
 //! network).
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use engine_http::{Exchange, ObservedConnection, RetryConfig, send_retrying};
-use engine_provider::{HttpVersion, TlsVersion};
+use engine_http::{
+    AuthenticatedClient, Exchange, ObservedConnection, RetryConfig, Sent, send_retrying,
+};
+use engine_provider::{Credential, CredentialSource, HttpVersion, TlsVersion};
 use engine_tls::TlsClientConfig;
+use reqwest::RequestBuilder;
 use serde_json::Value;
 
 use crate::{error::GoogleError, transport::GoogleTransport};
 
 /// The production reqwest transport: bearer auth.
 pub(crate) struct HttpTransport {
-    client: reqwest::Client,
-    token: String,
+    /// The account's client, which asks its source for the token on every request.
+    http: AuthenticatedClient,
+    /// Content URLs, which never carry the token: a plain client, following redirects as any
+    /// fetch of a public URL does.
+    anonymous: reqwest::Client,
     /// The HTTP and TLS versions most recently observed. `GoogleClient::connect`
     /// performs no request (Google has no session-discovery step), so these stay `None`
     /// until the adapter's first fetch.
@@ -32,15 +47,18 @@ pub(crate) struct HttpTransport {
 }
 
 impl HttpTransport {
-    /// Builds a transport authenticating with an OAuth bearer access token.
+    /// Builds a transport for the account configured at `base`, asking `source` for its token
+    /// on every request.
     ///
     /// # Errors
     ///
-    /// Returns [`GoogleError::Transport`] if the HTTP client cannot be built.
+    /// [`GoogleError::Protocol`] if `base` is not an absolute URL; [`GoogleError::Transport`]
+    /// if the HTTP client cannot be built.
     ///
     /// `tls` carries the host's trust policy (`docs/agent-guidance/tls.md`).
     pub(crate) fn new(
-        token: String,
+        base: &str,
+        source: Arc<dyn CredentialSource>,
         tls: &TlsClientConfig,
         retry: &RetryConfig,
         user_agent: &engine_http::UserAgent,
@@ -69,12 +87,30 @@ impl HttpTransport {
         retry.gate().narrow_to(crate::fetch::MAX_CONCURRENT_GETS);
         // The limit an ordinary pass actually meets is the rate, so the rate is bounded too.
         crate::quota::pace(retry.gate());
+        // Not echoed: a host may have put a credential in it.
+        let configured = reqwest::Url::parse(base)
+            .map_err(|_| GoogleError::protocol("the Google base is not an absolute URL"))?;
         Ok(Self {
-            client: engine_http::client(tls, user_agent).build()?,
-            token,
+            http: AuthenticatedClient::new(tls, user_agent, configured, source, retry.clone())?,
+            anonymous: engine_http::client(tls, user_agent).build()?,
             connection: ObservedConnection::default(),
             retry,
         })
+    }
+
+    /// Sends `request` with the account's token, through the account's client, and records the
+    /// transport versions it was answered over.
+    async fn authenticated(
+        &self,
+        request: RequestBuilder,
+        exchange: Exchange<'_>,
+    ) -> Result<Sent, GoogleError> {
+        let sent = self
+            .http
+            .send(request, exchange, present, engine_http::judge_by_scheme)
+            .await?;
+        self.connection.record(&sent);
+        Ok(sent)
     }
 
     /// Issues an authenticated write (`POST`/`PATCH`/`DELETE`) the write shapes share,
@@ -90,24 +126,20 @@ impl HttpTransport {
         exchange: Exchange<'_>,
     ) -> Result<engine_http::Sent, GoogleError> {
         crate::quota::charge(self.retry.gate(), &method, url).await;
-        let mut request = self.client.request(method, url).bearer_auth(&self.token);
+        let mut request = self.http.request(method, url);
         if let Some(content_type) = content_type {
             request = request.header("Content-Type", content_type);
         }
         if let Some(if_match) = if_match {
             request = request.header("If-Match", if_match);
         }
-        let response = send_retrying(request.body(body), &self.retry, exchange).await?;
-        self.connection.record(&response);
-        Ok(response)
+        self.authenticated(request.body(body), exchange).await
     }
 
-    /// Sends a prepared byte fetch, recording the negotiated versions and classifying a
-    /// non-2xx. Shared by the authenticated and anonymous byte paths so they differ in
-    /// exactly one thing: whether the bearer token is attached.
-    async fn fetch_bytes(&self, request: reqwest::RequestBuilder) -> Result<Vec<u8>, GoogleError> {
-        let resp = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
-        self.connection.record(&resp);
+    /// Classifies a byte fetch's reply and reads its body. Shared by the authenticated and
+    /// anonymous byte paths so they differ in exactly one thing: whether the bearer token is
+    /// attached.
+    async fn fetch_bytes(resp: Sent) -> Result<Vec<u8>, GoogleError> {
         let status = resp.status();
         if !status.is_success() {
             let wait = resp.stated_wait();
@@ -116,6 +148,16 @@ impl HttpTransport {
         }
         Ok(resp.bytes().await?)
     }
+}
+
+/// The token on `builder`: the Google APIs sign in with a token alone, so any other kind is
+/// refused before anything is sent. A `401` is read by [`engine_http::judge_by_scheme`]: Google
+/// refuses a token with a `Bearer` challenge (`error="invalid_token"`).
+fn present(
+    builder: RequestBuilder,
+    credential: &Credential,
+) -> Result<RequestBuilder, GoogleError> {
+    Ok(engine_http::present_bearer(builder, credential)?)
 }
 
 /// Turns a successful write response into its parsed JSON body, or `None` when the
@@ -139,9 +181,9 @@ async fn write_body(resp: engine_http::Sent) -> Result<Option<Value>, GoogleErro
 impl GoogleTransport for HttpTransport {
     async fn get(&self, url: &str) -> Result<Value, GoogleError> {
         crate::quota::charge(self.retry.gate(), &reqwest::Method::GET, url).await;
-        let request = self.client.get(url).bearer_auth(&self.token);
-        let resp = send_retrying(request, &self.retry, Exchange::Ordinary).await?;
-        self.connection.record(&resp);
+        let resp = self
+            .authenticated(self.http.get(url), Exchange::Ordinary)
+            .await?;
         let status = resp.status();
         if !status.is_success() {
             let wait = resp.stated_wait();
@@ -157,12 +199,16 @@ impl GoogleTransport for HttpTransport {
 
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, GoogleError> {
         crate::quota::charge(self.retry.gate(), &reqwest::Method::GET, url).await;
-        self.fetch_bytes(self.client.get(url).bearer_auth(&self.token))
-            .await
+        let resp = self
+            .authenticated(self.http.get(url), Exchange::Ordinary)
+            .await?;
+        Self::fetch_bytes(resp).await
     }
 
     async fn get_bytes_unauthenticated(&self, url: &str) -> Result<Vec<u8>, GoogleError> {
-        self.fetch_bytes(self.client.get(url)).await
+        // Not recorded: the content host's connection says nothing about the account's.
+        let resp = send_retrying(self.anonymous.get(url), &self.retry, Exchange::Ordinary).await?;
+        Self::fetch_bytes(resp).await
     }
 
     async fn post(
@@ -276,223 +322,8 @@ impl GoogleTransport for HttpTransport {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::io::{Read, Write};
-
-    use engine_core::error::FailureClass;
-
-    use super::*;
-
-    /// Serves one canned response and hands back the raw request head, so a test can
-    /// assert on the headers that actually went out.
-    fn mock_server_capturing(
-        response: String,
-    ) -> (String, std::sync::Arc<std::sync::Mutex<String>>) {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let sink = std::sync::Arc::clone(&seen);
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 4096];
-                let read = stream.read(&mut buf).unwrap_or(0);
-                *sink.lock().unwrap() = String::from_utf8_lossy(&buf[..read]).into_owned();
-                let _ = stream.write_all(response.as_bytes());
-            }
-        });
-        (format!("http://{addr}"), seen)
-    }
-
-    /// A People `photos[].url` points off-origin (`googleusercontent.com`) and is served
-    /// publicly. The anonymous byte path exists so the OAuth token never travels there.
-    #[tokio::test]
-    async fn the_anonymous_byte_path_sends_no_authorization_header() {
-        let body = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nbytes";
-        let (base, seen) = mock_server_capturing(body.to_owned());
-        let transport = HttpTransport::new(
-            "super-secret".to_owned(),
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap();
-
-        transport.get_bytes_unauthenticated(&base).await.unwrap();
-
-        let sent = seen.lock().unwrap().to_lowercase();
-        assert!(
-            !sent.contains("authorization"),
-            "OAuth token leaked to a payload-named host: {sent}"
-        );
-        assert!(
-            !sent.contains("super-secret"),
-            "token in the request: {sent}"
-        );
-    }
-
-    /// A blocking single-shot mock HTTP server: serves `response` to one connection, so
-    /// the live reqwest transport runs offline (no network).
-    fn mock_server(response: String) -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 4096];
-                let _ = stream.read(&mut buf);
-                let _ = stream.write_all(response.as_bytes());
-            }
-        });
-        format!("http://{addr}")
-    }
-
-    fn http(status_line: &str, body: &str) -> String {
-        format!(
-            "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-    }
-
-    #[tokio::test]
-    async fn get_parses_a_success_body() {
-        let base = mock_server(http("200 OK", r#"{"labels":[]}"#));
-        let transport = HttpTransport::new(
-            "tok".to_owned(),
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap();
-        let doc = transport.get(&base).await.unwrap();
-        assert!(doc.get("labels").is_some());
-    }
-
-    #[tokio::test]
-    async fn the_http_version_is_unknown_until_the_first_response() {
-        // Google's connect performs no I/O (no session discovery), so a fresh transport
-        // has observed nothing; the first response fills the fact in.
-        let base = mock_server(http("200 OK", r#"{"labels":[]}"#));
-        let transport = HttpTransport::new(
-            "tok".to_owned(),
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap();
-        assert_eq!(GoogleTransport::http_version(&transport), None);
-
-        transport.get(&base).await.unwrap();
-        assert_eq!(
-            GoogleTransport::http_version(&transport),
-            Some(HttpVersion::Http1_1)
-        );
-        // The mock server speaks cleartext, so there is no TLS version to report — and
-        // reporting one anyway would be the tell that the fact is invented rather than
-        // read off the connection. The real handshake is covered in `engine-http`.
-        assert_eq!(GoogleTransport::tls_version(&transport), None);
-    }
-
-    #[tokio::test]
-    async fn non_success_status_becomes_a_classified_status_error() {
-        let body = r#"{"error":{"code":401,"message":"nope","errors":[{"reason":"authError"}],"status":"UNAUTHENTICATED"}}"#;
-        let base = mock_server(http("401 Unauthorized", body));
-        let err = HttpTransport::new(
-            "tok".to_owned(),
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap()
-        .get(&base)
-        .await
-        .unwrap_err();
-        assert!(matches!(&err, GoogleError::Status { reason: Some(r), .. } if r == "authError"));
-        assert_eq!(err.failure_class(), FailureClass::Authentication);
-    }
-
-    #[tokio::test]
-    async fn a_non_json_success_body_is_a_permanent_decode_error() {
-        let base = mock_server(http("200 OK", "this is not json"));
-        let err = HttpTransport::new(
-            "tok".to_owned(),
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap()
-        .get(&base)
-        .await
-        .unwrap_err();
-        // `Json`, not `Transport`: the bytes arrived fine and are not the JSON the
-        // protocol requires, which is what that variant is for. It used to be `Transport`
-        // only because `reqwest::Response::json` wrapped the parse failure as a decode
-        // error of its own — and a reply now comes back through `engine_http::Sent`, whose
-        // bytes this crate parses itself. The class callers branch on is unchanged.
-        assert!(matches!(err, GoogleError::Json(_)));
-        assert_eq!(err.failure_class(), FailureClass::Permanent);
-    }
-
-    #[tokio::test]
-    async fn a_refused_connection_is_a_retryable_transport_error() {
-        let err = HttpTransport::new(
-            "tok".to_owned(),
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap()
-        .get("http://127.0.0.1:1/gmail/v1/users/me/labels")
-        .await
-        .unwrap_err();
-        assert!(matches!(err, GoogleError::Transport(_)));
-        assert!(err.failure_class().is_retryable());
-    }
-
-    #[tokio::test]
-    async fn a_write_body_parses_json_or_treats_empty_as_none() {
-        // A modify/send echoes JSON; a 204 (a trash/untrash no-body) carries none.
-        let base = mock_server(http("200 OK", r#"{"id":"m1"}"#));
-        let sent = HttpTransport::new(
-            "tok".to_owned(),
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap()
-        .post(&base, "application/json", b"{}".to_vec())
-        .await
-        .unwrap();
-        assert_eq!(sent.unwrap()["id"], "m1");
-
-        let base = mock_server(http("204 No Content", ""));
-        HttpTransport::new(
-            "tok".to_owned(),
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap()
-        .delete(&base, None)
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_write_non_success_is_a_classified_status_error() {
-        let body = r#"{"error":{"code":403,"message":"no","errors":[{"reason":"insufficientPermissions"}],"status":"PERMISSION_DENIED"}}"#;
-        let base = mock_server(http("403 Forbidden", body));
-        let err = HttpTransport::new(
-            "tok".to_owned(),
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap()
-        .post(&base, "application/json", b"{}".to_vec())
-        .await
-        .unwrap_err();
-        assert_eq!(err.failure_class(), FailureClass::Permanent);
-    }
-}
+#[path = "http_transport_tests.rs"]
+mod tests;
 
 #[cfg(test)]
 #[path = "deadline_tests.rs"]

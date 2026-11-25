@@ -75,12 +75,16 @@ async fn live_the_connection_reports_the_negotiated_tls_version() {
          for reqwest's TlsInfo extension"
     );
     // The same response carried both facts — which is the reason they are recorded
-    // together. Observed: `graph.microsoft.com` answers **HTTP/1.1** even though the
-    // shared client offers `h2` first, and an independent `curl --http2` agrees, so this
-    // is Microsoft's choice and not a missing ALPN offer. (Google, on the same client,
-    // answers HTTP/2 — see `provider-google`'s counterpart.)
-    assert_eq!(
-        info.http_version,
-        Some(engine_provider::HttpVersion::Http1_1)
+    // together. Which version is Microsoft's choice: `graph.microsoft.com` answered
+    // HTTP/1.1 to the shared client's `h2` offer when this was first measured
+    // (2026-09-11), and started negotiating HTTP/2 by 2026-11-24, with the client builder
+    // unchanged and an independent `curl` seeing the same. So either is a real
+    // observation; `None` would mean the transport stopped recording it.
+    assert!(
+        matches!(
+            info.http_version,
+            Some(engine_provider::HttpVersion::Http2 | engine_provider::HttpVersion::Http1_1)
+        ),
+        "Graph answers over HTTP/2 or HTTP/1.1"
     );
 }

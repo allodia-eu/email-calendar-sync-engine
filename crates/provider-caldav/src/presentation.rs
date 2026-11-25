@@ -4,10 +4,12 @@
 //! [`engine_http::AuthenticatedClient`], which asks the account's source for it on every request
 //! (`docs/design/credential-source.md`). These are the two pieces that client leaves to the
 //! adapter: how a credential goes on a request ([`present`]), and what a `401` to a request that
-//! carried it says ([`judge`]). Both are WebDAV-neutral, so one answer serves all three.
+//! carried it says. Both are `engine_http`'s, shared with every adapter that takes the credential
+//! as it stands ([`engine_http::judge_by_scheme`]); what is left here is the crate's own
+//! credential type and the challenge no credential can answer.
 
-use engine_http::{Sent, Unauthorized, asks_for, credential_scheme, offered_schemes};
-use engine_provider::{Credential, ProviderError};
+use engine_http::asks_for;
+use engine_provider::Credential;
 use reqwest::RequestBuilder;
 
 use crate::{error::CalDavError, transport::Credentials};
@@ -22,7 +24,8 @@ impl From<Credentials> for Credential {
     }
 }
 
-/// `credential` on `builder`, in the scheme [`credential_scheme`] names.
+/// `credential` on `builder`, in the scheme [`engine_http::credential_scheme`] names
+/// ([`engine_http::present_credential`]).
 ///
 /// # Errors
 ///
@@ -31,34 +34,7 @@ pub(crate) fn present(
     builder: RequestBuilder,
     credential: &Credential,
 ) -> Result<RequestBuilder, CalDavError> {
-    match credential {
-        Credential::Password { username, password } => {
-            Ok(builder.basic_auth(username, Some(password.expose())))
-        }
-        Credential::Bearer { token, .. } => Ok(builder.bearer_auth(token.expose())),
-        _ => Err(unpresentable()),
-    }
-}
-
-/// The failure for a credential HTTP cannot carry.
-pub(crate) fn unpresentable() -> CalDavError {
-    CalDavError::Credential(ProviderError::permanent(
-        "this kind of credential cannot be presented over HTTP, which has no authorization \
-         identity",
-    ))
-}
-
-/// What a `401` to a request that carried `credential` says: the credential was refused when
-/// the challenge offers its scheme, or offers none at all (YAHOO-1 in `docs/spec-deviations.md`),
-/// and the source may replace it; a challenge only for other schemes is final, because another
-/// credential of the same kind would be refused the same way.
-pub(crate) fn judge(reply: &Sent, credential: &Credential) -> Unauthorized {
-    match credential_scheme(credential) {
-        Some(scheme) if asks_for(&offered_schemes(reply.headers()), scheme) => {
-            Unauthorized::Refused
-        }
-        _ => Unauthorized::Final,
-    }
+    Ok(engine_http::present_credential(builder, credential)?)
 }
 
 /// Whether a `401` offering `offered` can be answered by no credential HTTP carries at all:

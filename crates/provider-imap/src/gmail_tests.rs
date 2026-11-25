@@ -206,3 +206,34 @@ async fn a_refused_body_read_ends_the_stream_with_its_failure() {
     assert_eq!(got.len(), 1);
     assert!(got[0].is_err());
 }
+
+#[tokio::test]
+async fn the_reader_signs_in_as_the_account_does() {
+    let (account, _) = gmail_over(GMAIL_CAPABILITY, &[]).await;
+    let gmail = account.gmail().unwrap();
+    assert_eq!(gmail.credential_subject(), &account.subject);
+    assert_eq!(
+        gmail.clone().credential_subject(),
+        gmail.credential_subject()
+    );
+}
+
+#[tokio::test]
+async fn a_connected_account_signs_in_as_its_sources_subject() {
+    use std::sync::Arc;
+
+    use engine_provider::{Credential, CredentialSubject, FixedCredential};
+
+    let (cert, addr) = crate::test_server::gmail().await;
+    let tls = engine_tls::client_config(&engine_tls::TlsPolicy::pinned(vec![cert])).expect("tls");
+    let subject = CredentialSubject::new("acct-1");
+    let source = FixedCredential::new(subject.clone(), Credential::password("alice", "pw"));
+    let config = crate::ImapConfig::from_credential_source(addr, "127.0.0.1", Arc::new(source));
+
+    let account = ImapAccount::connect(&config, tls.connector())
+        .await
+        .expect("connect");
+
+    let gmail = account.gmail().expect("X-GM-EXT-1");
+    assert_eq!(gmail.credential_subject(), &subject);
+}

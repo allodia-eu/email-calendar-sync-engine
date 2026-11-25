@@ -158,11 +158,12 @@ impl TlsClientConfig {
     /// settings such as the redirect policy.
     ///
     /// Advertises ALPN `h2` then `http/1.1`, so the connection negotiates HTTP/2
-    /// where the server offers it (Google does; `graph.microsoft.com` answers HTTP/1.1
-    /// even when `h2` is offered — measured, see `docs/agent-guidance/tls.md`) and falls
-    /// back to HTTP/1.1 otherwise. ALPN is set here rather than inherited: the shared
-    /// config carries none (correct for the IMAP/SMTP connector), and reqwest's
-    /// preconfigured-TLS path keeps the config's ALPN instead of deriving its own.
+    /// where the server offers it (Google does, and `graph.microsoft.com` has since
+    /// November 2026, after answering HTTP/1.1 to the same offer before — measured, see
+    /// `docs/agent-guidance/tls.md`) and falls back to HTTP/1.1 otherwise. ALPN is set here rather
+    /// than inherited: the shared config carries none (correct for the IMAP/SMTP connector),
+    /// and reqwest's preconfigured-TLS path keeps the config's ALPN instead of deriving its
+    /// own.
     ///
     /// Also asks reqwest to attach its `TlsInfo` extension to every response, which
     /// is how an HTTP adapter learns the **negotiated TLS version** — the fact

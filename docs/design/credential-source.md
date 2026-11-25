@@ -1,8 +1,9 @@
 # Design note: one provider-neutral `CredentialSource`
 
-Status: accepted; steps 1 to 4 of "Phasing" have landed (`engine_provider::credential`,
-IMAP/SMTP on it, the IMAP authorization identity, JMAP on `engine_http::AuthenticatedClient`, and
-CalDAV, CardDAV and Talk on the same client). The direction is principle 7 of
+Status: accepted; steps 1 to 5 of "Phasing" have landed (`engine_provider::credential`,
+IMAP/SMTP on it, the IMAP authorization identity, JMAP on `engine_http::AuthenticatedClient`,
+CalDAV, CardDAV and Talk on the same client, and Microsoft Graph and the Google APIs on it too,
+with Google's IMAP and API halves bound to one credential subject). Every protocol path now asks. The direction is principle 7 of
 `north-star.md`: **credentials are asked for, not held.** The owner settled every open
 question on 2026-11-23 ("Decisions", at the end), and the body below states each decision where
 it applies. One `CredentialSource` is a "Next" step in
@@ -347,8 +348,8 @@ how a provider is built, not how a capability is reached.
 | `provider-imap` | `ImapConfig` holds `Arc<dyn engine_provider::CredentialSource>`; `with_renewal` becomes the shared helper; `dial`/`filing`/`smtp_auth` match on `Credential` | **Breaking**: (1) implementers of `provider_imap::CredentialSource` (`credentials`→`credential(request)`, `renew`→`replace(refused, request)`, new `subject`), and callers of `source.credentials()`/`renew()` too; (2) matches on `Credentials::OAuth2` (now `Credential::Bearer`); (3) `Credentials::username()` returns `Option<&str>`; (4) `Password.password` is a `Secret`, which breaks struct literals and reads of the field as a `String`; (5) a bare `Credentials` is no longer a source (`Arc::new(credentials)`); (6) `Debug` of `ImapConfig` and the credential no longer prints the username; (7) the shims are `#[deprecated]`, so a caller building with `-D warnings` fails until it moves to the new names. Callers otherwise keep compiling: a deprecated `Credentials` alias with its `password`/`oauth2` constructors, and `ImapConfig::new` taking a fixed credential. Not breaking (`ImapError` is `#[non_exhaustive]`): the new `ImapError::AuthUnsupported`, which some failures that were `Auth` now are, with the same class |
 | `provider-jmap` | `Transport` asks per request through an `AuthenticatedClient`; re-framing reads `Credential`; `JmapConfig::from_credential_source`; later `JmapEndpoint` | `JmapConfig::new(base, provider_jmap::Credentials, ua)` kept and converted into a `FixedCredential` with a unique subject. **Behaviour change:** a `401` can now cause one replayed request when the source replaces |
 | `provider-caldav` / CardDAV / Talk | `DavClient` and `TalkMeetings` send on an `AuthenticatedClient`; `CredentialScope` reads the credential's scheme; `permits` merged with `CredentialHosts`; `from_credential_source` on `CalDavConfig`, `CardDavConfig` and `TalkMeetings` | **Breaking:** the `pub credentials` field of `CalDavConfig` and `CardDavConfig` is gone (the source is private, as JMAP's is), so code reading or assigning it breaks; neither struct could be built as a literal before (private fields). `new` and `TalkMeetings::new` keep taking `provider_caldav::Credentials`, as a fixed credential under a unique subject. `CredentialHosts` and `with_credential_hosts` are deprecated, not removed, so a caller building with `-D warnings` fails until it moves to `permits`. **Behaviour changes:** no credential over plaintext except loopback-from-loopback (a plaintext server elsewhere fails the connect as `Permanent` before anything is sent); one replacement and replay on a `401` the source can answer; the configs' `Debug` no longer prints the username |
-| `provider-graph` | `HttpTransport` asks per request; `GraphClient::connect_with_source`; `GraphProvider` shares the client (`Arc`) | `connect(token, …)`, `for_mailbox` and `with_base` kept, wrapping a fixed bearer. `GraphProvider::new(GraphClient, …)` can keep its signature if `GraphClient` becomes a cheap clone |
-| `provider-google` | Same as Graph; `with_imap` and the API side bind **one** source, so both transports present the same token | `connect(token, …)` kept |
+| `provider-graph` | `HttpTransport` sends on an `AuthenticatedClient`; `GraphClient::connect_with_source` and `with_base_and_source`; `with_principal` public; `GraphClient` a cheap clone sharing one transport (`Arc`), so `GraphProvider` shares the client | Additive: `connect(token, …)`, `for_mailbox` and `with_base` kept, wrapping a fixed bearer under a unique subject; `GraphProvider::new(GraphClient, …)` keeps its signature. `GraphError::Credential` is new (`#[non_exhaustive]`). **Behaviour changes:** one replacement and replay on a `401` with a `Bearer` challenge; no redirect followed on an authenticated request (a `3xx` is returned as it came); no token over plaintext except loopback-from-loopback (`with_base` to an `http://` base off loopback now fails each request as `Permanent`); `with_base` refuses a base that is not an absolute URL at construction |
+| `provider-google` | Same as Graph (`GoogleClient::connect_with_source`, `with_base_and_source`, cheap clone); `GmailProvider::with_imap` checks that the IMAP reader signs in as the client's subject (`GmailMail::credential_subject`, new in `provider-imap`) | **Breaking:** `with_imap` returns `ProviderResult<Self>`, and refuses (`InvalidState`) a reader that signs in as another credential subject, which includes every pairing of `GoogleClient::connect(token)` with `ImapConfig::new(credential)`: each is a fixed credential under a subject of its own. `connect(token, …)` and `with_base` are kept. `GoogleError::Credential` is new. **Behaviour changes:** as Graph's |
 
 ### What the sync host's wrappers become
 
@@ -508,7 +509,44 @@ These live in `mail-calendar/crates/mailcal-account`, read-only here:
    password. With the replacement disabled, every one of those but the `permits` test fails.
 5. **Graph and Google API**: the same bearer funnel. Google's IMAP and API halves share one source.
    This deletes the token halves of the Graph and Gmail wrappers. Graph application permissions
-   and Google domain-wide delegation need nothing beyond this slice.
+   and Google domain-wide delegation need nothing beyond this slice. *Landed.* As built: both
+   transports send every authenticated request on an `AuthenticatedClient` built for the
+   client's base (`connect_with_source`, `with_base_and_source`; `connect`, `for_mailbox` and
+   `with_base` wrap a fixed bearer under a unique subject), and keep a plain client for content
+   URLs, which never ask. The presentation and the reading of a `401` CalDAV had are now
+   `engine_http`'s, shared: `present_credential` (Basic for a password, Bearer for a token),
+   `present_bearer` (for an API that signs in with a token alone: a password is refused as
+   `Permanent` before anything is sent, through `CredentialFailure::unpresentable`) and
+   `judge_by_scheme`. Graph's judge departs in one case: a `401` with no challenge to the
+   directory's delta (`/users/delta`) is final, because Graph answers the directory of a
+   personal account that way with a good token (MICROSOFT-2 in `spec-deviations.md`); without
+   it every pass over that source would cost a token refresh. Only that read was observed, so
+   every other Graph request keeps the shared rule, and a token refused without a challenge
+   elsewhere would still be replaced. Google's refusal carries a
+   `Bearer` challenge, so the shared rule stands. `GraphClient` and `GoogleClient` are cheap
+   clones over one shared transport, so `GraphProvider::new` keeps its signature and a host
+   builds one client per account rather than one per folder; `GraphClient::with_principal` is
+   public, for a token with application permissions to reach any mailbox. The Google binding
+   is checked rather than documented: `GmailProvider::with_imap` compares the IMAP reader's
+   subject (`GmailMail::credential_subject`, which `ImapAccount` records from its config's
+   source) with the client's, and refuses a mismatch as `InvalidState`, so an account cannot
+   end up with another account's reader, or with two fixed credentials under subjects of their
+   own. It proves one subject, not one source object: two sources naming the same subject are
+   the same account's by the subject contract, and a host passes one source to both so that a
+   replacement serves both. The source
+   answers the token with the account's address (`Credential::bearer_for`), which IMAP's SASL
+   needs and HTTP ignores. Proven live, read-only (`provider-graph/tests/live_credential_source.rs`,
+   `provider-google/tests/live_credential_source.rs`): on a personal Microsoft account and a
+   work account, a garbage token refused with Graph's `Bearer` challenge, replaced, and the
+   folders listed, with a control whose replacement is garbage too ending `Authentication`
+   after one replacement; on the personal account the directory's challenge-less `401` asking
+   for no replacement, and the same request with a garbage token asking for one; on the Google
+   test account the labels listed after a replacement, the same control, and the shared
+   source in both orders, the IMAP half's XOAUTH2 refusal replacing the token the API half
+   then presents without a refusal and the reverse, and an IMAP half signing in as another
+   subject refused. With the replacement disabled, each of those but the challenge-less `401` and the
+   binding fails; with Graph's departure removed, the challenge-less test fails; with the
+   subject check removed, the binding test fails.
 6. **Endpoints and `bind` for the direct host**: shared HTTP clients, per-subject caches, the IMAP
    pool registry with a process ceiling, and the eviction defaults with their host overrides.
 
@@ -572,7 +610,9 @@ Live (`AGENTS.md`: any new request shape is run against a real server):
   tools (`tools/graph-oauth`, `tools/google-oauth`): present a garbage or revoked token first,
   observe the `401`, and succeed through `replace`. Each `401` envelope is captured and scrubbed
   (the existing `UNAUTHORIZED` fixtures already have the right shape). If the owner cannot run
-  them, the PR names them as unverified.
+  them, the PR names them as unverified. As run: see "Phasing", step 5; the challenges are
+  `error/unauthorized_challenge.txt` in each crate's fixtures. A token with Graph application
+  permissions was not run: it is a bearer token like any other, on the same path.
 
 ## Decisions (2026-11-23)
 

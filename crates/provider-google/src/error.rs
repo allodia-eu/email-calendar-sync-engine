@@ -68,6 +68,17 @@ pub enum GoogleError {
     /// an absent list array, a malformed value, …).
     #[error("malformed Google response: {0}")]
     Protocol(String),
+
+    /// The credential could not be presented, or not replaced: the account's
+    /// [`CredentialSource`](engine_provider::CredentialSource) did not permit the origin, had no
+    /// credential to give, or did not answer within the request's deadline; the engine refused
+    /// the origin (plaintext HTTP, except to loopback from an account configured there); or the
+    /// credential is not a token, which is all the Google APIs sign in with. In each of those
+    /// nothing was sent. When the source fails as it is asked to replace a token Google refused
+    /// with a `401`, a request was sent and refused, and this takes the `401`'s place.
+    /// Classified as the source classified it, and `Permanent` for a refusal.
+    #[error("no credential to present: {0}")]
+    Credential(ProviderError),
 }
 
 impl GoogleError {
@@ -146,7 +157,9 @@ impl GoogleError {
             Self::Transport(err) => err.may_have_been_received(),
             Self::Status { status, .. } => engine_http::gateway_without_answer(*status),
             Self::Json(_) => true,
-            Self::HistoryExpired(_) | Self::Protocol(_) => false,
+            // Nothing was sent, or what was sent was refused with a `401`, which says the
+            // request was not processed.
+            Self::HistoryExpired(_) | Self::Protocol(_) | Self::Credential(_) => false,
         }
     }
 
@@ -196,6 +209,9 @@ impl GoogleError {
             // Malformed JSON or a structurally invalid response is a protocol-level
             // incompatibility: retrying the same request will not fix it.
             Self::Json(_) | Self::Protocol(_) => FailureClass::Permanent,
+            // The source's own class: a broker that is down is retried, consent that is gone is
+            // the person's to give again.
+            Self::Credential(source) => source.class(),
         }
     }
 }
@@ -207,6 +223,14 @@ fn transport_class(err: &engine_http::SendError) -> FailureClass {
         FailureClass::Permanent
     } else {
         FailureClass::Retryable
+    }
+}
+
+/// The source's failure, or the engine's refusal of an origin or a kind of credential, with
+/// the class it gave.
+impl From<engine_provider::CredentialFailure> for GoogleError {
+    fn from(failure: engine_provider::CredentialFailure) -> Self {
+        Self::Credential(failure.into_error())
     }
 }
 
@@ -307,6 +331,11 @@ pub(crate) fn unread_answer(detail: &str) -> ProviderError {
 
 impl From<GoogleError> for ProviderError {
     fn from(err: GoogleError) -> Self {
+        // The source's own error, passed through as it gave it: its class, and a rate limit's
+        // instant with it.
+        if let GoogleError::Credential(source) = err {
+            return source;
+        }
         let class = err.failure_class();
         let detail = err.to_string();
         // A rate limit is the one class that carries *when*. The outbox obeys a provider's

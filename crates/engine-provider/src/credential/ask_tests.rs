@@ -365,3 +365,14 @@ fn an_origin_the_engine_refuses_is_a_permanent_failure_with_its_reason() {
         "{error}"
     );
 }
+
+#[test]
+fn a_kind_the_adapter_cannot_present_is_a_permanent_failure_with_its_reason() {
+    let failure = CredentialFailure::unpresentable("a password to a token-only API");
+    let error = failure.into_error();
+    assert_eq!(error.class(), FailureClass::Permanent);
+    assert!(
+        error.to_string().contains("a password to a token-only API"),
+        "{error}"
+    );
+}

@@ -14,9 +14,13 @@
 //! offline against captured fixtures; the production reqwest implementation
 //! ([`HttpTransport`](crate::http_transport)) lives in `http_transport`.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use engine_http::RetryConfig;
-use engine_provider::{HandOver, HttpVersion, TlsVersion};
+use engine_provider::{
+    Credential, CredentialSource, FixedCredential, HandOver, HttpVersion, TlsVersion,
+};
 use engine_tls::TlsClientConfig;
 use serde_json::Value;
 
@@ -117,12 +121,18 @@ pub(crate) trait GraphTransport: Send + Sync {
 
 /// A connected Microsoft Graph client: an authenticated transport plus the API root.
 ///
-/// Built with [`GraphClient::connect`] (an OAuth bearer access token; the engine
-/// stays OAuth-agnostic, so token acquisition/refresh is the host's job —
-/// `north-star.md`). The fetch layer builds Graph-relative paths and `GET`s them
-/// through the crate-internal `url`/`get` methods.
+/// Built with [`GraphClient::connect_with_source`], which asks the account's
+/// [`CredentialSource`] for its token on every request, or with [`GraphClient::connect`] for a
+/// token that never changes. The engine stays OAuth-agnostic: acquiring and refreshing the token
+/// is the source's job (`docs/design/credential-source.md`). The fetch layer builds
+/// Graph-relative paths and `GET`s them through the crate-internal `url`/`get` methods.
+///
+/// Cheap to clone, and the clones share one transport: one HTTP connection pool, one source,
+/// and the versions it observed. A host builds one client per account and hands each
+/// folder-bound [`GraphProvider`](crate::GraphProvider) a clone.
+#[derive(Clone)]
 pub struct GraphClient {
-    transport: Box<dyn GraphTransport>,
+    transport: Arc<dyn GraphTransport>,
     base: String,
     principal: MailboxPrincipal,
 }
@@ -137,7 +147,9 @@ impl core::fmt::Debug for GraphClient {
 }
 
 impl GraphClient {
-    /// Connects with an OAuth bearer access token, targeting the Graph v1.0 root.
+    /// Connects with an OAuth bearer access token that never changes and is never replaced
+    /// ([`FixedCredential`] under a subject of its own), targeting the Graph v1.0 root. A host
+    /// whose token is refreshed uses [`connect_with_source`](Self::connect_with_source).
     ///
     /// # Errors
     ///
@@ -152,8 +164,32 @@ impl GraphClient {
         retry: &RetryConfig,
         user_agent: &engine_http::UserAgent,
     ) -> Result<Self, GraphError> {
-        let transport = Box::new(HttpTransport::new(token.into(), tls, retry, user_agent)?);
-        Ok(Self::with_transport(transport, GRAPH_BASE.to_owned()))
+        Self::connect_with_source(fixed(token), tls, retry, user_agent)
+    }
+
+    /// Connects to the Graph v1.0 root, asking `source` for the token on every request
+    /// (`docs/design/credential-source.md`). Nothing is sent until the first request.
+    ///
+    /// Requests follow no redirect, so the token goes only where a request is addressed; it goes
+    /// over plaintext only to loopback from a base on loopback, and only to an origin the source
+    /// [permits](CredentialSource::permits). A `401` whose challenge offers `Bearer` asks the
+    /// source once for a replacement and sends the request once more; a request with no answer
+    /// is never sent again. The source must answer a token
+    /// ([`Credential::Bearer`](engine_provider::Credential::Bearer)): Graph signs in with
+    /// nothing else, so any other kind fails the request as `Permanent` before it is sent. A
+    /// token with application permissions is one such token, and the client reaches a mailbox
+    /// other than the signed-in user's through [`with_principal`](Self::with_principal).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphError::Transport`] if the HTTP client cannot be built.
+    pub fn connect_with_source(
+        source: Arc<dyn CredentialSource>,
+        tls: &TlsClientConfig,
+        retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
+    ) -> Result<Self, GraphError> {
+        Self::with_base_and_source(source, GRAPH_BASE, tls, retry, user_agent)
     }
 
     /// Connects to one specific mailbox the signed-in user can access — their own
@@ -192,9 +228,27 @@ impl GraphClient {
         retry: &RetryConfig,
         user_agent: &engine_http::UserAgent,
     ) -> Result<Self, GraphError> {
+        Self::with_base_and_source(fixed(token), &base.into(), tls, retry, user_agent)
+    }
+
+    /// [`with_base`](Self::with_base), asking `source` for the token on every request as
+    /// [`connect_with_source`](Self::connect_with_source) does. The base is the account's
+    /// configured origin: the token goes over plaintext only when it is on loopback.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphError::Protocol`] if `base` is not an absolute URL, and
+    /// [`GraphError::Transport`] if the HTTP client cannot be built.
+    pub fn with_base_and_source(
+        source: Arc<dyn CredentialSource>,
+        base: &str,
+        tls: &TlsClientConfig,
+        retry: &RetryConfig,
+        user_agent: &engine_http::UserAgent,
+    ) -> Result<Self, GraphError> {
         Ok(Self::with_transport(
-            Box::new(HttpTransport::new(token.into(), tls, retry, user_agent)?),
-            base.into(),
+            Box::new(HttpTransport::new(base, source, tls, retry, user_agent)?),
+            base.to_owned(),
         ))
     }
 
@@ -202,16 +256,18 @@ impl GraphClient {
     /// defaulting to the signed-in user's own mailbox.
     pub(crate) fn with_transport(transport: Box<dyn GraphTransport>, base: String) -> Self {
         Self {
-            transport,
+            transport: Arc::from(transport),
             base,
             principal: MailboxPrincipal::Me,
         }
     }
 
     /// Roots this client's requests at a specific mailbox (the user's own, or a
-    /// shared one) instead of `/me`.
+    /// shared one) instead of `/me`: [`for_mailbox`](Self::for_mailbox) for a client asking a
+    /// source. The transport is the same, so a clone rooted at another mailbox presents the same
+    /// token.
     #[must_use]
-    pub(crate) fn with_principal(mut self, principal: MailboxPrincipal) -> Self {
+    pub fn with_principal(mut self, principal: MailboxPrincipal) -> Self {
         self.principal = principal;
         self
     }
@@ -401,65 +457,15 @@ impl GraphClient {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn client_roots_urls_at_the_principal_and_redacts_debug() {
-        // Default — the signed-in user's own mailbox roots at /me.
-        let me = GraphClient::connect(
-            "super-secret-token",
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap();
-        assert_eq!(me.url("/messages"), format!("{GRAPH_BASE}/me/messages"));
-        // A shared mailbox roots requests at /users/{address} — the documented shape
-        // `…/users/info@example.org/mailFolders('Inbox')/messages`.
-        let shared = GraphClient::for_mailbox(
-            "t",
-            MailboxPrincipal::user("info@example.org").unwrap(),
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap();
-        assert_eq!(
-            shared.url("/mailFolders('Inbox')/messages"),
-            format!("{GRAPH_BASE}/users/info@example.org/mailFolders('Inbox')/messages")
-        );
-        // The Debug rendering must not leak the bearer token.
-        assert!(!format!("{me:?}").contains("super-secret-token"));
-    }
-
-    #[test]
-    fn rebase_targets_a_custom_base_but_is_a_noop_at_the_default() {
-        // At the default base, an absolute Graph link is left untouched.
-        let prod = GraphClient::connect(
-            "t",
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap();
-        let link = format!("{GRAPH_BASE}/me/messages/delta?$deltatoken=x");
-        assert_eq!(prod.rebase(&link), link);
-        // A custom base catches the absolute link (a replay server / proxy) …
-        let custom = GraphClient::with_base(
-            "t",
-            "http://127.0.0.1:9",
-            crate::test_support::tls(),
-            &crate::test_support::retry(),
-            &crate::test_support::user_agent(),
-        )
-        .unwrap();
-        assert_eq!(
-            custom.rebase(&link),
-            "http://127.0.0.1:9/me/messages/delta?$deltatoken=x"
-        );
-        // … but only `graph.microsoft.com` links; anything else passes through.
-        assert_eq!(custom.rebase("http://elsewhere/x"), "http://elsewhere/x");
-    }
+/// `token` as a source that never changes and is never replaced, under a subject of its own.
+fn fixed(token: impl Into<String>) -> Arc<dyn CredentialSource> {
+    Arc::new(FixedCredential::unique(Credential::bearer(token)))
 }
+
+#[cfg(test)]
+#[path = "transport_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "credential_source_tests.rs"]
+mod credential_source_tests;
