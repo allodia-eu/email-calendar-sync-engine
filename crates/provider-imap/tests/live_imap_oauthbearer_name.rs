@@ -5,13 +5,15 @@
 //! What the harness can show, and what it cannot:
 //!
 //! - **Stalwart takes the escaped header.** The adapter signs in with a token for the seeded
-//!   account under a name holding both bytes, and the session opens.
+//!   account under a name holding both bytes, and the session opens. The pre-auth `CAPABILITY`
+//!   offers `OAUTHBEARER`, which the adapter prefers wherever it is offered, so the sign-in is
+//!   `OAUTHBEARER`'s and not `XOAUTH2`'s (which sends the name unescaped).
 //! - **Stalwart reads no authorization identity from the header,** so it cannot tell an escaped
 //!   name from a broken one. Pinned against a control: a header naming the token's own account,
 //!   another account, no account, the escaped name and the unescaped one all open the token's
-//!   account, whose INBOX count differs from the other account's own. This is why the escaping
-//!   itself (RFC conformant, checked offline in `sasl_tests.rs`) is not proven live: that needs a
-//!   server that reads the field.
+//!   account, told by a seeded message only its INBOX holds (`<baseline-0001@test.local>`), which
+//!   the other account's does not. This is why the escaping itself (RFC conformant, checked offline
+//!   in `sasl_tests.rs`) is not proven live: that needs a server that reads the field.
 //!
 //! Gated on `STALWART_HTTP_ADDR` (`stalwart_harness::Harness::from_env`). Every sign-in here
 //! succeeds, so none counts towards Stalwart's ban on failed sign-ins. The tokens come from the
@@ -31,6 +33,10 @@ use tokio_rustls::{TlsConnector, rustls::pki_types::ServerName};
 /// The name the adapter is handed: legal in an account name, and both bytes need escaping.
 const ESCAPED_NAME: &str = "al=i,ce@test.local";
 
+/// The seeded message only the seeded account's INBOX holds (`01-plain.eml`), which tells whose
+/// mailbox opened whatever else another suite appends meanwhile.
+const SEEDED_ONLY: &str = "baseline-0001@test.local";
+
 fn connector() -> TlsConnector {
     engine_tls::TlsClientConfig::dangerous_accept_any().connector()
 }
@@ -47,6 +53,16 @@ async fn stalwart_takes_the_escaped_name_the_adapter_sends() {
         eprintln!("skipping: STALWART_HTTP_ADDR unset");
         return;
     };
+    // The adapter prefers OAUTHBEARER wherever it is offered (`sasl::select`); offered here, so
+    // the sign-in below is OAUTHBEARER's, not XOAUTH2's, which sends the name unescaped.
+    let mut io = session(&harness).await;
+    io.get_mut().write_all(b"a1 CAPABILITY\r\n").await.unwrap();
+    let capability = until_tagged(&mut io, "a1 ").await;
+    assert!(
+        capability.contains(" AUTH=OAUTHBEARER"),
+        "the pre-auth CAPABILITY offers OAUTHBEARER: {capability}"
+    );
+    drop(io);
     let token = token(&harness).await;
     let config = ImapConfig::new(
         harness.imap_addr.as_str(),
@@ -95,9 +111,10 @@ async fn until_tagged<S: tokio::io::AsyncRead + Unpin>(io: &mut BufReader<S>, ta
     }
 }
 
-/// Signs in with `first` (an `AUTHENTICATE` or a `LOGIN` line, tagged `a1`) and answers the
-/// INBOX's message count of the account that opened, or `None` where the sign-in was refused.
-async fn inbox_count(harness: &Harness, first: &str) -> Option<u64> {
+/// A TLS session on the harness's IMAP port, its greeting read.
+async fn session(
+    harness: &Harness,
+) -> BufReader<tokio_rustls::client::TlsStream<tokio::net::TcpStream>> {
     let tcp = tokio::net::TcpStream::connect(&harness.imap_addr)
         .await
         .expect("the harness listens");
@@ -107,22 +124,32 @@ async fn inbox_count(harness: &Harness, first: &str) -> Option<u64> {
         .expect("TLS");
     let mut io = BufReader::new(tls);
     until_tagged(&mut io, "*").await;
+    io
+}
+
+/// Signs in with `first` (an `AUTHENTICATE` or a `LOGIN` line, tagged `a1`) and answers whether
+/// the INBOX that opened holds [`SEEDED_ONLY`], or `None` where the sign-in was refused.
+async fn holds_the_seed(harness: &Harness, first: &str) -> Option<bool> {
+    let mut io = session(harness).await;
     io.get_mut().write_all(first.as_bytes()).await.unwrap();
     if !until_tagged(&mut io, "a1 ").await.contains("a1 OK") {
         return None;
     }
     io.get_mut()
-        .write_all(b"a2 STATUS INBOX (MESSAGES)\r\n")
+        .write_all(b"a2 EXAMINE INBOX\r\n")
         .await
         .unwrap();
-    let status = until_tagged(&mut io, "a2 ").await;
-    let count = status
-        .split("MESSAGES ")
-        .nth(1)
-        .and_then(|rest| rest.split(')').next())
-        .and_then(|n| n.parse().ok());
-    let _ = io.get_mut().write_all(b"a3 LOGOUT\r\n").await;
-    count
+    until_tagged(&mut io, "a2 ").await;
+    // The envelopes, as `live_imap_acting_as.rs` reads them: Stalwart's `SEARCH HEADER
+    // Message-ID` finds nothing (v1.0.2, observed), so the marker is looked for in what it serves.
+    io.get_mut()
+        .write_all(b"a3 FETCH 1:* (ENVELOPE)\r\n")
+        .await
+        .unwrap();
+    let envelopes = until_tagged(&mut io, "a3 ").await;
+    let found = envelopes.contains(&format!("\"<{SEEDED_ONLY}>\""));
+    let _ = io.get_mut().write_all(b"a4 LOGOUT\r\n").await;
+    Some(found)
 }
 
 /// `OAUTHBEARER`'s initial response naming `authzid` in the GS2 header, verbatim.
@@ -144,27 +171,22 @@ async fn stalwart_reads_no_authorization_identity_from_the_gs2_header() {
     let other = &harness.scratch[0];
     let login =
         |account: &str, password: &str| format!("a1 LOGIN \"{account}\" \"{password}\"\r\n");
-    let own = inbox_count(&harness, &login(&harness.account, &harness.password))
-        .await
-        .expect("the seeded account signs in");
-    let others = inbox_count(&harness, &login(&other.address, &other.password))
-        .await
-        .expect("the other account signs in");
-    assert_ne!(
-        own, others,
-        "the two accounts' INBOXes must differ for the check to tell them apart"
-    );
+    // The controls: the marker is in the seeded account's INBOX and not in the other's.
+    let own = login(&harness.account, &harness.password);
+    assert_eq!(holds_the_seed(&harness, &own).await, Some(true));
+    let others = login(&other.address, &other.password);
+    assert_eq!(holds_the_seed(&harness, &others).await, Some(false));
     for authzid in [
         harness.account.as_str(),
         other.address.as_str(),
         "",
         "al=3Di=2Cce@test.local",
-        "al=i,ce@test.local",
+        ESCAPED_NAME,
     ] {
-        let opened = inbox_count(&harness, &oauthbearer(authzid, &token)).await;
+        let opened = holds_the_seed(&harness, &oauthbearer(authzid, &token)).await;
         assert_eq!(
             opened,
-            Some(own),
+            Some(true),
             "a header naming {authzid:?} opens the token's account"
         );
     }
