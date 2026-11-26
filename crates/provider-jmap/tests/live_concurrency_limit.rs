@@ -31,10 +31,11 @@
 //! process*, and the server counts everyone. That is the case this test is about, and the
 //! only case in which the refusal is reachable at all.
 //!
-//! Each attachment is 64 KB, so a run stores about 1 MB against the harness's 50 MB blob
-//! quota, and every draft is removed at the end. Firing 4 MB uploads instead — the first
-//! thing that worked — exhausts that quota in one run and answers `429 Quota exceeded` for
-//! the next three quarters of an hour.
+//! Each attachment is 64 KB, so a run stores about 1 MB against the upload quota, and every
+//! draft is removed at the end. Firing 4 MB uploads instead — the first thing that worked —
+//! exhausted Stalwart's shipped 50 MB quota in one run and answered `429 Quota exceeded` for
+//! the next three quarters of an hour. The harness now raises that quota; a real server keeps
+//! it, so the small attachments stay.
 //!
 //! Skips with no `STALWART_HTTP_ADDR`, like every live suite here:
 //!
@@ -71,7 +72,7 @@ const PER_CLIENT: usize = 6;
 /// next, so the blob quota sees one round's worth at a time.
 const ROUNDS: usize = 8;
 /// Big enough to stay in flight while its neighbours arrive, small enough that a run costs
-/// a fiftieth of the blob quota.
+/// a fiftieth of Stalwart's shipped blob quota.
 const ATTACHMENT_BYTES: usize = 64 * 1024;
 
 fn account() -> AccountId {

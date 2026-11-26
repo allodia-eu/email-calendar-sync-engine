@@ -43,11 +43,27 @@
 //! one — 4 per account, refused with a `400` (#332) — and `live_concurrency_refusal.rs` is the
 //! suite that offers enough at once to meet it.
 //!
-//! Which is also why arm A asserts and arm B only reports: "clean at every width" is a
+//! Which is also why arm A asserts and arm B only reports how much: "clean at every width" is a
 //! property worth failing on, while "refused 40.6% at 400/s" is a weather report, and a
-//! threshold against it would be a flake generator.
+//! threshold against it would be a flake generator. What the Stalwart arm does require of arm B
+//! is that it refused *something* — 2,400 requests offered in six seconds against 1,000 a
+//! minute cannot all pass — because without that, arm A's zeros prove nothing.
 //!
-//! ⚠️ **It takes about seven minutes**, nearly all of it the cooldowns. They are the
+//! # Stalwart's own limit, not the harness's
+//!
+//! The harness raises Stalwart's per-account limit (1,000 requests a minute as shipped) so a
+//! migration-sized copy fits (`stalwart-harness.md`). This suite measures the server's own
+//! refusals, so the Stalwart arm sets the shipped limit back through the management API for its
+//! run, and the harness's raised one after it, whether it passes or not. The limit is
+//! server-wide, so for those minutes it binds **every account**: run this only under the
+//! harness lock (`stalwart-harness.md`), and this binary's other test talks to SabreDAV.
+//!
+//! It restores the known raised value, never the one it read: a run killed while the limit was
+//! lowered (Ctrl-C, a timeout) leaves 1,000 a minute behind, and a restore of what the next run
+//! read would make that permanent. That next run refuses to start instead, and says to restart
+//! the container, whose entrypoint raises the limit again.
+//!
+//! ⚠️ **It takes about three and a half minutes**, nearly all of it the cooldowns. They are the
 //! measurement: without them a block inherits the previous block's drained limiter, which is
 //! exactly the mistake that produced the wrong Gmail figure this file's sibling corrects.
 //!
@@ -64,10 +80,15 @@
 //! ```
 
 use core::time::Duration;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    panic::resume_unwind,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
+
+use stalwart_harness::{Harness, RAISED_REQUESTS_PER_MINUTE, SHIPPED_REQUESTS_PER_MINUTE};
 
 /// Long enough for a tripped rate limiter to refill between blocks, so a block measures its
 /// own offered load rather than the previous block's leftovers. The first DAV sweep skipped
@@ -196,7 +217,8 @@ async fn offer(client: &reqwest::Client, target: &Target, width: usize, rate: u6
     counts
 }
 
-async fn measure(target: Target) {
+/// Runs both arms against `target`, and answers arm B's worst refusal share.
+async fn measure(target: Target) -> f64 {
     // Built through the shared TLS config, like every adapter's transport: it installs the
     // rustls crypto provider `rustls-no-provider` requires, and it means this probe sends
     // over the same client stack the adapter does.
@@ -249,13 +271,6 @@ async fn measure(target: Target) {
         );
         worst = worst.max(counts.refused_percent());
     }
-    // Leave the server as it was found. Everything above deliberately drains Stalwart's
-    // rate limiter, and the suite that runs next on the same harness then meets a `429`
-    // with half a minute still on it — which the engine no longer sleeps through, because a
-    // wait that long is a scheduling decision now (`http-throttling.md`). A probe that
-    // hammers a shared server owes it a cooldown on the way out, not only between blocks.
-    tokio::time::sleep(COOLDOWN.saturating_mul(2)).await;
-
     eprintln!(
         "  → {}: width does not bound; rate {} (worst refusal share {:.1}%)",
         target.name,
@@ -266,18 +281,52 @@ async fn measure(target: Target) {
         },
         worst,
     );
+    worst
 }
 
 /// Stalwart: the arm that carries the proof, because it is the one that refuses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn live_stalwart_bounds_rate_under_a_steady_load() {
-    let Some(target) = stalwart() else {
+    let (Some(target), Some(harness)) = (stalwart(), Harness::from_env()) else {
         eprintln!(
             "skipping live_stalwart_bounds_rate_under_a_steady_load: STALWART_HTTP_ADDR unset"
         );
         return;
     };
-    measure(target).await;
+    // The harness raises the per-account limit out of a migration's way, so this run puts
+    // Stalwart's own back for itself, and the harness's after, whether it passes or not.
+    let found = harness
+        .requests_per_minute()
+        .expect("read the harness's request limit");
+    assert!(
+        found > SHIPPED_REQUESTS_PER_MINUTE,
+        "the harness allows {found} signed-in requests a minute, not the raised \
+         {RAISED_REQUESTS_PER_MINUTE}: left lowered by a killed run of this suite, or a harness \
+         older than the change. Restart the container (`docker compose restart`), whose \
+         entrypoint raises it again"
+    );
+    // Lowering happens inside the task, so a lowering that half-succeeds (stored, but the
+    // reload refused) is restored too.
+    let lowered = harness.clone();
+    let outcome = tokio::spawn(async move {
+        lowered
+            .set_requests_per_minute(SHIPPED_REQUESTS_PER_MINUTE)
+            .expect("lower the request limit to Stalwart's own");
+        measure(target).await
+    })
+    .await;
+    // The known raised value, never the one read above: see `stalwart_harness`'s constants.
+    harness
+        .set_requests_per_minute(RAISED_REQUESTS_PER_MINUTE)
+        .expect("raise the harness's request limit again");
+    let worst = outcome.unwrap_or_else(|failed| resume_unwind(failed.into_panic()));
+    // What keeps arm A from being vacuous on this server: a server that refused nothing would
+    // pass it for free. A run against the raised limit refuses nothing, and fails here.
+    assert!(
+        worst > 1.0,
+        "Stalwart refused {worst:.1}% at most, even at 400/s: this run did not meet the \
+         per-account rate limit it measures, so arm A proved nothing"
+    );
 }
 
 /// SabreDAV: a second implementation, so "a steady rate is not refused for its width" rests on

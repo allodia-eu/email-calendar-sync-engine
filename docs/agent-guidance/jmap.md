@@ -160,9 +160,9 @@ account with neither could send no message, so it imports nothing.
 
 - **The bytes travel inline where they fit.** RFC 9404 `Blob/upload` in the same request as the
   `Email/import` that references each blob as `#b<n>`. On Stalwart this is not an optimisation:
-  it takes about 1,000 requests per account a minute, and one upload per message met that wall
-  within seconds, where inline batches imported 10,000 messages in 541 requests (measured on
-  Stalwart 1.0). A message goes to the `uploadUrl` instead, at most
+  as shipped it takes about 1,000 requests per account a minute, and one upload per message met
+  that wall within seconds, where inline batches imported 10,000 messages in 541 requests
+  (measured on Stalwart 1.0). A message goes to the `uploadUrl` instead, at most
   `maxConcurrentUpload` at once, only when it cannot go inline: the account lacks the blob
   extension, the message is larger than `maxSizeBlobSet`, or its base64 does not fit a request.
 - **A request is sized in its bytes on the wire**, base64 included, against `maxSizeRequest`,
@@ -217,7 +217,8 @@ Live: `tests/live_import.rs` runs the shared conformance check as the scratch ac
 then one message into two mailboxes with a custom keyword, a 7.6 MB message by the upload URL, a
 message refused for a mailbox that does not exist beside them, and one over
 `maxMailboxesPerEmail`, all read back from the import cursor and byte-compared. The 7.6 MB message
-counts against the upload quota for an hour, so the suite can run about six times an hour.
+would count against Stalwart's upload quota for an hour as shipped (about six runs an hour); the
+harness raises that quota (`stalwart-harness.md`), so the suite can be run again at once.
 
 ## Out-of-office (`VacationResponse`)
 
@@ -419,8 +420,9 @@ Fixtures: `sieve_get_rules_and_reply_response.json`, `sieve_set_create_rules_res
   nothing, and paces an account's downloads at about 25 a second whatever the width (5 to 100
   in flight, HTTP/2 or HTTP/1.1, all measured at 25), so width past the number buys nothing
   there either.
-- **Stalwart also limits requests per account over time**, separately from concurrency: the
-  harness and Thundermail both answer `429` after about 1,000 requests in a minute, with a
+- **Stalwart also limits requests per account over time**, separately from concurrency: as
+  shipped and on Thundermail it answers `429` after about 1,000 requests in a minute (the harness
+  raises the limit, and `live_concurrency` sets it back to measure it), with a
   problem-details body ("try again in a few seconds") and **no `Retry-After`**, so the funnel
   falls back to its own backoff. Measured on Thundermail: 4,000 downloads at the session's
   width of 4 were throttled at requests 996, 1,999, 3,027 and 4,059, and averaged 19 a second
