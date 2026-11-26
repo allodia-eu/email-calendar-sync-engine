@@ -21,6 +21,10 @@
 //! `Id` alphabet: it must also hold Microsoft Graph, Gmail, and CalDAV keys,
 //! which use different character sets. Alphabet validation (e.g. JMAP's
 //! URL-safe-base64 subset) belongs in the relevant provider adapter, not here.
+//!
+//! Every id here but the store-local [`PersonId`] can carry content, so its `Debug` shows the
+//! value only where [`crate::redact::SHOWS_VALUES`] holds, which is where engine-core is built
+//! with debug assertions. `Display` and `as_str()` always show it.
 
 use core::fmt;
 
@@ -49,7 +53,11 @@ pub enum IdError {
 /// treated as opaque bytes: the engine never parses it, only stores and compares
 /// it. The only universal invariant across providers is that it is non-empty;
 /// length and alphabet limits are provider-specific and enforced by adapters.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+///
+/// A key can carry content (an IMAP key holds the folder's path, a shared-store handle can be an
+/// address), so its `Debug` shows the value only where [`crate::redact::SHOWS_VALUES`] holds;
+/// [`Display`](fmt::Display) and [`as_str`](Self::as_str) always do.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ProviderKey(Box<str>);
 
@@ -71,6 +79,14 @@ impl ProviderKey {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl fmt::Debug for ProviderKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ProviderKey")
+            .field(&crate::redact::Content(&self.0))
+            .finish()
     }
 }
 
@@ -99,7 +115,8 @@ impl From<ProviderKey> for String {
 /// The generated type is a transparent newtype: it serializes as the underlying
 /// provider-key string, validating on the way in. Distinct types mean the
 /// compiler rejects passing, say, a [`MailboxId`] where a [`MessageId`] is
-/// expected.
+/// expected. Its derived `Debug` prints the [`ProviderKey`]'s, so it redacts the key as that
+/// does: `MailboxId(ProviderKey(<redacted, 5 bytes>))` without debug assertions.
 macro_rules! object_id {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
@@ -144,11 +161,13 @@ macro_rules! object_id {
 }
 
 /// Defines a length-bounded, non-empty string newtype for a *content* id (one
-/// carried inside a message or event, identifying it across systems).
+/// carried inside a message or event, identifying it across systems). Its `Debug` shows the
+/// value only where [`crate::redact::SHOWS_VALUES`] holds: a `UID` or a `Message-ID` often
+/// names the sender's host.
 macro_rules! content_id {
     ($(#[$meta:meta])* $name:ident, max_octets = $limit:expr) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+        #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(Box<str>);
 
@@ -177,6 +196,14 @@ macro_rules! content_id {
             #[must_use]
             pub fn as_str(&self) -> &str {
                 &self.0
+            }
+        }
+
+        impl ::core::fmt::Debug for $name {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                f.debug_tuple(stringify!($name))
+                    .field(&$crate::redact::Content(&self.0))
+                    .finish()
             }
         }
 
@@ -276,6 +303,46 @@ mod tests {
     fn object_id_deserialization_rejects_empty() {
         let err = serde_json::from_str::<MessageId>("\"\"").unwrap_err();
         assert!(err.to_string().contains("must not be empty"));
+    }
+
+    /// What `Debug` must show: the derived form where this build shows values, and the type and
+    /// the length only where it does not (`crate::redact`).
+    fn per_build<'a>(revealed: &'a str, redacted: &'a str) -> &'a str {
+        if crate::redact::SHOWS_VALUES {
+            revealed
+        } else {
+            redacted
+        }
+    }
+
+    #[test]
+    fn debug_shows_an_id_only_where_the_build_shows_values() {
+        let key = ProviderKey::new("alice@example.com").unwrap();
+        assert_eq!(
+            format!("{key:?}"),
+            per_build(
+                r#"ProviderKey("alice@example.com")"#,
+                "ProviderKey(<redacted, 17 bytes>)"
+            )
+        );
+        assert_eq!(
+            format!("{:?}", MailboxId::new(key)),
+            per_build(
+                r#"MailboxId(ProviderKey("alice@example.com"))"#,
+                "MailboxId(ProviderKey(<redacted, 17 bytes>))"
+            )
+        );
+        assert_eq!(
+            format!("{:?}", Uid::new("alice@example.com").unwrap()),
+            per_build(r#"Uid("alice@example.com")"#, "Uid(<redacted, 17 bytes>)")
+        );
+        assert_eq!(
+            format!("{:?}", MessageIdHeader::new("alice@example.com").unwrap()),
+            per_build(
+                r#"MessageIdHeader("alice@example.com")"#,
+                "MessageIdHeader(<redacted, 17 bytes>)"
+            )
+        );
     }
 
     #[test]

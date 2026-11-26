@@ -45,6 +45,7 @@ pub mod patch;
 pub mod people;
 pub mod raw;
 pub mod recipient;
+pub mod redact;
 pub mod rules;
 pub mod scheduling;
 pub mod search_index;

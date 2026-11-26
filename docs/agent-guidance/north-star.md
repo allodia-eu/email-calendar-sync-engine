@@ -220,7 +220,11 @@ Mail and calendar data are hostile input and sensitive data:
 - MIME parsing is fuzz-tested.
 - iCalendar and JMAP JSON parsing are fuzz-tested.
 - Attachments are quota-managed and opened through host policy.
-- Logs, crash reports, snippets, and telemetry are redacted by default.
+- Logs, crash reports, snippets, and telemetry are redacted by default. A payload's, a body's or a
+  rule value's `Debug` never prints it; an id's or a cursor's own `Debug`, which can carry an
+  address or a folder path, prints it only where engine-core is built with debug assertions (the
+  host's profile decides). Structs holding content in plain fields, and error texts, can still
+  carry it (`modeling.md`, `engine_core::redact`).
 - Provider credentials never enter the SQL store.
 - TLS trust is unified across every provider and host-selected: one `TlsPolicy` — bundled Mozilla roots by default, with OS/enterprise or explicitly pinned roots as opt-ins — realized by `engine-tls` into one `ring`-backed config (`tls.md`). The engine bakes in no per-provider trust store.
 - At-rest protection is host-selected: bulk data relies on OS file encryption by default, with SQLCipher as an opt-in whole-database layer whose key is wrapped by the host platform keystore. High-value secrets (tokens, passwords, key material) are always field-encrypted with a keystore-wrapped key and never stored in cleartext. FTS content and snippets are protected only by whichever at-rest layer is in force.

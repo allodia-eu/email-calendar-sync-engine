@@ -271,5 +271,10 @@ async fn an_account_and_its_folders_can_be_logged() {
     let logged = format!("{account:?} {:?}", account.provider(mailbox("Archive")));
 
     assert!(logged.contains("ImapAccount") && logged.contains("max_connections"));
-    assert!(logged.contains("ImapProvider") && logged.contains("Archive"));
+    // The folder as its id's own `Debug` shows it, which names it only in a debug build.
+    assert!(logged.contains("ImapProvider"));
+    assert!(
+        logged.contains(&format!("{:?}", mailbox("Archive"))),
+        "{logged}"
+    );
 }

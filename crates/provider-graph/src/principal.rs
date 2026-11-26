@@ -38,8 +38,19 @@ use crate::error::GraphError;
 ///
 /// Construct it with [`MailboxAddress::new`]; there is no other way, so a
 /// [`MailboxPrincipal::User`] cannot hold an address that restructures a URL.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// An address is personal, so `Debug` shows it only where [`engine_core::redact::SHOWS_VALUES`]
+/// holds; [`as_str`](Self::as_str) always does.
+#[derive(Clone, PartialEq, Eq)]
 pub struct MailboxAddress(String);
+
+impl core::fmt::Debug for MailboxAddress {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("MailboxAddress")
+            .field(&engine_core::redact::Content(&self.0))
+            .finish()
+    }
+}
 
 impl MailboxAddress {
     /// Checks `address` and wraps it.

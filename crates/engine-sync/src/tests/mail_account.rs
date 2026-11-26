@@ -73,11 +73,7 @@ async fn a_pass_syncs_every_folder_and_reports_one_outcome_each() {
     assert_eq!(report.busy_scopes(), 0);
     // Each folder is its own scope, so the report can name which one did what — the thing a
     // single `Result` for the whole account could never say.
-    let scopes: BTreeSet<String> = report
-        .folders
-        .iter()
-        .map(|f| format!("{:?}", f.scope))
-        .collect();
+    let scopes: BTreeSet<&SyncScope> = report.folders.iter().map(|f| &f.scope).collect();
     assert_eq!(scopes.len(), 3, "three distinct scopes");
 }
 

@@ -29,8 +29,20 @@ pub enum SyncKind {
 /// Distinct from [`SyncState`], which resumes the *next* pass: a page token only
 /// orders the current fetch. JMAP encodes a query position; IMAP a UID range;
 /// Gmail/Graph a page token or delta link. The engine never parses it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Graph's is an `@odata.nextLink` URL whose path names the mailbox's address, so `Debug` shows
+/// the value only where [`engine_core::redact::SHOWS_VALUES`] holds; [`as_str`](Self::as_str)
+/// always does.
+#[derive(Clone, PartialEq, Eq)]
 pub struct PageToken(Box<str>);
+
+impl core::fmt::Debug for PageToken {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("PageToken")
+            .field(&engine_core::redact::Content(&self.0))
+            .finish()
+    }
+}
 
 impl PageToken {
     /// Wraps a provider continuation string.
@@ -102,6 +114,18 @@ mod tests {
         let token = PageToken::new("position:50");
         assert_eq!(token.as_str(), "position:50");
         assert_eq!(token, PageToken::new("position:50"));
+    }
+
+    #[test]
+    fn debug_shows_a_page_token_only_where_the_build_shows_values() {
+        // Graph's continuation is an `@odata.nextLink`, whose path names the mailbox's address.
+        let token = PageToken::new("https://graph.example/users/a@example.com/messages");
+        let expected = if engine_core::redact::SHOWS_VALUES {
+            r#"PageToken("https://graph.example/users/a@example.com/messages")"#
+        } else {
+            "PageToken(<redacted, 50 bytes>)"
+        };
+        assert_eq!(format!("{token:?}"), expected);
     }
 
     #[test]
