@@ -116,6 +116,20 @@ fn what_no_transport_writes_is_not_expressible() {
                 copy: false,
             },
         ),
+        (
+            "the server's own records, which no one files mail into",
+            Action::FileInto {
+                mailbox: RuleMailbox::Role(MailboxRole::ServerRecords),
+                copy: false,
+            },
+        ),
+        (
+            "the chat history the service stores",
+            Action::FileInto {
+                mailbox: RuleMailbox::Role(MailboxRole::ChatHistory),
+                copy: false,
+            },
+        ),
         ("no keyword", Action::AddKeywords(BTreeSet::new())),
         ("a redirect to nobody", redirect(0)),
         ("a forward to nobody", Action::Forward { to: Vec::new() }),

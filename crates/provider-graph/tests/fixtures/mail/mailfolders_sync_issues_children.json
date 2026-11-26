@@ -1,0 +1,38 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('00000000-0000-0000-0000-00000000feed')/mailFolders('folder-syncissues')/childFolders",
+  "value": [
+    {
+      "childFolderCount": 0,
+      "displayName": "Conflicten",
+      "id": "folder-conflicts",
+      "isHidden": false,
+      "parentFolderId": "folder-syncissues",
+      "sizeInBytes": 0,
+      "totalItemCount": 0,
+      "unreadItemCount": 0,
+      "wellKnownName": "conflicts"
+    },
+    {
+      "childFolderCount": 0,
+      "displayName": "Lokale fouten",
+      "id": "folder-localfailures",
+      "isHidden": false,
+      "parentFolderId": "folder-syncissues",
+      "sizeInBytes": 0,
+      "totalItemCount": 0,
+      "unreadItemCount": 0,
+      "wellKnownName": "localfailures"
+    },
+    {
+      "childFolderCount": 0,
+      "displayName": "Serverfouten",
+      "id": "folder-serverfailures",
+      "isHidden": false,
+      "parentFolderId": "folder-syncissues",
+      "sizeInBytes": 0,
+      "totalItemCount": 0,
+      "unreadItemCount": 0,
+      "wellKnownName": "serverfailures"
+    }
+  ]
+}

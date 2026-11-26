@@ -1,0 +1,12 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('00000000-0000-0000-0000-00000000feed')/mailFolders/$entity",
+  "childFolderCount": 3,
+  "displayName": "Synchronisatieproblemen",
+  "id": "folder-syncissues",
+  "isHidden": false,
+  "parentFolderId": "folder-root",
+  "sizeInBytes": 0,
+  "totalItemCount": 0,
+  "unreadItemCount": 0,
+  "wellKnownName": "syncissues"
+}

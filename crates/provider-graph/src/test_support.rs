@@ -311,10 +311,37 @@ pub(crate) fn base64_decode(text: &str) -> Vec<u8> {
     out
 }
 
-/// The routes for a full folder-list sync: the `msgfolderroot` + six well-known
-/// role aliases + the folder list, and the `childFolders` of every folder the list
-/// says has children — the tree walk is part of one folder sync, not an extra step.
-pub(crate) fn folder_routes() -> Vec<(&'static str, Value)> {
+/// The routes for a full folder-list sync of the captured personal account: the
+/// `msgfolderroot`, every well-known role alias, the folder list, and the `childFolders` of
+/// every folder the list says has children — the tree walk is part of one folder sync, not an
+/// extra step.
+///
+/// The account has no Sync Issues folder, and Graph answers its four aliases with the `404
+/// ErrorFolderNotFound` it really sent; every other route answers.
+pub(crate) fn folder_routes() -> Vec<(&'static str, FakeRoute)> {
+    let not_found = json(include_str!(
+        "../tests/fixtures/error/syncissues_not_found.json"
+    ));
+    let mut routes: Vec<(&'static str, FakeRoute)> = [
+        "/mailFolders/syncissues",
+        "/mailFolders/conflicts",
+        "/mailFolders/localfailures",
+        "/mailFolders/serverfailures",
+    ]
+    .into_iter()
+    .map(|alias| (alias, Err((404, not_found.clone()))))
+    .collect();
+    routes.extend(
+        answered_folder_routes()
+            .into_iter()
+            .map(|(key, doc)| (key, Ok(doc))),
+    );
+    routes
+}
+
+/// The routes of [`folder_routes`] that answer `200`, for a replay server, which answers every
+/// other URL `404` as Graph answers the Sync Issues aliases of an account without that folder.
+pub(crate) fn answered_folder_routes() -> Vec<(&'static str, Value)> {
     vec![
         (
             "/mailFolders/msgfolderroot",
@@ -347,6 +374,12 @@ pub(crate) fn folder_routes() -> Vec<(&'static str, Value)> {
         (
             "/mailFolders/junkemail",
             json(include_str!("../tests/fixtures/wellknown/junkemail.json")),
+        ),
+        (
+            "/mailFolders/conversationhistory",
+            json(include_str!(
+                "../tests/fixtures/wellknown/conversationhistory.json"
+            )),
         ),
         (
             "/mailFolders?$top",

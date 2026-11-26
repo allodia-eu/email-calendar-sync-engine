@@ -43,6 +43,11 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 | `mail/category_in_use.json` | the same folder, `$filter=categories/any(c:c eq '…') or categories/any(c:c eq '…')` | which of a keyword's names a sent message already carries, so a device reuses it rather than adding a second |
 | `mail/message_moved.json` | `POST /me/messages/{id}/move` body `{destinationId}` | the move echo — **same `id`** (immutable), `parentFolderId` now the destination |
 | `wellknown/*.json` | `GET /me/mailFolders/{inbox,drafts,…}` | well-known-name → id role resolution |
+| `wellknown/conversationhistory.json` | `GET /me/mailFolders/conversationhistory?$select=id`, on the personal account, November 2026 | that the alias answers with the id of `Gesprekgeschiedenis` in `mail/mailfolders.json` (`folder-extra-1`), so a folder named in Dutch gets `MailboxRole::ChatHistory` |
+| `wellknown/{syncissues,conflicts,localfailures,serverfailures}.json` | the same, on a **work/school** tenant | the four Sync Issues aliases resolving; ids are placeholders, and the user in `@odata.context` is a zero object id |
+| `error/syncissues_not_found.json` | `GET /me/mailFolders/syncissues?$select=id` on the personal account | the `404 ErrorFolderNotFound` an account without Sync Issues answers (the Exchange trace says the default folder "cannot be created"); `conflicts`, `localfailures` and `serverfailures` answered the same, each naming its own folder. Nothing identifies the account. The offline fake routes all four aliases to it. The trace implies other default folders are created when first accessed; whether a read of an alias does that is unverified (`graph.md`, "Roles resolved by id") |
+| `mail/mailfolder_sync_issues.json` | `GET /me/mailFolders/syncissues`, on the work/school tenant | the Sync Issues folder itself, `Synchronisatieproblemen`, with its `childFolderCount` of 3; `fetch_roles_tests.rs` adds it to the personal folder list, since the tenant's own list names private folders |
+| `mail/mailfolders_sync_issues_children.json` | `GET /me/mailFolders/{sync issues}/childFolders?$top=100`, on the work/school tenant | Conflicts, Local Failures and Server Failures in Dutch, under Sync Issues; the sizes and item and unread counts are zeroed |
 | `mail/message_reported.json` | `POST {beta}/messages/{id}/reportMessage` `{ReportAction,IsMessageMoveRequested}` | the report echo — a **`reportMessageCommandResult`**, not the `message` object the docs describe (see Finding 17) |
 | `error/report_bad_action.json` | the same call with `ReportAction: unknownFutureValue` | the `400 RequestBodyRead` for a `reportAction` outside the three that exist |
 | `error/bad_request.json` / `unauthorized.json` | a 400 and a 401 | `error` envelope → `FailureClass` mapping |
@@ -73,9 +78,16 @@ gitignored raw captures under `tools/graph-oauth/.local/raw/` to these files. Th
 
 ## Real-behavior findings (captured, not assumed)
 
-1. **Personal `mailFolder` has no `wellKnownName`** (work/school-only) — selecting
-   it 400s. Role mapping must resolve the well-known *aliases* (`/me/mailFolders/inbox`
-   …) to ids and match, not read a role property.
+1. **`wellKnownName` is not a v1.0 property** — selecting it 400s
+   (`error/bad_request.json`, from the personal account). A work/school tenant answered the
+   same request with the same body, request ids aside, in November 2026; that capture is
+   not kept. Role mapping must
+   resolve the well-known *aliases* (`/me/mailFolders/inbox` …) to ids and match, not read
+   a role property. When `mail/mailfolders.json` was captured a personal account's folders
+   did not carry it at all; in November 2026 the default projection of the list and of
+   `childFolders` carried it on both accounts (`mail/mailfolders_sync_issues_children.json`
+   keeps it as it came). It is still undeclared, and `$select` still refuses it, so the
+   adapter does not read it.
 2. **Folder `displayName`s are localized** (these are Dutch: "Postvak IN" = Inbox).
    Never parse display names for roles.
 3. **`messages/delta` `$top` does not paginate on consumer.** The page size is set with

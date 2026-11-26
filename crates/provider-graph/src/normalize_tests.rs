@@ -50,9 +50,30 @@ fn resolved_roles() -> Vec<(MailboxId, MailboxRole)> {
             "junkemail",
             include_str!("../tests/fixtures/wellknown/junkemail.json"),
         ),
+        (
+            "syncissues",
+            include_str!("../tests/fixtures/wellknown/syncissues.json"),
+        ),
+        (
+            "conflicts",
+            include_str!("../tests/fixtures/wellknown/conflicts.json"),
+        ),
+        (
+            "localfailures",
+            include_str!("../tests/fixtures/wellknown/localfailures.json"),
+        ),
+        (
+            "serverfailures",
+            include_str!("../tests/fixtures/wellknown/serverfailures.json"),
+        ),
+        (
+            "conversationhistory",
+            include_str!("../tests/fixtures/wellknown/conversationhistory.json"),
+        ),
     ];
     WELL_KNOWN_ROLES
         .iter()
+        .chain(RECORD_ROLES)
         .map(|(alias, role)| {
             let fixture = aliases.iter().find(|(a, _)| a == alias).unwrap().1;
             let id = well_known_folder_id(&serde_json::from_str(fixture).unwrap()).unwrap();
@@ -103,9 +124,13 @@ fn roles_resolve_by_id_not_by_localized_name() {
     assert_eq!(role_of("Ongewenste e-mail"), Some(MailboxRole::Junk));
     assert_eq!(role_of("Concepten"), Some(MailboxRole::Drafts));
     assert_eq!(role_of("Archiveren"), Some(MailboxRole::Archive));
-    // Outbox and Conversation History have no standard role.
+    // Conversation History holds the chats the service stored, whatever it is called.
+    assert_eq!(
+        role_of("Gesprekgeschiedenis"),
+        Some(MailboxRole::ChatHistory)
+    );
+    // The Outbox has no role.
     assert_eq!(role_of("Postvak UIT"), None);
-    assert_eq!(role_of("Gesprekgeschiedenis"), None);
 }
 
 #[test]
