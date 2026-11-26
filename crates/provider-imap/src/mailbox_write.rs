@@ -183,12 +183,24 @@ where
 
 /// The full path of a folder called `name` inside `parent`, or at the top of `store` when
 /// `None` — which for a shared store is below its root, not beside the credential's `INBOX`.
+///
+/// Refuses, before any change is sent, exactly the names IMAP cannot carry as one level: an
+/// empty one, one with a byte no command line can hold (CR, LF, NUL), one carrying the server's
+/// delimiter (known only from the `LIST`, which is why this runs after it), a subfolder on a
+/// server with no hierarchy, and a top-level `INBOX`. Nothing more: a tab, a `/` on a server
+/// whose delimiter is `.`, a surrounding space are the server's to judge. Every edit that names
+/// a folder builds its path here, a trash's included.
 fn child_path(
     tree: &Tree,
     store: &MailStore,
     parent: Option<&MailboxId>,
     name: &str,
 ) -> ProviderResult<String> {
+    if name.is_empty() {
+        return Err(ProviderError::invalid_state(
+            "a folder name cannot be empty",
+        ));
+    }
     reject_control_chars(name)?;
     let delimiter = tree.delimiter(parent.map(MailboxId::as_str));
     if let Some(d) = &delimiter

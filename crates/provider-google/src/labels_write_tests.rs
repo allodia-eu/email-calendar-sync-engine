@@ -336,3 +336,46 @@ fn gmail_advertises_folder_changes() {
     let provider = GmailProvider::new(fake_client(vec![]));
     assert!(provider.connection_info().capabilities.mailbox_writes());
 }
+
+#[tokio::test]
+async fn a_name_gmail_would_nest_or_cannot_hold_is_refused_before_any_request() {
+    // Gmail nests by name alone, so `a/b` would silently make a label inside another.
+    for name in ["a/b", ""] {
+        let (client, log) = recording_client(vec![("GET /users/me/labels", Ok(labels()))]);
+        let edits = [
+            MailboxEdit::Create {
+                name: name.into(),
+                parent: Some(id("Label_1")),
+            },
+            MailboxEdit::Update {
+                target: id("Label_4"),
+                name: name.into(),
+                parent: None,
+            },
+        ];
+        for change in &edits {
+            let err = edit(&client, change).await.unwrap_err();
+            assert_eq!(err.class(), FailureClass::InvalidState, "{change:?}");
+            assert!(err.detail().starts_with("a label name cannot"), "{err}");
+        }
+        let sent = log.lock().unwrap();
+        assert!(sent.is_empty(), "{name:?} sent {} requests", sent.len());
+    }
+
+    // A name Gmail holds as one level still goes through, a `.` included: that is IMAP's
+    // delimiter on some servers, not Gmail's.
+    let (client, log) = recording_client(vec![
+        ("GET /users/me/labels", Ok(labels())),
+        (
+            "POST /users/me/labels",
+            Ok(json!({ "id": "Label_9", "name": "Work/Q1.Q2", "type": "user" })),
+        ),
+    ]);
+    let create = MailboxEdit::Create {
+        name: "Q1.Q2".into(),
+        parent: Some(id("Label_1")),
+    };
+    let receipt = edit(&client, &create).await.unwrap();
+    assert_eq!(receipt.mailbox, Some(id("Label_9")));
+    assert_eq!(writes(&log.lock().unwrap()).len(), 1);
+}

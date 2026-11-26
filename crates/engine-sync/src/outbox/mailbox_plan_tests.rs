@@ -7,7 +7,7 @@ use engine_core::{
 };
 use engine_provider::MailboxEdit;
 
-use super::{MailboxChange, MailboxNameError, MailboxPlace, Plan, plan, validate_mailbox_name};
+use super::{MailboxChange, MailboxNameError, MailboxPlace, Plan, plan};
 
 fn id(value: &str) -> MailboxId {
     MailboxId::try_from(value).unwrap()
@@ -237,23 +237,7 @@ fn a_cycle_the_server_reports_does_not_hang_the_walk() {
 }
 
 #[test]
-fn names_every_transport_refuses_are_caught_before_queueing() {
-    assert_eq!(validate_mailbox_name("Receipts"), Ok(()));
-    assert_eq!(validate_mailbox_name("Reçus 2024"), Ok(()));
-    assert_eq!(validate_mailbox_name(""), Err(MailboxNameError::Empty));
-    assert_eq!(validate_mailbox_name("   "), Err(MailboxNameError::Empty));
-    assert_eq!(
-        validate_mailbox_name(" Bills"),
-        Err(MailboxNameError::Surrounded)
-    );
-    assert_eq!(
-        validate_mailbox_name("Bi\tlls"),
-        Err(MailboxNameError::Control)
-    );
-    assert_eq!(
-        validate_mailbox_name("Work/2024"),
-        Err(MailboxNameError::Separator)
-    );
+fn a_change_checks_the_names_it_would_give_before_queueing() {
     let trash = MailboxChange::Trash {
         target: id("bills"),
         seen: seen("Bills", None),
@@ -267,4 +251,9 @@ fn names_every_transport_refuses_are_caught_before_queueing() {
         parent: None,
     };
     assert_eq!(rename.validate(), Err(MailboxNameError::Separator));
+    let create = MailboxChange::Create {
+        name: "Bi\tlls".into(),
+        parent: None,
+    };
+    assert_eq!(create.validate(), Err(MailboxNameError::Control));
 }

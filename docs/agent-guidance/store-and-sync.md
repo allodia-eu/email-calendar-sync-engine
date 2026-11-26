@@ -1126,9 +1126,13 @@ one event never race on either provider.
   - the name a trashed folder takes inside Trash (`Bills`, `Bills 2` …) is chosen from
     the list as it stands then.
   Every change to one account's tree serialises on one resource (`mailbox-tree`), because
-  an IMAP rename moves the key of every folder beneath it. The names no transport accepts
-  (empty, surrounded by whitespace, a control character, `/`) are refused before enqueue
-  (`validate_mailbox_name`, which a host can call while the user types).
+  an IMAP rename moves the key of every folder beneath it. A name outside the engine's
+  portable policy (empty, surrounded by whitespace, a control character, `/`) is refused
+  before enqueue (`validate_mailbox_name`, in `engine_core::mail` and re-exported here and by
+  `engine-api`, which a host can call while the user types), as `InvalidState` with the typed
+  `MailboxNameError` as the error's source. It is a policy, not a transport limit, so the
+  adapters do not apply it: each refuses only what its own transport cannot carry
+  (`providers.md`).
 - **A folder the list no longer holds takes its mail with it.** Where message sync is per
   folder (IMAP, Graph) a folder's mail is its own scope, and on IMAP a rename is a new path,
   so the old path's scope would otherwise keep a full copy of the mail that every search

@@ -411,6 +411,9 @@ are account-level, so any folder-bound provider makes them.
   deleted, and Outlook's own delete is a move to Deleted Items, which `Trash` already is.
   `permanentDelete` is served on the global cloud only. A `404` is success: the op behind
   it is retried.
+- **Names are the server's to judge.** The adapter refuses none itself, a trash's included,
+  and makes no claim about which characters Exchange holds (unmeasured); a name it refuses
+  comes back as the server's own error (`providers.md`).
 - **A duplicate create is answered with the existing folder**: on `409` or
   `ErrorFolderExists` the parent's `childFolders` is read and a folder of **exactly** that
   name is the success a retry meets. One differing only in case is a `Conflict`, as are a

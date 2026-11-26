@@ -36,6 +36,7 @@ pub use calendar::{
 pub use contact::{ContactWriteOutcome, create_contact, delete_contact, patch_contact};
 pub use drafts::{DraftPut, PutDraftOutcome, delete_draft_mail, put_draft_mail};
 pub use drain::{DrainOutcome, DrainReport, DrainedOp, drain_outbox};
+pub use engine_core::mail::{MailboxNameError, validate_mailbox_name};
 use engine_core::{
     ids::AccountId,
     write::{PendingOp, PendingOpId, PendingOutcome},
@@ -49,7 +50,7 @@ pub use mail::{
     report_message, send_mail_edit,
 };
 pub use mailbox::{MailboxEditOutcome, edit_mailbox};
-pub use mailbox_plan::{MailboxChange, MailboxNameError, MailboxPlace, validate_mailbox_name};
+pub use mailbox_plan::{MailboxChange, MailboxPlace};
 pub use submit::{SubmitOutcome, submit_mail};
 // Tokio's own `Instant`, so the wait's bound holds under a paused test clock too.
 use tokio::time::Instant;

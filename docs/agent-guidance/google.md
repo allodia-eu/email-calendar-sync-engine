@@ -400,8 +400,11 @@ nesting lives in the name alone (above):
 | delete | `labels.delete` of the subtree, deepest first; a `404` is removed. Mail is not destroyed: Gmail keeps it in All Mail |
 
 Label ids never move, so every receipt names the id the edit started with, and a trash names
-none. A system label, a system parent and the synthetic All Mail are refused as
-`InvalidState` before anything is sent; a label gone from the list is a `Conflict`.
+none. A create's or rename's name that is empty, or that carries a `/`, which Gmail would read
+as nesting and so make a label nobody asked for, is refused as `InvalidState` before any
+request, the label list included. A system label, a system parent and the synthetic All Mail
+are refused as `InvalidState` too, after the label list is read and before any change is
+sent. A label gone from the list is a `Conflict`.
 
 ⚠️ **Live verification is pending.** The request shapes are pinned offline through the recording
 fake (`labels_write_tests`), from the documented API, not from captured replies.
