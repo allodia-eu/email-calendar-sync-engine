@@ -266,6 +266,7 @@ fn read_only_account_does_not_advertise_mail_writes() {
     assert!(session.capabilities().mail());
     assert!(!session.capabilities().mail_writes());
     assert!(!session.capabilities().mailbox_writes());
+    assert!(!session.capabilities().mailbox_create_role());
     assert!(!session.capabilities().draft_keywords());
 }
 

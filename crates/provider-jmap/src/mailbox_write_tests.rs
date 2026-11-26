@@ -77,10 +77,7 @@ async fn a_create_sends_the_name_the_parent_and_a_subscription() {
         "Mailbox/set",
         &json!({ "created": { "new": { "id": "h" } } }),
     );
-    let create = MailboxEdit::Create {
-        name: "Reçus".into(),
-        parent: Some(id("work")),
-    };
+    let create = MailboxEdit::create("Reçus", Some(id("work")));
 
     let (result, sent) = edit(vec![created], &create).await;
 
@@ -102,20 +99,14 @@ async fn a_create_at_the_top_sends_a_null_parent() {
         "Mailbox/set",
         &json!({ "created": { "new": { "id": "h" } } }),
     );
-    let create = MailboxEdit::Create {
-        name: "Receipts".into(),
-        parent: None,
-    };
+    let create = MailboxEdit::create("Receipts", None);
     let (_, sent) = edit(vec![created], &create).await;
     assert_eq!(sent[0].1["create"]["new"]["parentId"], Value::Null);
 }
 
 #[tokio::test]
 async fn a_create_that_finds_its_folder_there_resolves_to_it() {
-    let create = MailboxEdit::Create {
-        name: "probe-parent".into(),
-        parent: None,
-    };
+    let create = MailboxEdit::create("probe-parent", None);
     let (result, sent) = edit(vec![observed(0)], &create).await;
     assert_eq!(result, Ok(MailboxEditReceipt::resolved(id("h"))));
     assert_eq!(
@@ -138,10 +129,7 @@ async fn an_already_exists_without_the_id_is_looked_up_by_name() {
             { "id": "y", "name": "Receipts", "parentId": "work" }
         ] }),
     );
-    let create = MailboxEdit::Create {
-        name: "Receipts".into(),
-        parent: Some(id("work")),
-    };
+    let create = MailboxEdit::create("Receipts", Some(id("work")));
 
     let (result, sent) = edit(vec![refused, listed], &create).await;
 
@@ -288,3 +276,6 @@ async fn a_delete_the_server_refuses_keeps_the_refusal() {
     .await;
     assert_eq!(result, Err(FailureClass::Permanent));
 }
+
+#[path = "mailbox_write_role_tests.rs"]
+mod role;

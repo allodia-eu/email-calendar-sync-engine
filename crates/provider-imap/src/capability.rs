@@ -41,6 +41,10 @@ pub(crate) enum Extension {
     ListStatus,
     /// `SPECIAL-USE` (RFC 6154) — `LIST` can be asked for the role attributes.
     SpecialUse,
+    /// `CREATE-SPECIAL-USE` (RFC 6154 §3) — a `CREATE` can give the new folder a role with a
+    /// `USE` parameter. Apart from `SPECIAL-USE`: a server may list roles and let no client set
+    /// one.
+    CreateSpecialUse,
     /// `QRESYNC` (RFC 7162) — a mailbox delta can reconcile flags and expunges.
     Qresync,
     /// `NAMESPACE` (RFC 2342) — the server says which part of the mailbox tree is the
@@ -76,10 +80,11 @@ pub(crate) enum Extension {
 impl Extension {
     /// Every extension, in declaration order — what the `ENABLE` argument list and the
     /// connect trace iterate, so a new one cannot be added here and forgotten there.
-    pub(crate) const ALL: [Self; 12] = [
+    pub(crate) const ALL: [Self; 13] = [
         Self::Idle,
         Self::ListStatus,
         Self::SpecialUse,
+        Self::CreateSpecialUse,
         Self::Qresync,
         Self::Namespace,
         Self::Acl,
@@ -97,6 +102,7 @@ impl Extension {
             Self::Idle => "IDLE",
             Self::ListStatus => "LIST-STATUS",
             Self::SpecialUse => "SPECIAL-USE",
+            Self::CreateSpecialUse => "CREATE-SPECIAL-USE",
             Self::Qresync => "QRESYNC",
             Self::Namespace => "NAMESPACE",
             Self::Acl => "ACL",
@@ -114,11 +120,14 @@ impl Extension {
     ///
     /// `QRESYNC` is **not** folded in — rev2 took only its `CLOSED` response code (item 9),
     /// leaving the extension itself to RFC 7162 and to its own `ENABLE`. Nor are `ACL` and
-    /// `LIST-MYRIGHTS`, which Appendix E does not mention; `NAMESPACE` is, in item 2.
+    /// `LIST-MYRIGHTS`, which Appendix E does not mention; `NAMESPACE` is, in item 2. Nor is
+    /// `CREATE-SPECIAL-USE`: item 2 folds in only "the list of new mailbox attributes from
+    /// SPECIAL-USE", and rev2's `CREATE` takes no parameters (§9, `create`).
     pub(crate) const fn folded_into_rev2(self) -> bool {
         match self {
             Self::Idle | Self::ListStatus | Self::SpecialUse | Self::Namespace => true,
-            Self::Qresync
+            Self::CreateSpecialUse
+            | Self::Qresync
             | Self::Acl
             | Self::ListMyrights
             | Self::UidOnly
@@ -138,6 +147,7 @@ impl Extension {
             Self::Idle
             | Self::ListStatus
             | Self::SpecialUse
+            | Self::CreateSpecialUse
             | Self::Namespace
             | Self::Acl
             | Self::ListMyrights
@@ -259,6 +269,17 @@ impl Negotiated {
     ///   attributes arrive as base data or not at all.
     pub(crate) fn must_request_special_use(&self) -> bool {
         self.advertises(Extension::SpecialUse.atom())
+    }
+
+    /// Whether a `CREATE` may give the new folder a role (`USE`, RFC 6154 §3), the one answer
+    /// the capability, a folder write and the sent copy's fallback folder all use.
+    ///
+    /// The server must advertise `CREATE-SPECIAL-USE`: never on a guess, since Dovecot takes an
+    /// unadvertised `USE` and drops the role (DOVECOT-1). And the session must be able to read
+    /// roles back ([`has`](Self::has) `SPECIAL-USE`: advertised, or base `LIST` data on rev2),
+    /// or a create could not tell a landed retry from someone else's folder, nor confirm the role.
+    pub(crate) fn may_create_with_role(&self) -> bool {
+        self.has(Extension::CreateSpecialUse) && self.has(Extension::SpecialUse)
     }
 
     /// The dialect this session settled on, named as the protocol names it — for the

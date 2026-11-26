@@ -115,21 +115,12 @@ async fn labels_behave_as_folders_across_create_rename_move_trash_and_delete() {
     let top = format!("Allodia Probe {marker}");
 
     // --- create a folder and one inside it -------------------------------------------
-    let parent = apply(
-        &provider,
-        MailboxEdit::Create {
-            name: top.clone(),
-            parent: None,
-        },
-    )
-    .await
-    .expect("a create names its label");
+    let parent = apply(&provider, MailboxEdit::create(top.clone(), None))
+        .await
+        .expect("a create names its label");
     let child = apply(
         &provider,
-        MailboxEdit::Create {
-            name: "Child".into(),
-            parent: Some(parent.clone()),
-        },
+        MailboxEdit::create("Child", Some(parent.clone())),
     )
     .await
     .expect("a create names its label");
@@ -141,10 +132,7 @@ async fn labels_behave_as_folders_across_create_rename_move_trash_and_delete() {
     // A second create of the same folder is the first one.
     let again = apply(
         &provider,
-        MailboxEdit::Create {
-            name: "Child".into(),
-            parent: Some(parent.clone()),
-        },
+        MailboxEdit::create("Child", Some(parent.clone())),
     )
     .await;
     assert_eq!(again.as_ref(), Some(&child));

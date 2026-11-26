@@ -93,10 +93,7 @@ async fn a_folder_is_made_renamed_and_moved_and_its_children_go_with_it() {
         let root = resolved(
             &edit(
                 &provider,
-                MailboxEdit::Create {
-                    name: unique("FolderWrites"),
-                    parent: None,
-                },
+                MailboxEdit::create(unique("FolderWrites"), None),
                 label,
             )
             .await,
@@ -105,10 +102,7 @@ async fn a_folder_is_made_renamed_and_moved_and_its_children_go_with_it() {
         let receipts = resolved(
             &edit(
                 &provider,
-                MailboxEdit::Create {
-                    name: "Reçus".into(),
-                    parent: Some(root.clone()),
-                },
+                MailboxEdit::create("Reçus", Some(root.clone())),
                 label,
             )
             .await,
@@ -116,10 +110,7 @@ async fn a_folder_is_made_renamed_and_moved_and_its_children_go_with_it() {
         let inner = resolved(
             &edit(
                 &provider,
-                MailboxEdit::Create {
-                    name: "2024".into(),
-                    parent: Some(receipts.clone()),
-                },
+                MailboxEdit::create("2024", Some(receipts.clone())),
                 label,
             )
             .await,
@@ -133,10 +124,7 @@ async fn a_folder_is_made_renamed_and_moved_and_its_children_go_with_it() {
         // Making it again is the retry case: the same folder, and no error.
         let again = edit(
             &provider,
-            MailboxEdit::Create {
-                name: "Reçus".into(),
-                parent: Some(root.clone()),
-            },
+            MailboxEdit::create("Reçus", Some(root.clone())),
             label,
         )
         .await;
@@ -255,24 +243,11 @@ async fn a_trashed_folder_lands_in_trash_with_its_mail_and_a_delete_removes_it_f
         };
 
         let name = unique("Trashed");
-        let root = resolved(
-            &edit(
-                &provider,
-                MailboxEdit::Create {
-                    name: name.clone(),
-                    parent: None,
-                },
-                label,
-            )
-            .await,
-        );
+        let root = resolved(&edit(&provider, MailboxEdit::create(name.clone(), None), label).await);
         let inner = resolved(
             &edit(
                 &provider,
-                MailboxEdit::Create {
-                    name: "Inner".into(),
-                    parent: Some(root.clone()),
-                },
+                MailboxEdit::create("Inner", Some(root.clone())),
                 label,
             )
             .await,
@@ -355,10 +330,7 @@ async fn a_parent_made_only_to_hold_a_folder_is_listed_as_not_selectable() {
         let child = resolved(
             &edit(
                 &provider,
-                MailboxEdit::Create {
-                    name: "Child".into(),
-                    parent: Some(parent.clone()),
-                },
+                MailboxEdit::create("Child", Some(parent.clone())),
                 label,
             )
             .await,

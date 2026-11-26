@@ -99,7 +99,8 @@ fn every_mailbox_role_maps_consistently() {
     ];
     for (jmap, imap, expected) in &cases {
         assert_eq!(MailboxRole::from_jmap_role(jmap), *expected);
-        assert_eq!(expected.as_jmap_role(), *jmap);
+        assert_eq!(expected.jmap_role(), Some(*jmap));
+        assert_eq!(expected.as_str(), *jmap);
         assert_eq!(expected.to_string(), *jmap);
         // IMAP SPECIAL-USE maps to the same normalized roles (INBOX is
         // name-based, so it is not produced from a SPECIAL-USE attribute).
@@ -107,10 +108,11 @@ fn every_mailbox_role_maps_consistently() {
             assert_eq!(MailboxRole::from_imap_special_use(imap), *expected);
         }
     }
-    // The service's own records and stored chats have no IMAP attribute; their names are the
-    // engine's own.
+    // The service's own records and stored chats have no IMAP attribute and no JMAP role; their
+    // names are the engine's own, and read back from a store but never from a server.
     for role in [MailboxRole::ServerRecords, MailboxRole::ChatHistory] {
-        assert_eq!(MailboxRole::from_jmap_role(role.as_jmap_role()), role);
+        assert_eq!(MailboxRole::from(role.as_str().to_owned()), role);
+        assert_eq!(role.jmap_role(), None);
         assert_eq!(role.as_imap_special_use(), None);
     }
     // Unknown roles are preserved on both mappers.

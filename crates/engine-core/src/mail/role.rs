@@ -65,10 +65,20 @@ pub enum MailboxRole {
 }
 
 impl MailboxRole {
-    /// Maps a JMAP `role` value (a lowercase IANA attribute name, RFC 8621 §2).
+    /// Maps a JMAP `role` value a server reported (a lowercase IANA attribute name, RFC 8621
+    /// §2). Only the registered roles map to their variants; anything else, the engine's own
+    /// names ([`ServerRecords`](Self::ServerRecords), [`ChatHistory`](Self::ChatHistory))
+    /// included, is a role this server made up, kept as [`Other`](Self::Other). A server's
+    /// `server-records` is not the engine's.
     #[must_use]
     pub fn from_jmap_role(role: &str) -> Self {
-        match role.to_ascii_lowercase().as_str() {
+        let role = role.to_ascii_lowercase();
+        Self::registered(&role).unwrap_or(Self::Other(role))
+    }
+
+    /// The role a lowercase IANA name registers, the JMAP `inbox` included.
+    fn registered(name: &str) -> Option<Self> {
+        Some(match name {
             "inbox" => Self::Inbox,
             "archive" => Self::Archive,
             "drafts" => Self::Drafts,
@@ -78,10 +88,18 @@ impl MailboxRole {
             "all" => Self::All,
             "flagged" => Self::Flagged,
             "important" => Self::Important,
-            // No JMAP server reports these names; they are here so each role reads back as itself.
+            _ => return None,
+        })
+    }
+
+    /// Reads back the engine's stable name ([`as_str`](Self::as_str)), ignoring case: every
+    /// role's, the engine's own names included. What a store wrote, never what a server sent.
+    fn from_stable_name(name: &str) -> Self {
+        let name = name.to_ascii_lowercase();
+        match name.as_str() {
             "server-records" => Self::ServerRecords,
             "chat-history" => Self::ChatHistory,
-            other => Self::Other(other.to_owned()),
+            other => Self::registered(other).unwrap_or(Self::Other(name)),
         }
     }
 
@@ -128,15 +146,29 @@ impl MailboxRole {
         }
     }
 
-    /// The role's name: the JMAP role (a lowercase IANA attribute name) of a registered role, the
-    /// server's own spelling of an [`Other`](Self::Other), and the engine's own name for
-    /// [`ServerRecords`](Self::ServerRecords) and [`ChatHistory`](Self::ChatHistory), which no
-    /// registry names and so are no role to send a JMAP server. It is also the role's
-    /// [`Display`](fmt::Display) and serde form, which [`from_jmap_role`](Self::from_jmap_role)
-    /// reads back.
+    /// The role's stable name in the engine: the lowercase IANA name of a registered role, the
+    /// engine's own name for [`ServerRecords`](Self::ServerRecords) (`server-records`) and
+    /// [`ChatHistory`](Self::ChatHistory) (`chat-history`), and the server's own spelling of an
+    /// [`Other`](Self::Other).
+    ///
+    /// It is the role's [`Display`](fmt::Display) and serde form, and what a store keeps; it
+    /// reads back through `From<String>`. It is **not**
+    /// what to send a server: that is [`jmap_role`](Self::jmap_role) or
+    /// [`as_imap_special_use`](Self::as_imap_special_use), which have no name for a role no
+    /// registry names.
+    ///
+    /// The round trip is by name, so an [`Other`](Self::Other) whose name is one of the engine's
+    /// reads back as that role: a server reporting `server-records` (an `Other`, since
+    /// [`from_jmap_role`](Self::from_jmap_role) does not take the engine's names from a server)
+    /// is [`ServerRecords`](Self::ServerRecords) after a store's round trip, as an IMAP `\Inbox`
+    /// attribute (`Other("inbox")`) reads back as [`Inbox`](Self::Inbox). Both name what the
+    /// engine means by them, so nothing a host relies on changes.
     #[must_use]
-    pub fn as_jmap_role(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         match self {
+            Self::ServerRecords => "server-records",
+            Self::ChatHistory => "chat-history",
+            Self::Other(role) => role,
             Self::Inbox => "inbox",
             Self::Archive => "archive",
             Self::Drafts => "drafts",
@@ -146,28 +178,55 @@ impl MailboxRole {
             Self::All => "all",
             Self::Flagged => "flagged",
             Self::Important => "important",
-            Self::ServerRecords => "server-records",
-            Self::ChatHistory => "chat-history",
-            Self::Other(role) => role,
         }
+    }
+
+    /// The JMAP `role` to send a server for this role (RFC 8621 §2: a lowercase name from the
+    /// IANA "IMAP Mailbox Name Attributes" registry, or `inbox`): the inverse of
+    /// [`from_jmap_role`](Self::from_jmap_role).
+    ///
+    /// `None` for a role no registry names. [`ServerRecords`](Self::ServerRecords) and
+    /// [`ChatHistory`](Self::ChatHistory) are the engine's own. [`Other`](Self::Other) is
+    /// `None` too: it holds whatever a server reported that the engine does not know (a
+    /// vendor's JMAP role, a lowercased IMAP attribute such as `snoozed`), and sending that to
+    /// another server would ask for a role the engine cannot say exists there.
+    ///
+    /// Named `jmap_role`, not `as_jmap_role`: that name used to return the stable name
+    /// ([`as_str`](Self::as_str)), and a caller written for it must fail to build rather than
+    /// quietly get `None` for the engine's own roles.
+    #[must_use]
+    pub fn jmap_role(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Inbox => "inbox",
+            Self::Archive => "archive",
+            Self::Drafts => "drafts",
+            Self::Sent => "sent",
+            Self::Trash => "trash",
+            Self::Junk => "junk",
+            Self::All => "all",
+            Self::Flagged => "flagged",
+            Self::Important => "important",
+            Self::ServerRecords | Self::ChatHistory | Self::Other(_) => return None,
+        })
     }
 }
 
 impl fmt::Display for MailboxRole {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_jmap_role())
+        f.write_str(self.as_str())
     }
 }
 
+/// Reads the stable name back ([`MailboxRole::as_str`]); serde's form.
 impl From<String> for MailboxRole {
     fn from(value: String) -> Self {
-        Self::from_jmap_role(&value)
+        Self::from_stable_name(&value)
     }
 }
 
 impl From<MailboxRole> for String {
     fn from(value: MailboxRole) -> Self {
-        value.as_jmap_role().to_owned()
+        value.as_str().to_owned()
     }
 }
 
@@ -221,42 +280,107 @@ mod tests {
         );
     }
 
+    /// Every role a variant of its own names, with the stable name a store has always kept.
+    const STABLE_NAMES: [(MailboxRole, &str); 11] = [
+        (MailboxRole::Inbox, "inbox"),
+        (MailboxRole::Archive, "archive"),
+        (MailboxRole::Drafts, "drafts"),
+        (MailboxRole::Sent, "sent"),
+        (MailboxRole::Trash, "trash"),
+        (MailboxRole::Junk, "junk"),
+        (MailboxRole::All, "all"),
+        (MailboxRole::Flagged, "flagged"),
+        (MailboxRole::Important, "important"),
+        (MailboxRole::ServerRecords, "server-records"),
+        (MailboxRole::ChatHistory, "chat-history"),
+    ];
+
     #[test]
-    fn role_roundtrips_through_string_and_json() {
-        for role in [
-            MailboxRole::Inbox,
-            MailboxRole::Sent,
-            MailboxRole::Important,
-            MailboxRole::Other("custom".into()),
-        ] {
+    fn every_role_keeps_the_stable_name_and_serialized_form_it_always_had() {
+        let mut roles = STABLE_NAMES.to_vec();
+        roles.push((MailboxRole::Other("snoozed".into()), "snoozed"));
+        for (role, name) in roles {
+            assert_eq!(role.as_str(), name);
+            assert_eq!(role.to_string(), name);
+            assert_eq!(String::from(role.clone()), name);
+            // Byte for byte what a store wrote before the name and the JMAP role were apart.
             let json = serde_json::to_string(&role).unwrap();
+            assert_eq!(json, format!("\"{name}\""));
             assert_eq!(serde_json::from_str::<MailboxRole>(&json).unwrap(), role);
-            assert_eq!(role.to_string(), role.as_jmap_role());
+            assert_eq!(MailboxRole::from(name.to_owned()), role);
         }
+        // Read back ignoring case, as before.
         assert_eq!(
-            serde_json::to_string(&MailboxRole::Inbox).unwrap(),
-            "\"inbox\""
+            MailboxRole::from("Chat-History".to_owned()),
+            MailboxRole::ChatHistory
+        );
+        assert_eq!(MailboxRole::from("SENT".to_owned()), MailboxRole::Sent);
+    }
+
+    #[test]
+    fn only_a_registered_role_has_a_jmap_role_to_send() {
+        for (role, name) in &STABLE_NAMES[..9] {
+            assert_eq!(role.jmap_role(), Some(*name));
+            assert_eq!(MailboxRole::from_jmap_role(name), *role);
+        }
+        for role in [
+            MailboxRole::ServerRecords,
+            MailboxRole::ChatHistory,
+            // A vendor's role, or an IMAP attribute no registry names, read from some server.
+            MailboxRole::Other("snoozed".into()),
+        ] {
+            assert_eq!(role.jmap_role(), None, "{role}");
+        }
+    }
+
+    #[test]
+    fn a_server_cannot_report_the_engines_own_roles() {
+        // A JMAP server that reports these names made them up; they are not the engine's.
+        for name in ["server-records", "chat-history", "Server-Records"] {
+            assert_eq!(
+                MailboxRole::from_jmap_role(name),
+                MailboxRole::Other(name.to_ascii_lowercase())
+            );
+        }
+        // While a store's copy of the same name still reads back as the engine's role.
+        assert_eq!(
+            MailboxRole::from("server-records".to_owned()),
+            MailboxRole::ServerRecords
         );
     }
 
     #[test]
-    fn the_roles_no_registry_names_have_names_of_their_own_and_no_special_use() {
-        for (role, name) in [
-            (MailboxRole::ServerRecords, "server-records"),
-            (MailboxRole::ChatHistory, "chat-history"),
+    fn a_store_round_trip_is_by_name_so_an_other_named_like_a_role_comes_back_as_it() {
+        // Documented on `as_str`: what a server called `server-records`, and an IMAP `\Inbox`
+        // attribute, are each the role the engine means by that name once stored.
+        for (reported, stored_as) in [
+            (
+                MailboxRole::from_jmap_role("server-records"),
+                MailboxRole::ServerRecords,
+            ),
+            (
+                MailboxRole::from_imap_special_use("\\Inbox"),
+                MailboxRole::Inbox,
+            ),
         ] {
-            // No registry names them, so no IMAP attribute writes one or reads as one.
+            assert!(matches!(reported, MailboxRole::Other(_)), "{reported:?}");
+            let json = serde_json::to_string(&reported).unwrap();
+            assert_eq!(
+                serde_json::from_str::<MailboxRole>(&json).unwrap(),
+                stored_as
+            );
+        }
+    }
+
+    #[test]
+    fn the_roles_no_registry_names_have_no_special_use() {
+        for role in [MailboxRole::ServerRecords, MailboxRole::ChatHistory] {
+            let name = role.as_str();
             assert_eq!(role.as_imap_special_use(), None, "{name}");
             assert_eq!(
                 MailboxRole::from_imap_special_use(&format!("\\{name}")),
                 MailboxRole::Other(name.into())
             );
-            assert_eq!(role.as_jmap_role(), name);
-            assert_eq!(role.to_string(), name);
-            // Each survives a store's round trip by its name, like every other role.
-            let json = serde_json::to_string(&role).unwrap();
-            assert_eq!(json, format!("\"{name}\""));
-            assert_eq!(serde_json::from_str::<MailboxRole>(&json).unwrap(), role);
         }
         // A name no role has still reads as one the engine does not know.
         assert_eq!(

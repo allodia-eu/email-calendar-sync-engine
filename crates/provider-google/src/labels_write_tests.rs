@@ -4,17 +4,27 @@
 //! The label list below follows the documented `users.labels.list` shape (id, full `/`-joined
 //! name, `type`); it is written by hand, not captured.
 
-use engine_core::{error::FailureClass, ids::MailboxId};
-use engine_provider::{MailboxEdit, Provider};
+use engine_core::{error::FailureClass, ids::MailboxId, mail::MailboxRole};
+use engine_provider::{CreateRoleError, MailboxEdit, MailboxWrites, Provider};
 use serde_json::json;
 
-use super::edit;
 use crate::{
     GmailProvider,
     test_support::{FakeRoute, Request, fake_client, json, recording_client},
 };
 
 const DRAFT_NOT_FOUND: &str = include_str!("../tests/fixtures/error/draft_not_found.json");
+
+/// [`super::edit`], with the capabilities `GmailProvider` advertises.
+async fn edit(
+    client: &crate::transport::GoogleClient,
+    change: &MailboxEdit,
+) -> engine_provider::ProviderResult<engine_provider::MailboxEditReceipt> {
+    let capabilities = GmailProvider::new(fake_client(vec![]))
+        .connection_info()
+        .capabilities;
+    super::edit(client, change, &capabilities).await
+}
 
 fn labels() -> serde_json::Value {
     json!({ "labels": [
@@ -60,10 +70,7 @@ async fn a_folder_is_created_under_its_parents_full_name() {
             Ok(json!({ "id": "Label_9", "name": "Work/Receipts", "type": "user" })),
         ),
     ]);
-    let create = MailboxEdit::Create {
-        name: "Receipts".into(),
-        parent: Some(id("Label_1")),
-    };
+    let create = MailboxEdit::create("Receipts", Some(id("Label_1")));
 
     let receipt = edit(&client, &create).await.unwrap();
 
@@ -89,10 +96,7 @@ async fn a_folder_is_created_under_its_parents_full_name() {
 #[tokio::test]
 async fn a_folder_that_already_exists_is_not_created_twice() {
     let (client, log) = recording_client(vec![("GET /users/me/labels", Ok(labels()))]);
-    let create = MailboxEdit::Create {
-        name: "Clients".into(),
-        parent: Some(id("Label_1")),
-    };
+    let create = MailboxEdit::create("Clients", Some(id("Label_1")));
 
     let receipt = edit(&client, &create).await.unwrap();
 
@@ -176,18 +180,12 @@ async fn a_system_label_is_refused_and_a_missing_one_is_a_conflict() {
         edit(&client, &inbox).await.unwrap_err().class(),
         FailureClass::InvalidState
     );
-    let under_trash = MailboxEdit::Create {
-        name: "Kept".into(),
-        parent: Some(id("TRASH")),
-    };
+    let under_trash = MailboxEdit::create("Kept", Some(id("TRASH")));
     assert_eq!(
         edit(&client, &under_trash).await.unwrap_err().class(),
         FailureClass::InvalidState
     );
-    let under_all_mail = MailboxEdit::Create {
-        name: "Kept".into(),
-        parent: Some(id("ALL_MAIL")),
-    };
+    let under_all_mail = MailboxEdit::create("Kept", Some(id("ALL_MAIL")));
     assert_eq!(
         edit(&client, &under_all_mail).await.unwrap_err().class(),
         FailureClass::InvalidState
@@ -332,9 +330,37 @@ async fn deleting_a_label_that_is_gone_sends_nothing() {
 }
 
 #[test]
-fn gmail_advertises_folder_changes() {
+fn gmail_advertises_folder_changes_and_no_role_on_create() {
     let provider = GmailProvider::new(fake_client(vec![]));
     assert!(provider.connection_info().capabilities.mailbox_writes());
+    // Gmail's role folders are its system labels, which exist already; a user label is never one.
+    assert!(
+        !provider
+            .connection_info()
+            .capabilities
+            .mailbox_create_role()
+    );
+}
+
+#[tokio::test]
+async fn a_create_that_asks_for_a_role_is_refused_before_any_request() {
+    for role in [MailboxRole::Sent, MailboxRole::ChatHistory] {
+        let (client, log) = recording_client(vec![]);
+        let provider = GmailProvider::new(client);
+        let create = MailboxEdit::create_with_role("Sent", None, role);
+
+        let account = engine_core::ids::AccountId::try_from("acct").unwrap();
+        let err = provider.edit_mailbox(&account, &create).await.unwrap_err();
+
+        assert_eq!(err.class(), FailureClass::InvalidState);
+        assert_eq!(
+            std::error::Error::source(&err)
+                .and_then(|s| s.downcast_ref::<CreateRoleError>())
+                .cloned(),
+            Some(CreateRoleError::NotSupported)
+        );
+        assert!(log.lock().unwrap().is_empty(), "not even the label list");
+    }
 }
 
 #[tokio::test]
@@ -343,10 +369,7 @@ async fn a_name_gmail_would_nest_or_cannot_hold_is_refused_before_any_request() 
     for name in ["a/b", ""] {
         let (client, log) = recording_client(vec![("GET /users/me/labels", Ok(labels()))]);
         let edits = [
-            MailboxEdit::Create {
-                name: name.into(),
-                parent: Some(id("Label_1")),
-            },
+            MailboxEdit::create(name, Some(id("Label_1"))),
             MailboxEdit::Update {
                 target: id("Label_4"),
                 name: name.into(),
@@ -371,10 +394,7 @@ async fn a_name_gmail_would_nest_or_cannot_hold_is_refused_before_any_request() 
             Ok(json!({ "id": "Label_9", "name": "Work/Q1.Q2", "type": "user" })),
         ),
     ]);
-    let create = MailboxEdit::Create {
-        name: "Q1.Q2".into(),
-        parent: Some(id("Label_1")),
-    };
+    let create = MailboxEdit::create("Q1.Q2", Some(id("Label_1")));
     let receipt = edit(&client, &create).await.unwrap();
     assert_eq!(receipt.mailbox, Some(id("Label_9")));
     assert_eq!(writes(&log.lock().unwrap()).len(), 1);

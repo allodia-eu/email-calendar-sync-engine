@@ -157,3 +157,83 @@ fn a_key_without_appenduid_falls_back_to_the_message_id() {
         "draft:placed-probe@test.local"
     );
 }
+
+/// [`connection`], on a server that lets a client give a new folder a role (RFC 6154 §3).
+async fn creating_roles(parts: &[&str]) -> (Connection<MockStream>, crate::mock::Recorded) {
+    let (mut conn, recorded) = connection(parts).await;
+    conn.negotiated = crate::capability::Negotiated::from_capabilities(&[
+        "SPECIAL-USE".to_owned(),
+        "CREATE-SPECIAL-USE".to_owned(),
+    ]);
+    (conn, recorded)
+}
+
+#[tokio::test]
+async fn a_missing_role_folder_is_created_with_its_role_where_the_server_can_give_one() {
+    // So the folder made for the copy is found by its role next time, by this client and by
+    // every other, whatever it is called.
+    let (mut conn, recorded) = creating_roles(&[
+        "* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\na2 OK LIST done\r\n",
+        "a3 OK CREATE done\r\n",
+    ])
+    .await;
+
+    let folder = resolve_filing_folder(&mut conn, &own(), Filing::Drafts)
+        .await
+        .unwrap();
+
+    assert_eq!(folder, "Drafts");
+    let sent = written(&recorded);
+    assert!(
+        sent.contains("a3 CREATE \"Drafts\" (USE (\\Drafts))\r\n"),
+        "{sent}"
+    );
+    assert!(!sent.contains("a4 "), "{sent}");
+}
+
+#[tokio::test]
+async fn a_role_the_server_will_not_give_still_gets_the_copy_a_folder() {
+    // The role is a convenience here; the copy is the point. A refused role falls back to the
+    // plain `CREATE` every server takes.
+    let (mut conn, recorded) = creating_roles(&[
+        "* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\na2 OK LIST done\r\n",
+        "a3 NO [USEATTR] \\Sent not supported\r\n",
+        "a4 OK CREATE done\r\n",
+    ])
+    .await;
+
+    let folder = resolve_filing_folder(&mut conn, &own(), Filing::Sent)
+        .await
+        .unwrap();
+
+    assert_eq!(folder, "Sent");
+    let sent = written(&recorded);
+    assert!(
+        sent.contains("a3 CREATE \"Sent\" (USE (\\Sent))\r\n"),
+        "{sent}"
+    );
+    assert!(sent.contains("a4 CREATE \"Sent\"\r\n"), "{sent}");
+}
+
+#[tokio::test]
+async fn a_folder_already_there_by_name_is_not_created_a_second_time() {
+    // A `Sent` without the role: the `USE` create says it exists, and a plain one would only
+    // be refused again.
+    let (mut conn, recorded) = creating_roles(&[
+        "* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\na2 OK LIST done\r\n",
+        "a3 NO [ALREADYEXISTS] Mailbox exists\r\n",
+    ])
+    .await;
+
+    let folder = resolve_filing_folder(&mut conn, &own(), Filing::Sent)
+        .await
+        .unwrap();
+
+    assert_eq!(folder, "Sent");
+    let sent = written(&recorded);
+    assert!(
+        sent.contains("a3 CREATE \"Sent\" (USE (\\Sent))\r\n"),
+        "{sent}"
+    );
+    assert!(!sent.contains("a4 "), "{sent}");
+}

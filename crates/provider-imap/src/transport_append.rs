@@ -34,11 +34,19 @@ impl AppendFailure {
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
-    /// `CREATE <mailbox>`. Used to ensure the Sent folder exists before filing a
-    /// copy; an "already exists" rejection is the caller's to ignore.
-    pub(crate) async fn create(&mut self, mailbox: &str) -> ImapResult<()> {
-        self.command(&format!("CREATE {}", self.quoted_name(mailbox)))
-            .await?;
+    /// `CREATE <mailbox>`, or `CREATE <mailbox> (USE (<attribute>))` to give it the
+    /// special-use `attribute` too (RFC 6154 §3), which only a server advertising
+    /// `CREATE-SPECIAL-USE` may be sent. An "already exists" rejection is the caller's to judge.
+    pub(crate) async fn create(
+        &mut self,
+        mailbox: &str,
+        special_use: Option<&str>,
+    ) -> ImapResult<()> {
+        let with_use = special_use
+            .map(|attribute| format!(" (USE ({attribute}))"))
+            .unwrap_or_default();
+        let command = format!("CREATE {}{with_use}", self.quoted_name(mailbox));
+        self.command(&command).await?;
         Ok(())
     }
 

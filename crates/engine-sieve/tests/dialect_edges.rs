@@ -1,9 +1,12 @@
 //! The edges of the dialect: what reads typed though Roundcube would not write it so, everything
 //! it does not write (carried whole, never misread), and the writer's corners.
 
-use engine_core::rules::{
-    Action, Condition, HeaderField, MailRule, MailboxPath, Match, MatchMode, RuleAddress, RuleBody,
-    RuleMailbox, SizeBound, TextOp, TextTest,
+use engine_core::{
+    mail::MailboxRole,
+    rules::{
+        Action, Condition, HeaderField, MailRule, MailboxPath, Match, MatchMode, RuleAddress,
+        RuleBody, RuleMailbox, SizeBound, TextOp, TextTest,
+    },
 };
 use engine_sieve::dialect::{DialectErrorKind, read_rules, vocabulary, write_rules};
 
@@ -128,7 +131,7 @@ fn forms_roundcube_does_not_write_but_mean_the_same_read_typed() {
     assert!(stop);
     assert!(matches!(
         &actions[0],
-        Action::FileInto { mailbox: RuleMailbox::Role(role), .. } if role.as_jmap_role() == "inbox"
+        Action::FileInto { mailbox: RuleMailbox::Role(role), .. } if *role == MailboxRole::Inbox
     ));
 }
 

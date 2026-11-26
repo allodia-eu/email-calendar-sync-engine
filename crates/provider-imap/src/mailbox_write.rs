@@ -12,13 +12,24 @@
 //! write re-subscribes what it made and unsubscribes what it removed, and a server that
 //! refuses either is not a failed write: the folder change itself went through.
 //!
+//! A create may give the folder a role: `CREATE … (USE (\Archive))` (RFC 6154 §3), only where
+//! the server advertises `CREATE-SPECIAL-USE`, and only for a role with an attribute. Anything
+//! else is refused before a command is sent. A refusal is told apart by the folder list, never
+//! by the server's prose: a folder of that name already there with the role is the retry of a
+//! create that landed; one without the role, or a `[USEATTR]` refusal while another folder of
+//! the store holds the role, is a conflict; a `[USEATTR]` with no holder is a role this server
+//! will not give. A server may also take the role from another folder, or let two folders
+//! share it (RFC 6154 §3): that is its choice, and the create succeeds.
+//!
 //! Every edit is made in one store (`crate::store`): the credential's own, or the shared
 //! mailbox the provider is bound to. The folders an edit names come from that store's list,
 //! so they are its already; what the store decides is where the **top level** is — a folder
 //! made or moved there with no parent — and which folder is the Inbox no edit may touch.
 
-use engine_core::ids::MailboxId;
-use engine_provider::{MailboxEdit, MailboxEditReceipt, ProviderError, ProviderResult};
+use engine_core::{ids::MailboxId, mail::MailboxRole};
+use engine_provider::{
+    Capabilities, CreateRoleError, MailboxEdit, MailboxEditReceipt, ProviderError, ProviderResult,
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
@@ -57,8 +68,16 @@ impl Tree {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send,
     {
+        Self::read_matching(connection, "*").await
+    }
+
+    /// The folders `pattern` matches (a `LIST` pattern, so `*` and `%` in it are wildcards).
+    async fn read_matching<S>(connection: &mut Connection<S>, pattern: &str) -> ProviderResult<Self>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send,
+    {
         let modified_utf7 = connection.names_are_modified_utf7();
-        let rows = connection.list("*").await?;
+        let rows = connection.list(pattern).await?;
         let folders = rows
             .into_iter()
             .map(|row| Listed {
@@ -118,6 +137,7 @@ pub(crate) async fn edit_mailbox<S>(
     connection: &mut Connection<S>,
     store: &MailStore,
     edit: &MailboxEdit,
+    capabilities: &Capabilities,
 ) -> ProviderResult<MailboxEditReceipt>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -127,18 +147,19 @@ where
     {
         return Err(ProviderError::invalid_state("INBOX cannot be changed"));
     }
+    // The provider's own capability: `USE` only where `CREATE-SPECIAL-USE` is advertised and
+    // roles can be read back (`Negotiated::may_create_with_role`; DOVECOT-1).
+    let role = edit.role_as(capabilities, MailboxRole::as_imap_special_use)?;
+    // The capability was read at the first connect; a redial may land on a backend that does
+    // not advertise it. The same rule, on this session.
+    if role.is_some() && !connection.negotiated.may_create_with_role() {
+        return Err(CreateRoleError::NotSupported.into());
+    }
     let tree = Tree::read(connection).await?;
     match edit {
-        MailboxEdit::Create { name, parent } => {
+        MailboxEdit::Create { name, parent, .. } => {
             let path = child_path(&tree, store, parent.as_ref(), name)?;
-            if tree.get(&path).is_none() {
-                match connection.create(&path).await {
-                    Ok(()) => {}
-                    // A retry meets the folder the first attempt made.
-                    Err(err) if carries_code(&err, "ALREADYEXISTS") => {}
-                    Err(err) => return Err(err.into()),
-                }
-            }
+            create(connection, &tree, store, &path, role).await?;
             subscribe(connection, &path).await;
             resolved(&path)
         }
@@ -225,6 +246,80 @@ fn child_path(
         .get(parent.as_str())
         .map_or(parent.as_str(), |f| f.path.as_str());
     Ok(format!("{parent}{d}{name}"))
+}
+
+/// `CREATE`s the folder at `path`, with the special-use `attribute` where a role was asked for.
+///
+/// A folder already at `path` is the retry of a create that landed, so it is not created again,
+/// unless a role was asked for and it lacks it. A folder made with a role is listed once more
+/// to see that it has it; where it does not, it is subscribed as any create's folder is and
+/// named in [`CreateRoleError::NotKept`]. The same holds for one
+/// another client made between the `LIST` and the `CREATE` (`[ALREADYEXISTS]`), which is listed
+/// again to see.
+async fn create<S>(
+    connection: &mut Connection<S>,
+    tree: &Tree,
+    store: &MailStore,
+    path: &str,
+    attribute: Option<&str>,
+) -> ProviderResult<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    if let Some(existing) = tree.get(path) {
+        return holds(existing, attribute);
+    }
+    match connection.create(path, attribute).await {
+        Ok(()) => match attribute {
+            None => Ok(()),
+            // Success is read, not assumed: one `LIST` of the new folder, its roles asked for.
+            Some(attribute) => match Tree::read_matching(connection, path).await?.get(path) {
+                Some(made) if made.has_attribute(attribute) => Ok(()),
+                // The one refusal with a side effect: the folder is there without the role, so
+                // it is finished as any create finishes it, and named, never deleted.
+                _ => {
+                    subscribe(connection, path).await;
+                    let mailbox = MailboxId::try_from(path).map_err(|_| {
+                        ProviderError::invalid_state("a folder path cannot be empty")
+                    })?;
+                    Err(CreateRoleError::NotKept { mailbox }.into())
+                }
+            },
+        },
+        Err(err) if carries_code(&err, "ALREADYEXISTS") => match attribute {
+            None => Ok(()),
+            Some(_) => match Tree::read(connection).await?.get(path) {
+                Some(existing) => holds(existing, attribute),
+                None => Err(ProviderError::conflict(
+                    "the server says the folder exists, and does not list it",
+                )),
+            },
+        },
+        Err(err) => match attribute {
+            Some(attribute) if carries_code(&err, "USEATTR") => {
+                let held = tree.folders.iter().any(|folder| {
+                    store.relative(&folder.path).is_some() && folder.has_attribute(attribute)
+                });
+                Err(if held {
+                    ProviderError::conflict("another folder already has that role")
+                } else {
+                    ProviderError::invalid_state("the server will not give a folder that role")
+                })
+            }
+            _ => Err(err.into()),
+        },
+    }
+}
+
+/// Whether a folder already there is the one a create asked for: any folder of the name, or
+/// with a role asked for, only one carrying its `attribute`.
+fn holds(existing: &Listed, attribute: Option<&str>) -> ProviderResult<()> {
+    match attribute {
+        Some(attribute) if !existing.has_attribute(attribute) => Err(ProviderError::conflict(
+            "a folder of that name is already there without that role",
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Why a `RENAME` did not go through.
@@ -362,7 +457,7 @@ where
 
 /// Whether a refusal opens with the response code `code` (RFC 5530), the only part of a
 /// `NO` a client may act on: the text after it is the server's prose.
-fn carries_code(err: &ImapError, code: &str) -> bool {
+pub(crate) fn carries_code(err: &ImapError, code: &str) -> bool {
     let ImapError::No(detail) = err else {
         return false;
     };

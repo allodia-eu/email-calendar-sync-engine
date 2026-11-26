@@ -406,6 +406,11 @@ request, the label list included. A system label, a system parent and the synthe
 are refused as `InvalidState` too, after the label list is read and before any change is
 sent. A label gone from the list is a `Conflict`.
 
+No create gives a label a role: Gmail's role folders are its system labels, which exist already,
+and a user label is never one. So `mailbox_create_role` is `false`, and a create that asks for a
+role is refused as `InvalidState` (`CreateRoleError::NotSupported`, `providers.md`) before any
+request, the label list included.
+
 ⚠️ **Live verification is pending.** The request shapes are pinned offline through the recording
 fake (`labels_write_tests`), from the documented API, not from captured replies.
 `tests/live_mailbox_writes.rs` drives create, rename, move, trash and delete on a throwaway label

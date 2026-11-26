@@ -389,6 +389,11 @@ fn capabilities<S>(connection: &Connection<S>, smtp: bool) -> Capabilities {
     if connection.idle_available() {
         capabilities = capabilities.with_idle();
     }
+    // A new folder can be given a role only where the server advertises `CREATE-SPECIAL-USE`
+    // and roles can be read back (`Negotiated::may_create_with_role`).
+    if connection.negotiated.may_create_with_role() {
+        capabilities = capabilities.with_mailbox_create_role();
+    }
     // Shares are listable where the server can say whose mail is whose (`NAMESPACE`) and can
     // grant access at all (`ACL`, RFC 4314 — how one IMAP user shares with another). Gmail and
     // Outlook.com advertise `NAMESPACE` alone; claiming a list there would offer a picker that

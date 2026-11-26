@@ -82,13 +82,7 @@ async fn the_message_limit_fallback_finds_what_the_servers_own_dated_search_find
             .as_nanos();
         let admin = imap.provider(MailboxId::try_from("INBOX").unwrap());
         let folder = admin
-            .edit_mailbox(
-                &account,
-                &MailboxEdit::Create {
-                    name: format!("Limit {run}"),
-                    parent: None,
-                },
-            )
+            .edit_mailbox(&account, &MailboxEdit::create(format!("Limit {run}"), None))
             .await
             .unwrap_or_else(|err| panic!("create a folder on {label}: {err}"))
             .mailbox

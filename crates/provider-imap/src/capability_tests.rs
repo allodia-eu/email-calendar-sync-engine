@@ -197,3 +197,40 @@ fn the_largest_message_a_server_takes_is_its_appendlimit() {
     assert_eq!(caps(&["IMAP4rev1", "APPENDLIMIT"]).append_limit(), None);
     assert_eq!(caps(&["IMAP4rev1"]).append_limit(), None);
 }
+
+#[test]
+fn a_role_on_create_is_had_only_where_advertised_on_either_dialect() {
+    // RFC 6154 §3: a client MUST NOT send `CREATE … (USE …)` unless the server advertises
+    // `CREATE-SPECIAL-USE`, which is a capability apart from `SPECIAL-USE`. RFC 9051 folds in
+    // only SPECIAL-USE's list of attributes (Appendix E item 2), and its `CREATE` takes no
+    // parameters (§9, `create`), so a rev2 session has it no more than a rev1 one. The
+    // parameter changes nothing the server sends unbidden, so there is nothing to `ENABLE`.
+    assert!(!Extension::CreateSpecialUse.folded_into_rev2());
+    assert!(!Extension::CreateSpecialUse.needs_enable());
+    assert_eq!(Extension::CreateSpecialUse.atom(), "CREATE-SPECIAL-USE");
+
+    let mut rev2 = caps(&["IMAP4rev2", "SPECIAL-USE"]);
+    rev2.confirm_enabled(&["IMAP4rev2".to_owned()]);
+    assert!(rev2.has(Extension::SpecialUse));
+    assert!(!rev2.has(Extension::CreateSpecialUse));
+    assert!(!caps(&["IMAP4rev1", "SPECIAL-USE"]).has(Extension::CreateSpecialUse));
+    assert!(caps(&["IMAP4rev1", "CREATE-SPECIAL-USE"]).has(Extension::CreateSpecialUse));
+    assert!(
+        !caps(&["IMAP4rev1", "CREATE-SPECIAL-USE"])
+            .enable_arguments()
+            .contains(&"CREATE-SPECIAL-USE")
+    );
+}
+
+#[test]
+fn a_create_may_give_a_role_only_where_it_is_advertised_and_roles_can_be_read_back() {
+    assert!(caps(&["IMAP4rev1", "SPECIAL-USE", "CREATE-SPECIAL-USE"]).may_create_with_role());
+    // Advertised, but no role could be read back to tell a retry or confirm the role.
+    assert!(!caps(&["IMAP4rev1", "CREATE-SPECIAL-USE"]).may_create_with_role());
+    // rev2 makes the role attributes base `LIST` data (RFC 9051 §7.3.1).
+    let mut rev2 = caps(&["IMAP4rev2", "CREATE-SPECIAL-USE"]);
+    rev2.confirm_enabled(&["IMAP4rev2".to_owned()]);
+    assert!(rev2.may_create_with_role());
+    // Roles listed, none settable (Dovecot's capability).
+    assert!(!caps(&["IMAP4rev1", "SPECIAL-USE"]).may_create_with_role());
+}

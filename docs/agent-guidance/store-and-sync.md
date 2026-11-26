@@ -1114,7 +1114,9 @@ one event never race on either provider.
 - **A folder change is judged when it runs, not when it was queued.**
   `engine_sync::edit_mailbox` stores a `MailboxChange`: the host's intent, plus `seen`, the
   place (name and parent) the user saw the folder in. It never stores the `MailboxEdit` the
-  intent comes to. Before anything is sent, inline or from the drainer, the op reads the
+  intent comes to. Its `Create` carries no role: the outbox makes ordinary folders, and a role
+  on create (`MailboxEdit::create_with_role`, `providers.md`) is for a host that drives the
+  provider directly. Before anything is sent, inline or from the drainer, the op reads the
   folder list from the server and plans against it (`outbox/mailbox_plan.rs`):
   - a folder that is gone, or no longer at `seen`, is a `Conflict`, settled and never
     sent. On JMAP, Graph and Gmail a folder id survives a rename, so without this a

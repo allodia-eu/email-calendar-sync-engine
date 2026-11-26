@@ -132,10 +132,7 @@ where
     let created = admin
         .edit_mailbox(
             &account(),
-            &MailboxEdit::Create {
-                name: format!("Band {}", run_id()),
-                parent: None,
-            },
+            &MailboxEdit::create(format!("Band {}", run_id()), None),
         )
         .await
         .unwrap_or_else(|err| panic!("create the folder on {label}: {err}"));

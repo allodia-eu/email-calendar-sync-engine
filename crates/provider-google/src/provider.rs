@@ -460,7 +460,7 @@ impl MailboxWrites for GmailProvider {
         _account: &AccountId,
         edit: &MailboxEdit,
     ) -> ProviderResult<MailboxEditReceipt> {
-        crate::labels_write::edit(&self.client, edit).await
+        crate::labels_write::edit(&self.client, edit, &self.connection_info().capabilities).await
     }
 }
 

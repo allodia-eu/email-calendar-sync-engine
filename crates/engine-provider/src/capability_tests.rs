@@ -221,3 +221,14 @@ fn keeping_a_draft_s_keywords_is_its_own_promise() {
         "keeping them on a Sent copy is not keeping them on a draft"
     );
 }
+
+#[test]
+fn a_role_on_create_is_its_own_promise_and_needs_folder_writes() {
+    let writes = Capabilities::none().with_mail().with_mailbox_writes();
+    assert!(writes.mailbox_writes());
+    assert!(!writes.mailbox_create_role());
+    assert!(writes.with_mailbox_create_role().mailbox_create_role());
+    // A role on create is a kind of folder write: without the writes it promises nothing.
+    let without_writes = Capabilities::none().with_mail().with_mailbox_create_role();
+    assert!(!without_writes.mailbox_create_role());
+}

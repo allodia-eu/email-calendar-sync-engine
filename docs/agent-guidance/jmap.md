@@ -811,6 +811,32 @@ Fixtures: `sieve_get_rules_and_reply_response.json`, `sieve_set_create_rules_res
   name): the adapter refuses none itself, a trash's included, and an `invalidProperties`
   naming only `name` is `InvalidState`. `mailbox_writes` rides the `mail_writes` gate. Live:
   `tests/live_mailbox_writes.rs`, as the scratch account `carol@`.
+- **A create with a role** sends `role` in the same `create` (RFC 8621 §2), so
+  `mailbox_create_role` rides `mailbox_writes`, and the refusal follows it: a role asked of an
+  account that cannot change its folders is `CreateRoleError::NotSupported`, before any
+  request. Only a registered role is sent (`MailboxRole::jmap_role`: the IANA attribute names
+  and `inbox`); `ServerRecords`, `ChatHistory` and any `Other` are refused before the request
+  (`InvalidState`, `CreateRoleError::NoTransportForm`), because `Other` holds whatever some
+  server reported and would be a guess on another. A created mailbox's role is read back: from
+  `created` where the server echoed it (RFC 8620 §5.3 has it echo only what it set or changed,
+  so usually not), else one `Mailbox/get` of that id's `role`; a mailbox without it is
+  `CreateRoleError::NotKept`. RFC 8621 allows one mailbox per role, so a refusal
+  (`alreadyExists`, or `invalidProperties` naming `role`) is read against a `Mailbox/get` of
+  `name`, `parentId` and `role`, never against the server's `description`: the folder
+  `existingId` names (first, since a server may normalise the name), else the one of that name
+  and parent, holding the role is the retry of a create that landed and resolves to it; one
+  without the role, or another folder holding the role, is a `Conflict` (a create that asked
+  for a role never resolves to a folder lacking it); a role nobody holds that the server still
+  refuses is `InvalidState`. A create without a role sends no `role` key and reads nothing back,
+  byte for byte what it sent
+  before. Offline: `mailbox_write_role_tests.rs`. **Verified live on Stalwart**
+  (`tests/live_mailbox_create_role.rs`, as carol, whose account holds inbox, trash, junk,
+  drafts and sent): a new folder takes `archive` and lists with it, a retry resolves to it, a
+  second folder asking for `archive` or for `sent` is a `Conflict` and nothing is made, a
+  same-named folder without the role is a `Conflict`, and `ServerRecords` is refused before
+  sending. Stalwart's refusal of a held role is `invalidProperties` with `properties: ["role"]`
+  (and the prose "A mailbox with role 'sent' already exists.", never read), captured in
+  `mailbox_set_role_refusal_response.json`.
 - **A submission that loses its answer needs confirming.** The batched `Email/set` +
   `EmailSubmission/set` goes through `Executor::submit`, which waits the `submission`
   bound for its reply. Once that request may have reached the server, a failure there (a

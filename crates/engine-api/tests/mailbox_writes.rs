@@ -71,7 +71,7 @@ impl MailboxWrites for Tree {
         _account: &AccountId,
         edit: &MailboxEdit,
     ) -> ProviderResult<MailboxEditReceipt> {
-        let MailboxEdit::Create { name, parent } = edit else {
+        let MailboxEdit::Create { name, parent, .. } = edit else {
             panic!("only creates are asked of this fake");
         };
         let mut made = Mailbox::new(id("made"), name.clone());

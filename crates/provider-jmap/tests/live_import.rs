@@ -58,7 +58,7 @@ fn nanos() -> u128 {
 
 async fn folder(provider: &JmapProvider, name: String) -> MailboxId {
     provider
-        .edit_mailbox(&account(), &MailboxEdit::Create { name, parent: None })
+        .edit_mailbox(&account(), &MailboxEdit::create(name, None))
         .await
         .expect("create a scratch folder")
         .mailbox

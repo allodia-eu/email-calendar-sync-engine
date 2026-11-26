@@ -56,10 +56,7 @@ fn a_new_folder_is_sent_and_one_already_there_is_done() {
     };
     assert_eq!(
         plan(&fresh, &tree()).unwrap(),
-        Plan::Send(MailboxEdit::Create {
-            name: "Receipts".into(),
-            parent: Some(id("work")),
-        })
+        Plan::Send(MailboxEdit::create("Receipts", Some(id("work"))))
     );
     // A retry after the first attempt landed meets the folder it made.
     let again = MailboxChange::Create {

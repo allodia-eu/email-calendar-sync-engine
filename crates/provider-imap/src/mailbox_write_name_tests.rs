@@ -9,14 +9,8 @@ use super::{TREE, id, run};
 #[tokio::test]
 async fn an_empty_name_is_refused_before_any_change_is_sent() {
     for edit in [
-        MailboxEdit::Create {
-            name: String::new(),
-            parent: None,
-        },
-        MailboxEdit::Create {
-            name: String::new(),
-            parent: Some(id("Work")),
-        },
+        MailboxEdit::create(String::new(), None),
+        MailboxEdit::create(String::new(), Some(id("Work"))),
         MailboxEdit::Update {
             target: id("Work/2024"),
             name: String::new(),
@@ -35,10 +29,7 @@ async fn an_empty_name_is_refused_before_any_change_is_sent() {
 #[tokio::test]
 async fn a_slash_is_one_level_on_a_server_whose_delimiter_is_a_dot() {
     let dotted = "* LIST () \".\" \"INBOX\"\r\n* LIST () \".\" \"Work\"\r\na2 OK LIST done\r\n";
-    let create = MailboxEdit::Create {
-        name: "Q1/Q2".into(),
-        parent: Some(id("Work")),
-    };
+    let create = MailboxEdit::create("Q1/Q2", Some(id("Work")));
     let (result, sent) = run(
         dotted,
         &["a3 OK CREATE\r\n", "a4 OK SUBSCRIBE\r\n"],

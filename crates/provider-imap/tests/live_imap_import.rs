@@ -64,10 +64,7 @@ async fn an_import_stores_the_bytes_flags_keywords_and_date_and_a_delta_from_its
         let created = importer
             .edit_mailbox(
                 &account(),
-                &MailboxEdit::Create {
-                    name: format!("Imp€rt {run}"),
-                    parent: None,
-                },
+                &MailboxEdit::create(format!("Imp€rt {run}"), None),
             )
             .await
             .unwrap_or_else(|err| panic!("create the folder on {label}: {err}"));

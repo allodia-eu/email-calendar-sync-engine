@@ -454,6 +454,12 @@ are account-level, so any folder-bound provider makes them.
   deleted, and Outlook's own delete is a move to Deleted Items, which `Trash` already is.
   `permanentDelete` is served on the global cloud only. A `404` is success: the op behind
   it is retried.
+- **No create gives a folder a role.** Graph's role folders are its well-known folders
+  (`archive`, `sentitems`, … and `msgfolderroot`), which every mailbox has; no request makes
+  another or names an existing folder as one. So `mailbox_create_role` is `false` and a create
+  that asks for a role is refused before any request, by the provider's own capability
+  (`InvalidState`, `CreateRoleError::NotSupported`, `providers.md`), rather than making an ordinary folder a host would take for
+  its Archive. A host that mirrors a role onto Graph resolves the well-known folder instead.
 - **Names are the server's to judge.** The adapter refuses none itself, a trash's included,
   and makes no claim about which characters Exchange holds (unmeasured); a name it refuses
   comes back as the server's own error (`providers.md`).
