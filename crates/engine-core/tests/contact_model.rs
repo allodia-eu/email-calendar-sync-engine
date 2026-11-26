@@ -10,7 +10,7 @@ use engine_core::{
         ContactRelation, ContactResource, ContactSourceClass, FieldPatch, NameComponent,
         NameComponentKind, Organization, PersonalInfo, PropertyId, Title,
     },
-    ids::{AddressBookId, ContactId},
+    ids::{AddressBookId, ContactId, Uid},
     membership::Memberships,
     raw::{RawJsContact, RawProviderJson, RawVcard},
 };
@@ -42,7 +42,7 @@ fn contact_ids_are_distinct_and_membership_is_non_empty() {
 #[test]
 fn card_roundtrip_preserves_property_ids_and_raw_documents() {
     let mut card = card();
-    card.uid = Some("urn:uuid:contact-1".into());
+    card.uid = Some(Uid::new("urn:uuid:contact-1").unwrap());
     card.kind = ContactKind::Individual;
     card.name = Some(ContactName {
         full: Some("山田 太郎".into()),
@@ -273,4 +273,39 @@ fn property_ids_validate_and_deserialize() {
     assert!(PropertyId::new("").is_err());
     assert_eq!(property_id("stable").as_str(), "stable");
     assert!(serde_json::from_str::<PropertyId>("\"\"").is_err());
+}
+
+/// A stored card was written when `uid` was a plain string, so a row may hold one that is no UID
+/// at all: empty, or longer than a `Uid` takes. Such a row loads with no UID; it never fails the
+/// read, which would fail every card the store holds. A string a `Uid` takes loads as one.
+#[test]
+fn a_stored_uid_that_is_no_uid_loads_as_none_and_never_fails_the_card() {
+    let stored = |uid: serde_json::Value| {
+        let mut object = serde_json::to_value(card()).unwrap();
+        object["uid"] = uid;
+        serde_json::from_value::<ContactCard>(object).map(|card| card.uid)
+    };
+    assert_eq!(stored(serde_json::json!("")).unwrap(), None);
+    assert_eq!(
+        stored(serde_json::json!("u".repeat(Uid::MAX_OCTETS + 1))).unwrap(),
+        None
+    );
+    assert_eq!(stored(serde_json::Value::Null).unwrap(), None);
+    assert_eq!(
+        stored(serde_json::json!("urn:uuid:contact-1")).unwrap(),
+        Some(Uid::new("urn:uuid:contact-1").unwrap())
+    );
+
+    let mut object = serde_json::to_value(card()).unwrap();
+    object.as_object_mut().unwrap().remove("uid");
+    assert_eq!(
+        serde_json::from_value::<ContactCard>(object).unwrap().uid,
+        None
+    );
+
+    let mut card = card();
+    card.uid = Some(Uid::new("urn:uuid:contact-1").unwrap());
+    let json = serde_json::to_value(&card).unwrap();
+    assert_eq!(json["uid"], "urn:uuid:contact-1");
+    assert_eq!(serde_json::from_value::<ContactCard>(json).unwrap(), card);
 }

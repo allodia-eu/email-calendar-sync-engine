@@ -21,8 +21,9 @@ pub(super) fn card_object(card: &ContactCard) -> Map<String, Value> {
         "kind".into(),
         json!(super::contact_write::kind_name(&card.kind)),
     );
+    // A card without one is given one by `contact_write::create_object`, for a create.
     if let Some(uid) = &card.uid {
-        object.insert("uid".into(), json!(uid));
+        object.insert("uid".into(), json!(uid.as_str()));
     }
     if let Some(name) = &card.name {
         object.insert("name".into(), name_value(name));

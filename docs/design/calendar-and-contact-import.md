@@ -255,8 +255,17 @@ lookup and a collection's properties answer), with what a card changes:
   is taken as ours: the servers rewrite what they store (Stalwart writes 3.0 as 4.0, Nextcloud
   gives the card a `UID` of its own, both found live), and only those bytes lead to the name.
 - The name is the event's rule (`href::resource_name`): both servers list the `@` raw.
-  `create_contact` names a card the same way, and a card with no `UID` by a SHA-256 of its name
-  and addresses (no longer `DefaultHasher`, which is not stable across Rust releases).
+  `create_contact` names a card the same way. A create of a draft with no `UID` (one from a
+  source without a real one) is given one, since RFC 6352 §5.1 says "vCard components in an
+  address book collection MUST have a UID property value": `engine_provider::content_uid_of`,
+  minted from the whole draft, and named by the same SHA-256 (`carddav_ops::new_card`). It is a
+  fallback that keeps a retried create stable, not an identity (`contacts.md`, "A card's
+  `UID`").
+- **An import does not mint one.** Its contract is the source's bytes, so a card without a `UID`
+  is stored without one, against that same §5.1: Stalwart stores it so, and Nextcloud gives it
+  a `UID` of its own. A host that wants every imported card to carry one adds it before
+  importing. The import reads a card's `UID` as a sync does (`vcard::card_uid`): the first `UID`
+  property, unescaped and trimmed, and one no `Uid` takes (empty, over 1024 octets) as none.
 - `address-data-type` takes RFC 6352 §10.3's defaults: no `content-type` is `text/vcard`, no
   `version` is 3.0; the media type is compared without its parameters.
 - A bare `412`, a refusal, a throttle and the lookup's answers are read as for events

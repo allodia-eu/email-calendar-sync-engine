@@ -174,18 +174,24 @@ async fn a_taken_name_is_an_earlier_attempt_and_a_refused_card_is_never_taken() 
 
 #[tokio::test]
 async fn a_card_without_a_uid_is_named_by_its_bytes_and_not_looked_up() {
-    let anonymous = CARD.replace("UID:capture-1@example.com\r\n", "");
-    let (answer, replay) = import_one(&anonymous, vec![ok(PROPS), wrote(201, None)]).await;
-    assert!(
-        key(&answer.expect("stored"))
-            .is_some_and(|href| href.starts_with("/dav/addressbooks/alice/friends/sha256-"))
-    );
-    assert!(
-        replay
-            .seen()
-            .iter()
-            .all(|(method, _)| *method != DavMethod::Report)
-    );
+    // A `UID` no `Uid` takes (empty, over 1024 octets) is none, as a sync reads it
+    // (`vcard::card_uid`), so the card is named and looked up as one without.
+    let long = format!("UID:{}\r\n", "u".repeat(1025));
+    for replaced in ["", "UID:\r\n", long.as_str()] {
+        let anonymous = CARD.replace("UID:capture-1@example.com\r\n", replaced);
+        let (answer, replay) = import_one(&anonymous, vec![ok(PROPS), wrote(201, None)]).await;
+        assert!(
+            key(&answer.expect("stored"))
+                .is_some_and(|href| href.starts_with("/dav/addressbooks/alice/friends/sha256-")),
+            "{replaced}"
+        );
+        assert!(
+            replay
+                .seen()
+                .iter()
+                .all(|(method, _)| *method != DavMethod::Report)
+        );
+    }
 }
 
 #[tokio::test]

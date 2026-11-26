@@ -1,6 +1,8 @@
 //! JMAP ContactCard create objects and PatchObjects.
 
-use engine_core::contact::{ContactCard, ContactField, ContactKind, ContactPatch, FieldPatch};
+use engine_core::contact::{
+    ContactCard, ContactDraft, ContactField, ContactKind, ContactPatch, FieldPatch,
+};
 use serde_json::{Map, Value, json};
 
 use crate::{contact_write_fields, error::JmapError};
@@ -38,7 +40,33 @@ const MODELLED_PROPERTIES: &[&str] = &[
     "updated",
 ];
 
-/// Builds the `ContactCard/set` **create** object for a card.
+/// The `ContactCard/set` create object for `draft`: [`writable_object`], its book, and always a
+/// `uid`.
+///
+/// RFC 9553 §2.1.9 makes a Card's `uid` mandatory, and RFC 9610 does not ask a server to supply a
+/// missing one (RFC 8620 §5.3 lets it set a default for "any such property [that] may be omitted
+/// by the client", and the `uid` has none), so a create never leaves it out: a draft without its
+/// own gets [`engine_provider::content_uid_of`], minted from the whole draft. That is a fallback,
+/// not an identity: a retried create of the same draft sends the same `uid`, which RFC 9610 §3
+/// forbids a second card to hold ("there MUST NOT be more than one ContactCard with the same uid
+/// in an Account"), but an edited draft sends another. Stalwart stores a Card sent without a
+/// `uid` as it is, with none (`docs/spec-deviations.md`, STALWART-11).
+pub(crate) fn create_object(draft: &ContactDraft) -> Map<String, Value> {
+    let mut object = writable_object(&draft.card);
+    object.insert(
+        "addressBookIds".into(),
+        json!({ draft.address_book.as_str(): true }),
+    );
+    if !object.contains_key("uid") {
+        object.insert(
+            "uid".into(),
+            json!(engine_provider::content_uid_of(draft).uid().as_str()),
+        );
+    }
+    object
+}
+
+/// Builds the `ContactCard/set` **create** object for a card, without its book.
 ///
 /// The card's own values always win. Returning the stored raw JSContact verbatim was
 /// tempting — it is byte-faithful to what the server last sent — but a create is not a

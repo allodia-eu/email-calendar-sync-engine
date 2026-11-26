@@ -27,8 +27,9 @@ pub(crate) fn person(
     let resource = required_text(value, "resourceName")?;
     let id =
         ContactId::try_from(resource).map_err(|error| GoogleError::protocol(error.to_string()))?;
+    // No `uid`: the People API carries no vCard `UID` (its CardDAV endpoint does, but this is
+    // not that), and the resource name is the card's id, not an identity across systems.
     let mut card = ContactCard::new(id, Memberships::of_one(address_book));
-    card.uid = Some(resource.to_owned());
     card.source_class = source_class;
     card.is_writable = writable;
     card.name = value

@@ -38,7 +38,7 @@ fn card() -> ContactCard {
         sort_as: BTreeMap::from([("surname".into(), "Lovelace".into())]),
         ..ContactName::default()
     });
-    card.uid = Some("urn:uuid:card-1".into());
+    card.uid = Some(engine_core::ids::Uid::new("urn:uuid:card-1").unwrap());
     card.nicknames.insert(
         id("nickname"),
         ContactProperty::new(ContactNickname::new("Enchantress")),
@@ -399,4 +399,53 @@ fn a_name_leaves_out_what_it_does_not_have_rather_than_sending_null() {
         "{name:?}"
     );
     assert_eq!(name["isOrdered"], true);
+}
+
+/// RFC 9553 §2.1.9 makes a Card's `uid` mandatory, so a create never sends a Card without one.
+/// A draft without its own gets one minted from the whole draft
+/// ([`engine_provider::content_uid_of`]): the same draft the same `uid`; another book, a
+/// birthday, or a part of the source card the create object leaves out (its raw provider JSON),
+/// another one.
+#[test]
+fn a_create_always_sends_a_uid_and_mints_one_from_the_whole_draft_when_the_card_has_none() {
+    let draft = |card: ContactCard, book: &str| ContactDraft {
+        address_book: AddressBookId::try_from(book).unwrap(),
+        card,
+    };
+    let kept = create_object(&draft(card(), "book-1"));
+    assert_eq!(kept["uid"], "urn:uuid:card-1");
+    assert_eq!(kept["addressBookIds"]["book-1"], true);
+
+    let mut bare = card();
+    bare.uid = None;
+    let minted = create_object(&draft(bare.clone(), "book-1"));
+    let uid = minted["uid"].as_str().expect("a uid is sent");
+    assert_eq!(
+        uid,
+        engine_provider::content_uid_of(&draft(bare.clone(), "book-1"))
+            .uid()
+            .as_str()
+    );
+    assert_eq!(create_object(&draft(bare.clone(), "book-1"))["uid"], uid);
+    assert_ne!(create_object(&draft(bare.clone(), "book-2"))["uid"], uid);
+
+    let mut born = bare.clone();
+    born.anniversaries.insert(
+        id("birthday"),
+        ContactProperty::new(Anniversary {
+            date: "1815-12-10".into(),
+            kind: Some("birth".into()),
+            place: None,
+        }),
+    );
+    assert_ne!(create_object(&draft(born, "book-1"))["uid"], uid);
+
+    let mut sourced = bare;
+    sourced.raw_provider_json = Some(engine_core::raw::RawProviderJson::new(r#"{"id":"c2"}"#));
+    let other = create_object(&draft(sourced, "book-1"));
+    assert!(other.get("raw_provider_json").is_none(), "{other:?}");
+    assert_ne!(
+        other["uid"], uid,
+        "a source card the create leaves part of out"
+    );
 }

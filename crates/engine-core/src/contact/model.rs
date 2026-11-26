@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::{ContactFieldSet, ContactProperty, PropertyId};
 use crate::{
     extended::ExtendedProperties,
-    ids::{AddressBookId, ContactId},
+    ids::{AddressBookId, ContactId, Uid},
     membership::Memberships,
     raw::{RawJsContact, RawProviderJson, RawVcard},
     time::UtcDateTime,
@@ -301,8 +301,20 @@ pub struct PersonalInfo {
 pub struct ContactCard {
     /// Provider object id.
     pub id: ContactId,
-    /// Portable JSContact/vCard UID, when supplied.
-    pub uid: Option<String>,
+    /// The card's own `UID`: the vCard `UID` (RFC 6350 §6.7.6) or JSContact `uid` (RFC 9553
+    /// §2.1.9), the identity it keeps across systems. A provider's own object id is never a
+    /// `Uid` (it is [`id`](Self::id)); a source without a real UID gives `None`.
+    ///
+    /// Every deserialization reads it leniently: a value no [`Uid`] takes (empty, or over
+    /// [`Uid::MAX_OCTETS`]) becomes `None` without an error, whether it comes from a stored card
+    /// written before the field was a `Uid` or from a host's JSON. So a host that sends such a
+    /// value gets a card without a `uid`, silently.
+    ///
+    /// On a create, a target that requires one mints it when this is `None`; that is a fallback
+    /// that keeps a retried create of the same draft stable, not an identity, so a host that has
+    /// one sets it here.
+    #[serde(deserialize_with = "lenient_uid")]
+    pub uid: Option<Uid>,
     /// Non-empty address-book membership.
     pub address_books: Memberships<AddressBookId>,
     /// Authority class of the source that supplied this record.
@@ -393,6 +405,15 @@ impl ContactCard {
     pub fn populated_fields(&self) -> ContactFieldSet {
         ContactFieldSet::from_card(self)
     }
+}
+
+/// Reads a stored `uid` written when the field was a plain string: one that is no [`Uid`] loads
+/// as `None` rather than failing the card, and with it every card the store reads in one pass.
+fn lenient_uid<'de, D>(deserializer: D) -> Result<Option<Uid>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.and_then(|uid| Uid::new(uid).ok()))
 }
 
 impl Default for ContactCard {

@@ -289,7 +289,11 @@ async fn a_contact_scope_larger_than_one_get_syncs_whole() {
     let in_scope = |cards: &[engine_core::contact::ContactCard], prefix: &str| {
         cards
             .iter()
-            .filter(|card| card.uid.as_deref().is_some_and(|uid| uid.contains(prefix)))
+            .filter(|card| {
+                card.uid
+                    .as_ref()
+                    .is_some_and(|uid| uid.as_str().contains(prefix))
+            })
             .count()
     };
     scope.create(CONTACTS, "ContactCard", &cards("scope-snap"));

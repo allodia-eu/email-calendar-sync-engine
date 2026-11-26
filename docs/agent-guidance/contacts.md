@@ -36,11 +36,32 @@ cached; photo upload and deletion are deferred.
 - A contact card has one or more address-book memberships. Membership is
   separate from the card's provider identity and uses the same non-empty
   `Memberships<T>` invariant as mail and calendar.
-- JSContact/vCard `uid` is preserved as content identity. It does not replace
-  the provider-assigned `ContactId`.
+- A card's `uid` is its cross-system identity, apart from `ContactId` ("A card's `UID`").
 - Person, organization, and group cards share `ContactCard`; `ContactKind`
   carries the distinction. Google contact groups and JMAP/vCard group cards
   normalize to group cards with member references.
+
+## A card's `UID`
+
+- `ContactCard::uid` is a `Uid` (as an event's `UID` is): the vCard `UID` (RFC 6350 §6.7.6) or
+  JSContact `uid` (RFC 9553 §2.1.9). CardDAV and JMAP give one; Google People and Graph have
+  none, so theirs is `None` (`NORMALIZER_VERSION` 18 re-reads the provider ids stored there
+  before). A value no `Uid` takes (empty, over 1024 octets) reads as `None`, from a source or
+  any JSON; CardDAV's sync and import read it with one function (`vcard::card_uid`).
+- A create on CardDAV (RFC 6352 §5.1: "vCard components in an address book collection MUST
+  have a UID property value") or JMAP (RFC 9553 §2.1.9: `uid` is mandatory) always sends one.
+  A draft without one gets `engine_provider::content_uid_of`, a `urn:uuid:` UUIDv8 of the
+  SHA-256 of the whole draft (book and every card field but `id` and `uid`, keys sorted), so
+  cards differing anywhere never share one. It is a **fallback that keeps a retried create of
+  the same draft stable, not an identity**, and only within one engine version: a new or
+  renamed field, or a draft rebuilt after a sync changed its revisions, raw JSON or timestamps,
+  mints another, so an outbox create persisted before an upgrade does not meet its earlier
+  write. A host with an identity (a migration host: its pair and the source `ContactId`) sets
+  `uid` itself. Stalwart stores a JMAP Card sent without a `uid` as it is (STALWART-11). A
+  retry after a lost answer is refused on JMAP as `invalidProperties` (RFC 9610 §3) where
+  CardDAV answers `Conflict`; aligning them (as `mailbox_write.rs` reclassifies by the
+  property named) is a follow-up. **An import does not mint**: a card without a `UID` is stored
+  as sent, against RFC 6352 §5.1 (Stalwart keeps it so; Nextcloud gives it one of its own).
 
 ## Normalized card and raw preservation
 
@@ -102,6 +123,8 @@ combined convenience, but stores and reports retain separate source scopes.
   birthday and homepage values are normalized on read, but the neutral
   multi-value anniversary/link maps are not advertised for writes because Graph
   exposes only one scalar of each. Never silently choose one value.
+- No vCard `UID`: `uid` is `None`, proven live (`live_fetch_contact_matches_the_synced_card`
+  creates a contact, reads it back with no `uid`, and deletes it; run with the owner's approval).
 - Fetch personal-contact and directory-user photos on demand. A missing photo is
   a normal absence, not a failed contact sync — see "Absence is an outcome, not a
   failure" below, including which photo route each resource kind actually offers.
@@ -149,7 +172,7 @@ mail/calendar/identity scopes.
 - Advertise and use `urn:ietf:params:jmap:contacts`.
 - Sync `AddressBook/get|changes` before `ContactCard/query|get|changes`, paging the cards
   within `maxObjectsInGet` (`jmap.md`).
-- Preserve the server-assigned card `id`, `uid`, non-empty multi-address-book
+- Preserve the server-assigned card `id`, its `uid`, non-empty multi-address-book
   membership, rights, JSContact property ids, groups, and extensions.
 - Use `ContactCard/set` for CRUD. JMAP state protects the set operation at a
   collection state boundary, but the neutral capability reports
@@ -212,20 +235,17 @@ mail/calendar/identity scopes.
   keys hash the resource URI — an inline `PHOTO;ENCODING=b` *is* a `data:` URI
   holding the whole image, and neither key may carry it.
 
-- **Import** (`contact_import.rs`, the `import` feature; `providers.md` → "Import",
-  `docs/design/calendar-and-contact-import.md`) stores a card byte for byte. A book's
-  `supported-address-data` names the vCard versions it takes (Stalwart 4.0, 3.0, 2.1; Nextcloud
-  3.0, 4.0), and a card in another is refused before anything is sent, never converted. The
-  `UID` is looked up with `addressbook-query` (`match-type="equals"`, honoured by both), and a
-  `403`/`409` `no-uid-conflict` names the card that holds it, so a card the book holds is
-  already there; a card without a `UID` is named by its bytes' hash. Both servers keep every one
-  of 26 properties of a rich 4.0 card (Stalwart re-serializes; Nextcloud stores as sent and
-  converts on read), so there is no per-field `kept` yet. An `address-data-type` naming no
-  `content-type` or `version` takes RFC 6352 §10.3's defaults (`text/vcard`, 3.0). A card is
-  named by the rule every create uses (`href::resource_name`; `create_contact` too, and a card
-  with no `UID` by a SHA-256 of its name and addresses), a taken name is read back before it is
-  linked, and a refusal is judged by the one write classifier (`caldav.md` → "Import"). Live in
-  `tests/contacts/import.rs`, on Stalwart and Nextcloud (the SabreDAV fixture serves no CardDAV).
+- **Import** (`contact_import.rs`, the `import` feature; the survey and the steps are in
+  `docs/design/calendar-and-contact-import.md`) stores a card byte for byte, in a vCard version
+  the book's `supported-address-data` names (else refused unsent, never converted). The `UID` is
+  looked up with `addressbook-query` (`match-type="equals"`), and a `403`/`409`
+  `no-uid-conflict` names the holder, so a card the book holds is already there; a card without
+  a `UID` is named by its bytes' hash. Both servers keep all 26 properties of a rich 4.0 card,
+  so there is no per-field `kept` yet. Names follow `href::resource_name`, as every create's do.
+  Live in `tests/contacts/import.rs` on Stalwart and Nextcloud.
+- **A create always sends a `UID`** ("A card's `UID`"), a minted one naming the resource by the
+  same hash (`carddav_ops::new_card`). Live (`tests/contacts/uid_less_create.rs`): Stalwart and
+  Nextcloud keep it, list the card under that name, and refuse the same draft again.
 
 The Stalwart fixture writes the shared person/group cards over CardDAV; the
 gated `provider-caldav/tests/live_contacts.rs` reads them through both JMAP and

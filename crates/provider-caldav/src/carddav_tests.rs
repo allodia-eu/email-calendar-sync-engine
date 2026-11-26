@@ -148,7 +148,7 @@ async fn carddav_create_uses_vcard_put_and_if_none_match() {
         ContactId::try_from("ignored").unwrap(),
         Memberships::of_one(book.clone()),
     );
-    card.uid = Some("ada@example.test".into());
+    card.uid = Some(engine_core::ids::Uid::new("ada@example.test").unwrap());
     provider
         .create_contact(
             &AccountId::try_from("account-1").unwrap(),

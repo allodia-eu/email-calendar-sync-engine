@@ -177,3 +177,28 @@ fn card_kinds_members_media_and_structured_name_variants_are_normalized() {
     assert_eq!(photo.fingerprint.as_deref(), Some("blob-1"));
     assert!(!card.is_writable);
 }
+
+/// A `uid` no `Uid` takes reads as none and keeps the card; a real one is the card's `Uid`.
+#[test]
+fn a_uid_no_uid_type_takes_reads_as_none_and_keeps_the_card() {
+    let read = |uid: serde_json::Value| {
+        crate::contact::card(&json!({
+            "id": "card-1",
+            "uid": uid,
+            "addressBookIds": {"book-1": true},
+            "name": {"full": "Ada"}
+        }))
+        .expect("a card with a bad uid is still a card")
+        .uid
+    };
+    assert_eq!(
+        read(json!("urn:uuid:ada")),
+        Some(engine_core::ids::Uid::new("urn:uuid:ada").unwrap())
+    );
+    assert_eq!(read(json!("")), None);
+    assert_eq!(
+        read(json!("u".repeat(engine_core::ids::Uid::MAX_OCTETS + 1))),
+        None
+    );
+    assert_eq!(read(serde_json::Value::Null), None);
+}

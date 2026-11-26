@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use async_trait::async_trait;
 use engine_core::{
     contact::VcardVersion,
-    ids::{AccountId, AddressBookId, ContactId},
+    ids::{AccountId, AddressBookId, ContactId, Uid},
     sync::SyncState,
     version::{ETag, RevisionTokens},
 };
@@ -42,7 +42,7 @@ use crate::{
     href::{collection_href, hashed_name, resource_name},
     request::{CONTACT_IMPORT_PROPFIND, card_uid_query},
     transport::{DavExecutor, DavMethod, Precondition, WriteRequest},
-    vcard::unfold,
+    vcard::{card_uid, unfold},
 };
 
 #[async_trait]
@@ -122,9 +122,10 @@ impl CardDavProvider {
         };
         let collection = collection_href(card.address_book.as_str())
             .map_err(|err| err.content_free("importing a card"))?;
-        let name = uid
-            .as_deref()
-            .map_or_else(|| hashed_name(text.as_bytes()), resource_name);
+        let name = uid.as_ref().map_or_else(
+            || hashed_name(text.as_bytes()),
+            |uid| resource_name(uid.as_str()),
+        );
         let href = format!("{collection}{name}.vcf");
         let key = |href: &str| ContactId::try_from(href).ok();
         // A card is the one asked for when it has the same `UID`. A card without one is named by
@@ -140,7 +141,7 @@ impl CardDavProvider {
             Some(uid) => holder(
                 self.executor.as_ref(),
                 &collection,
-                card_uid_query(uid),
+                card_uid_query(uid.as_str()),
                 "address-data",
                 holds,
             )
@@ -186,9 +187,9 @@ impl CardDavProvider {
 
 /// What the one vCard a text holds is named by.
 enum OneCard {
-    /// Its `UID`.
-    Uid(String),
-    /// Nothing: it has no `UID` (optional in vCard 3.0).
+    /// Its `UID`, read as a sync reads it ([`card_uid`]).
+    Uid(Uid),
+    /// Nothing: it has no `UID` (optional in vCard 3.0), or one no `Uid` takes.
     NoUid,
 }
 
@@ -204,20 +205,7 @@ fn one_card(text: &str) -> Option<OneCard> {
     if count("BEGIN:VCARD") != 1 || count("END:VCARD") != 1 {
         return None;
     }
-    // The value starts after the first `:` outside a quoted parameter (RFC 6350 §3.3).
-    let uid = lines.iter().find_map(|line| {
-        let mut quoted = false;
-        let colon = line.char_indices().find_map(|(at, c)| {
-            if c == '"' {
-                quoted = !quoted;
-            }
-            (c == ':' && !quoted).then_some(at)
-        })?;
-        let (head, value) = (&line[..colon], line[colon + 1..].trim());
-        let name = head.split(';').next()?.rsplit('.').next()?;
-        (name.trim().eq_ignore_ascii_case("UID") && !value.is_empty()).then(|| value.to_owned())
-    });
-    Some(uid.map_or(OneCard::NoUid, OneCard::Uid))
+    Some(card_uid(&lines).map_or(OneCard::NoUid, OneCard::Uid))
 }
 
 /// The address book's import properties, parsed, and the body they came in, which holds the

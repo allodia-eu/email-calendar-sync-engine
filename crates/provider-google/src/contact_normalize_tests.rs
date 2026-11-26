@@ -64,7 +64,9 @@ fn comprehensive_person_normalizes_losslessly() {
         true,
     )
     .unwrap();
-    assert_eq!(card.uid.as_deref(), Some("people/c1"));
+    // The People API carries no vCard `UID`: the resource name is the card's id, never its UID.
+    assert_eq!(card.id.as_str(), "people/c1");
+    assert_eq!(card.uid, None);
     assert_eq!(card.name.as_ref().unwrap().components.len(), 5);
     assert_eq!(
         card.name.as_ref().unwrap().components[0].kind,

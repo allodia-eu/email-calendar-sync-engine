@@ -6,9 +6,13 @@
 //! exactly what `parse_vcard` recovers — the `N` line especially, whose two nested
 //! separator levels are escape-aware on both sides.
 
-use engine_core::contact::{
-    ContactCard, ContactEmail, ContactKind, ContactName, ContactNote, ContactPatch, ContactPhone,
-    ContactProperty, ContactResource, FieldPatch, Organization, PropertyId, Title,
+use engine_core::{
+    contact::{
+        ContactCard, ContactEmail, ContactKind, ContactName, ContactNote, ContactPatch,
+        ContactPhone, ContactProperty, ContactResource, FieldPatch, Organization, PropertyId,
+        Title,
+    },
+    ids::Uid,
 };
 
 use crate::{
@@ -70,11 +74,16 @@ fn title_line(title: &Title) -> String {
     format!("{property}:{}", escape(&title.name))
 }
 
-pub(crate) fn build_vcard(card: &ContactCard) -> String {
-    let mut lines = vec!["BEGIN:VCARD".into(), "VERSION:4.0".into()];
-    if let Some(uid) = &card.uid {
-        lines.push(format!("UID:{}", escape(uid)));
-    }
+/// The vCard a create sends for `card`, under `uid`: the card's own, or the one
+/// `carddav_ops::new_card` minted for a card without one. It takes the `UID` apart from the card
+/// because RFC 6352 §5.1 requires one in every address object, so no create may send a card
+/// without it.
+pub(crate) fn build_vcard(card: &ContactCard, uid: &Uid) -> String {
+    let mut lines = vec![
+        "BEGIN:VCARD".into(),
+        "VERSION:4.0".into(),
+        format!("UID:{}", escape(uid.as_str())),
+    ];
     lines.push(format!("KIND:{}", escape(kind_text(&card.kind))));
     if let Some(name) = card.display_name() {
         lines.push(format!("FN:{}", escape(&name)));

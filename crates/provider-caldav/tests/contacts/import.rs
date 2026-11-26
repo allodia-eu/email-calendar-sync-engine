@@ -209,7 +209,7 @@ async fn steps(
     );
     let stored = cards
         .iter()
-        .find(|card| card.uid.as_deref() == Some(person))
+        .find(|card| card.uid.as_ref().map(engine_core::ids::Uid::as_str) == Some(person))
         .expect("the rich card");
     every_property_kept(stored, &rich(person));
 }

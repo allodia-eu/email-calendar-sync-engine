@@ -6,7 +6,7 @@ use engine_core::{
         ContactName, ContactNickname, ContactNote, ContactPhone, ContactProperty, ContactResource,
         NameComponent, NameComponentKind, Organization, OrganizationUnit, PropertyId, Title,
     },
-    ids::{AddressBookId, ContactId},
+    ids::{AddressBookId, ContactId, Uid},
     membership::Memberships,
     raw::RawVcard,
 };
@@ -35,6 +35,7 @@ pub(crate) fn parse_vcard(
     }
     let mut card = ContactCard::new(id, Memberships::of_one(address_book));
     card.is_writable = writable;
+    card.uid = card_uid(&lines);
     for (index, line) in lines.iter().enumerate() {
         let Some((head, value)) = line.split_once(':') else {
             continue;
@@ -47,7 +48,6 @@ pub(crate) fn parse_vcard(
             .to_ascii_uppercase();
         let parameters: Vec<&str> = parts.collect();
         match property.as_str() {
-            "UID" => card.uid = Some(unescape(value)),
             "KIND" => card.kind = kind(value),
             "FN" => {
                 card.name.get_or_insert_with(ContactName::default).full = Some(unescape(value));
@@ -147,6 +147,27 @@ pub(crate) fn parse_vcard(
     }
     card.raw_vcard = Some(RawVcard::new(raw));
     Ok(card)
+}
+
+/// A card's `UID`, decided one way for every path that reads one (a synced card, a card to
+/// import): the value of its first `UID` property, in any group, taken after the first `:`
+/// outside a quoted parameter value (RFC 6350 §3.3), trimmed and unescaped. A value no `Uid`
+/// takes (empty, or over its 1024 octets) is none: no identity to keep, and never a reason to
+/// lose the card. The raw vCard keeps it as sent.
+pub(crate) fn card_uid(lines: &[String]) -> Option<Uid> {
+    lines.iter().find_map(|line| {
+        let mut quoted = false;
+        let colon = line.char_indices().find_map(|(at, c)| {
+            if c == '"' {
+                quoted = !quoted;
+            }
+            (c == ':' && !quoted).then_some(at)
+        })?;
+        let name = line[..colon].split(';').next()?.rsplit('.').next()?;
+        name.trim()
+            .eq_ignore_ascii_case("UID")
+            .then(|| Uid::new(unescape(line[colon + 1..].trim())).ok())
+    })?
 }
 
 pub(crate) fn unfold(raw: &str) -> Vec<String> {
