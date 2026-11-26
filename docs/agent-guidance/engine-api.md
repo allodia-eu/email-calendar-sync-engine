@@ -274,7 +274,9 @@ Step 6 lands in small, tested slices. Order and status:
    - **`put_calendar_document` can create, not only replace.** `EventWrite::creating(…)`
      asks the server to store the document **only if nothing is there** (`WritePrecondition::IfAbsent`),
      so putting an invitation that arrived as mail onto the calendar is a guarded create: a
-     resource that appeared in the meantime is a `Conflict`, never a silent overwrite. This
+     resource that appeared in the meantime is a `Conflict`, never a silent overwrite. The
+     address comes from `provider.new_event_id(calendar, uid)` (`CalendarWrites`), the
+     adapter's own naming rule, never a host's copy of it. This
      is the path for an inbound invitation because only the received raw document preserves
      its organiser, participant response states, sequence and extensions. `EventDraft::meeting`
      is instead the organiser-authored path for creating a new invitation.

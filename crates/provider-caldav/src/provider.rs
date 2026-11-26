@@ -245,7 +245,8 @@ impl CalDavProvider {
     /// it — a create states an [`EventDraft`] and learns the resulting id from the receipt.
     /// It stays public for the operations that address a resource *before* it has been
     /// synced: pre-cleaning a throwaway event, or the iMIP RSVP path
-    /// ([`imip`](crate::imip)). A patch or delete of a synced event reuses its stored
+    /// ([`imip`](crate::imip)). A host holding a `dyn Provider` asks the same rule through
+    /// [`CalendarWrites::new_event_id`]. A patch or delete of a synced event reuses its stored
     /// [`Event::id`](engine_core::calendar::Event::id).
     ///
     /// # Errors
@@ -413,6 +414,11 @@ impl CalendarWrites for CalDavProvider {
         crate::write::put_event(self.executor.as_ref(), write)
             .await
             .map_err(CalDavError::into_write_error)
+    }
+
+    /// [`event_href`](CalDavProvider::event_href), the rule every create here uses.
+    fn new_event_id(&self, calendar: &CalendarId, uid: &Uid) -> ProviderResult<EventId> {
+        Ok(self.event_href(calendar, uid)?)
     }
 
     async fn rsvp_event(

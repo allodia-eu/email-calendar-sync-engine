@@ -458,7 +458,7 @@ the user's `calendar-home-set` never names. It is offered through the neutral
   its own copy the moment the organizer writes, and an unconditional `PUT` would erase it
   along with whatever the server had recorded about delivery. A `412` is the same
   `Conflict` as any other precondition failure — re-read and decide, never a blind retry.
-  Live on both servers (`tests/common/imip.rs`).
+  Live on Stalwart, SabreDAV and Nextcloud (`tests/common/imip.rs`).
 - **Optimistic concurrency uses the strongest scheduling revision available.** It
   advertises `Capabilities::calendar_writes(WriteGuard::Enforced)` — the *other* calendar
   transport cannot (`jmap.md`), which is why the guard is a capability a host reads rather
@@ -556,9 +556,15 @@ the user's `calendar-home-set` never names. It is offered through the neutral
   `uid@example.com.ics` (observed live), so the id a create answers is the id sync reports. A
   name longer than 255 bytes is replaced by `sha256-<hex>` of the `UID`: Nextcloud stores a
   255-byte name and answers a 260-byte one `500` (measured), while Stalwart and the SabreDAV fixture
-  took 1,004 (`href::resource_name`). A create lands in the calendar its draft names,
-  by the href the listing gave it; a bare name is refused, since it would be a second id for
-  a listed calendar, keyed to a scope of its own.
+  took 1,004 (`href::resource_name`). A host that holds a `dyn Provider` asks the same rule
+  through `CalendarWrites::new_event_id(calendar, uid)` before a document create
+  (`EventWrite::creating`), and never mints the href itself: a copy of the rule drifts. A host
+  copy that encoded the `@` read the event back under an id no server lists: `common::imip`
+  asserts on all three servers that the event is listed under the minted id, and failed on all
+  three with the encoding swapped in. The minted id names only copies written under this rule; a
+  copy an auto-scheduling server filed sits at its own href (below), found by `UID`. A create
+  lands in the calendar its draft names, by the href the listing gave it; a bare name is
+  refused, since it would be a second id for a listed calendar, keyed to a scope of its own.
 - **The new `ETag` is read back where the server supplies it.** A successful PUT returns the
   resource's new entity tag in the `ETag` response header (RFC 4791 §5.3.4), surfaced on the
   receipt as `revisions`; when the server omits it the receipt carries an empty

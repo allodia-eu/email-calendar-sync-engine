@@ -110,6 +110,8 @@ mod discovery_start_tests;
 #[cfg(test)]
 mod double_encoding_tests;
 #[cfg(test)]
+mod new_event_id_tests;
+#[cfg(test)]
 mod vcard_tests;
 #[cfg(test)]
 mod write_outcome_tests;

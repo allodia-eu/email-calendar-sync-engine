@@ -311,6 +311,10 @@ impl EventWrite {
     /// `SEQUENCE` intact — [`EventDraft`] carries none of those, so a create through the
     /// neutral spine would store a plain appointment with no `ATTENDEE` line to answer on
     /// afterwards.
+    ///
+    /// `event` comes from
+    /// [`CalendarWrites::new_event_id`](crate::CalendarWrites::new_event_id), the adapter's own
+    /// naming rule; a host never mints it.
     #[must_use]
     pub fn creating(event: EventId, uid: Uid, ical: RawIcal) -> Self {
         Self {
