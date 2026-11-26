@@ -15,12 +15,15 @@
 //! - **A location** an event does not have yet goes in as a whole `locations/<id>` object, not as a
 //!   `locations/<id>/name` pointer.
 //! - **The first edit of an occurrence** assigns the whole `recurrenceOverrides` map, with that
-//!   occurrence as its sole entry. Only once the series is overridden *somewhere* can a later edit
-//!   address one entry through `recurrenceOverrides/<start>/…`.
+//!   occurrence as its sole entry. Once the series is overridden *somewhere*, a first edit of
+//!   another occurrence adds its entry whole, as `recurrenceOverrides/<start>`. Only an occurrence
+//!   that already has an entry is edited through `recurrenceOverrides/<start>/…`.
 //!
 //! Measured on Stalwart: with no `recurrenceOverrides` on the event, every pointer into it —
 //! `…/<start>`, `…/<start>/title`, `…/<start>/excluded` — comes back `invalidProperties`,
-//! while assigning the map succeeds. With the map present, all three are accepted.
+//! while assigning the map succeeds. With the map present, `…/<start>` is accepted, and so is
+//! `…/<start>/title` once that entry exists; into an entry that does not exist yet, it is
+//! `invalidPatch`.
 
 use engine_core::{calendar::Event, scheduling::addresses_match, time::CalendarDateTime};
 use engine_provider::{EventEdit, InviteeRole, PatchTarget, RecurrenceEdit, TextEdit};
@@ -173,11 +176,17 @@ pub(crate) fn patch_to_json(
         PatchTarget::Series => out.append(&mut properties),
         PatchTarget::Instance(occurrence) if !properties.is_empty() => {
             let start = local_date_time(&occurrence.start)?;
-            if is_overridden(base) {
-                let key = escape_pointer(&start);
+            let key = escape_pointer(&start);
+            if has_entry(base, &start) {
                 for (name, value) in properties {
                     out.insert(format!("recurrenceOverrides/{key}/{name}"), value);
                 }
+            } else if is_overridden(base) {
+                // The entry is itself a PatchObject, as in the map-assigning shape below.
+                out.insert(
+                    format!("recurrenceOverrides/{key}"),
+                    Value::Object(properties),
+                );
             } else {
                 // The map itself has to be assigned, and its entry keeps the pointer-keyed
                 // names: a `recurrenceOverrides` value *is* a PatchObject (RFC 8984 §1.4.11),
@@ -373,6 +382,20 @@ fn is_overridden(base: &Event) -> bool {
     base.recurrence
         .as_ref()
         .is_some_and(|recurrence| !recurrence.overrides.is_empty())
+}
+
+/// Whether the series already carries an entry for the occurrence starting at `start` — which
+/// decides whether a pointer into that entry addresses anything (see the module docs).
+///
+/// Read off the base, as [`is_overridden`] is, with the same window: an entry added elsewhere
+/// between the read and this write is replaced by the one this edit adds.
+fn has_entry(base: &Event, start: &str) -> bool {
+    let Ok(start) = start.parse() else {
+        return false;
+    };
+    base.recurrence
+        .as_ref()
+        .is_some_and(|recurrence| recurrence.overrides.contains_key(&start))
 }
 
 /// A text property's new value, or `null` to remove it (RFC 8620 §5.3).
