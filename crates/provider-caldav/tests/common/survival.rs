@@ -31,6 +31,8 @@ const SURVIVAL_UID: &str = "live-caldav-survival@test.local";
 const SERIES_START: &str = "2026-06-01T09:30:00";
 const OVERRIDDEN: &str = "2026-06-08T09:30:00";
 const OVERRIDE_TITLE: &str = "Renamed by hand";
+/// Where [`OVERRIDDEN`]'s occurrence is once the series has moved from 09:30 to 11:00.
+const MOVED_SLOT: &str = "2026-06-08T11:00:00";
 
 fn stamp() -> UtcDateTime {
     UtcDateTime::new(2026, 6, 1, 12, 0, 0).unwrap()
@@ -54,7 +56,10 @@ pub(crate) async fn survival_is_what_the_adapter_advertises(
         .override_survival()
         .expect("an adapter that writes calendars states what a series edit costs");
 
-    let renamed = measure(provider, account, |patch| patch.summary("Series renamed")).await;
+    let renamed = measure(provider, account, OVERRIDDEN, |patch| {
+        patch.summary("Series renamed")
+    })
+    .await;
     assert_eq!(
         renamed.clobbered,
         declared.clobbers_own_fields,
@@ -66,7 +71,10 @@ pub(crate) async fn survival_is_what_the_adapter_advertises(
         }
     );
 
-    let moved = measure(provider, account, |patch| {
+    // The occurrence is named by its slot, and moving the series moves the slot: the override
+    // has survived only if it still stands in for its occurrence, at the slot's new key. Read at
+    // the old key, an override left behind would pass, while drawn as an extra occurrence.
+    let moved = measure(provider, account, MOVED_SLOT, |patch| {
         patch
             .start(amsterdam("2026-06-01T11:00:00"))
             .end(amsterdam("2026-06-01T11:30:00"))
@@ -87,7 +95,7 @@ pub(crate) async fn survival_is_what_the_adapter_advertises(
     // destroyed rather than merely unscheduled.
     let mut shorter = RecurrenceRule::new(Frequency::Weekly);
     shorter.bound = RecurrenceBound::Count(NonZeroU32::new(4).unwrap());
-    let ruled = measure(provider, account, move |patch| {
+    let ruled = measure(provider, account, OVERRIDDEN, move |patch| {
         patch.recurrence(DraftRecurrence::new(shorter.clone()))
     })
     .await;
@@ -109,8 +117,9 @@ struct Outcome {
     clobbered: bool,
 }
 
-/// Builds a series with an override, applies `edit` to the master, and reads it back.
-async fn measure<F>(provider: &OnCalendar, account: &AccountId, edit: F) -> Outcome
+/// Builds a series with an override, applies `edit` to the master, and reads back the
+/// override at `slot`: where its occurrence is after the edit.
+async fn measure<F>(provider: &OnCalendar, account: &AccountId, slot: &str, edit: F) -> Outcome
 where
     F: FnOnce(EventPatch) -> EventPatch,
 {
@@ -125,10 +134,10 @@ where
         .expect("edit the series");
 
     let stored = require(provider, account, SURVIVAL_UID).await;
-    let entry = stored.recurrence.as_ref().and_then(|r| {
-        r.overrides
-            .get(&OVERRIDDEN.parse::<LocalDateTime>().unwrap())
-    });
+    let entry = stored
+        .recurrence
+        .as_ref()
+        .and_then(|r| r.overrides.get(&slot.parse::<LocalDateTime>().unwrap()));
     let outcome = Outcome {
         survived: entry.is_some(),
         clobbered: match entry {

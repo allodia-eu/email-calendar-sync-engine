@@ -419,6 +419,21 @@ Proven live with a control (`caldav.md` → "Import").
   | A property the override **set for itself** (its title) | kept | kept | kept | **clobbered** |
   | The master **deleted** | resource goes | object goes | occurrence `404`s | instances go `cancelled` |
 
+  **On CalDAV and JMAP, "survives" a move means the override is moved with the series.** An
+  override and an exclusion name their occurrence by its *original* slot (`RECURRENCE-ID`,
+  `EXDATE`, the `recurrenceOverrides` key), so moving the series' start gives its occurrences
+  other names. One left at the old name names nothing: the occurrence it was made for comes
+  back, the override is drawn beside it as an added occurrence, and an exclusion excludes
+  nothing. Both adapters therefore re-key every override and exclusion of a series whose start
+  moves, by `engine_core::calendar::SeriesShift`: the slots move by what the move did to the
+  *rule's* slots, which is only the time of day for a rule that names its days (`BYDAY`,
+  `BYMONTHDAY`, `BYYEARDAY`, `BYWEEKNO`) and only the day for one that names its hours. An
+  override the user moved keeps the time they gave it; one still at its slot (a JSCalendar
+  patch without a `start`, an iCalendar override whose `DTSTART` is its `RECURRENCE-ID`) moves
+  with it. Observed on Stalwart before the re-keying: one occurrence drawn twice after the whole
+  series was dragged, while the live survival tests passed, because they read the override at
+  its old key.
+
   `engine_provider::OverrideSurvival` is that table as an adapter constant, and each adapter's
   live suite re-runs the experiment against its own server rather than trusting the row —
   `OverrideSurvival::kept()` is the CalDAV/JMAP answer and the one a new transport should have
@@ -482,7 +497,8 @@ this section fixes the *semantics* they share.
   Tuesday's standup is either a move of *that occurrence* or of *every Monday from now
   to eternity*. `PatchTarget` therefore has no default:
   - `Series` edits the series itself — every occurrence moves. (iCalendar: the master
-    `VEVENT`. JSCalendar: the top-level object, leaving `recurrenceOverrides` alone.)
+    `VEVENT`. JSCalendar: the top-level object. A move of its start also re-keys the overrides
+    and exclusions, on both: see `OverrideSurvival` above.)
   - `Instance(recurrence_id)` edits one occurrence, named by its **original** start — its
     identity within the series, not where it is being moved to. (iCalendar: the
     `RECURRENCE-ID` override `VEVENT`. JSCalendar: the `recurrenceOverrides` entry keyed by

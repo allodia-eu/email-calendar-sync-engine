@@ -544,6 +544,12 @@ the user's `calendar-home-set` never names. It is offered through the neutral
     and end: the master's are the *first* occurrence's. A JMAP server materializes the
     override itself and needs neither — so the neutral `PatchTarget::Instance` must not
     promise them.
+  - **Moving the series moves its overrides and exclusions** (`patch/shift.rs`): every
+    `RECURRENCE-ID` and `EXDATE` is rewritten to the slot its occurrence has after the move, and
+    an override still at its slot moves its `DTSTART` and `DTEND` with it. Left at the old slot,
+    an override is drawn as an extra occurrence beside the one it was made for, and an
+    exclusion excludes nothing (`calendar-semantics.md`, `OverrideSurvival`). An `EXDATE` list
+    is rewritten one value per line.
   - **An event may not end before it begins.** The check is against the end the event *will
     have*, so moving the start past an unchanged end is caught too; the reader would
     otherwise reject the event as malformed and drop it, making the edit look saved while

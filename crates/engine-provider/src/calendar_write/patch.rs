@@ -50,7 +50,9 @@ pub enum PatchTarget {
     /// The series itself. **Every** occurrence moves.
     ///
     /// iCalendar: the master `VEVENT` (the one with no `RECURRENCE-ID`). JSCalendar: the
-    /// top-level object, leaving `recurrenceOverrides` alone.
+    /// top-level object. A move of the series' start also moves the overrides and exclusions
+    /// to their occurrences' new slots, on both
+    /// ([`OverrideSurvival::survives_time_change`](crate::OverrideSurvival::survives_time_change)).
     Series,
     /// A single occurrence — see [`Occurrence`] for how one is named, and why naming it
     /// takes more than a wall clock.

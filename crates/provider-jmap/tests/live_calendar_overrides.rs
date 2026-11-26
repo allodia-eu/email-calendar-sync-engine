@@ -102,3 +102,109 @@ async fn a_second_occurrence_is_overridden_beside_the_first() {
         .await
         .expect("delete the probe series");
 }
+
+#[tokio::test]
+async fn moving_the_series_takes_its_overrides_to_their_new_slots() {
+    let Some(provider) = setup("moving_the_series_takes_its_overrides_to_their_new_slots").await
+    else {
+        return;
+    };
+    let uid = "live-jmap-series-move@test.local";
+    pre_clean(&provider, uid).await;
+    let mut weekly = RecurrenceRule::new(Frequency::Weekly);
+    weekly.bound = RecurrenceBound::Count(NonZeroU32::new(6).unwrap());
+    provider
+        .create_event(
+            &account(),
+            &EventDraft::new(
+                calendar(&provider).await,
+                Uid::new(uid).unwrap(),
+                "Live JMAP series move probe",
+                amsterdam(SERIES_START),
+                amsterdam("2026-07-06T10:00:00"),
+                stamp(),
+            )
+            .repeating(DraftRecurrence::new(weekly)),
+        )
+        .await
+        .expect("create a recurring event");
+
+    // One occurrence moved by hand, one deleted: the two things a user does to a series.
+    let base = require(&provider, uid).await;
+    provider
+        .patch_event(
+            &account(),
+            &base,
+            &EventEdit::new(
+                &base,
+                PatchTarget::Instance(Occurrence::starting(amsterdam(FIRST_MOVED))),
+                EventPatch::new(stamp())
+                    .start(amsterdam("2026-07-13T15:00:00"))
+                    .end(amsterdam("2026-07-13T15:30:00")),
+            ),
+        )
+        .await
+        .expect("move one occurrence");
+    let base = require(&provider, uid).await;
+    provider
+        .delete_event(
+            &account(),
+            Some(&base),
+            &EventDeletion::occurrence(
+                &base,
+                Occurrence::starting(amsterdam(SECOND_MOVED)),
+                stamp(),
+            ),
+        )
+        .await
+        .expect("delete another");
+
+    // Then the whole series, an hour and a half later.
+    let base = require(&provider, uid).await;
+    provider
+        .patch_event(
+            &account(),
+            &base,
+            &EventEdit::new(
+                &base,
+                PatchTarget::Series,
+                EventPatch::new(stamp())
+                    .start(amsterdam("2026-07-06T11:00:00"))
+                    .end(amsterdam("2026-07-06T11:30:00")),
+            ),
+        )
+        .await
+        .expect("move the series");
+
+    let stored = require(&provider, uid).await;
+    let overrides = stored
+        .recurrence
+        .as_ref()
+        .expect("still a series")
+        .overrides
+        .clone();
+    let key = |text: &str| text.parse::<LocalDateTime>().unwrap();
+    assert!(
+        !overrides.contains_key(&key(FIRST_MOVED)) && !overrides.contains_key(&key(SECOND_MOVED)),
+        "nothing is left at a slot the series no longer has: {:?}",
+        overrides.keys().collect::<Vec<_>>()
+    );
+    match overrides.get(&key("2026-07-13T11:00:00")) {
+        Some(RecurrenceOverride::Patch(patch)) => assert_eq!(
+            patch.get("start").and_then(serde_json::Value::as_str),
+            Some("2026-07-13T15:00:00"),
+            "the occurrence moved by hand keeps the time it was given"
+        ),
+        other => panic!("the moved occurrence follows its slot, got {other:?}"),
+    }
+    assert_eq!(
+        overrides.get(&key("2026-07-20T11:00:00")),
+        Some(&RecurrenceOverride::Excluded),
+        "the deleted occurrence stays deleted"
+    );
+
+    provider
+        .delete_event(&account(), None, &EventDeletion::of(&stored))
+        .await
+        .expect("delete the probe series");
+}
