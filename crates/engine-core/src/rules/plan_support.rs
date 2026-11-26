@@ -198,8 +198,11 @@ pub(super) fn action_support(action: &Action, target: &RuleVocabulary) -> Option
                 RuleMailbox::Role(MailboxRole::Inbox) | RuleMailbox::Path(_) => {
                     RuleFeature::FileInto
                 }
-                // A role no transport names has no folder to file into.
-                RuleMailbox::Role(MailboxRole::Other(_)) => return None,
+                // A role no transport names has no folder to file into, and no transport files
+                // into the service's own records or its stored chats by role.
+                RuleMailbox::Role(
+                    MailboxRole::Other(_) | MailboxRole::ServerRecords | MailboxRole::ChatHistory,
+                ) => return None,
                 RuleMailbox::Role(
                     MailboxRole::All | MailboxRole::Flagged | MailboxRole::Important,
                 ) if target.has_limit(RuleLimit::RealFoldersOnly) => {

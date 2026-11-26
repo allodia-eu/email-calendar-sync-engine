@@ -82,3 +82,92 @@ async fn live_mail_folders_include_the_nested_ones() {
     assert_eq!(parent.parent.as_ref(), Some(&archive.id));
     assert_eq!(child.parent.as_ref(), Some(&parent.id));
 }
+
+/// Every folder a well-known alias names carries that alias's role, whatever the folder is
+/// called: the standard ones, Exchange's bookkeeping (Sync Issues and the three under it) and
+/// its stored chats (Conversation History). The test asks each alias itself, so it asserts
+/// per folder rather than per account: an alias the mailbox answers `404` (a personal
+/// account has no Sync Issues) or `403` for must leave its role on no folder at all.
+///
+/// What only a live run shows: that Graph accepts each alias in the URL, and that a mailbox
+/// without one answers in a way that leaves the listing whole.
+#[tokio::test]
+async fn live_mail_folders_carry_the_role_of_each_alias() {
+    let Some(token) = token() else {
+        eprintln!(
+            "skipping live_mail_folders_carry_the_role_of_each_alias: GRAPH_ACCESS_TOKEN unset"
+        );
+        return;
+    };
+    let mailboxes = provider(token.clone())
+        .sync_mailboxes(&account(), None)
+        .await
+        .expect("sync folders");
+    let SyncUpdate::Snapshot { objects, .. } = &mailboxes.update else {
+        panic!("expected a folder snapshot");
+    };
+    let http = engine_tls::TlsClientConfig::bundled()
+        .reqwest_builder()
+        .build()
+        .expect("client");
+    // Stated here rather than read from the adapter, so the test says what it expects.
+    let aliases = [
+        ("inbox", MailboxRole::Inbox),
+        ("archive", MailboxRole::Archive),
+        ("drafts", MailboxRole::Drafts),
+        ("sentitems", MailboxRole::Sent),
+        ("deleteditems", MailboxRole::Trash),
+        ("junkemail", MailboxRole::Junk),
+        ("syncissues", MailboxRole::ServerRecords),
+        ("conflicts", MailboxRole::ServerRecords),
+        ("localfailures", MailboxRole::ServerRecords),
+        ("serverfailures", MailboxRole::ServerRecords),
+        ("conversationhistory", MailboxRole::ChatHistory),
+    ];
+    let mut answered = Vec::new();
+    for (alias, role) in aliases.iter().cloned() {
+        // A GET, as the adapter sends it: ids in their immutable form.
+        let reply = http
+            .get(format!(
+                "https://graph.microsoft.com/v1.0/me/mailFolders/{alias}?$select=id"
+            ))
+            .bearer_auth(&token)
+            .header("Prefer", "IdType=\"ImmutableId\"")
+            .send()
+            .await
+            .expect("alias lookup");
+        let status = reply.status().as_u16();
+        if status != 200 {
+            assert!(matches!(status, 403 | 404), "{alias} answered {status}");
+            continue;
+        }
+        let body: serde_json::Value = reply.json().await.expect("alias JSON");
+        let id = body["id"].as_str().expect("an id").to_owned();
+        let folder = objects
+            .iter()
+            .find(|m| m.id.as_str() == id)
+            .unwrap_or_else(|| panic!("the {alias} folder is listed"));
+        assert_eq!(folder.role.as_ref(), Some(&role), "{alias}");
+        answered.push(role);
+    }
+    // Each role is on exactly the folders its aliases answered with, so a role given to an
+    // extra folder shows here.
+    for (_, role) in &aliases {
+        let carried = objects
+            .iter()
+            .filter(|m| m.role.as_ref() == Some(role))
+            .count();
+        let expected = answered.iter().filter(|r| *r == role).count();
+        assert_eq!(carried, expected, "{role}");
+    }
+    // And no folder carries a role this table does not know: an alias the adapter gained
+    // without the test hearing of it shows here.
+    for folder in objects {
+        if let Some(role) = &folder.role {
+            assert!(
+                aliases.iter().any(|(_, known)| known == role),
+                "a folder carries {role}, which no alias here names"
+            );
+        }
+    }
+}

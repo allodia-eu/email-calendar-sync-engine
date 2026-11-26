@@ -1,0 +1,18 @@
+{
+  "error": {
+    "code": "ErrorFolderNotFound",
+    "innererror": {
+      "internalexception": {
+        "internalexception": {
+          "message": "The defaultFolder cannot be created by XSO (it does not have CanCreate behavior). defaultFolder = SyncIssues, IsDelegatedLogon = False, IsOwnerLogon = True, Is defaultFolderData = HasInitialized=False,\nIdInitialized=False,\nInitializationException=,\nFolderId=,\n.",
+          "type": "Microsoft.Exchange.Data.StoreObjects.CannotCreateDefaultFolderException"
+        },
+        "message": "The specified folder could not be found in the store.",
+        "type": "Microsoft.Exchange.Services.Core.Types.ErrorFolderNotFoundException"
+      },
+      "message": "\"Exchange service returned error ErrorFolderNotFound: The specified folder could not be found in the store.\".",
+      "type": "Microsoft.Exchange.Services.ExchangeService.ExchangeServiceErrorResponseException"
+    },
+    "message": "The specified folder could not be found in the store."
+  }
+}

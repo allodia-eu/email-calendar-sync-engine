@@ -107,6 +107,12 @@ fn every_mailbox_role_maps_consistently() {
             assert_eq!(MailboxRole::from_imap_special_use(imap), *expected);
         }
     }
+    // The service's own records and stored chats have no IMAP attribute; their names are the
+    // engine's own.
+    for role in [MailboxRole::ServerRecords, MailboxRole::ChatHistory] {
+        assert_eq!(MailboxRole::from_jmap_role(role.as_jmap_role()), role);
+        assert_eq!(role.as_imap_special_use(), None);
+    }
     // Unknown roles are preserved on both mappers.
     assert_eq!(
         MailboxRole::from_imap_special_use("\\Snoozed"),

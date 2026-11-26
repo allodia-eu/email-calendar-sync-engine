@@ -25,9 +25,10 @@ use serde_json::Value;
 use crate::{
     error::GraphError,
     json::{req_str, wrap_id},
+    mailbox_write::is_not_found,
     normalize::{
-        MESSAGE_EXPAND, MESSAGE_SELECT, WELL_KNOWN_ROLES, apply_roles, folder_from_json,
-        message_from_json, well_known_folder_id,
+        MESSAGE_EXPAND, MESSAGE_SELECT, RECORD_ROLES, WELL_KNOWN_ROLES, apply_roles,
+        folder_from_json, message_from_json, well_known_folder_id,
     },
     normalize_state::{MESSAGE_STATE_SELECT, names_only_state, state_from_json},
     transport::GraphClient,
@@ -42,11 +43,19 @@ const PENDING_CURSOR: &str = "graph-pending";
 /// them).
 pub(crate) async fn folders(client: &GraphClient) -> Result<Vec<Mailbox>, GraphError> {
     let root = well_known_id(client, "msgfolderroot").await?;
-    let mut resolved = Vec::with_capacity(WELL_KNOWN_ROLES.len());
-    for (alias, role) in WELL_KNOWN_ROLES {
-        // A well-known folder the account never provisioned 404s; skip its role
-        // rather than failing the whole folder list.
-        if let Some(id) = optional_well_known_id(client, alias).await? {
+    let mut resolved = Vec::with_capacity(WELL_KNOWN_ROLES.len() + RECORD_ROLES.len());
+    // A well-known folder the account never provisioned 404s; skip its role rather than
+    // failing the whole folder list. A records folder may also be refused to the caller.
+    let lookups = (WELL_KNOWN_ROLES
+        .iter()
+        .map(|known| (known, is_not_found as Absent)))
+    .chain(
+        RECORD_ROLES
+            .iter()
+            .map(|known| (known, absent_or_withheld as Absent)),
+    );
+    for ((alias, role), absent) in lookups {
+        if let Some(id) = optional_well_known_id(client, alias, absent).await? {
             resolved.push((id, role.clone()));
         }
     }
@@ -109,15 +118,28 @@ pub(crate) async fn well_known_id(
     well_known_folder_id(&doc)
 }
 
-/// Resolves a well-known alias to its folder id, returning `None` when the account
-/// has no such folder (`404`) and propagating any other failure.
+/// Whether a well-known alias's failure means only that the folder is not there for the caller.
+type Absent = fn(&GraphError) -> bool;
+
+/// Absent, or there and not the caller's to see (`403 ErrorAccessDenied`). Only for the
+/// [`RECORD_ROLES`]: a standard role's `403` is the caller's grant falling short of the
+/// mailbox, which the listing reports rather than hides.
+fn absent_or_withheld(err: &GraphError) -> bool {
+    is_not_found(err)
+        || matches!(err, GraphError::Status { status: 403, .. })
+        || matches!(err, GraphError::Status { code: Some(code), .. } if code == "ErrorAccessDenied")
+}
+
+/// Resolves a well-known alias to its folder id, returning `None` when `absent` says the
+/// account has no such folder for the caller and propagating any other failure.
 async fn optional_well_known_id(
     client: &GraphClient,
     alias: &str,
+    absent: Absent,
 ) -> Result<Option<MailboxId>, GraphError> {
     match well_known_id(client, alias).await {
         Ok(id) => Ok(Some(id)),
-        Err(GraphError::Status { status: 404, .. }) => Ok(None),
+        Err(err) if absent(&err) => Ok(None),
         Err(other) => Err(other),
     }
 }
@@ -337,6 +359,10 @@ fn odata_link(doc: &Value, key: &str) -> Option<String> {
 #[cfg(test)]
 #[path = "fetch_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "fetch_roles_tests.rs"]
+mod roles_tests;
 
 #[cfg(test)]
 #[path = "fetch_content_tests.rs"]

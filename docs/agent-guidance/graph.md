@@ -104,13 +104,56 @@ each over its own `GraphClient` on the same token. The mail layers:
   short tree. And **`childFolderCount` counts hidden folders that `childFolders` does not
   return** (Conversation History has one), so a folder can promise a child and answer with
   an empty page; that is ordinary, not a failure.
-- **Roles resolved by id, never by name.** A personal `mailFolder` carries **no**
-  `wellKnownName` (selecting it `400`s) and a **localized** `displayName`
-  (e.g. Dutch "Postvak IN"). The provider `GET`s the well-known aliases
-  (`inbox`, `archive`, `drafts`, `sentitems`, `deleteditems`, `junkemail`) to
-  learn their ids and matches by id; `msgfolderroot` is resolved to null the
-  parent of top-level folders. `outbox`/conversation-history have no standard
-  role.
+- **Roles resolved by id, never by name.** A `mailFolder` has a **localized** `displayName`
+  (e.g. Dutch "Postvak IN"), and `wellKnownName` is not in v1.0's schema: selecting it `400`s
+  on the personal account and the work/school tenant we test with. (The default projection
+  of the folder list does carry it on both, observed November 2026; an undeclared property
+  is not something to build on, so the adapter does not read it.) The provider `GET`s the
+  well-known aliases (`/mailFolders/{alias}?$select=id`) to learn their ids and matches by id;
+  `msgfolderroot` is resolved to null the parent of top-level folders. `outbox` has no role.
+
+  | Alias | Role | An alias that answers… |
+  |---|---|---|
+  | `inbox`, `archive`, `drafts`, `sentitems`, `deleteditems`, `junkemail` | `Inbox`, `Archive`, `Drafts`, `Sent`, `Trash`, `Junk` | not found: no role; anything else fails the listing |
+  | `syncissues`, and under it `conflicts`, `localfailures`, `serverfailures` | `ServerRecords` | not found or `403`: no role; anything else fails the listing |
+  | `conversationhistory` | `ChatHistory` | the same |
+
+  `ServerRecords` is Exchange's own bookkeeping: Outlook's logs of failed synchronisations
+  and the copies a sync conflict left behind. `ChatHistory` is Conversation History, the
+  chats Exchange stored as messages: records of chats, not mail. The visible folder mainly
+  holds Skype for Business conversations; Microsoft 365 keeps its copies of Teams chats in a
+  hidden folder under it, which `childFolders` does not return (Conversation History counts
+  one child and lists none: `tests/fixtures/mail/mailfolders_children_hidden.json`), so
+  neither the folder list nor this role reaches them. Gmail's chats (`CHAT`) are the same
+  thing and do **not** behave alike: the Gmail adapter treats `CHAT` as a label that files
+  nothing (`NORMALIZER_VERSION` 12), so a chat appears only in the synthetic All Mail (role
+  `All`) and nothing marks it as a chat. A host that leaves `ChatHistory` out still copies
+  Gmail's chats. They are two roles, not one, because a host may treat stored chats
+  differently from bookkeeping and cannot tell them apart by their localized names
+  ("Synchronisatieproblemen", "Gesprekgeschiedenis"). Over IMAP the same Exchange folders
+  are listed with no SPECIAL-USE attribute (unverified here), so `provider-imap` gives them
+  no role: only a name would tell, and names are localized.
+
+  The five are information about a folder, so a folder list never fails for want of one:
+  an alias answering not found or `403` (the folder is absent, or not the caller's to see)
+  leaves its role unassigned. "Not found" is one predicate,
+  `mailbox_write::is_not_found`. The six standard aliases keep failing the listing on a
+  `403`, which there is the credential's grant falling short of the mailbox.
+
+  Observed on a personal account and one work/school tenant, November 2026: the personal
+  account has Conversation History but no Sync Issues, and answers those four aliases `404
+  ErrorFolderNotFound` (`tests/fixtures/error/syncissues_not_found.json`); the tenant
+  answered all five. Other folders Exchange keeps, such as `scheduled`, `searchfolders` or
+  RSS Subscriptions, have no role: none of them was surveyed.
+
+  ⚠️ **Unverified: whether reading an alias creates its folder.** The `404` for Sync Issues
+  carries an Exchange trace saying the default folder "cannot be created by XSO (it does not
+  have CanCreate behavior)", which implies that some default folders *are* created when
+  they are first accessed. Both test accounts already had Conversation History and an
+  Archive, so whether a `GET` on `conversationhistory` or `archive` (asked on every folder
+  listing) creates a missing one was not observed, and was not provoked. If it does, a
+  folder listing writes to the mailbox it reads, which matters for a source a migration
+  host promises to leave untouched.
 - **Snapshot = the initial delta enumeration** (full objects): drain
   `@odata.nextLink` pages, ending at the `@odata.deltaLink` that becomes the
   persisted cursor. `$top` does **not** paginate consumer delta; the page size is asked for
@@ -779,9 +822,10 @@ proven too; sending it as a `PATCH` instead is a follow-up.
 - **No cross-folder orchestration yet.** The provider is folder-bound; syncing
   every folder is the orchestrator's job (the live test binds the inbox alias).
 - **Per-id delta re-fetch (and role resolution) are sequential GETs.** A changed id
-  is re-fetched with one `GET` each, and the 6 role aliases + `msgfolderroot` are
-  resolved with one `GET` each per folder-list pass; both could collapse to a few
-  round-trips via `$batch` (≤20 sub-requests) — a follow-up optimization. A
+  is re-fetched with one `GET` each, and the 11 role aliases + `msgfolderroot` are
+  resolved with one `GET` each per folder-list pass (12 before the folder list itself);
+  both could collapse to a few round-trips via `$batch` (≤20 sub-requests) — a follow-up
+  optimization. A
   changed-id re-fetch that `404`s (deleted/moved in the race since the delta) is
   skipped, so a single vanished message cannot wedge the pass.
 - **National clouds aren't auto-rebased.** `with_base` rebasing rewrites only the
