@@ -204,6 +204,42 @@ async fn editing_an_already_overridden_occurrence_patches_through_its_pointer() 
 }
 
 #[tokio::test]
+async fn a_first_edit_of_another_occurrence_adds_its_whole_entry() {
+    // The map exists, but this occurrence has no entry in it yet, and RFC 8620 §5.3 lets a
+    // pointer address only what already exists: `recurrenceOverrides/<start>/title` points
+    // into an entry that is not there, and the whole update is rejected with it. Observed on
+    // Stalwart as `invalidPatch` on the second occurrence a user moved. So the new entry goes in
+    // whole, as the first one did, and the one already there is left alone.
+    let (p, exec) = recording(vec![set_response(&json!({ "updated": { EVENT: null } }))]);
+    let base = overridden_base("2026-08-08T09:00:00");
+    p.patch_event(
+        &account(),
+        &base,
+        &edit(
+            &base,
+            PatchTarget::Instance(Occurrence::starting(zoned("2026-08-15T09:00:00"))),
+            EventPatch::new(stamp())
+                .summary("Moved standup")
+                .start(zoned("2026-08-15T10:00:00")),
+        ),
+    )
+    .await
+    .unwrap();
+
+    let (_, _, args) = exec.sole_call();
+    assert_eq!(
+        args["update"][EVENT],
+        json!({
+            "recurrenceOverrides/2026-08-15T09:00:00": {
+                "title": "Moved standup",
+                "start": "2026-08-15T10:00:00",
+            },
+        }),
+        "a new entry is added whole beside the existing one, never pointed into"
+    );
+}
+
+#[tokio::test]
 async fn a_first_edit_of_an_occurrence_assigns_the_override_map() {
     // A series nobody has touched has no `recurrenceOverrides` at all, and RFC 8620 §5.3
     // lets a pointer address only what already exists — so the pointer form above would be

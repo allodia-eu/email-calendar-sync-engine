@@ -887,23 +887,26 @@ Fixtures: `sieve_get_rules_and_reply_response.json`, `sieve_set_create_rules_res
   that takes only `recurrenceRules` would reject our create, and no JMAP server other than
   Stalwart is exercised here. If Fastmail (or any other) is ever added, this is the first
   thing to re-measure — the reader needs no change, only the writer.
-- **A patch pointer may only address what already exists — which gives the override map two
+- **A patch pointer may only address what already exists — which gives the override map three
   shapes.** RFC 8620 §5.3 requires every part of a JSON pointer *before* the last to be
   present on the server already, and a pointer that fails that rejects the **whole** update,
   not just its own line. So on a series nobody has overridden yet — no `recurrenceOverrides`
   property at all — every pointer into it (`…/<start>`, `…/<start>/title`,
   `…/<start>/excluded`) comes back `invalidProperties`, measured. The **first** edit or
   exclusion of an occurrence therefore assigns the map, with that occurrence as its sole
-  entry; once the series is overridden anywhere, a later one addresses the entry through a
-  pointer. `calendar_patch::is_overridden` reads that off the base, and the same rule already
-  governs `locations`.
+  entry. Once the series is overridden anywhere, the first edit of *another* occurrence adds
+  its entry whole, as `recurrenceOverrides/<start>`: a `…/<start>/start` pointer into an
+  entry that is not there yet is `invalidPatch`, measured, and it was the second occurrence a
+  user moved that found it. Only an occurrence that already has an entry is edited through
+  `…/<start>/<name>`. `calendar_patch::is_overridden` and `has_entry` read that off the base,
+  and the same rule already governs `locations`.
 
   The entry keeps the pointer-keyed names either way: a `recurrenceOverrides` value **is** a
   PatchObject (RFC 8984 §1.4.11), so `locations/<id>/name` inside it addresses the master's
   location exactly as it does at the top level. Verified — Stalwart stores it expanded.
 
-  ⚠️ The map-assigning shape is chosen from the base, so a series that gained its *first*
-  override elsewhere between the read and the write loses it. JMAP carries no per-object
+  ⚠️ The shape is chosen from the base, so a series that gained its *first* override, or an
+  entry for this occurrence, elsewhere between the read and the write loses it. JMAP carries no per-object
   revision to refuse the write on (`WriteGuard::Absent`), so nothing can detect it.
 - **There is no JSCalendar version to negotiate. Read the shape, do not ask.** This is the
   durable answer to "which version does this server speak?", and the answer is that the
@@ -1320,7 +1323,8 @@ the shares the user has **subscribed** to, so a share appears there once accepte
     `session.rs` must stop advertising `Absent`.
   - `round_trip` (create → patch → destroy, plus the idempotent re-destroy) and
     `recurrence_override_edit` (is a `recurrenceOverrides/<start>/…` pointer accepted?) cover
-    the wire shapes. The recurrence test edits the **seeded** series — the only recurring
+    the wire shapes, and `live_calendar_overrides.rs` the entry a second occurrence adds
+    beside the first. The recurrence test edits the **seeded** series — the only recurring
     event available, and restores it before returning, so the seed the read tests assert on
     is left exactly as found.
 - **Fuzzing:** `fuzz/` is a separate cargo-fuzz workspace (`cargo +nightly fuzz

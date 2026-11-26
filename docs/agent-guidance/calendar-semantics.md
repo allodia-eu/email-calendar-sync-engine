@@ -520,8 +520,8 @@ this section fixes the *semantics* they share.
   negative duration the reader then silently discarded as malformed — so the user's move
   simply vanished.
 
-  A **JMAP** server materializes the override itself from a `recurrenceOverrides/<start>/…`
-  pointer and needs neither. So this is a CalDAV *requirement*, documented on
+  A **JMAP** server materializes the override itself from a `recurrenceOverrides` entry
+  keyed by the original start and needs neither. So this is a CalDAV *requirement*, documented on
   `PatchTarget::Instance` as one — not a promise the neutral contract makes.
 - **A move must not silently convert the value's form.** The new `DTSTART`/`DTEND` must
   be zoned in the same zone / floating / all-day as the value it replaces, or the patch
