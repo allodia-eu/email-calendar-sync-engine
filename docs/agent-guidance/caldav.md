@@ -846,10 +846,11 @@ what a client would assume:
   answers `429` with a `Retry-After` — 31 seconds, observed — and since the engine stopped
   sleeping through a wait that long, a `connect` or a sync that meets one fails with
   `FailureClass::RateLimited` and the instant attached (`http-throttling.md`). That is the
-  intended contract, not a regression: the caller comes back when the server said. It shows
-  up in this crate's own live suites because `tests/live_concurrency.rs` drains that limiter
-  by design, which is why it now cools down on the way out and why `tests/live_contacts.rs`
-  honours the instant at connect — the smallest version of what a host does.
+  intended contract, not a regression: the caller comes back when the server said. The
+  harness raises that limit (1,000 requests a minute per account as shipped) out of the live
+  suites' way, so only `tests/live_concurrency.rs` meets it: it sets Stalwart's own limit back
+  for its run and raises it again after (`stalwart-harness.md`). `tests/live_contacts.rs`
+  still honours the instant at connect — the smallest version of what a host does.
 
 - **iTIP/iMIP inbound parse + RSVP are implemented; delivery/persistence wiring is
   staged.** `engine_core::scheduling` (keys, `SEQUENCE` ordering, the trust

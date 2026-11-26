@@ -13,7 +13,8 @@
 use std::{net::TcpStream, sync::Arc, time::Duration};
 
 use stalwart_harness::{
-    CONTACT_UID, GATE_VAR, Harness, ImapProbe, ONE_OFF_EVENT_UID, SHARED_GROUP_ACCOUNT, run_probe,
+    CONTACT_UID, GATE_VAR, Harness, ImapProbe, ONE_OFF_EVENT_UID, RAISED_REQUESTS_PER_MINUTE,
+    SHARED_GROUP_ACCOUNT, run_probe,
 };
 
 /// Return the configured harness, or `None` (skipping, with a note labelled by
@@ -66,6 +67,58 @@ fn anonymous_requests_are_not_rationed() {
              (`docker compose down -v && up`)"
         );
     }
+}
+
+/// The harness must take a migration-sized copy into one account, so it raises Stalwart's
+/// per-account limits: 1,000 signed-in requests a minute, uploads of 50 MB or 1,000 blobs an
+/// hour, and 2,000 IMAP commands a minute. This sends more than a minute's default allowance of
+/// requests as one account and requires every one answered, so a harness without the
+/// entrypoint's `raise_per_account_limits` fails at the 1,001st. The upload quota and the IMAP
+/// limit are only read back, since an upload stays counted for an hour; a stored value counts as
+/// applied because the entrypoint applies all three with one settings reload, which the 1,100
+/// requests prove took effect. `provider-caldav`'s `live_concurrency` lowers the request limit
+/// for its own run and raises it again; a run of it that was killed is the other way to fail
+/// here.
+#[test]
+fn per_account_limits_fit_a_migration() {
+    const RESTART: &str = "Restart it (`docker compose restart`): its entrypoint raises the \
+                           limits again on every start";
+    let Some(h) = ready_harness() else {
+        return;
+    };
+    let account = h.scratch[0].auth();
+    for n in 1..=1_100 {
+        let status = h
+            .dav_get_as(account, "/jmap/session")
+            .expect("the session answers")
+            .status;
+        assert_ne!(
+            status, 429,
+            "signed-in request {n} was refused for its rate: the harness is on Stalwart's \
+             per-account limit of 1,000 a minute. {RESTART}"
+        );
+        assert_eq!(status, 200, "signed-in request {n} was answered {status}");
+    }
+    // The constant `live_concurrency` restores is the value the entrypoint sets; they cannot drift.
+    assert_eq!(
+        h.requests_per_minute().expect("x:Http"),
+        RAISED_REQUESTS_PER_MINUTE,
+        "the entrypoint's raised limit and `RAISED_REQUESTS_PER_MINUTE` differ"
+    );
+    let jmap = h.settings("Jmap").expect("x:Jmap");
+    assert!(
+        jmap["uploadQuota"].as_u64() > Some(50_000_000)
+            && jmap["maxUploadCount"].as_u64() > Some(1_000),
+        "the harness is on Stalwart's upload quota ({} bytes, {} blobs an hour). {RESTART}",
+        jmap["uploadQuota"],
+        jmap["maxUploadCount"],
+    );
+    let imap = h.settings("Imap").expect("x:Imap");
+    assert!(
+        imap["rateLimit"]["count"].as_u64() > Some(2_000),
+        "the harness is on Stalwart's IMAP rate limit ({}). {RESTART}",
+        imap["rateLimit"],
+    );
 }
 
 #[test]

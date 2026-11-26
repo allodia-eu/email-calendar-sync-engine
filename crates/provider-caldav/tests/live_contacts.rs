@@ -19,11 +19,11 @@ use stalwart_harness::Harness;
 
 /// Connects, honouring a throttle the way a host is now expected to.
 ///
-/// Stalwart rate-limits its DAV endpoint, and the concurrency probe in this same crate
-/// drains that limiter on purpose. A suite running after it meets a `429` with half a
-/// minute still to run — and since #218's follow-up the engine does not sleep through a wait
-/// that long: it hands back the instant the server named, because parking a task on a quota
-/// window holds a lane of the account's gate and stalls everything else on it.
+/// Stalwart rate-limits its DAV endpoint: 1,000 requests a minute per account as shipped,
+/// which a real server keeps, though the harness raises it. A client that meets it gets a
+/// `429` with up to half a minute to run — and since #218's follow-up the engine does not
+/// sleep through a wait that long: it hands back the instant the server named, because parking
+/// a task on a quota window holds a lane of the account's gate and stalls everything else on it.
 ///
 /// So the caller schedules, which here means this function. It is the smallest honest
 /// version of what a host does, and it is the reason the contract is worth having: the

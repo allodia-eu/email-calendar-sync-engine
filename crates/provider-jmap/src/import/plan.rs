@@ -2,11 +2,11 @@
 //! referenced as `#b<n>` from `Email/import`) and which by the `uploadUrl`, and how they are
 //! packed into requests the server takes.
 //!
-//! Inline is the default wherever it fits, and on Stalwart it is not an optimisation: the server
-//! takes about 1,000 requests per account a minute, and one upload per message met that wall
-//! within seconds where inline batches did not (`jmap.md` → "Import"). A message goes by URL only
-//! when it cannot go inline: the account lacks the blob extension, the message is larger than
-//! one `Blob/upload` takes (`maxSizeBlobSet`), or its base64 alone would not fit a request.
+//! Inline is the default wherever it fits, and on Stalwart it is not an optimisation: as shipped,
+//! the server takes about 1,000 requests per account a minute, and one upload per message met
+//! that wall within seconds where inline batches did not (`jmap.md` → "Import"). A message goes by
+//! URL only when it cannot go inline: the account lacks the blob extension, the message is larger
+//! than one `Blob/upload` takes (`maxSizeBlobSet`), or its base64 alone would not fit a request.
 //!
 //! A request is sized in the bytes it will be on the wire, base64 included, against
 //! `maxSizeRequest`: a request over it fails whole (a `400`, `limit: maxSizeRequest`). Each

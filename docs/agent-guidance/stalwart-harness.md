@@ -386,16 +386,52 @@ One `live_caldav` run fits in the budget; back-to-back runs did not, and once it
 poll drew `429` (`Retry-After` up to a minute) until the wait timed out with
 `harness ready: Timeout(30s)` — 4 of 5 consecutive runs on v0.16.24 (#333). Polling once per test
 binary would only have moved the failure to the DAV connects, so the fix is the limit. Verified:
-five back-to-back `live_caldav` runs, where the fourth used to fail. `rateLimitAuthenticated`
-(1000/minute) is left as shipped. The smoke test `anonymous_requests_are_not_rationed` sends 150
-unauthenticated requests and fails on a harness started before the change, so a stale container
-says so rather than flaking.
+five back-to-back `live_caldav` runs, where the fourth used to fail. The smoke test
+`anonymous_requests_are_not_rationed` sends 150 unauthenticated requests and fails on a harness
+started before the change, so a stale container says so rather than flaking.
 
-That authenticated limit stays because `live_concurrency` measures the server's own refusals, and
-it is per account: 1,000 requests a minute. One run of a suite fits; the same suite in a loop on
-one scratch account does not, and the runs after the first fail on `429`, before any assertion
-about the code. Leave half a minute between repeated runs, and read a `429` in a loop as the
-loop's fault, not the code's.
+### And so are the per-account limits a migration meets
+
+A migration host copies a whole mailbox into one account, and three of Stalwart's per-account
+limits stop that long before the copy is done. The entrypoint raises them, the same way, and logs
+`raised the per-account request and upload limits`:
+
+| Setting | As shipped (v1.0.2) | On the harness |
+| --- | --- | --- |
+| `x:Http.rateLimitAuthenticated` | 1,000 signed-in requests a minute per account | 1,000,000 a minute |
+| `x:Jmap.uploadQuota` / `maxUploadCount` | 50 MB or 1,000 blobs per account, counted for an hour (`uploadTtl`), imported or not | 1 TB / 1,000,000 blobs |
+| `x:Imap.rateLimit` | 2,000 commands a minute per account | 1,000,000 a minute |
+
+Measured on v1.0.2 before the change, each limit as one account: request 1,001 of a burst drew
+`429`; the third of three 17.5 MB uploads drew `429 Quota exceeded` with `Retry-After: 3075`; IMAP
+command 2,001 drew `NO [LIMIT] Too many requests, retry in 51 seconds` and the server closed the
+connection, so an `APPEND` per message ends a copy there. After it: 1,500 requests in under
+two seconds, four 20 MB uploads (80 MB), 1,100 small uploads and 2,500 IMAP commands, all
+accepted.
+
+**A settings write needs a reload.** `x:<object>/set` is stored and answered `updated`, but the
+running server keeps enforcing the old value until it restarts or is told to reload
+(`x:Action/set` creating `{"@type": "ReloadSettings"}`). Measured on `rateLimitAuthenticated`, the
+limit cheapest to observe (the others are assumed to behave alike): lowered to 1,000 a minute, it
+let 1,100 requests in three seconds all pass; after the reload, the 1,001st drew `429`. A fresh bootstrap hid this, because it restarts once to bind the STARTTLS
+listeners after the limits are written; a warm start on an older volume does not. So the
+entrypoint ends its settings with `reload_settings`, and `Harness::update_settings` reloads after
+every write.
+
+The per-request limits stay as shipped (`maxUploadSize` 50 MB, `maxConcurrentUploads` and
+`maxConcurrentRequests` 4, `maxRequestSize` 10 MB): the session states them, the engine keeps to them, and a real server
+has them too. The smoke test `per_account_limits_fit_a_migration` sends 1,100 signed-in requests
+as one account and reads the upload quota and the IMAP limit back, so a stale container says so.
+
+`provider-caldav/tests/live_concurrency.rs` measures the server's own rate refusals, so it sets
+`rateLimitAuthenticated` back to 1,000 a minute for its run, through the management API
+(`Harness::set_requests_per_minute`), and raises it again after, pass or fail. It restores the
+known raised value (`stalwart_harness::RAISED_REQUESTS_PER_MINUTE`, which must match the
+entrypoint), never the value it read, and refuses to start on a harness already at 1,000, so a
+killed run cannot make the lowering permanent. It also requires
+that run to have been refused something, so it cannot pass against the raised limit: a run whose
+lowering never applied (the missing reload above) refused nothing up to 400/s and failed there. A
+run killed midway leaves the shipped limit in place; `docker compose restart` raises it again.
 
 ### The ban on failed sign-ins is not disarmed
 
@@ -408,7 +444,10 @@ Repeated runs of a wrong-password test belong on the Dovecot harness, which bans
 `x:BlockedIp/get` with `ids: null` lists the addresses banned so far.
 
 When several worktrees share these servers, take a lock (`flock`) around every live run, reseed
-and `docker compose`, so one checkout's reseed cannot land in the middle of another's run.
+and `docker compose`, so one checkout's reseed cannot land in the middle of another's run. The
+lock also covers `provider-caldav`'s `live_concurrency`, which lowers the request limit server-wide
+for its run: for about three and a half minutes it binds **every account**, and a migration-size
+run beside it would meet `429` from its 1,001st request in a minute.
 
 ## The seed dataset — and the invariant each fixture protects
 

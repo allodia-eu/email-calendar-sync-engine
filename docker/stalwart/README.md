@@ -87,7 +87,16 @@ per sender-domain→recipient otherwise breaks the scheduling suite after a few 
 does so silently — see the harness guidance doc. It raises the **anonymous HTTP rate limit**
 (`x:Http.rateLimitAnonymous`, 100/minute) too, logging `relaxed the anonymous HTTP rate
 limit`: readiness polls and the uncredentialed first request of each DAV connection spend it,
-and back-to-back runs used to exhaust it.
+and back-to-back runs used to exhaust it. And it raises the **per-account limits a migration
+meets**, logging `raised the per-account request and upload limits`: signed-in requests
+(`x:Http.rateLimitAuthenticated`, 1,000/minute), the JMAP upload quota
+(`x:Jmap.uploadQuota` / `maxUploadCount`, 50 MB or 1,000 blobs an hour) and IMAP commands
+(`x:Imap.rateLimit`, 2,000/minute), so a real-size mailbox can be copied into one account. It
+then asks the server to reload its settings (`ReloadSettings`), without which a written setting
+is stored but not enforced until the next restart. `provider-caldav`'s `live_concurrency`
+measures Stalwart's own request limit, so it sets the shipped value back for its run, for every
+account (run it under the harness lock), and raises it again after. If a killed run left it
+lowered, `docker compose restart` raises it again.
 
 ## Layout
 

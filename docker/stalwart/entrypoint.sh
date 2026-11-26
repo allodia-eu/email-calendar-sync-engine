@@ -184,7 +184,7 @@ ensure_starttls_listener() { # create-key  name  bind  protocol
 # included, silently and with nothing in the log. Every scheduling test then timed out while
 # the organizer's PUT still returned 201, which reads exactly like a code regression.
 #
-# Idempotent: a warm start just re-sets the same values. Takes effect without a restart.
+# Idempotent: a warm start just re-sets the same values. `reload_settings` applies them.
 relax_inbound_throttles() {
   ids=$(jmap '["x:MtaInboundThrottle/get",{"ids":null,"properties":["description"]},"c0"]' \
     | grep -oE '"id":"[^"]+"' | cut -d'"' -f4)
@@ -214,10 +214,7 @@ relax_inbound_throttles() {
 # readiness wait timed out (#333). Polling once per test binary would only have moved the
 # problem to the DAV connects.
 #
-# The **authenticated** limit (`rateLimitAuthenticated`, 1000/minute) is left as shipped, so
-# the rate refusals `provider-caldav/tests/live_concurrency.rs` measures are the server's own.
-#
-# Idempotent, and takes effect without a restart.
+# Idempotent; `reload_settings` applies it.
 relax_anonymous_http_limit() {
   resp=$(jmap '["x:Http/set",{"update":{"singleton":{"rateLimitAnonymous":{"count":1000000,"period":60000}}}},"c0"]')
   if ! printf '%s' "$resp" | grep -q '"updated"'; then
@@ -225,6 +222,62 @@ relax_anonymous_http_limit() {
     return 1
   fi
   log "relaxed the anonymous HTTP rate limit"
+}
+
+# Raise the limits a **migration-sized copy into one account** meets, so a host can copy a
+# real mailbox in over JMAP and IMAP (the engine's importers; a migration host's own runs):
+#
+#   - `x:Http.rateLimitAuthenticated`: 1,000 signed-in requests a minute per account as shipped.
+#     A copy of thousands of messages, or a read-back of each, passes that within a minute.
+#   - `x:Jmap.uploadQuota` / `maxUploadCount`: 50 MB or 1,000 blobs per account, counted for an
+#     hour (`uploadTtl`) whether the blob was imported or not. One real mailbox's large
+#     messages pass that in minutes, and then every upload is `429` until the oldest expires.
+#   - `x:Imap.rateLimit`: 2,000 commands a minute per account as shipped. Past it Stalwart
+#     answers `NO [LIMIT] Too many requests, retry in N seconds` and closes the connection, so
+#     an `APPEND` per message ends a copy a little over 2,000 messages in.
+#
+# Set to effectively unlimited, like the throttles above. The per-request limits stay as
+# shipped (`maxUploadSize`, `maxConcurrentUploads`, `maxConcurrentRequests`): the session
+# states them, the engine keeps to them, and a real server has them too.
+#
+# `provider-caldav/tests/live_concurrency.rs` measures the server's own rate refusals, so it
+# sets `rateLimitAuthenticated` back to 1000/minute for its run and raises it again after, to
+# `stalwart_harness::RAISED_REQUESTS_PER_MINUTE`: keep that constant equal to the value here.
+#
+# Idempotent; `reload_settings` applies it.
+raise_per_account_limits() {
+  resp=$(jmap '["x:Http/set",{"update":{"singleton":{"rateLimitAuthenticated":{"count":1000000,"period":60000}}}},"c0"]')
+  if ! printf '%s' "$resp" | grep -q '"updated"'; then
+    log "FAILED to raise the authenticated HTTP rate limit: $resp"
+    return 1
+  fi
+  resp=$(jmap '["x:Jmap/set",{"update":{"singleton":{"uploadQuota":1000000000000,"maxUploadCount":1000000}}},"c0"]')
+  if ! printf '%s' "$resp" | grep -q '"updated"'; then
+    log "FAILED to raise the JMAP upload quota: $resp"
+    return 1
+  fi
+  resp=$(jmap '["x:Imap/set",{"update":{"singleton":{"rateLimit":{"count":1000000,"period":60000}}}},"c0"]')
+  if ! printf '%s' "$resp" | grep -q '"updated"'; then
+    log "FAILED to raise the IMAP rate limit: $resp"
+    return 1
+  fi
+  log "raised the per-account request and upload limits"
+}
+
+# Have the running server apply the settings written above. A settings `set` is stored and
+# answered `updated`, but the server goes on enforcing the old value until it reloads or
+# restarts (measured on v1.0.2: `rateLimitAuthenticated` lowered to 1000/minute, then 1,100
+# requests in three seconds all passed; after `ReloadSettings`, the 1,001st drew `429`). A fresh
+# bootstrap restarts below to bind the STARTTLS listeners, which hid this; a warm start on a
+# volume written by an older entrypoint does not restart, and without this would keep the old
+# limits.
+reload_settings() {
+  resp=$(jmap '["x:Action/set",{"create":{"r":{"@type":"ReloadSettings"}}},"c0"]')
+  if ! printf '%s' "$resp" | grep -q '"created":{"r"'; then
+    log "FAILED to reload settings: $resp"
+    return 1
+  fi
+  log "reloaded settings"
 }
 
 trap 'stop_server; exit 0' TERM INT
@@ -266,6 +319,8 @@ ensure_account dave "Dave Tester" "${HARNESS_DAVE_PW:-harness-dave-pw}"
 
 relax_inbound_throttles
 relax_anonymous_http_limit
+raise_per_account_limits
+reload_settings
 
 # The shared-mailbox fixture's first half: a credential-less group mailbox alice belongs
 # to, so she holds every right on it. The second half — bob granting alice read-only
