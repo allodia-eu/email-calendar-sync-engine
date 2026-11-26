@@ -4,7 +4,8 @@
 //! create resolves to the id it named:
 //!
 //! - [`MailboxEdit::Create`] → one `create` with `isSubscribed: true`, so the folder shows in
-//!   clients that list subscriptions only.
+//!   clients that list subscriptions only, and the `role` asked for, where one is: a registered
+//!   role ([`MailboxRole::jmap_role`]), any other refused before sending.
 //! - [`MailboxEdit::Update`] and [`MailboxEdit::Trash`] → one `update` setting `name` and
 //!   `parentId`; trashing is a move under Trash, which carries the folder's mail and subfolders
 //!   with it.
@@ -16,13 +17,23 @@
 //! `alreadyExists` carrying the sibling's `existingId`, for a create and an update alike; a
 //! missing or cyclic `parentId` is `invalidProperties` (the cycle names `parentId`, the
 //! missing parent names nothing); a missing target is `notFound`.
+//!
+//! A create with a role the server refuses is told apart by the tree, never by the server's
+//! prose: RFC 8621 §2 allows one mailbox per role, so the refusal is read against the folder
+//! list. The folder asked for, already there with the role, is the retry of a create that
+//! landed; a folder of that name without the role, or another folder holding the role, is a
+//! conflict; a role nobody holds that the server still refuses is one it will not give.
 
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
-use engine_core::ids::{AccountId, MailboxId};
+use engine_core::{
+    ids::{AccountId, MailboxId},
+    mail::MailboxRole,
+};
 use engine_provider::{
-    MailboxEdit, MailboxEditReceipt, MailboxWrites, ProviderError, ProviderResult,
+    Capabilities, CreateRoleError, MailboxEdit, MailboxEditReceipt, MailboxWrites, Provider,
+    ProviderError, ProviderResult,
 };
 use serde_json::{Map, Value, json};
 
@@ -44,7 +55,8 @@ impl MailboxWrites for JmapProvider {
         edit: &MailboxEdit,
     ) -> ProviderResult<MailboxEditReceipt> {
         let account = self.mail_account()?;
-        edit_mailbox(self.executor.as_ref(), &account, edit).await
+        let capabilities = self.connection_info().capabilities;
+        edit_mailbox(self.executor.as_ref(), &account, edit, &capabilities).await
     }
 }
 
@@ -60,10 +72,12 @@ pub(crate) async fn edit_mailbox(
     executor: &dyn Executor,
     mail_account: &str,
     edit: &MailboxEdit,
+    capabilities: &Capabilities,
 ) -> ProviderResult<MailboxEditReceipt> {
+    let role = edit.role_as(capabilities, MailboxRole::jmap_role)?;
     match edit {
-        MailboxEdit::Create { name, parent } => {
-            create(executor, mail_account, name, parent.as_ref()).await
+        MailboxEdit::Create { name, parent, .. } => {
+            create(executor, mail_account, name, parent.as_ref(), role).await
         }
         MailboxEdit::Update {
             target,
@@ -84,23 +98,26 @@ async fn create(
     mail_account: &str,
     name: &str,
     parent: Option<&MailboxId>,
+    role: Option<&str>,
 ) -> ProviderResult<MailboxEditReceipt> {
+    let mut mailbox =
+        json!({ "name": name, "parentId": parent.map(MailboxId::as_str), "isSubscribed": true });
+    if let Some(role) = role {
+        mailbox["role"] = json!(role);
+    }
     let mut create = Map::new();
-    create.insert(
-        NEW.to_owned(),
-        json!({ "name": name, "parentId": parent.map(MailboxId::as_str), "isSubscribed": true }),
-    );
+    create.insert(NEW.to_owned(), mailbox);
     let result = set(
         executor,
         json!({ "accountId": mail_account, "create": create }),
     )
     .await?;
-    if let Some(id) = result
-        .get("created")
-        .and_then(|c| c.get(NEW))
-        .and_then(|c| c.get("id"))
-        .and_then(Value::as_str)
+    if let Some(created) = result.get("created").and_then(|c| c.get(NEW))
+        && let Some(id) = created.get("id").and_then(Value::as_str)
     {
+        if let Some(role) = role {
+            kept_role(executor, mail_account, id, created, role).await?;
+        }
         return resolved(id);
     }
     let Some(error) = result.get("notCreated").and_then(|n| n.get(NEW)) else {
@@ -108,6 +125,22 @@ async fn create(
             JmapError::protocol("Mailbox/set neither created nor refused the mailbox").into(),
         );
     };
+    if let Some(role) = role {
+        let about_role = names_property(error, "role");
+        if about_role || error_type(error) == "alreadyExists" {
+            let tree = list(executor, mail_account, &["name", "parentId", "role"]).await?;
+            let existing = error.get("existingId").and_then(Value::as_str);
+            if let Some(settled) = role_refusal(&tree, existing, name, parent, role) {
+                return settled;
+            }
+            if about_role {
+                return Err(ProviderError::invalid_state(
+                    "the server will not give a folder that role",
+                ));
+            }
+        }
+        return Err(refused(NEW, error));
+    }
     if error_type(error) == "alreadyExists" {
         // The op is retried, and a retry meets the folder the first attempt made.
         if let Some(existing) = error.get("existingId").and_then(Value::as_str) {
@@ -118,6 +151,94 @@ async fn create(
         }
     }
     Err(refused(NEW, error))
+}
+
+/// Confirms that the mailbox a create with `role` made has it: from `created` where the server
+/// echoed it, else from one `Mailbox/get` of that mailbox. A server is to return only what it
+/// set or changed (RFC 8620 §5.3), so the role is usually not in `created`.
+///
+/// # Errors
+///
+/// [`CreateRoleError::NotKept`], naming the mailbox, where it has another role or none (or is
+/// not there to read): the server took the create and dropped the role. The mailbox is left as
+/// the server made it.
+async fn kept_role(
+    executor: &dyn Executor,
+    mail_account: &str,
+    id: &str,
+    created: &Value,
+    role: &str,
+) -> ProviderResult<()> {
+    let held = if let Some(echoed) = created.get("role") {
+        echoed.as_str().map(str::to_owned)
+    } else {
+        let mut req = Request::new([capability::CORE, capability::MAIL]);
+        let call = req.invoke(
+            "Mailbox/get",
+            json!({ "accountId": mail_account, "ids": [id], "properties": ["role"] }),
+        );
+        let resp = executor.execute(&req).await?;
+        resp.result(&call)?
+            .get("list")
+            .and_then(Value::as_array)
+            .and_then(|list| list.first())
+            .and_then(|mailbox| mailbox.get("role"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    if held.is_some_and(|held| held.eq_ignore_ascii_case(role)) {
+        return Ok(());
+    }
+    // The one refusal with a side effect: the mailbox is there, without the role.
+    let mailbox = MailboxId::try_from(id)
+        .map_err(|_| JmapError::protocol("Mailbox/set returned an empty id"))?;
+    Err(CreateRoleError::NotKept { mailbox }.into())
+}
+
+/// What `tree` says about a create of `name` in `parent` with `role` that the server refused,
+/// or `None` where it explains nothing.
+///
+/// The folder the refusal names (`existingId`) is looked at first, since a server may have
+/// normalised the name; else the one by that name in that parent. Holding the role, it is the
+/// one asked for: an earlier attempt of this create made it. Without it, it is someone else's
+/// folder, and a create that asked for a role does not resolve to it. Another folder holding
+/// the role is the one RFC 8621 §2 allows. Roles are compared ignoring case, as
+/// `from_jmap_role` reads them.
+fn role_refusal(
+    tree: &[Value],
+    existing: Option<&str>,
+    name: &str,
+    parent: Option<&MailboxId>,
+    role: &str,
+) -> Option<ProviderResult<MailboxEditReceipt>> {
+    let holds_role = |m: &&Value| {
+        m.get("role")
+            .and_then(Value::as_str)
+            .is_some_and(|held| held.eq_ignore_ascii_case(role))
+    };
+    let by_id = existing.and_then(|id| {
+        tree.iter()
+            .find(|m| m.get("id").and_then(Value::as_str) == Some(id))
+    });
+    let named = by_id.or_else(|| {
+        tree.iter().find(|m| {
+            m.get("name").and_then(Value::as_str) == Some(name)
+                && m.get("parentId").and_then(Value::as_str) == parent.map(MailboxId::as_str)
+        })
+    });
+    match named {
+        Some(folder) if holds_role(&folder) => Some(resolved(
+            folder.get("id").and_then(Value::as_str).unwrap_or_default(),
+        )),
+        Some(_) => Some(Err(ProviderError::conflict(
+            "a folder of that name is already there without that role",
+        ))),
+        None => tree.iter().find(holds_role).map(|_| {
+            Err(ProviderError::conflict(
+                "another folder already has that role",
+            ))
+        }),
+    }
 }
 
 /// Sets a mailbox's name and parent: a rename, a move, or a move under Trash.
@@ -281,6 +402,14 @@ async fn set(executor: &dyn Executor, arguments: Value) -> ProviderResult<Value>
 
 fn error_type(error: &Value) -> &str {
     error.get("type").and_then(Value::as_str).unwrap_or("")
+}
+
+/// Whether a `SetError` names `property` among the ones it refused.
+fn names_property(error: &Value, property: &str) -> bool {
+    error
+        .get("properties")
+        .and_then(Value::as_array)
+        .is_some_and(|p| p.iter().any(|v| v.as_str() == Some(property)))
 }
 
 /// Classifies a `SetError` against the folder tree.

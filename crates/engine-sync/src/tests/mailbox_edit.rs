@@ -109,7 +109,7 @@ impl MailboxWrites for Tree {
     ) -> ProviderResult<MailboxEditReceipt> {
         self.sent.lock().unwrap().push(edit.clone());
         Ok(match edit {
-            MailboxEdit::Create { name, parent } => {
+            MailboxEdit::Create { name, parent, .. } => {
                 let mut next = self.next_id.lock().unwrap();
                 let id = format!("new-{next}");
                 *next += 1;

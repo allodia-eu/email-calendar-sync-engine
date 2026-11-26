@@ -72,10 +72,7 @@ async fn messages(provider: &JmapProvider) -> Vec<Message> {
 }
 
 async fn create(provider: &JmapProvider, name: &str, parent: Option<&MailboxId>) -> MailboxId {
-    let edit = MailboxEdit::Create {
-        name: name.into(),
-        parent: parent.cloned(),
-    };
+    let edit = MailboxEdit::create(name, parent.cloned());
     provider
         .edit_mailbox(&account(), &edit)
         .await

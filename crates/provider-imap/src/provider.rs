@@ -453,9 +453,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> MailboxWrites fo
         _account: &AccountId,
         edit: &MailboxEdit,
     ) -> ProviderResult<MailboxEditReceipt> {
+        let capabilities = self.connection_info().capabilities;
         let mut connection = self.session().await?;
         let result = match self.store_on(&mut connection).await {
-            Ok(store) => crate::mailbox_write::edit_mailbox(&mut connection, &store, edit).await,
+            Ok(store) => {
+                crate::mailbox_write::edit_mailbox(&mut connection, &store, edit, &capabilities)
+                    .await
+            }
             Err(err) => Err(err),
         };
         connection.settle(result)

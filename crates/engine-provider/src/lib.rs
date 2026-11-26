@@ -116,7 +116,7 @@ pub use identity::{IdentityControls, SenderIdentity, SenderIdentityId};
 pub use keyword_name::{KeywordName, keyword_named};
 pub use mail_edit::{MailEdit, MailEditReceipt};
 pub use mail_rules::{MailRules, guard_version};
-pub use mailbox_edit::{MailboxEdit, MailboxEditReceipt};
+pub use mailbox_edit::{CreateRoleError, MailboxEdit, MailboxEditReceipt};
 pub use mailbox_write::MailboxWrites;
 pub use meeting::{
     JitsiMeetings, JitsiServerError, MeetingKey, MeetingKeyError, MeetingRequest, MeetingService,

@@ -18,6 +18,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::{
     error::ImapResult,
     mail::{keyword_to_flag, mailbox_from_list, message_key},
+    mailbox_write::carries_code,
     parse::SelectData,
     store::MailStore,
     store_message::{FolderKeywords, store_message},
@@ -134,7 +135,8 @@ where
 
 /// The folder `filing` places into: `store`'s folder carrying the role, else the
 /// conventional name **inside that store**, created if it does not exist (an "already
-/// exists" rejection is ignored).
+/// exists" rejection is ignored), with the role where the server advertises
+/// `CREATE-SPECIAL-USE`.
 ///
 /// Qualified by the store because an unqualified fallback resolves in the credential's own
 /// namespace: a shared mailbox with no `\Sent` would otherwise have its sent copy filed —
@@ -155,7 +157,27 @@ where
         return Ok(name);
     }
     let name = store.qualify(filing.default_folder());
-    let _ = connection.create(&name).await;
+    // Made with its role where the server can give one (RFC 6154 §3), so this client and every
+    // other finds it by the role next time, whatever it is called. The copy needs a folder more
+    // than the folder needs its role, so any refusal but "already there" falls back to the
+    // plain `CREATE`. Never unadvertised: Dovecot would take it and drop the role (DOVECOT-1).
+    let role = filing.role();
+    let attribute = connection
+        .negotiated
+        .may_create_with_role()
+        .then(|| role.as_imap_special_use())
+        .flatten();
+    let made = match attribute {
+        Some(attribute) => match connection.create(&name, Some(attribute)).await {
+            Ok(()) => true,
+            // There already, without the role: a plain `CREATE` would only be refused again.
+            Err(err) => carries_code(&err, "ALREADYEXISTS"),
+        },
+        None => false,
+    };
+    if !made {
+        let _ = connection.create(&name, None).await;
+    }
     Ok(name)
 }
 

@@ -726,6 +726,10 @@ credential.
   in a `LIST` (so a Gmail `[Gmail]/Sent Mail` or a localized name is honored), and
   only when the server advertises none does it fall back to creating the
   conventional `Sent`/`Drafts` name. This costs one `LIST` per submission (rare path).
+  Where the server advertises `CREATE-SPECIAL-USE` that folder is created **with** its role,
+  `CREATE "Sent" (USE (\Sent))` (RFC 6154 §3), so the next lookup, this client's or any
+  other's, finds it by the role whatever it is called; a refusal of the role falls back to the
+  plain `CREATE`, since the copy needs a folder more than the folder needs its role.
 - **Three transports.** `ImapConfig::with_smtp(addr)` is **plaintext, no auth** — for
   an MX that accepts local mail (the fixture's port 25). `with_smtp_tls(addr,
   server_name)` is **implicit TLS + `AUTH`** (port 465) using the account credentials and
@@ -1027,6 +1031,29 @@ protocol on both dialects.
 - **`Create`** → `CREATE "<path>"`, then `SUBSCRIBE`. A path the `LIST` already holds is not
   created again, and `NO [ALREADYEXISTS]` is success: a retry meets what the first attempt
   made.
+- **A create with a role** → `CREATE "<path>" (USE (\Archive))` (RFC 6154 §3). A client must
+  not send `USE` unless the server advertises `CREATE-SPECIAL-USE` (§3), a capability apart
+  from `SPECIAL-USE`; RFC 9051 does not fold it in (Appendix E item 2 takes only SPECIAL-USE's
+  attribute list, and rev2's `create` takes no parameters, §9), and it needs no `ENABLE`
+  (`Extension::CreateSpecialUse`). One answer, `Negotiated::may_create_with_role`, decides it
+  for the capability, a folder write and the sent copy's fallback folder: `CREATE-SPECIAL-USE`
+  advertised **and** roles readable back (`SPECIAL-USE` advertised, or rev2, where they are base
+  `LIST` data), since without them a landed retry could not be told from someone else's folder
+  nor the role confirmed. `Capabilities::mailbox_create_role` is that answer, and the adapter
+  refuses on it. Where it is false, or the role has no attribute (the inbox, which IMAP names by
+  its name; `ServerRecords`, `ChatHistory`, any `Other`), the create is refused before the
+  `LIST`, as `InvalidState` with a `CreateRoleError` source (`providers.md`). The rule is
+  checked again on the live session, since the capability was read at the first connect and a
+  redial may land on a backend that does not advertise it. After an `OK`, one `LIST "" "<path>"`
+  reads the role back, asking `RETURN (SPECIAL-USE)` where `SPECIAL-USE` is advertised (on rev2
+  without it the role is base `LIST` data); a folder without it is `CreateRoleError::NotKept`,
+  the one refusal with a side effect: the folder is subscribed as any created folder is, never
+  deleted, and named in the error. A folder the `LIST` already holds at the path is the retry only if
+  it carries the attribute; without it, it is a `Conflict`. `NO [USEATTR]` is told apart by the
+  `LIST`, never by the prose: another folder of the store holding the attribute is a
+  `Conflict`, none is `InvalidState` (the server will not give that role). `NO [ALREADYEXISTS]`
+  lists again to see the attribute. RFC 6154 lets a server take the role from another folder or
+  let two share it instead; that is the server's choice and the create succeeds.
 - **`Update`** → `RENAME "<from>" "<to>"`. `NO [NONEXISTENT]` or `[ALREADYEXISTS]` is a
   `Conflict`, as is a destination the `LIST` already holds (refused without a request).
 - **`Trash`** → `RENAME` under the Trash folder. Where Trash is `\Noinferiors`, or the
@@ -1040,6 +1067,31 @@ protocol on both dialects.
   a client listing only subscribed folders would lose a folder we moved. So a rename
   unsubscribes each old path of the subtree and subscribes each new one, and a delete
   unsubscribes. A refusal of either is ignored: the folder change itself went through.
+
+The role on create is pinned offline (`mailbox_write_role_tests.rs`: the `USE` bytes, nothing
+sent where unadvertised or formless, each refusal's class). `tests/live_mailbox_create_role.rs`
+reads each server's `CAPABILITY` on a raw session and holds the adapter's capability to it.
+Observed:
+
+| | `CREATE-SPECIAL-USE` | what happens |
+|---|---|---|
+| Stalwart | advertised | the adapter's `CREATE … (USE (\Archive))` makes a folder that lists with `\Archive`, and a retry meets it. A second folder asking for a role another holds is refused, `NO [USEATTR] A mailbox with role 'archive' already exists.`: one folder per role, as on its JMAP. The adapter reads that as a `Conflict` (the `LIST` shows the holder), and the first folder keeps the role |
+| Dovecot rev1 and rev2 (2.4.4) | **not** advertised | the adapter refuses and sends nothing. Sent raw anyway, `CREATE "x" (USE (\Archive))` answers `OK Create completed` and makes the folder **without** the attribute: a plain `LIST` shows `(\HasNoChildren)`, one asking `RETURN (SPECIAL-USE)` shows no flags, and the adapter's folder list gives it no role. `\Archive` is held there (the harness gives its `Archive` that role, and the same session lists `Archive` with `\Archive`, so the listing can show a role); the test asks for the unheld `\Flagged` too |
+
+**Dovecot takes `USE` without advertising it, and drops the role** (`DOVECOT-1` in
+`docs/spec-deviations.md`: RFC 4466 §2.2 has a server reject a parameter it does not support with
+`BAD`, and RFC 6154 §3 has it make no mailbox it cannot give the role, held or not). This is why
+the adapter's refusal matters and is not merely the client rule of RFC 6154 §3: had it sent `USE`
+to Dovecot, the create would have come back a success with an ordinary folder, which a host would
+take for its Archive; and why a role create is read back (`NotKept`) wherever it is sent. The
+capability is the only safe signal, so the adapter keeps to it on every server. The live test
+asserts, on every server, that a refused create makes nothing and a taken one makes the folder,
+and on Dovecot asserts the observed behaviour for a held role and an unheld one, so DOVECOT-1
+goes red the day Dovecot changes.
+
+The sent copy's fallback folder (`place.rs`) is created with its role under the same answer; a
+`[ALREADYEXISTS]` to that create means a `Sent` without the role is there already, and no plain
+`CREATE` follows it.
 
 Proven live on Stalwart (as the scratch account `carol@`) and both Dovecot dialects by
 `tests/live_mailbox_writes.rs`: create (including a non-ASCII name), create again, rename with
@@ -1393,6 +1445,9 @@ whole rule:
 - **QRESYNC is not folded in.** rev2 took only its `CLOSED` response code (item 9), so
   CONDSTORE/QRESYNC keeps its own capability and its own `ENABLE`.
 - **Neither is UIDONLY** (RFC 9586), which needs its own `ENABLE` on either dialect.
+- **Nor is CREATE-SPECIAL-USE** (RFC 6154 §3). rev2 folds in SPECIAL-USE's *attributes* only
+  ("the list of new mailbox attributes", item 2), and its `CREATE` takes no parameters (§9), so
+  a `USE` parameter needs the capability on either dialect. It needs no `ENABLE`.
 - **Folded in ≠ will arrive.** rev2 folds in SPECIAL-USE's *attributes* and makes them base
   `LIST` data (§7.3.1) — it defines **no** `RETURN (SPECIAL-USE)` option of its own, which
   reads like a rev2 session never has to ask. **Dovecot's rev2 disproves that**: it

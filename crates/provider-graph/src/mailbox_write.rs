@@ -13,6 +13,12 @@
 //! (<https://learn.microsoft.com/en-us/graph/outlook-immutable-id>). The receipt still
 //! names the id the move answered with rather than assuming it.
 //!
+//! **No create gives a folder a role.** Graph's role folders are its well-known folders
+//! (`archive`, `sentitems`, …), which every mailbox has already; no request makes another or
+//! names an existing folder as one. So a create that asks for a role is refused before any
+//! request (`GraphProvider`'s `edit_mailbox`, by [`MailboxEdit::role_as`] on its capabilities),
+//! rather than making an ordinary folder a host would take for its Archive.
+//!
 //! **An update reads the folder first**, because [`MailboxEdit::Update`] states where the
 //! folder is to end up rather than what changed: only the half that differs is sent, so a
 //! rename is never also a move to where the folder already is. The rename goes first, so a
@@ -52,7 +58,7 @@ pub(crate) async fn edit_mailbox(
     edit: &MailboxEdit,
 ) -> ProviderResult<MailboxEditReceipt> {
     match edit {
-        MailboxEdit::Create { name, parent } => create(client, name, parent.as_ref())
+        MailboxEdit::Create { name, parent, .. } => create(client, name, parent.as_ref())
             .await
             .map(MailboxEditReceipt::resolved),
         MailboxEdit::Update {

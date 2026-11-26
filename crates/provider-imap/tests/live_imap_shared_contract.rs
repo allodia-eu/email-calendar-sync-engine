@@ -296,10 +296,7 @@ async fn a_top_level_folder_made_in_a_full_share_is_never_the_credentials_own() 
             .unwrap()
             .as_nanos();
         let name = format!("shared-folder-{nonce}");
-        let create = MailboxEdit::Create {
-            name: name.clone(),
-            parent: None,
-        };
+        let create = MailboxEdit::create(name.clone(), None);
         match shared.edit_mailbox(&account, &create).await {
             Ok(receipt) => {
                 let made = receipt.mailbox.expect("a create names what it made");

@@ -7,8 +7,8 @@
 //! Exchange is known to use for a duplicate name, not one captured here. The gated
 //! `tests/live_mailbox_writes.rs` is what replaces them with the real bytes.
 
-use engine_core::{error::FailureClass, ids::MailboxId};
-use engine_provider::{MailboxEdit, MailboxEditReceipt, Provider};
+use engine_core::{error::FailureClass, ids::MailboxId, mail::MailboxRole};
+use engine_provider::{CreateRoleError, MailboxEdit, MailboxEditReceipt, MailboxWrites, Provider};
 use serde_json::{Value, json};
 
 use super::edit_mailbox;
@@ -69,10 +69,7 @@ async fn a_top_level_folder_is_made_under_the_mailbox_root() {
         "/childFolders",
         Ok(folder("folder-new", "Receipts", "folder-root")),
     )]);
-    let edit = MailboxEdit::Create {
-        name: "Receipts".into(),
-        parent: None,
-    };
+    let edit = MailboxEdit::create("Receipts", None);
 
     let receipt = edit_mailbox(&client, &edit).await.unwrap();
 
@@ -93,10 +90,7 @@ async fn a_nested_folder_is_made_under_its_parent() {
         "/childFolders",
         Ok(folder("folder-new", "2025", "folder-work")),
     )]);
-    let edit = MailboxEdit::Create {
-        name: "2025".into(),
-        parent: Some(id("folder-work")),
-    };
+    let edit = MailboxEdit::create("2025", Some(id("folder-work")));
 
     edit_mailbox(&client, &edit).await.unwrap();
 
@@ -115,10 +109,7 @@ async fn a_create_that_finds_its_folder_already_made_succeeds_with_it() {
         ),
         ("/childFolders", graph_error(409, "ErrorFolderExists")),
     ]);
-    let edit = MailboxEdit::Create {
-        name: "Receipts".into(),
-        parent: None,
-    };
+    let edit = MailboxEdit::create("Receipts", None);
 
     let receipt = edit_mailbox(&client, &edit).await.unwrap();
 
@@ -142,10 +133,7 @@ async fn a_name_taken_only_by_a_differently_cased_folder_is_a_conflict() {
         ),
         ("/childFolders", graph_error(409, "ErrorFolderExists")),
     ]);
-    let edit = MailboxEdit::Create {
-        name: "Receipts".into(),
-        parent: None,
-    };
+    let edit = MailboxEdit::create("Receipts", None);
 
     let err = edit_mailbox(&client, &edit).await.unwrap_err();
 
@@ -342,7 +330,39 @@ async fn a_server_failure_on_delete_stays_retryable() {
 }
 
 #[test]
-fn the_mail_provider_advertises_folder_writes() {
+fn the_mail_provider_advertises_folder_writes_and_no_role_on_create() {
     let provider = GraphProvider::new(fake_client(vec![]), id("inbox"));
     assert!(provider.connection_info().capabilities.mailbox_writes());
+    // Graph's well-known folders exist already, and no request makes another.
+    assert!(
+        !provider
+            .connection_info()
+            .capabilities
+            .mailbox_create_role()
+    );
+}
+
+#[tokio::test]
+async fn a_create_that_asks_for_a_role_is_refused_before_any_request() {
+    for role in [
+        MailboxRole::Archive,
+        MailboxRole::ServerRecords,
+        MailboxRole::Other("snoozed".into()),
+    ] {
+        let (client, log) = logged(vec![]);
+        let provider = GraphProvider::new(client, id("inbox"));
+        let edit = MailboxEdit::create_with_role("Archive", None, role);
+
+        let account = engine_core::ids::AccountId::try_from("acct").unwrap();
+        let error = provider.edit_mailbox(&account, &edit).await.unwrap_err();
+
+        assert_eq!(error.class(), FailureClass::InvalidState);
+        assert_eq!(
+            std::error::Error::source(&error)
+                .and_then(|s| s.downcast_ref::<CreateRoleError>())
+                .cloned(),
+            Some(CreateRoleError::NotSupported)
+        );
+        assert_eq!(sent(&log), Vec::new());
+    }
 }

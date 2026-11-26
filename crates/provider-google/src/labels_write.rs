@@ -15,12 +15,17 @@
 //!   All Mail, so nothing is destroyed.
 //!
 //! A system label (`INBOX`, `TRASH`, …) and the synthetic All Mail are not the user's to change,
-//! and refusing them here means nothing is sent that Gmail would refuse anyway.
+//! and refusing them here means nothing is sent that Gmail would refuse anyway. For the same
+//! reason no create gives a label a role: Gmail's role folders are its system labels, which
+//! exist already, so a create that asks for one is refused before any request
+//! ([`MailboxEdit::role_as`], on the provider's own capabilities).
 
 use std::collections::{BTreeSet, HashSet};
 
 use engine_core::ids::MailboxId;
-use engine_provider::{MailboxEdit, MailboxEditReceipt, ProviderError, ProviderResult};
+use engine_provider::{
+    Capabilities, MailboxEdit, MailboxEditReceipt, ProviderError, ProviderResult,
+};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use serde_json::{Value, json};
 
@@ -65,13 +70,18 @@ struct Label {
 pub(crate) async fn edit(
     client: &GoogleClient,
     edit: &MailboxEdit,
+    capabilities: &Capabilities,
 ) -> ProviderResult<MailboxEditReceipt> {
+    // No label is given a role: the provider's own capability is the gate.
+    edit.role_as(capabilities, |_| None)?;
     if let MailboxEdit::Create { name, .. } | MailboxEdit::Update { name, .. } = edit {
         own_name(name)?;
     }
     let all = labels(client).await?;
     match edit {
-        MailboxEdit::Create { name, parent } => create(client, &all, name, parent.as_ref()).await,
+        MailboxEdit::Create { name, parent, .. } => {
+            create(client, &all, name, parent.as_ref()).await
+        }
         MailboxEdit::Update {
             target,
             name,

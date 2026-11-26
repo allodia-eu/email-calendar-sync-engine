@@ -1,0 +1,19 @@
+{
+  "methodResponses": [
+    [
+      "Mailbox/set",
+      {
+        "accountId": "e",
+        "notCreated": {
+          "new": {
+            "description": "A mailbox with role 'sent' already exists.",
+            "properties": ["role"],
+            "type": "invalidProperties"
+          }
+        }
+      },
+      "0"
+    ]
+  ],
+  "sessionState": "s"
+}

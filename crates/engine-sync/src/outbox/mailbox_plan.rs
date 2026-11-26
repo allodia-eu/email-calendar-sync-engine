@@ -125,10 +125,7 @@ pub(crate) fn plan(change: &MailboxChange, current: &[Mailbox]) -> Result<Plan, 
             }
             Ok(match sibling_named(current, parent.as_ref(), name, None) {
                 Some(existing) => Plan::Done(Some(existing.id.clone())),
-                None => Plan::Send(MailboxEdit::Create {
-                    name: name.clone(),
-                    parent: parent.clone(),
-                }),
+                None => Plan::Send(MailboxEdit::create(name.clone(), parent.clone())),
             })
         }
         MailboxChange::Update {

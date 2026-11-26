@@ -22,11 +22,32 @@
 //! cannot carry, before it sends anything, and nothing more. The engine's portable name policy
 //! ([`validate_mailbox_name`](engine_core::mail::validate_mailbox_name)) is a host's to apply
 //! where it asks a user for a name; the outbox applies it before it queues a change.
+//!
+//! And on roles. A create may ask for one ([`MailboxEdit::create_with_role`]), which only some
+//! targets can give a folder as they make it
+//! ([`Capabilities::mailbox_create_role`]):
+//!
+//! | | a role on create | a role it has no form for |
+//! |---|---|---|
+//! | JMAP | `Mailbox/set` `role` (RFC 8621 §2), one folder per role | not a registered role: [`MailboxRole::jmap_role`] |
+//! | IMAP | `CREATE … (USE (…))` where the server advertises `CREATE-SPECIAL-USE` (RFC 6154 §3) and roles can be listed back | the inbox, and any role without an attribute: [`MailboxRole::as_imap_special_use`] |
+//! | Graph | none: its well-known folders exist already | — |
+//! | Gmail | none: its system labels exist already | — |
+//!
+//! Every adapter refuses a role it cannot set before it sends anything, by one rule
+//! ([`MailboxEdit::role_as`]), gated on its own capabilities; and after a create the server
+//! accepted, it reads the role back ([`CreateRoleError::NotKept`]). A folder made without the
+//! role it was asked for would leave a host believing the target has one.
 
-use engine_core::{ids::MailboxId, mail::MailboxNameError};
+use core::fmt;
+
+use engine_core::{
+    ids::MailboxId,
+    mail::{MailboxNameError, MailboxRole},
+};
 use serde::{Deserialize, Serialize};
 
-use crate::ProviderError;
+use crate::{Capabilities, ProviderError};
 
 /// A change to one folder of an account's tree, as an adapter performs it.
 ///
@@ -35,12 +56,26 @@ use crate::ProviderError;
 /// the user put it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MailboxEdit {
-    /// Creates a folder called `name` inside `parent`.
+    /// Creates a folder called `name` inside `parent`, with `role` where one is asked for.
+    ///
+    /// Built by [`MailboxEdit::create`] or [`MailboxEdit::create_with_role`]: the variant is
+    /// `#[non_exhaustive]`, so a field it gains later breaks no caller. A match names the
+    /// fields it reads and ends with `..`.
+    #[non_exhaustive]
     Create {
         /// The new folder's own name: one level, never a path.
         name: String,
         /// The folder to create it in, or `None` for the top level.
         parent: Option<MailboxId>,
+        /// The role the new folder is to have, or `None` for an ordinary folder.
+        ///
+        /// Only a target with
+        /// [`Capabilities::mailbox_create_role`](crate::Capabilities::mailbox_create_role) can
+        /// give one, and only a role its transport has a form for ([`MailboxEdit::role_as`]);
+        /// any other is refused before anything is sent. Absent from the serialized form when
+        /// `None`, so an edit queued before roles existed reads back unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<MailboxRole>,
     },
     /// Renames a folder, moves it, or both. Its subfolders go with it.
     Update {
@@ -77,6 +112,72 @@ pub enum MailboxEdit {
 }
 
 impl MailboxEdit {
+    /// A create of an ordinary folder called `name` inside `parent` (`None` for the top level).
+    #[must_use]
+    pub fn create(name: impl Into<String>, parent: Option<MailboxId>) -> Self {
+        Self::Create {
+            name: name.into(),
+            parent,
+            role: None,
+        }
+    }
+
+    /// A create of a folder called `name` inside `parent` that is to have `role`: a Sent folder,
+    /// say, on a target that has none.
+    ///
+    /// A constructor of its own rather than a `with_role` on every edit, which would have to
+    /// drop the role from an update or panic: neither is something a caller should discover.
+    #[must_use]
+    pub fn create_with_role(
+        name: impl Into<String>,
+        parent: Option<MailboxId>,
+        role: MailboxRole,
+    ) -> Self {
+        Self::Create {
+            name: name.into(),
+            parent,
+            role: Some(role),
+        }
+    }
+
+    /// The role a create asks for, or `None` for a create of an ordinary folder and for every
+    /// other edit.
+    #[must_use]
+    pub fn requested_role(&self) -> Option<&MailboxRole> {
+        match self {
+            Self::Create { role, .. } => role.as_ref(),
+            Self::Update { .. } | Self::Trash { .. } | Self::Delete { .. } => None,
+        }
+    }
+
+    /// The role a create asks for, in the form the target's transport sends it: the one rule
+    /// every adapter applies before it sends a folder edit.
+    ///
+    /// `capabilities` are the adapter's own, so the gate is the one a host reads
+    /// ([`Capabilities::mailbox_create_role`]); `form` is the transport's name for a role, such
+    /// as [`MailboxRole::jmap_role`] or [`MailboxRole::as_imap_special_use`]. `Ok(None)` when no
+    /// role is asked for.
+    ///
+    /// # Errors
+    ///
+    /// [`CreateRoleError::NotSupported`] for a role asked of a target whose capabilities say it
+    /// sets none, and [`CreateRoleError::NoTransportForm`] for a role `form` has no name for.
+    /// Either converts to an [`InvalidState`](engine_core::error::FailureClass::InvalidState)
+    /// [`ProviderError`].
+    pub fn role_as(
+        &self,
+        capabilities: &Capabilities,
+        form: impl FnOnce(&MailboxRole) -> Option<&'static str>,
+    ) -> Result<Option<&'static str>, CreateRoleError> {
+        let Some(role) = self.requested_role() else {
+            return Ok(None);
+        };
+        if !capabilities.mailbox_create_role() {
+            return Err(CreateRoleError::NotSupported);
+        }
+        form(role).map(Some).ok_or(CreateRoleError::NoTransportForm)
+    }
+
     /// The folder the edit changes, or `None` for a create, which changes nothing yet.
     #[must_use]
     pub fn target(&self) -> Option<&MailboxId> {
@@ -96,6 +197,60 @@ impl MailboxEdit {
 /// rides along as the [`source`](std::error::Error::source), so a host can tell which rule.
 impl From<MailboxNameError> for ProviderError {
     fn from(error: MailboxNameError) -> Self {
+        ProviderError::invalid_state(error.to_string()).with_source(error)
+    }
+}
+
+/// Why a create that asked for a role did not make a folder with it.
+///
+/// Two are refusals before anything is sent ([`MailboxEdit::role_as`]) and change nothing.
+/// [`NotKept`](Self::NotKept) is what the server did with a create it accepted, and is **the one
+/// with a side effect**: the folder exists, without the role, under the id it carries. The
+/// message says which, never the role's name, which may be a server's own spelling
+/// ([`MailboxRole::Other`]), nor the folder, whose id may be its name (IMAP).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CreateRoleError {
+    /// The target cannot give a folder a role as it makes it
+    /// ([`Capabilities::mailbox_create_role`] is `false`): Graph's well-known folders and
+    /// Gmail's system labels exist already and no request makes another; a JMAP account that
+    /// cannot change its folders; an IMAP server that does not advertise `CREATE-SPECIAL-USE`
+    /// (RFC 6154 §3) or cannot list roles at all. Nothing was sent.
+    NotSupported,
+    /// The role has no form on the target's transport: no registry names
+    /// [`ServerRecords`](MailboxRole::ServerRecords) or [`ChatHistory`](MailboxRole::ChatHistory),
+    /// an [`Other`](MailboxRole::Other) is a role some server made up, and IMAP names the inbox
+    /// by its name rather than an attribute. Nothing was sent.
+    NoTransportForm,
+    /// The server accepted the create and the folder it made does not have the role, read back
+    /// right after. **This refusal has a side effect**: the folder exists, as an ordinary one,
+    /// finished as any create finishes it (subscribed, on IMAP), under `mailbox`. The adapter
+    /// never deletes it. A host records it as made, or deletes it if it does not want it; a
+    /// retry of the same create meets it by name and is a
+    /// [`Conflict`](engine_core::error::FailureClass::Conflict).
+    NotKept {
+        /// The folder the create made, without the role.
+        mailbox: MailboxId,
+    },
+}
+
+impl fmt::Display for CreateRoleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NotSupported => "this account cannot give a folder a role as it creates it",
+            Self::NoTransportForm => "this account has no way to name that role",
+            Self::NotKept { .. } => "the server made the folder without the role",
+        })
+    }
+}
+
+impl std::error::Error for CreateRoleError {}
+
+/// [`InvalidState`](engine_core::error::FailureClass::InvalidState), as a refused name is: the
+/// create cannot succeed as asked, however often it is retried. The typed error rides along as
+/// the [`source`](std::error::Error::source), so a host can tell which.
+impl From<CreateRoleError> for ProviderError {
+    fn from(error: CreateRoleError) -> Self {
         ProviderError::invalid_state(error.to_string()).with_source(error)
     }
 }
@@ -126,74 +281,5 @@ impl MailboxEditReceipt {
 }
 
 #[cfg(test)]
-mod tests {
-    use engine_core::error::FailureClass;
-
-    use super::*;
-
-    fn id(value: &str) -> MailboxId {
-        MailboxId::try_from(value).unwrap()
-    }
-
-    #[test]
-    fn a_create_targets_nothing_and_every_other_edit_its_folder() {
-        let create = MailboxEdit::Create {
-            name: "Receipts".into(),
-            parent: None,
-        };
-        assert_eq!(create.target(), None);
-        let edits = [
-            MailboxEdit::Update {
-                target: id("f1"),
-                name: "Bills".into(),
-                parent: Some(id("f0")),
-            },
-            MailboxEdit::Trash {
-                target: id("f1"),
-                trash: id("trash"),
-                name: "Bills".into(),
-            },
-            MailboxEdit::Delete { target: id("f1") },
-        ];
-        for edit in &edits {
-            assert_eq!(edit.target(), Some(&id("f1")));
-        }
-    }
-
-    #[test]
-    fn a_refused_name_is_invalid_state_and_its_detail_is_the_rule() {
-        let error = ProviderError::from(MailboxNameError::Separator);
-        assert_eq!(error.class(), FailureClass::InvalidState);
-        assert_eq!(error.detail(), MailboxNameError::Separator.to_string());
-    }
-
-    #[test]
-    fn a_refused_name_carries_the_typed_rule_as_its_source() {
-        let error = ProviderError::from(MailboxNameError::Control);
-        let source = std::error::Error::source(&error).expect("the typed error");
-        assert_eq!(
-            source.downcast_ref::<MailboxNameError>(),
-            Some(&MailboxNameError::Control)
-        );
-    }
-
-    #[test]
-    fn an_edit_survives_the_outbox_round_trip() {
-        let edit = MailboxEdit::Update {
-            target: id("Work/2024"),
-            name: "2025".into(),
-            parent: None,
-        };
-        let json = serde_json::to_value(&edit).unwrap();
-        assert_eq!(serde_json::from_value::<MailboxEdit>(json).unwrap(), edit);
-    }
-
-    #[test]
-    fn a_receipt_names_the_folder_or_says_none_remains() {
-        assert_eq!(
-            MailboxEditReceipt::resolved(id("Trash/Bills")).mailbox,
-            Some(id("Trash/Bills"))
-        );
-        assert_eq!(MailboxEditReceipt::removed().mailbox, None);
-    }
-}
+#[path = "mailbox_edit_tests.rs"]
+mod tests;

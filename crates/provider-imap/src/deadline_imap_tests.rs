@@ -108,7 +108,7 @@ async fn a_server_silent_after_any_command_fails_retryable_after_the_reply_bound
     assert_took(elapsed, BOUNDS.reply());
 
     let (mut c, _) = session(&[]);
-    let (outcome, elapsed) = timed(c.create("Sent")).await;
+    let (outcome, elapsed) = timed(c.create("Sent", None)).await;
     assert_timed_out(outcome);
     assert_took(elapsed, BOUNDS.reply());
 }

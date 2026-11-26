@@ -201,7 +201,7 @@ async fn create_issues_the_command() {
     let (stream, recorded) = MockStream::new(server);
     let mut conn = Connection::open(stream).await.unwrap();
     conn.login("a", "b").await.unwrap();
-    conn.create("Sent").await.unwrap();
+    conn.create("Sent", None).await.unwrap();
     assert!(written(&recorded).contains("a2 CREATE \"Sent\""));
 }
 

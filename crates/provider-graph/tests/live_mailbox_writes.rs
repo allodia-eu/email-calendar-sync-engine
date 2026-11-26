@@ -64,15 +64,9 @@ async fn live_folder_tree_writes_round_trip() {
         .as_secs();
     let parent_name = format!("Engine live {run}");
 
-    let parent = edit(
-        &provider,
-        MailboxEdit::Create {
-            name: parent_name.clone(),
-            parent: None,
-        },
-    )
-    .await
-    .expect("a create names its folder");
+    let parent = edit(&provider, MailboxEdit::create(parent_name.clone(), None))
+        .await
+        .expect("a create names its folder");
     let outcome = exercise(&provider, &parent, &parent_name).await;
 
     // Clean up whatever the run left, then report.
@@ -103,25 +97,12 @@ async fn exercise(
     assert_eq!(stored.parent, None, "a top-level folder has no parent");
 
     // A second create of the same name is the retry of the first: the same folder.
-    let again = edit(
-        provider,
-        MailboxEdit::Create {
-            name: parent_name.to_owned(),
-            parent: None,
-        },
-    )
-    .await;
+    let again = edit(provider, MailboxEdit::create(parent_name.to_owned(), None)).await;
     assert_eq!(again.as_ref(), Some(parent));
 
-    let child = edit(
-        provider,
-        MailboxEdit::Create {
-            name: "Child".into(),
-            parent: Some(parent.clone()),
-        },
-    )
-    .await
-    .ok_or("a nested create names its folder")?;
+    let child = edit(provider, MailboxEdit::create("Child", Some(parent.clone())))
+        .await
+        .ok_or("a nested create names its folder")?;
     assert_eq!(
         find(provider, &child).await.unwrap().parent.as_ref(),
         Some(parent)

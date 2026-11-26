@@ -438,6 +438,9 @@ impl MailboxWrites for GraphProvider {
         _account: &AccountId,
         edit: &MailboxEdit,
     ) -> ProviderResult<MailboxEditReceipt> {
+        // No create gives a folder a role here (`crate::mailbox_write`); the capability says so,
+        // and the gate is that capability.
+        edit.role_as(&self.connection_info().capabilities, |_| None)?;
         crate::mailbox_write::edit_mailbox(&self.client, edit).await
     }
 }

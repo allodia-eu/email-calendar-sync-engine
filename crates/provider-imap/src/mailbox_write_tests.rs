@@ -54,7 +54,11 @@ async fn run_in(
     let mut parts = vec![GREETING, LOGIN_OK, list];
     parts.extend_from_slice(replies);
     let (mut conn, recorded) = logged_in(script(&parts)).await;
-    let result = edit_mailbox(&mut conn, store, edit).await;
+    // Ordinary edits: the server sets no roles, which none of them asks for.
+    let capabilities = engine_provider::Capabilities::none()
+        .with_mail()
+        .with_mailbox_writes();
+    let result = edit_mailbox(&mut conn, store, edit, &capabilities).await;
     (result, written(&recorded))
 }
 
@@ -82,10 +86,7 @@ const SHARED_TREE: &str = concat!(
 
 #[tokio::test]
 async fn a_new_folder_is_created_under_its_parent_in_the_wire_encoding_and_subscribed() {
-    let create = MailboxEdit::Create {
-        name: "Reçus".into(),
-        parent: Some(id("Work")),
-    };
+    let create = MailboxEdit::create("Reçus", Some(id("Work")));
     let (result, sent) = run(TREE, &["a3 OK CREATE\r\n", "a4 OK SUBSCRIBE\r\n"], &create).await;
 
     assert_eq!(
@@ -106,10 +107,7 @@ async fn a_folder_made_inside_the_inbox_takes_the_path_the_server_lists_it_under
         "* LIST (\\HasNoChildren) \"/\" \"Work\"\r\n",
         "a2 OK LIST done\r\n",
     );
-    let create = MailboxEdit::Create {
-        name: "Receipts".into(),
-        parent: Some(id("INBOX")),
-    };
+    let create = MailboxEdit::create("Receipts", Some(id("INBOX")));
     let (result, sent) = run(list, &["a3 OK CREATE\r\n", "a4 OK SUBSCRIBE\r\n"], &create).await;
 
     assert_eq!(
@@ -121,10 +119,7 @@ async fn a_folder_made_inside_the_inbox_takes_the_path_the_server_lists_it_under
 
 #[tokio::test]
 async fn a_create_the_server_says_already_exists_is_a_success() {
-    let create = MailboxEdit::Create {
-        name: "Receipts".into(),
-        parent: None,
-    };
+    let create = MailboxEdit::create("Receipts", None);
     let (result, sent) = run(
         TREE,
         &[
@@ -144,10 +139,7 @@ async fn a_create_the_server_says_already_exists_is_a_success() {
 
 #[tokio::test]
 async fn a_folder_the_list_already_holds_is_not_created_again() {
-    let create = MailboxEdit::Create {
-        name: "2024".into(),
-        parent: Some(id("Work")),
-    };
+    let create = MailboxEdit::create("2024", Some(id("Work")));
     let (result, sent) = run(TREE, &["a3 OK SUBSCRIBE\r\n"], &create).await;
 
     assert_eq!(
@@ -159,10 +151,7 @@ async fn a_folder_the_list_already_holds_is_not_created_again() {
 
 #[tokio::test]
 async fn a_name_carrying_the_delimiter_is_refused_before_any_change_is_sent() {
-    let create = MailboxEdit::Create {
-        name: "a/b".into(),
-        parent: None,
-    };
+    let create = MailboxEdit::create("a/b", None);
     let (result, sent) = run(TREE, &[], &create).await;
 
     assert_eq!(result.unwrap_err().class(), FailureClass::InvalidState);
@@ -172,10 +161,7 @@ async fn a_name_carrying_the_delimiter_is_refused_before_any_change_is_sent() {
 #[tokio::test]
 async fn a_server_with_no_hierarchy_keeps_no_subfolders() {
     let flat = "* LIST () NIL \"INBOX\"\r\n* LIST () NIL \"Work\"\r\na2 OK LIST done\r\n";
-    let create = MailboxEdit::Create {
-        name: "Inner".into(),
-        parent: Some(id("Work")),
-    };
+    let create = MailboxEdit::create("Inner", Some(id("Work")));
     let (result, sent) = run(flat, &[], &create).await;
 
     assert_eq!(result.unwrap_err().class(), FailureClass::InvalidState);
@@ -371,10 +357,7 @@ async fn the_inbox_is_refused_before_the_server_is_asked_anything() {
 
 #[tokio::test]
 async fn a_top_level_folder_of_a_shared_store_is_made_inside_that_store() {
-    let create = MailboxEdit::Create {
-        name: "Receipts".into(),
-        parent: None,
-    };
+    let create = MailboxEdit::create("Receipts", None);
     let replies = ["a3 OK CREATE\r\n", "a4 OK SUBSCRIBE\r\n"];
     let (result, sent) = run_in(&support(), SHARED_TREE, &replies, &create).await;
 
@@ -441,10 +424,7 @@ async fn a_shared_store_s_inbox_is_refused_in_either_server_shape() {
 
 #[tokio::test]
 async fn a_shared_store_keeps_its_reserved_inbox_name_too() {
-    let create = MailboxEdit::Create {
-        name: "inbox".into(),
-        parent: None,
-    };
+    let create = MailboxEdit::create("inbox", None);
     let (result, sent) = run_in(&support(), SHARED_TREE, &[], &create).await;
 
     assert_eq!(result.unwrap_err().class(), FailureClass::InvalidState);
@@ -454,3 +434,7 @@ async fn a_shared_store_keeps_its_reserved_inbox_name_too() {
 // The names IMAP can and cannot carry as one level, beside the delimiter test above.
 #[path = "mailbox_write_name_tests.rs"]
 mod names;
+
+// A create that asks for a role.
+#[path = "mailbox_write_role_tests.rs"]
+mod roles;
