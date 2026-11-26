@@ -38,8 +38,8 @@ const FOLDER_LIST_CURSOR: &str = "graph-folders";
 ///
 /// Construct one with [`GraphProvider::new`] from a connected
 /// [`GraphClient`](crate::GraphClient) and the folder to bind. It advertises mail
-/// read/sync, mutating writes (mark-read/flag, move, delete), and submission; calendar
-/// is a separate provider.
+/// read/sync, a message's source, mutating writes (mark-read/flag, move, delete), and
+/// submission; calendar is a separate provider.
 pub struct GraphProvider {
     client: GraphClient,
     folder: MailboxId,
@@ -78,6 +78,8 @@ impl GraphProvider {
             capabilities: Capabilities::none()
                 .with_mail()
                 .with_mail_writes()
+                // A message's whole RFC 5322 source, from `/messages/{id}/$value` (`crate::fetch`).
+                .with_message_source()
                 // Create, rename, move, trash and delete a folder (`crate::mailbox_write`).
                 .with_mailbox_writes()
                 // A draft is created from the same MIME `/sendMail` takes, into the

@@ -285,8 +285,8 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
     /// default rejects, so a capability-checking caller never relies on it.
     /// `message` carries everything an adapter needs to address the fetch: its
     /// [`id`](engine_core::mail::Message::id) key (the IMAP `(mailbox, UIDVALIDITY,
-    /// UID)`) and its [`blob_id`](engine_core::mail::Message::blob_id) (a JMAP/Graph
-    /// download handle).
+    /// UID)`; Graph's and Gmail's message id) and its
+    /// [`blob_id`](engine_core::mail::Message::blob_id) (a JMAP download handle).
     ///
     /// # Errors
     ///
