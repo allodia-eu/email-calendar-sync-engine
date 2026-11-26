@@ -6,7 +6,8 @@
 //! nowhere. That is only safe if a real server does name it, which the offline suite cannot
 //! show: it serves whatever answer it was given. So this drives create, patch and delete
 //! through the adapter and checks each landed, then deletes again to see that an already-gone
-//! card still reads as done.
+//! card still reads as done. The draft has no `uid`, so the read back also shows the one the
+//! adapter minted was kept.
 
 mod common;
 
@@ -60,6 +61,15 @@ async fn a_card_is_created_patched_and_deleted_and_each_answer_says_so() {
         .fetch_contact(&account(), &created.contact)
         .await
         .expect("the created card");
+    // The draft has no `uid` (as a card read from Google People or Microsoft Graph has none), and
+    // RFC 9553 §2.1.9 makes it mandatory, so the adapter minted one (`content_uid_of`, a UUIDv8)
+    // and the server kept it.
+    let uid = stored.uid.as_ref().expect("the created card has a uid");
+    let minted = uid
+        .as_str()
+        .strip_prefix("urn:uuid:")
+        .expect("the uid the adapter minted");
+    assert_eq!(&minted[14..15], "8", "a UUIDv8");
     let mut patch = ContactPatch::default();
     patch.fields.insert(
         ContactField::Name,

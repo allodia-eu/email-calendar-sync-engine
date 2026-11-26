@@ -22,7 +22,7 @@ use crate::{
     carddav_ops::{
         ADDRESSBOOK, advertised_classes, bind_collection, contact_id, contact_report,
         contact_update, decode_data_uri, discover_home, fallback_contact_sync, list_address_books,
-        normalize_response, require_writable, supported_fields, unnamed_card_name,
+        new_card, normalize_response, require_writable, supported_fields,
     },
     ctag_sync::{is_ctag_cursor, refuses_sync_collection},
     error::CalDavError,
@@ -369,10 +369,7 @@ impl ContactsProvider for CardDavProvider {
             ));
         }
         // One naming rule for every create, an event's and an import's included.
-        let name = draft.card.uid.as_deref().map_or_else(
-            || unnamed_card_name(&draft.card),
-            crate::href::resource_name,
-        );
+        let (uid, name) = new_card(draft);
         let href = format!("{}{name}.vcf", self.href());
         self.executor
             .send_write(WriteRequest {
@@ -380,7 +377,7 @@ impl ContactsProvider for CardDavProvider {
                 href: href.clone(),
                 content_type: Some("text/vcard; charset=utf-8"),
                 precondition: Precondition::IfNoneMatch,
-                body: vcard_write::build_vcard(&draft.card),
+                body: vcard_write::build_vcard(&draft.card, &uid),
             })
             .await?
             .into_write_etag()?;

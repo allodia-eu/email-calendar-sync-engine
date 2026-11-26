@@ -128,4 +128,10 @@ pub use store::Store;
 ///   ENVELOPE carries, as every other transport already did. A stored IMAP message has no sent
 ///   instant until the re-snapshot re-reads it, and the recipients observed on it then gain the
 ///   instant they were last written to.
-pub const NORMALIZER_VERSION: u32 = 17;
+/// - `18`: a contact's `uid` holds only a real vCard `UID` or JSContact `uid`
+///   ([`ContactCard::uid`](engine_core::contact::ContactCard::uid)). A Google People card held its
+///   resource name there and a Graph contact a `urn:microsoft:graph:` made of its id; both now hold
+///   none. A stored card keeps the provider id posing as a UID (it loads as a valid one), and both
+///   sources are read by token or delta, so an unchanged card would keep it indefinitely; the
+///   re-snapshot re-reads every card without it.
+pub const NORMALIZER_VERSION: u32 = 18;

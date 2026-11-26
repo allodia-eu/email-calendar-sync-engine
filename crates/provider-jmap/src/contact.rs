@@ -9,7 +9,7 @@ use engine_core::{
         ContactKind, ContactMember, ContactName, ContactPatch, ContactProperty, ContactResource,
         ContactSourceClass, NameComponent, NameComponentKind, PropertyId,
     },
-    ids::{AccountId, AddressBookId, ContactId},
+    ids::{AccountId, AddressBookId, ContactId, Uid},
     membership::Memberships,
     raw::{RawJsContact, RawProviderJson},
     sync::SyncState,
@@ -82,7 +82,12 @@ pub(crate) fn card(value: &Value) -> Result<ContactCard, JmapError> {
     let memberships =
         Memberships::new(books).map_err(|error| JmapError::protocol(error.to_string()))?;
     let mut card = ContactCard::new(id, memberships);
-    card.uid = value.get("uid").and_then(Value::as_str).map(str::to_owned);
+    // A `uid` no `Uid` takes (empty, or over its 1024 octets) reads as none, never as a failed
+    // card; the raw JSContact keeps it as sent.
+    card.uid = value
+        .get("uid")
+        .and_then(Value::as_str)
+        .and_then(|uid| Uid::new(uid).ok());
     card.kind = match value
         .get("kind")
         .and_then(Value::as_str)
@@ -289,11 +294,7 @@ impl ContactsProvider for JmapProvider {
         _account: &AccountId,
         draft: &ContactDraft,
     ) -> ProviderResult<ContactWriteReceipt> {
-        let mut object = contact_write::writable_object(&draft.card);
-        object.insert(
-            "addressBookIds".into(),
-            json!({ draft.address_book.as_str(): true }),
-        );
+        let object = contact_write::create_object(draft);
         let result = self
             .contact_set(json!({
                 "accountId": self.contact_account()?,

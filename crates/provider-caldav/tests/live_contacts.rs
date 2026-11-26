@@ -66,7 +66,7 @@ fn cards(sync: ContactSourceSync<ContactCard>) -> Vec<ContactCard> {
 fn seeded<'a>(items: &'a [ContactCard], uid: &str) -> &'a ContactCard {
     items
         .iter()
-        .find(|card| card.uid.as_deref() == Some(uid))
+        .find(|card| card.uid.as_ref().map(engine_core::ids::Uid::as_str) == Some(uid))
         .expect("seeded card")
 }
 
@@ -286,7 +286,7 @@ async fn a_created_card_keeps_its_organization_and_title_through_a_patch() {
             .expect("a clock after 1970")
             .as_nanos()
     );
-    card.uid = Some(uid);
+    card.uid = Some(engine_core::ids::Uid::new(uid).unwrap());
     card.kind = ContactKind::Individual;
     card.name = Some(ContactName {
         full: Some("Grace Hopper".into()),
@@ -400,6 +400,35 @@ async fn a_created_card_keeps_its_organization_and_title_through_a_patch() {
         .delete_contact(&account, &patched)
         .await
         .expect("clean up");
+}
+
+#[path = "contacts/uid_less_create.rs"]
+mod uid_less_create;
+
+/// A card created with no `UID` against Stalwart (`contacts/uid_less_create.rs`).
+#[tokio::test]
+async fn stalwart_a_card_without_a_uid_is_created_with_the_one_minted() {
+    let Some(harness) = Harness::from_env() else {
+        eprintln!("skipping uid-less contact create: STALWART_HTTP_ADDR unset");
+        return;
+    };
+    harness
+        .wait_until_ready(Duration::from_secs(30))
+        .expect("harness ready");
+    let origin = format!("http://{}", harness.http_addr);
+    let provider = connect_honouring_throttles("CardDAV connect", || {
+        CardDavProvider::connect(CardDavConfig::new(
+            &origin,
+            Credentials::Basic {
+                username: harness.account.clone(),
+                password: harness.password.clone(),
+            },
+            engine_http::test_server::user_agent(),
+        ))
+    })
+    .await;
+    let account = AccountId::try_from("contact-uid-less").unwrap();
+    uid_less_create::uid_less_create_round_trip(&provider, &account).await;
 }
 
 #[cfg(feature = "import")]

@@ -4,7 +4,7 @@ use engine_core::{
         ContactPatch, ContactPhone, ContactProperty, ContactResource, FieldPatch, NameComponent,
         NameComponentKind, Organization, OrganizationUnit, PropertyId, Title,
     },
-    ids::{AddressBookId, ContactId},
+    ids::{AddressBookId, ContactId, Uid},
     membership::Memberships,
     raw::RawVcard,
 };
@@ -147,7 +147,7 @@ fn writable_card() -> ContactCard {
         ContactId::try_from("/contacts/ada.vcf").unwrap(),
         Memberships::of_one(book),
     );
-    card.uid = Some("ada".into());
+    card.uid = Some(Uid::new("ada").unwrap());
     card.kind = ContactKind::Individual;
     card.name = Some(ContactName {
         full: Some("Ada Lovelace".into()),
@@ -201,7 +201,7 @@ fn writable_card() -> ContactCard {
 
 #[test]
 fn create_vcard_includes_every_advertised_field() {
-    let raw = build_vcard(&writable_card());
+    let raw = build_vcard(&writable_card(), &Uid::new("ada").unwrap());
     for expected in [
         "UID:ada",
         "KIND:individual",
@@ -299,7 +299,7 @@ fn a_hostile_contact_kind_cannot_inject_vcard_properties() {
     let hostile = ContactKind::Other("individual\r\nEMAIL:attacker@evil.test".into());
     let mut card = writable_card();
     card.kind = hostile.clone();
-    let created = build_vcard(&card);
+    let created = build_vcard(&card, &Uid::new("ada").unwrap());
     // The hostile text survives as *data* on the KIND line; what it must never do is
     // start a content line of its own.
     assert!(created.contains("KIND:individual\\nEMAIL:attacker@evil.test"));
@@ -387,7 +387,7 @@ fn create_writes_structured_name_components_and_escapes_separators() {
         ],
         ..ContactName::default()
     });
-    let raw = build_vcard(&card);
+    let raw = build_vcard(&card, &Uid::new("ada").unwrap());
     assert!(raw.contains("N:King\\;Noel;Ada;;;"), "{raw}");
     let reparsed = parse_vcard(
         &raw,
@@ -406,7 +406,7 @@ fn create_writes_structured_name_components_and_escapes_separators() {
         full: Some("Ada".into()),
         ..ContactName::default()
     });
-    assert!(!build_vcard(&plain).contains("\r\nN:"));
+    assert!(!build_vcard(&plain, &Uid::new("ada").unwrap()).contains("\r\nN:"));
 }
 
 /// `ORG` and `TITLE` are the two fields the contacts editor shows and every other adapter
@@ -431,7 +431,7 @@ fn create_and_patch_write_organizations_and_titles() {
             ..Title::default()
         }),
     );
-    let raw = build_vcard(&card);
+    let raw = build_vcard(&card, &Uid::new("ada").unwrap());
     assert!(raw.contains("ORG:Babbage\\; Sons\r\n"), "{raw}");
     assert!(raw.contains("ROLE:Analyst"), "{raw}");
 

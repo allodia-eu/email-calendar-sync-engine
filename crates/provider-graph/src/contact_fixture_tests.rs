@@ -233,7 +233,9 @@ async fn captured_detail_get_normalizes_like_a_delta_entry() {
         Some("Ada Byron Lovelace")
     );
     assert_eq!(card.emails.len(), 2);
-    assert_eq!(card.uid.as_deref(), Some("urn:microsoft:graph:contact-1"));
+    // A Graph contact carries no vCard `UID`: its id is the card's id, never a UID made of it.
+    assert_eq!(card.id.as_str(), "contact-1");
+    assert_eq!(card.uid, None);
 }
 
 /// `POST /me/contacts` echoes the created object; the id it carries is the receipt.

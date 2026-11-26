@@ -48,10 +48,8 @@ pub(crate) fn card(
     let mut card = ContactCard::new(id, Memberships::of_one(address_book));
     card.source_class = source_class;
     card.is_writable = writable;
-    card.uid = value
-        .get("id")
-        .and_then(Value::as_str)
-        .map(|id| format!("urn:microsoft:graph:{id}"));
+    // No `uid`: a Graph contact carries no vCard `UID`, and one made of its id would claim an
+    // identity across systems that it does not have. The id is the card's id.
     card.kind = if source_class == ContactSourceClass::Directory
         && value
             .get("userType")

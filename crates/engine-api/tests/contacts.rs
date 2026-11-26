@@ -51,7 +51,7 @@ impl FakeContacts {
             full: Some(name.into()),
             ..ContactName::default()
         });
-        card.uid = Some(id.into());
+        card.uid = Some(engine_core::ids::Uid::new(id).unwrap());
         card.emails.insert(
             PropertyId::new("email").unwrap(),
             ContactProperty::new(ContactEmail::new(email)),

@@ -137,13 +137,16 @@ async fn nextcloud_contact_write_round_trip() {
     );
     // A fresh uid per run: a create is `If-None-Match: *`, so a run that aborted before its
     // cleanup would otherwise leave a card that refuses every later run.
-    card.uid = Some(format!(
-        "live-nextcloud-{}@test.local",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("a clock after 1970")
-            .as_nanos()
-    ));
+    card.uid = Some(
+        engine_core::ids::Uid::new(format!(
+            "live-nextcloud-{}@test.local",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("a clock after 1970")
+                .as_nanos()
+        ))
+        .unwrap(),
+    );
     card.kind = ContactKind::Individual;
     card.name = Some(ContactName {
         full: Some("Ada Lovelace".into()),
@@ -208,6 +211,19 @@ async fn nextcloud_contact_write_round_trip() {
         .delete_contact(&account, &patched)
         .await
         .expect("clean up");
+}
+
+#[path = "contacts/uid_less_create.rs"]
+mod uid_less_create;
+
+/// A card created with no `UID` against Nextcloud (`contacts/uid_less_create.rs`).
+#[tokio::test]
+async fn nextcloud_a_card_without_a_uid_is_created_with_the_one_minted() {
+    let Some(provider) = connect("nextcloud_a_card_without_a_uid", BOOK).await else {
+        return;
+    };
+    let account = AccountId::try_from("nextcloud-contacts-live").unwrap();
+    uid_less_create::uid_less_create_round_trip(&provider, &account).await;
 }
 
 #[cfg(feature = "import")]

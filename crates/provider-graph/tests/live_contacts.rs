@@ -294,10 +294,7 @@ async fn live_fetch_contact_matches_the_synced_card() {
         fetched.name.as_ref().and_then(|n| n.full.as_deref()),
         Some(format!("Live Probe {unique}").as_str())
     );
-    assert_eq!(
-        fetched.uid.as_deref(),
-        Some(format!("urn:microsoft:graph:{}", receipt.contact.as_str()).as_str())
-    );
+    assert_eq!(fetched.uid, None, "a Graph contact carries no vCard UID");
 
     provider
         .delete_contact(&account(), &fetched)

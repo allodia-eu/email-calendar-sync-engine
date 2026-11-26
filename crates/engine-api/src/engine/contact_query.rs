@@ -71,7 +71,7 @@ pub(super) fn person_matches(
                     .card
                     .uid
                     .as_ref()
-                    .is_some_and(|uid| members.contains(uid))
+                    .is_some_and(|uid| members.contains(uid.as_str()))
                     || members.contains(source.card.id.as_str())
             })
     });

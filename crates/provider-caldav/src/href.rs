@@ -129,7 +129,11 @@ pub(crate) fn resource_name(uid: &str) -> String {
 /// `sha256-` and the hex SHA-256 of `bytes`: a resource name every schema takes, the same for the
 /// same bytes.
 pub(crate) fn hashed_name(bytes: &[u8]) -> String {
-    let digest = <sha2::Sha256 as sha2::Digest>::digest(bytes);
+    digest_name(&<sha2::Sha256 as sha2::Digest>::digest(bytes).into())
+}
+
+/// `sha256-` and the hex of `digest`, a SHA-256 already taken: [`hashed_name`]'s form.
+pub(crate) fn digest_name(digest: &[u8; 32]) -> String {
     let mut name = String::from("sha256-");
     for byte in digest {
         name.push(hex_lower(byte >> 4));

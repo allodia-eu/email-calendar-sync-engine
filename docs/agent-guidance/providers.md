@@ -59,7 +59,12 @@ If product pressure changes the order, the domain model tests still need JMAP an
   server-canonical card without advancing the normal cursor. Capabilities report
   reads, groups, photos, and contact-write guard strength independently. JMAP and
   Graph are `WriteGuard::Absent`; Google and CardDAV are
-  `WriteGuard::Enforced`.
+  `WriteGuard::Enforced`. A card's `uid` (`Uid`) is the vCard/JSContact `UID` the
+  source carries: CardDAV's `UID`, JMAP's `uid`, and none from Google People or Graph,
+  which carry no such identity; a provider id is never put there. A CardDAV or JMAP
+  create of a draft without one mints one from the whole draft
+  (`engine_provider::content_uid_of`): a fallback that keeps a retried create stable, not an
+  identity; a host that has one (a migration host) sets `uid` itself (`contacts.md`).
 - **A new capability is its own trait, reached through an accessor on `Provider` that
   defaults to `None`** (`north-star.md`, Key Decisions). `Provider::mail_importer() ->
   Option<&dyn MailImporter>` is the first: an adapter that implements the trait answers

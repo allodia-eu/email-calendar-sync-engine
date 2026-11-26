@@ -52,6 +52,7 @@ mod connect_observer;
 mod connection;
 mod contact;
 mod content_id;
+mod content_uid;
 mod credential;
 mod deadline;
 mod draft_receipt;
@@ -104,6 +105,7 @@ pub use contact::{
     ContactDestination, ContactPhoto, ContactSourceSync, ContactUnavailable, ContactWriteReceipt,
     ContactsProvider,
 };
+pub use content_uid::{ContentUid, content_uid_of};
 pub use credential::{
     Credential, CredentialFailure, CredentialProtocol, CredentialRequest, CredentialSource,
     CredentialSubject, FixedCredential, Origin, Secret, permitted, with_credential,

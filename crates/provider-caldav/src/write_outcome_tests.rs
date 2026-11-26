@@ -250,7 +250,7 @@ fn card_draft() -> ContactDraft {
         ContactId::try_from("card").unwrap(),
         Memberships::of_one(book.clone()),
     );
-    card.uid = Some("ada@test.local".to_owned());
+    card.uid = Some(engine_core::ids::Uid::new("ada@test.local").unwrap());
     ContactDraft {
         address_book: book,
         card,

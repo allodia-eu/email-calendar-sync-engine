@@ -1,14 +1,9 @@
-use engine_core::{
-    contact::{ContactCard, ContactEmail, ContactName, ContactProperty, PropertyId},
-    ids::{AddressBookId, ContactId},
-    membership::Memberships,
-};
 use engine_provider::{ContactsProvider, IgnoreConnectSteps, Provider};
 use engine_tls::TlsClientConfig;
 
 use crate::{
     CardDavConfig, CardDavProvider, Credentials,
-    carddav_ops::{bind_collection, decode_data_uri, discover_home, unnamed_card_name},
+    carddav_ops::{bind_collection, decode_data_uri, discover_home},
     test_support::{Replay, ok, options},
     transport::HttpResponse,
 };
@@ -55,27 +50,6 @@ fn collection_uri_and_stable_resource_helpers_cover_edge_input() {
     );
     let report = crate::request::addressbook_multiget_report(&["/book/a&b.vcf".to_owned()]);
     assert!(report.contains("/book/a&amp;b.vcf"));
-
-    let book = AddressBookId::try_from("/book/").unwrap();
-    let mut card = ContactCard::new(
-        ContactId::try_from("/book/ada.vcf").unwrap(),
-        Memberships::of_one(book),
-    );
-    card.name = Some(ContactName {
-        full: Some("Ada".into()),
-        ..ContactName::default()
-    });
-    card.emails.insert(
-        PropertyId::new("email").unwrap(),
-        ContactProperty::new(ContactEmail::new("ada@example.test")),
-    );
-    // A card with no `UID` is named by a SHA-256 of what identifies it, the same on every Rust
-    // release (`DefaultHasher` is not), so a retried create meets its own earlier write.
-    let name = unnamed_card_name(&card);
-    assert!(name.starts_with("sha256-"), "{name}");
-    assert_eq!(unnamed_card_name(&card), name);
-    card.emails.clear();
-    assert_ne!(unnamed_card_name(&card), name);
 
     assert_eq!(decode_data_uri("image/png;base64,AQID").unwrap(), [1, 2, 3]);
     assert!(decode_data_uri("image/png;base64").is_err());

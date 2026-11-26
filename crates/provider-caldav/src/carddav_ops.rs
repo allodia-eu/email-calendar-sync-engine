@@ -3,8 +3,10 @@
 use std::collections::BTreeSet;
 
 use engine_core::{
-    contact::{AddressBook, ContactCard, ContactField, ContactFieldSet, ContactSourceClass},
-    ids::{AddressBookId, ContactId, ProviderKey},
+    contact::{
+        AddressBook, ContactCard, ContactDraft, ContactField, ContactFieldSet, ContactSourceClass,
+    },
+    ids::{AddressBookId, ContactId, ProviderKey, Uid},
     sync::SyncUpdate,
     version::{ETag, RevisionTokens},
 };
@@ -15,7 +17,7 @@ use crate::{
     dav::{DavResponse, MultiStatus},
     discovery::{authenticate_before_reading, follow, trusted_start},
     error::CalDavError,
-    href::redirect_href,
+    href::{digest_name, redirect_href, resource_name},
     multiget::{Multigets, same_path},
     request::{
         ADDRESS_BOOK_LIST_PROPFIND, ADDRESS_BOOK_PRINCIPAL_PROPFIND, address_book_sync_report,
@@ -297,16 +299,22 @@ pub(crate) fn bind_collection(home: &str, value: &str) -> Result<AddressBookId, 
     AddressBookId::try_from(href.as_str()).map_err(|error| CalDavError::protocol(error.to_string()))
 }
 
-/// The resource name a card with no `UID` is created under: a SHA-256 of its display name and
-/// email addresses, the same on every Rust release (unlike `DefaultHasher`), so a retried create
-/// meets its own earlier write.
-pub(crate) fn unnamed_card_name(card: &ContactCard) -> String {
-    let mut identity = card.display_name().unwrap_or_default();
-    for email in card.emails.values() {
-        identity.push('\n');
-        identity.push_str(&email.value.address);
+/// A new card's `UID`, and the resource name (without `.vcf`) it is stored under.
+///
+/// A card with a `UID` is named by it ([`resource_name`], the rule every create and import
+/// uses). RFC 6352 §5.1 says "vCard components in an address book collection MUST have a UID
+/// property value", so a draft without one gets [`engine_provider::content_uid_of`], minted from
+/// the whole draft, and the resource is named by the same SHA-256 ([`digest_name`]). The same
+/// draft therefore always mints the same `UID` and name, so a retried create meets its own
+/// earlier write (`If-None-Match: *`); a draft differing anywhere, even in a field the vCard
+/// leaves out, mints others. The mint is a fallback, not an identity, and stable only within one
+/// engine version ([`engine_provider::ContentUid`]): a host that has one sets the card's `uid`.
+pub(crate) fn new_card(draft: &ContactDraft) -> (Uid, String) {
+    if let Some(uid) = &draft.card.uid {
+        return (uid.clone(), resource_name(uid.as_str()));
     }
-    crate::href::hashed_name(identity.as_bytes())
+    let minted = engine_provider::content_uid_of(draft);
+    (minted.uid().clone(), digest_name(minted.digest()))
 }
 
 pub(crate) fn decode_data_uri(value: &str) -> Result<Vec<u8>, CalDavError> {
@@ -370,3 +378,7 @@ pub(crate) fn require_writable(writable: bool) -> ProviderResult<()> {
 pub(crate) fn contact_id(value: &str) -> Result<ContactId, CalDavError> {
     ContactId::try_from(value).map_err(|error| CalDavError::protocol(error.to_string()))
 }
+
+#[cfg(test)]
+#[path = "contact_uid_tests.rs"]
+mod uid_tests;
