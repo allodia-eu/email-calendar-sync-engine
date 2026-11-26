@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use engine_core::{
     calendar::Event,
     contact::{AddressBook, ContactCard, ContactDraft, ContactPatch, ContactResource},
-    ids::{AccountId, CalendarId, ContactId, ProviderKey},
+    ids::{AccountId, CalendarId, ContactId, EventId, ProviderKey, Uid},
     mail::{Mailbox, Message, MessageMetadata},
     raw::RawMime,
     sync::{MailboxWindows, SyncScope, SyncState, SyncWindow, Widening},
@@ -277,6 +277,10 @@ impl<P: CalendarWrites + ?Sized> CalendarWrites for Box<P> {
         write: &EventWrite,
     ) -> ProviderResult<EventWriteReceipt> {
         (**self).put_event(account, write).await
+    }
+
+    fn new_event_id(&self, calendar: &CalendarId, uid: &Uid) -> ProviderResult<EventId> {
+        (**self).new_event_id(calendar, uid)
     }
 
     async fn rsvp_event(

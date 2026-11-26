@@ -271,6 +271,7 @@ async fn caldav_storing_an_invitation_is_a_guarded_create() {
     };
     let _serial = common::serial_guard().await;
     common::imip::storing_an_invitation_is_a_guarded_create(&provider, &account).await;
+    common::imip::a_long_uid_is_stored_under_the_id_minted_for_it(&provider, &account).await;
 }
 
 /// Stalwart reports `DAV:current-user-privilege-set` on Alice's own calendar, and it

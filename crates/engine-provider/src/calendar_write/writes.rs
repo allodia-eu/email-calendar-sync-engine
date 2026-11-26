@@ -14,7 +14,10 @@
 //! forgets fail loudly rather than silently.
 
 use async_trait::async_trait;
-use engine_core::{calendar::Event, ids::AccountId};
+use engine_core::{
+    calendar::Event,
+    ids::{AccountId, CalendarId, EventId, Uid},
+};
 
 use crate::{
     CalendarUserAddresses, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite,
@@ -117,6 +120,33 @@ pub trait CalendarWrites: Send + Sync {
     ) -> ProviderResult<EventWriteReceipt> {
         let _ = (account, write);
         Err(unsupported("whole-document calendar writes"))
+    }
+
+    /// The id a **new** event with `uid` takes in `calendar`, for a
+    /// [`put_event`](CalendarWrites::put_event) that creates it
+    /// ([`EventWrite::creating`](crate::EventWrite::creating)).
+    ///
+    /// Only a transport whose client names a new resource has an answer (CalDAV, RFC 4791
+    /// §5.3.2). It is the adapter's own rule, the one its
+    /// [`create_event`](CalendarWrites::create_event) and its importer use, so every write this
+    /// engine makes for one `UID` names the same address, and a guarded create meets a copy one
+    /// of them already stored. A host that minted the address itself would drift from that rule.
+    ///
+    /// It names only copies written under this rule. A copy the server put there itself, such
+    /// as the one an auto-scheduling server files when an invitation arrives, sits at an
+    /// address of the server's choosing, so a host that finds the create refused looks the
+    /// event up by its `UID` rather than by this id.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`]:
+    /// [`FailureClass::Permanent`](engine_core::error::FailureClass::Permanent) when
+    /// `calendar` is not a calendar the adapter can address (CalDAV: not an href), and
+    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState) from an
+    /// adapter whose server names new events itself, as from the default.
+    fn new_event_id(&self, calendar: &CalendarId, uid: &Uid) -> ProviderResult<EventId> {
+        let _ = (calendar, uid);
+        Err(unsupported("naming new events"))
     }
 
     /// Answers an invitation: sets **the account's own** participation status, and lets the

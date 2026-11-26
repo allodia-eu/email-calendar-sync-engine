@@ -13,6 +13,10 @@
 //! the calendar has to be a create-if-absent, and only a server can tell us that
 //! `If-None-Match: *` is honoured on a `PUT` — that a second one is refused rather than
 //! silently overwriting the copy that is now there.
+//!
+//! Both document creates take their address from `CalendarWrites::new_event_id`, asked through
+//! `dyn Provider` as a host asks it, and check the server lists the event under that id:
+//! [`a_long_uid_is_stored_under_the_id_minted_for_it`] covers a `UID` named by its hash.
 
 use engine_core::{
     error::FailureClass,
@@ -73,7 +77,11 @@ pub(crate) async fn storing_an_invitation_is_a_guarded_create(
 ) {
     let uid = Uid::new(INVITATION_UID).unwrap();
     pre_clean(provider, account, &uid).await;
-    let href = provider.event_href(&uid).expect("mint event href");
+    // Minted through `dyn Provider`, as a host holding a boxed adapter asks it.
+    let held: &dyn Provider = &provider.provider;
+    let href = held
+        .new_event_id(&provider.calendar, &uid)
+        .expect("mint event href");
 
     // The invitation as it arrived, minus the transit-only METHOD (RFC 4791 §4.1 forbids
     // one in a stored resource). Its organizer, attendee and SEQUENCE are the point: they
@@ -104,6 +112,9 @@ pub(crate) async fn storing_an_invitation_is_a_guarded_create(
         .await
         .expect("the invitation is on the calendar");
     assert_eq!(stored.title, "Invitation from mail");
+    // The server lists it at the address it was written to, `@` and all, so a host reads it
+    // back by the id it minted.
+    assert_eq!(stored.id, href, "the minted id is the id the server lists");
     let me = stored
         .participants
         .iter()
@@ -157,6 +168,48 @@ pub(crate) async fn storing_an_invitation_is_a_guarded_create(
         .expect("still present");
     provider
         .delete_event(account, None, &EventDeletion::of(&final_copy))
+        .await
+        .expect("clean up");
+}
+
+/// A `UID` too long to be a resource name, stored as a document under the id the adapter mints
+/// for it: the hashed name, which the server takes and lists back under the same id, so a host
+/// reads it back by that id.
+pub(crate) async fn a_long_uid_is_stored_under_the_id_minted_for_it(
+    provider: &OnCalendar,
+    account: &AccountId,
+) {
+    let long = format!("{}@test.local", "0123456789abcdef".repeat(20));
+    let uid = Uid::new(long.as_str()).unwrap();
+    pre_clean(provider, account, &uid).await;
+    let held: &dyn Provider = &provider.provider;
+    let href = held
+        .new_event_id(&provider.calendar, &uid)
+        .expect("mint event href");
+    assert!(
+        href.as_str().contains("/sha256-"),
+        "a 331-byte UID is named by its hash, not verbatim: {href:?}"
+    );
+
+    let document = RawIcal::new(format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Organizer//EN\r\nBEGIN:VEVENT\r\n\
+         UID:{long}\r\nDTSTAMP:20260501T080000Z\r\nDTSTART:20260605T090000Z\r\n\
+         DTEND:20260605T093000Z\r\nSUMMARY:Long UID\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    ));
+    provider
+        .put_event(
+            account,
+            &EventWrite::creating(href.clone(), uid.clone(), document),
+        )
+        .await
+        .expect("a create under the hashed name lands");
+
+    let stored = fetch(provider, account, &long)
+        .await
+        .expect("the long-UID event is on the calendar");
+    assert_eq!(stored.id, href, "the minted id is the id the server lists");
+    provider
+        .delete_event(account, None, &EventDeletion::of(&stored))
         .await
         .expect("clean up");
 }
