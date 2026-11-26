@@ -52,6 +52,7 @@ async fn advertises_per_folder_scopes_and_mail_capability() {
     // Mutating writes and submission are advertised alongside read/sync.
     assert!(info.capabilities.mail_writes());
     assert!(info.capabilities.submission());
+    assert!(info.capabilities.message_source());
     // No keyword reaches the filed copy until one has a category name to go by.
     assert!(!info.capabilities.sent_copy_keywords());
     let named = engine_provider::KeywordName::new(

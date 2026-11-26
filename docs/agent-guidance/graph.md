@@ -836,7 +836,10 @@ proven too; sending it as a `PATCH` instead is a follow-up.
   `$orderby`). A streaming newest-first snapshot via the list endpoint is a
   possible later refinement.
 - **Mail read/sync + submission + writes (`GraphProvider`).** The provider advertises
-  `mail` + `mail_writes` + `submission` (see **Submission** and **Mail writes** above).
+  `mail` + `message_source` + `mail_writes` + `submission` (see **Submission** and **Mail
+  writes** above). A source is one `GET /messages/{id}/$value` per message, at most
+  `MAX_CONCURRENT_SOURCE_FETCHES` at once; the capability holds for the adapter, not every
+  message: a message Exchange cannot render as MIME answers `item_unavailable` (above).
   Both submission and writes are account-level (keyed by immutable id), so they need no
   per-folder config. Calendar is a separate provider (see **Calendar** below), not this one.
 
