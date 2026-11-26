@@ -57,7 +57,10 @@ pub struct MailboxEditOutcome {
 /// # Errors
 ///
 /// Returns [`SyncError::Provider`] if the change is refused or fails (after recording it),
-/// with a name no transport accepts refused before anything is queued;
+/// with a name outside the portable policy
+/// ([`validate_mailbox_name`](engine_core::mail::validate_mailbox_name)) refused before
+/// anything is queued, its typed [`MailboxNameError`](engine_core::mail::MailboxNameError) as
+/// the error's source;
 /// [`SyncError::Store`] on a store failure; or [`SyncError::Outbox`] if the change cannot
 /// be encoded or the just-enqueued op is not claimable.
 pub async fn edit_mailbox<P, S>(
@@ -75,7 +78,7 @@ where
 {
     change
         .validate()
-        .map_err(|err| SyncError::Provider(ProviderError::invalid_state(err.to_string())))?;
+        .map_err(|err| SyncError::Provider(err.into()))?;
     let payload = serde_json::to_value(change)
         .map_err(|e| SyncError::Outbox(format!("encode folder change: {e}")))?;
     let idempotency_key =

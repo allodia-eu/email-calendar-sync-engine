@@ -14,7 +14,7 @@
 
 use engine_core::{
     ids::MailboxId,
-    mail::{Mailbox, MailboxRole},
+    mail::{Mailbox, MailboxNameError, MailboxRole, validate_mailbox_name},
 };
 use engine_provider::{MailboxEdit, ProviderError};
 use serde::{Deserialize, Serialize};
@@ -91,48 +91,6 @@ impl MailboxChange {
             Self::Trash { .. } | Self::Delete { .. } => Ok(()),
         }
     }
-}
-
-/// Why a folder name cannot be used.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum MailboxNameError {
-    /// The name is empty, or only whitespace.
-    #[error("a folder name cannot be empty")]
-    Empty,
-    /// The name starts or ends with whitespace, which no two servers treat alike.
-    #[error("a folder name cannot start or end with a space")]
-    Surrounded,
-    /// The name carries a control character.
-    #[error("a folder name cannot contain a control character")]
-    Control,
-    /// The name carries `/`, which Gmail and most IMAP servers read as a level of the tree.
-    #[error("a folder name cannot contain '/'")]
-    Separator,
-}
-
-/// Checks a folder's own name against the rules every transport shares.
-///
-/// Not every rule a server has: an IMAP server whose hierarchy separator is `.` refuses a
-/// name containing one, and says so when asked. What this catches is what no transport
-/// accepts, so a host can say it while the user is still typing.
-///
-/// # Errors
-///
-/// Returns the [`MailboxNameError`] the name breaks.
-pub fn validate_mailbox_name(name: &str) -> Result<(), MailboxNameError> {
-    if name.trim().is_empty() {
-        return Err(MailboxNameError::Empty);
-    }
-    if name.trim() != name {
-        return Err(MailboxNameError::Surrounded);
-    }
-    if name.chars().any(char::is_control) {
-        return Err(MailboxNameError::Control);
-    }
-    if name.contains('/') {
-        return Err(MailboxNameError::Separator);
-    }
-    Ok(())
 }
 
 /// What a queued change comes to against the current folder list.

@@ -807,8 +807,10 @@ Fixtures: `sieve_get_rules_and_reply_response.json`, `sieve_set_create_rules_res
   (only the cycle names `parentId`), classified `Conflict` unless the error names `name`
   alone; a missing target is `notFound`. Stalwart applies a `destroy` list in array order;
   RFC 8620 does not promise that, so a server that reorders would refuse the parent until a
-  retry. `mailbox_writes` rides the `mail_writes` gate. Live: `tests/live_mailbox_writes.rs`,
-  as the scratch account `carol@`.
+  retry. Names are the server's to judge (RFC 8621 §2 asks only for a non-empty Net-Unicode
+  name): the adapter refuses none itself, a trash's included, and an `invalidProperties`
+  naming only `name` is `InvalidState`. `mailbox_writes` rides the `mail_writes` gate. Live:
+  `tests/live_mailbox_writes.rs`, as the scratch account `carol@`.
 - **A submission that loses its answer needs confirming.** The batched `Email/set` +
   `EmailSubmission/set` goes through `Executor::submit`, which waits the `submission`
   bound for its reply. Once that request may have reached the server, a failure there (a

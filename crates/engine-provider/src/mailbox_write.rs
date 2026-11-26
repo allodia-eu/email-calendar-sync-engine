@@ -26,8 +26,12 @@ pub trait MailboxWrites: Send + Sync {
     /// Applies one [`MailboxEdit`] to the account's folder tree.
     ///
     /// Outbox-mediated by the caller: a durable pending op precedes this side effect, and
-    /// the caller has already checked the folder is where the user saw it. This method
-    /// performs only the provider call.
+    /// the caller has already checked the folder is where the user saw it, and the name
+    /// against the engine's portable policy
+    /// ([`validate_mailbox_name`](engine_core::mail::validate_mailbox_name)) where it asked a
+    /// user for one. This method performs the provider call, and refuses first exactly the
+    /// names its own transport cannot carry; it does not apply the portable policy, so a host
+    /// can write any name the target accepts.
     ///
     /// **A create that finds its folder already there succeeds** with that folder, and a
     /// delete that finds nothing succeeds too: both verbs sit behind a retryable op, so a
@@ -39,7 +43,8 @@ pub trait MailboxWrites: Send + Sync {
     /// destination that already holds a folder of that name, or a move into the folder's
     /// own subtree is
     /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict). A name the
-    /// transport cannot express (one carrying its hierarchy separator) is
+    /// transport cannot carry (one carrying its hierarchy separator, an empty one), refused
+    /// before any change is sent, is
     /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState), as
     /// is the default, which an adapter without [`Capabilities::mailbox_writes`] keeps.
     async fn edit_mailbox(

@@ -39,8 +39,9 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError::InvalidInput`] for a folder name no transport accepts, before
-    /// anything is queued, and [`ApiError::Sync`] if the change is refused or fails: a
+    /// Returns [`ApiError::InvalidInput`] for a folder name outside the engine's portable
+    /// policy ([`validate_mailbox_name`](crate::validate_mailbox_name)), before anything is
+    /// queued, and [`ApiError::Sync`] if the change is refused or fails: a
     /// retryable failure leaves it queued for the drainer; a conflict settles it.
     pub async fn edit_mailbox<P: Provider>(
         &self,

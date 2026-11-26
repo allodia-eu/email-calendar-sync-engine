@@ -1014,12 +1014,16 @@ protocol on both dialects.
   the server renames every folder beneath it too (RFC 9051 §6.3.6), so every receipt names the
   path the folder has **after** the edit. Each edit starts with one `LIST` and judges against
   it.
-- **Names.** A leaf carrying the delimiter would make levels nobody asked for, and a
-  subfolder on a server whose delimiter is `NIL` has nowhere to go; both are `InvalidState`
-  before anything is sent, as is any edit of the store's Inbox and a top-level folder called
-  `INBOX`. The top level is the store's: for a provider bound to a shared store it is below
-  the store's root (see "Shared mailboxes").
-  Names go through `quoted_name`, so rev1 sends modified UTF-7 (`Reçus` → `Re&AOc-us`).
+- **Names.** The adapter refuses exactly what IMAP cannot carry as one level, and nothing more
+  (`providers.md`): an empty leaf, CR, LF or NUL (a quoted string cannot hold them), a leaf
+  carrying the delimiter, which would make levels nobody asked for, a subfolder on a server
+  whose delimiter is `NIL`, which has nowhere to go, and a top-level folder called `INBOX`. The
+  delimiter is the one the edit's `LIST` reports, so these are judged after that read and before
+  any command that changes the tree; all are `InvalidState`. An edit of the store's Inbox is
+  refused before the `LIST`. A tab, a surrounding space, or a `/` on a server whose delimiter is
+  `.` are the server's to judge. The top level is the store's: for a provider bound to a shared
+  store it is below the store's root (see "Shared mailboxes"). Names go through `quoted_name`,
+  so rev1 sends modified UTF-7 (`Reçus` → `Re&AOc-us`).
 - **`Create`** → `CREATE "<path>"`, then `SUBSCRIBE`. A path the `LIST` already holds is not
   created again, and `NO [ALREADYEXISTS]` is success: a retry meets what the first attempt
   made.

@@ -17,9 +17,16 @@
 //! That is why a receipt names the folder the edit **resolved to**: on IMAP a rename or a
 //! trash hands back a different key, and a host that kept the old one would name a folder
 //! the server no longer has.
+//!
+//! They disagree on names too, so each adapter refuses exactly the names its own transport
+//! cannot carry, before it sends anything, and nothing more. The engine's portable name policy
+//! ([`validate_mailbox_name`](engine_core::mail::validate_mailbox_name)) is a host's to apply
+//! where it asks a user for a name; the outbox applies it before it queues a change.
 
-use engine_core::ids::MailboxId;
+use engine_core::{ids::MailboxId, mail::MailboxNameError};
 use serde::{Deserialize, Serialize};
+
+use crate::ProviderError;
 
 /// A change to one folder of an account's tree, as an adapter performs it.
 ///
@@ -82,6 +89,17 @@ impl MailboxEdit {
     }
 }
 
+/// A name outside the portable policy is
+/// [`InvalidState`](engine_core::error::FailureClass::InvalidState), the class an adapter
+/// gives a name its transport cannot carry: the change cannot succeed as asked, however
+/// often it is retried. The detail is the rule broken, never the name, and the typed error
+/// rides along as the [`source`](std::error::Error::source), so a host can tell which rule.
+impl From<MailboxNameError> for ProviderError {
+    fn from(error: MailboxNameError) -> Self {
+        ProviderError::invalid_state(error.to_string()).with_source(error)
+    }
+}
+
 /// The result of a successful [`MailboxEdit`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailboxEditReceipt {
@@ -109,6 +127,8 @@ impl MailboxEditReceipt {
 
 #[cfg(test)]
 mod tests {
+    use engine_core::error::FailureClass;
+
     use super::*;
 
     fn id(value: &str) -> MailboxId {
@@ -138,6 +158,23 @@ mod tests {
         for edit in &edits {
             assert_eq!(edit.target(), Some(&id("f1")));
         }
+    }
+
+    #[test]
+    fn a_refused_name_is_invalid_state_and_its_detail_is_the_rule() {
+        let error = ProviderError::from(MailboxNameError::Separator);
+        assert_eq!(error.class(), FailureClass::InvalidState);
+        assert_eq!(error.detail(), MailboxNameError::Separator.to_string());
+    }
+
+    #[test]
+    fn a_refused_name_carries_the_typed_rule_as_its_source() {
+        let error = ProviderError::from(MailboxNameError::Control);
+        let source = std::error::Error::source(&error).expect("the typed error");
+        assert_eq!(
+            source.downcast_ref::<MailboxNameError>(),
+            Some(&MailboxNameError::Control)
+        );
     }
 
     #[test]

@@ -300,15 +300,23 @@ async fn a_trashed_folder_goes_into_trash_under_a_free_name() {
 }
 
 #[tokio::test]
-async fn a_name_no_transport_accepts_is_refused_before_anything_is_queued() {
+async fn a_name_outside_the_portable_policy_is_refused_before_anything_is_queued() {
     let tree = Tree::new();
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
     let err = change(&tree, &store, "rename-bad", &rename_work("a/b"))
         .await
         .expect_err("refused");
-    assert!(matches!(err, crate::SyncError::Provider(ref e)
-        if e.class() == FailureClass::InvalidState));
+    let crate::SyncError::Provider(ref refused) = err else {
+        panic!("a provider-shaped refusal: {err:?}");
+    };
+    assert_eq!(refused.class(), FailureClass::InvalidState);
+    // The typed rule rides along, so a host can say which one the name broke.
+    let source = std::error::Error::source(refused).expect("the typed rule");
+    assert_eq!(
+        source.downcast_ref::<engine_core::mail::MailboxNameError>(),
+        Some(&engine_core::mail::MailboxNameError::Separator)
+    );
     assert_eq!(store.list_pending_ops(account()).await.unwrap(), []);
     assert_eq!(tree.sent(), []);
 }

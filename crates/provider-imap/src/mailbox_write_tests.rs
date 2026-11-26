@@ -158,7 +158,7 @@ async fn a_folder_the_list_already_holds_is_not_created_again() {
 }
 
 #[tokio::test]
-async fn a_name_carrying_the_delimiter_is_refused_before_anything_is_sent() {
+async fn a_name_carrying_the_delimiter_is_refused_before_any_change_is_sent() {
     let create = MailboxEdit::Create {
         name: "a/b".into(),
         parent: None,
@@ -450,3 +450,7 @@ async fn a_shared_store_keeps_its_reserved_inbox_name_too() {
     assert_eq!(result.unwrap_err().class(), FailureClass::InvalidState);
     assert!(!sent.contains("CREATE"), "{sent}");
 }
+
+// The names IMAP can and cannot carry as one level, beside the delimiter test above.
+#[path = "mailbox_write_name_tests.rs"]
+mod names;
