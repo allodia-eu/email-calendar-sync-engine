@@ -120,6 +120,15 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-features
 
+      # An id's or a cursor's own `Debug` prints its value only where engine-core has debug
+      # assertions (`engine_core::redact`), so the run above sees only the shown form. This one
+      # builds engine-core without them and runs the unit tests of the crates whose types use
+      # `redact::Content`, so an impl reverted to `#[derive(Debug)]` fails. Mirrors AGENTS.md's gate.
+      - name: Test the redacted Debug (engine-core without debug assertions)
+        run: >-
+          cargo test --config 'profile.dev.package.engine-core.debug-assertions=false'
+          --all-features --lib -p engine-core -p engine-provider -p provider-graph -p provider-jmap
+
       - name: Docs
         run: cargo doc --workspace --all-features --no-deps
 

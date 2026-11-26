@@ -334,8 +334,21 @@ cargo +nightly fmt --all --check      # must now be clean
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo build --workspace --all-features
 cargo test --workspace --all-features
+cargo test --config 'profile.dev.package.engine-core.debug-assertions=false' \
+  --all-features --lib -p engine-core -p engine-provider -p provider-graph -p provider-jmap
 cargo doc --workspace --all-features --no-deps
 ```
+
+**The second `cargo test` is the redacted `Debug`.** An id's or a cursor's own `Debug` prints its
+value only where engine-core is built with debug assertions (`engine_core::redact`,
+`modeling.md`), so the plain test run only ever sees the shown form, and an impl reverted to
+`#[derive(Debug)]` would stay green. This run builds engine-core without them and runs the unit
+tests of the crates whose types use `redact::Content`; add a crate to the list when one of its
+types does. The override names engine-core alone, because it is engine-core's build that decides,
+which keeps the third-party dependency tree shared with the first run (one extra build of the
+workspace crates, about 300 MB). It goes through `profile.dev`, whose `package` overrides
+`profile.test` inherits (see the comment in the root [`Cargo.toml`](Cargo.toml)), so it reaches
+every unit of the run: engine-core's own tests and engine-core built for the other crates' tests.
 
 **Every checkout builds in its own `target/`**, Cargo's default, so a new worktree's first build
 compiles the whole dependency tree and holds several GB of its own. ⚠️ Never point two checkouts at

@@ -36,6 +36,8 @@ use crate::{error::JmapError, request::capability, session::Session};
 /// ([`Session::mail_account_id`] and its siblings). It is not the engine's host-assigned
 /// [`AccountId`](engine_core::ids::AccountId), and it is a type of its own so the two cannot be
 /// mixed up. It serializes as the bare string, so it goes into a call's arguments as it is.
+/// Some servers name an account by its user's login, so `Debug` shows the value only where
+/// [`engine_core::redact::SHOWS_VALUES`] holds; `Display` and [`as_str`](Self::as_str) always do.
 ///
 /// # Examples
 ///
@@ -50,9 +52,17 @@ use crate::{error::JmapError, request::capability, session::Session};
 ///     Ok(request)
 /// }
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct JmapAccountId(String);
+
+impl fmt::Debug for JmapAccountId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("JmapAccountId")
+            .field(&engine_core::redact::Content(&self.0))
+            .finish()
+    }
+}
 
 impl JmapAccountId {
     /// An account id as a server names it, unchecked.
@@ -455,6 +465,20 @@ mod tests {
         assert!(!accounts[0].personal && !accounts[0].read_only);
         assert!(accounts[0].name.is_none());
         assert!(!accounts[0].supports(capability::MAIL));
+    }
+
+    #[test]
+    fn debug_shows_an_account_id_only_where_the_build_shows_values() {
+        // Cyrus-style servers name an account by its user's login.
+        let expected = if engine_core::redact::SHOWS_VALUES {
+            r#"JmapAccountId("alice@test.local")"#
+        } else {
+            "JmapAccountId(<redacted, 16 bytes>)"
+        };
+        assert_eq!(
+            format!("{:?}", JmapAccountId::new("alice@test.local")),
+            expected
+        );
     }
 
     #[test]

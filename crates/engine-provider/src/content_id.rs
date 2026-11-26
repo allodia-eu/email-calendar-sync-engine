@@ -8,9 +8,21 @@ use serde::{Deserialize, Serialize};
 ///
 /// The type keeps inline-image references distinct from arbitrary strings and
 /// prevents the characters that would break the header boundary.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// A generated `Content-ID` commonly ends in the sender's domain, so `Debug` shows the value
+/// only where [`engine_core::redact::SHOWS_VALUES`] holds; `Display` and
+/// [`as_str`](Self::as_str) always do.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ContentIdHeader(Box<str>);
+
+impl fmt::Debug for ContentIdHeader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ContentIdHeader")
+            .field(&engine_core::redact::Content(&self.0))
+            .finish()
+    }
+}
 
 impl ContentIdHeader {
     /// Builds a content id value without surrounding angle brackets.
@@ -81,3 +93,20 @@ impl fmt::Display for ContentIdError {
 }
 
 impl std::error::Error for ContentIdError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_shows_a_content_id_only_where_the_build_shows_values() {
+        // A generated `Content-ID` commonly ends in the sender's domain.
+        let id = ContentIdHeader::new("logo.1@mail.example.com").unwrap();
+        let expected = if engine_core::redact::SHOWS_VALUES {
+            r#"ContentIdHeader("logo.1@mail.example.com")"#
+        } else {
+            "ContentIdHeader(<redacted, 23 bytes>)"
+        };
+        assert_eq!(format!("{id:?}"), expected);
+    }
+}

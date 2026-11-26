@@ -101,3 +101,19 @@ fn the_refusal_reaches_a_provider_caller_as_permanent_without_echoing_the_input(
     assert!(err.detail().contains("U+000A"), "{err}");
     assert!(!err.detail().contains("X-Injected"), "{err}");
 }
+
+#[test]
+fn an_address_shows_in_debug_only_where_the_build_shows_values() {
+    let address = MailboxAddress::new("info@example.org").unwrap();
+    let expected = if engine_core::redact::SHOWS_VALUES {
+        r#"MailboxAddress("info@example.org")"#
+    } else {
+        "MailboxAddress(<redacted, 16 bytes>)"
+    };
+    assert_eq!(format!("{address:?}"), expected);
+    // The principal around it says only that an address is there, in every build.
+    assert_eq!(
+        format!("{:?}", MailboxPrincipal::User(address)),
+        "User(address present)"
+    );
+}

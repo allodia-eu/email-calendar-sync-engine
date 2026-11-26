@@ -29,8 +29,19 @@ use engine_core::mail::EmailAddress;
 /// reads it from [`SenderIdentity::id`] and passes it back to
 /// [`Provider::set_sender_name`](crate::Provider::set_sender_name); nothing else may be
 /// inferred from its contents.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// Graph and Gmail use the send-as address itself, so `Debug` shows the value only where
+/// [`engine_core::redact::SHOWS_VALUES`] holds; `Display` and [`as_str`](Self::as_str) always do.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SenderIdentityId(Box<str>);
+
+impl fmt::Debug for SenderIdentityId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("SenderIdentityId")
+            .field(&engine_core::redact::Content(&self.0))
+            .finish()
+    }
+}
 
 impl SenderIdentityId {
     /// Wraps a provider-assigned identity handle.
@@ -133,6 +144,20 @@ mod tests {
             EmailAddress::new("bob@example.com"),
         );
         assert!(identity.address.name.is_none());
+    }
+
+    #[test]
+    fn debug_shows_the_handle_only_where_the_build_shows_values() {
+        // Graph and Gmail use the send-as address as the handle.
+        let expected = if engine_core::redact::SHOWS_VALUES {
+            r#"SenderIdentityId("alice@example.com")"#
+        } else {
+            "SenderIdentityId(<redacted, 17 bytes>)"
+        };
+        assert_eq!(
+            format!("{:?}", SenderIdentityId::new("alice@example.com")),
+            expected
+        );
     }
 
     #[test]
