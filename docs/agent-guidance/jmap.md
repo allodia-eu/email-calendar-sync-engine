@@ -905,6 +905,11 @@ Fixtures: `sieve_get_rules_and_reply_response.json`, `sieve_set_create_rules_res
   PatchObject (RFC 8984 §1.4.11), so `locations/<id>/name` inside it addresses the master's
   location exactly as it does at the top level. Verified — Stalwart stores it expanded.
 
+  **A series move writes the map whole** (`calendar_patch_shift`): the keys name each
+  occurrence's original slot, a move of the series' start gives the occurrences other slots, and
+  a key cannot be renamed through a pointer. Each entry's contents are copied from the preserved
+  raw under its new key (`calendar-semantics.md`, `OverrideSurvival`).
+
   ⚠️ The shape is chosen from the base, so a series that gained its *first* override, or an
   entry for this occurrence, elsewhere between the read and the write loses it. JMAP carries no per-object
   revision to refuse the write on (`WriteGuard::Absent`), so nothing can detect it.

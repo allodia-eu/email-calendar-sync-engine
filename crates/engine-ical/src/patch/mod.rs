@@ -49,6 +49,7 @@
 
 mod conference;
 mod plan;
+mod shift;
 mod vevent;
 
 #[cfg(test)]
@@ -59,6 +60,8 @@ mod exclude_tests;
 mod guard_tests;
 #[cfg(test)]
 mod patch_tests;
+#[cfg(test)]
+mod shift_tests;
 #[cfg(test)]
 mod test_support;
 
@@ -109,6 +112,7 @@ pub fn patch_event_ical(
             };
             plan::plan(&doc, master, patch, base.as_ref(), &mut edits)?;
             plan::set_recurrence(&doc, master, &resource, patch, &mut edits)?;
+            shift::shift_slots(&doc, master, &resource, patch, &mut edits)?;
         }
         PatchTarget::Instance(occurrence) => {
             // A single occurrence has no rule of its own — it is one instance *of* a rule

@@ -125,8 +125,11 @@ pub struct OverrideSurvival {
     ///
     /// `false` on Graph and Google: both revert the occurrence to the pattern, so an edit
     /// the user made weeks ago is gone with no further warning than the one a host gives
-    /// from this flag. CalDAV and JMAP keep it — on CalDAV by construction, since the
-    /// structural patcher rewrites only the master `VEVENT`'s own lines.
+    /// from this flag. CalDAV and JMAP keep it, and keep it **attached**: an override is
+    /// named by its occurrence's original slot, so both adapters move every override and
+    /// exclusion to the slot the moved series gives it
+    /// ([`SeriesShift`](engine_core::calendar::SeriesShift)). Left at the old slot, it would be
+    /// kept and still be lost, drawn as an extra occurrence beside the one it was made for.
     pub survives_time_change: bool,
     /// Changing the **recurrence rule** keeps them.
     ///

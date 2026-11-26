@@ -26,6 +26,9 @@ mod recurrence;
 mod recurrence_format;
 mod recurrence_parse;
 mod recurrence_set;
+mod series_shift;
+#[cfg(test)]
+mod series_shift_tests;
 
 pub use alert::{Alert, AlertAction, Trigger};
 pub use calendar_collection::{Calendar, CalendarAccess};
@@ -46,3 +49,4 @@ pub use recurrence::{Frequency, NDay, RecurrenceBound, RecurrenceRule, Recurrenc
 pub use recurrence_format::{RruleFormatError, UntilForm, format_rrule};
 pub use recurrence_parse::{RruleParseError, parse_rrule};
 pub use recurrence_set::{Recurrence, RecurrenceOverride};
+pub use series_shift::SeriesShift;

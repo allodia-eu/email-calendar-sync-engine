@@ -61,6 +61,12 @@ impl LocalDateTime {
         self.0
     }
 
+    /// A wall clock from the underlying `time` value: the inverse of
+    /// [`as_primitive`](Self::as_primitive), for wall-clock arithmetic in this crate.
+    pub(crate) fn from_primitive(value: PrimitiveDateTime) -> Self {
+        Self(value)
+    }
+
     /// Returns the year.
     #[must_use]
     pub fn year(self) -> i32 {

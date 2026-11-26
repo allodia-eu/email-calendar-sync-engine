@@ -386,6 +386,10 @@ mod identity_tests;
 mod calendar_patch_tests;
 
 #[cfg(test)]
+#[path = "calendar_series_shift_tests.rs"]
+mod calendar_series_shift_tests;
+
+#[cfg(test)]
 #[path = "contact_tests.rs"]
 mod contact_tests;
 

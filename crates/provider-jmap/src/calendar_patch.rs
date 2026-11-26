@@ -173,7 +173,12 @@ pub(crate) fn patch_to_json(
     }
 
     match &edit.target {
-        PatchTarget::Series => out.append(&mut properties),
+        PatchTarget::Series => {
+            out.append(&mut properties);
+            if let Some(moved) = crate::calendar_patch_shift::moved_overrides(base, patch)? {
+                out.insert("recurrenceOverrides".to_owned(), moved);
+            }
+        }
         PatchTarget::Instance(occurrence) if !properties.is_empty() => {
             let start = local_date_time(&occurrence.start)?;
             let key = escape_pointer(&start);

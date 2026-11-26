@@ -49,11 +49,20 @@ fn moving_the_series_keeps_the_zone_and_bumps_the_sequence() {
     assert_only_changed(
         SERIES,
         &after,
-        &["DTSTART", "DTEND", "DTSTAMP", "LAST-MODIFIED", "SEQUENCE"],
+        &[
+            "DTSTART",
+            "DTEND",
+            "DTSTAMP",
+            "LAST-MODIFIED",
+            "SEQUENCE",
+            "EXDATE",
+        ],
     );
     // The zone survives: rendering this as UTC would move the event for everyone else.
     assert!(after.contains("DTSTART;TZID=Europe/Amsterdam:20260105T100000\r\n"));
     assert!(after.contains("DTEND;TZID=Europe/Amsterdam:20260105T104500\r\n"));
+    // The excluded Monday stays excluded, at its new slot (`shift_tests`).
+    assert!(after.contains("EXDATE;TZID=Europe/Amsterdam:20260119T100000\r\n"));
     // A move *is* significant, so attendees are told (RFC 5546 §3.2.8).
     assert!(after.contains("SEQUENCE:4\r\n"));
     assert!(after.contains("DTSTAMP:20260210T113000Z\r\n"));
