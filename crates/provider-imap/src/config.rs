@@ -202,11 +202,14 @@ impl ImapConfig {
     /// Once the account has connected, the service's greeting is read in the background, under a
     /// deadline of its own (10 s), so the mail never waits for it. Every provider of the account
     /// (not a shared store's) offers [`mail_rules`](engine_provider::Provider::mail_rules) and
-    /// [`vacation`](engine_provider::Provider::vacation) while that runs, each call waiting for
-    /// it; once it succeeded, the rules, and the reply where the server lists `vacation`; once it
-    /// failed, neither, and a call made meanwhile answers
-    /// [`item_unavailable`](engine_provider::ProviderError::item_unavailable). A failure that may
-    /// pass is probed again on a later dial, as any is after
+    /// [`vacation`](engine_provider::Provider::vacation) while the first probe runs, each call
+    /// waiting for it; once it succeeded, the rules, and the reply where the server lists
+    /// `vacation`; once it failed, neither, and a call made meanwhile answers `Retryable` where
+    /// the probe got no answer, or
+    /// [`item_unavailable`](engine_provider::ProviderError::item_unavailable) where the endpoint
+    /// answered that it is no ManageSieve service. A later probe is never waited for: the offer
+    /// stays what the last one found until it lands. A failure that may pass is probed again on a
+    /// later dial, as any is after
     /// [`ImapAccount::invalidate`](crate::ImapAccount::invalidate). The connect observer sees
     /// [`ConnectStep::Negotiated`](engine_provider::ConnectStep::Negotiated), or
     /// [`ConnectStep::Unavailable`](engine_provider::ConnectStep::Unavailable) with the class of

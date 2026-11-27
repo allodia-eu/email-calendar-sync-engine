@@ -163,13 +163,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
         Some(self)
     }
 
-    /// Over ManageSieve, where the host configured it ([`ImapConfig::with_managesieve`]), while a
-    /// probe of its greeting runs and after one succeeded (once the account connected, or after
-    /// a later dial following a failure that may pass or `ImapAccount::invalidate`); never for a
-    /// shared mail store, whose rules are its owner's. While a probe runs, each call waits for it
-    /// (at most its 10-second deadline), and where it failed the call answers
-    /// [`item_unavailable`](engine_provider::ProviderError::item_unavailable) and this answers
-    /// `None` from then on. `Some` says the service answers, not that signing in works: no
+    /// Over ManageSieve, where the host configured it ([`ImapConfig::with_managesieve`]): while
+    /// the account's first probe of its greeting runs, and after the last probe succeeded; never
+    /// for a shared mail store, whose rules are its owner's. While the first probe runs, each call
+    /// waits for it (at most its 10-second deadline). Where it failed, a call made meanwhile
+    /// answers [`Retryable`](engine_core::error::FailureClass::Retryable) when the probe got no
+    /// answer and [`item_unavailable`](engine_provider::ProviderError::item_unavailable) when the
+    /// endpoint answered that it is no ManageSieve service, and this answers `None` until a later
+    /// probe succeeds. A later probe (a later dial following a failure that may pass, or
+    /// `ImapAccount::invalidate`) is never waited for: this answers from the last finding until it
+    /// lands. `Some` says the service answers, not that signing in works: no
     /// credential was presented, so a credential ManageSieve does not carry, or a token where the
     /// server offers only `PLAIN`, fails at the first call.
     ///
