@@ -125,18 +125,27 @@ async fn run(label: &str, imap: &str, sieve: &str, user: &str, password: &str) {
             }
         }));
     let account = ImapAccount::connect(&config, connector()).await.unwrap();
-    assert!(
-        steps
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|step| step == "ManageSieve"),
-        "{label}"
-    );
     let provider = account.provider(MailboxId::try_from("INBOX").unwrap());
     let rules = engine_provider::Provider::mail_rules(&provider).expect("rules offered");
     let reply = engine_provider::Provider::vacation(&provider).expect("reply offered");
     let id = AccountId::try_from("live-managesieve").unwrap();
+    // The probe lands after the connect returned: a call waits for it, and the observer hears of
+    // it as it lands.
+    rules.rule_vocabulary(&id).await.unwrap();
+    let negotiated = || {
+        steps
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|step| step == "ManageSieve")
+    };
+    for _ in 0..50 {
+        if negotiated() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(negotiated(), "{label}");
 
     let mut admin = dial::connect(&config, config.managesieve.as_ref().unwrap(), &connector())
         .await
