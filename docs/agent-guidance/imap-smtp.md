@@ -980,7 +980,12 @@ connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "
   adapter knows a folder by its name, so the vocabulary leaves `FileIntoId` out
   (`RuleVocabulary::without`), and a rule another client wrote with `:mailboxid` is read carried
   whole (`engine_sieve::dialect::folder_ids_carried`) and copied back as it was, never handed to a
-  host as one of its folder ids.
+  host as one of its folder ids. A folder's id here is its full name, which `fileinto` takes, so
+  the vocabulary says the ids are paths (`RuleVocabulary::with_folder_ids_as_paths`) and
+  `RuleMailbox::for_folder` names a folder by its id as a path where no role names it. Live tests
+  file by a top-level folder's path (`live_provider_tests.rs`), but none calls `for_folder` or
+  `folder_in`; a nested or non-ASCII name follows RFC 5228 §4.1, and the round trip through the
+  adapter's writer and reader is proven offline only (`managesieve/rules_folder_tests.rs`).
 - **Import** (`managesieve/import.rs`, the `import` feature): `RulesImporter` through
   `engine_provider::import::append_rules` and `import_reply` over the same service
   (`providers.md`, "Importing rules and the reply"), answered by `Provider::rules_importer`

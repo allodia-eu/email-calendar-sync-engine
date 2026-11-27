@@ -84,13 +84,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> MailRules for ManageSie
 /// (Dovecot lists `MAXREDIRECTS` only then).
 ///
 /// Never filing by id: `fileinto :mailboxid` names an RFC 8474 `MAILBOXID`, and this adapter knows
-/// a folder by its name, so an id a host holds for it is no id the server would know.
+/// a folder by its name, so an id a host holds for it is no id the server would know. A folder's
+/// id here is its full name, which is what `fileinto` takes, so a folder is filed by its id as a
+/// path (`RuleVocabulary::with_folder_ids_as_paths`).
 fn vocabulary(capabilities: &Capabilities) -> RuleVocabulary {
     engine_sieve::dialect::vocabulary(
         capabilities.sieve.iter().map(String::as_str),
         capabilities.max_redirects,
     )
     .without(RuleFeature::FileIntoId)
+    .with_folder_ids_as_paths()
 }
 
 fn rule_set(state: &State) -> RuleSet {
@@ -245,3 +248,7 @@ fn refused_store(err: SieveError) -> ProviderError {
 #[cfg(test)]
 #[path = "rules_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "rules_folder_tests.rs"]
+mod folder_tests;

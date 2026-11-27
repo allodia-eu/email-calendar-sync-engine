@@ -208,6 +208,20 @@ Implemented as sketched, with these differences, each for a reason the code met:
 - `RuleMailbox` also has `Path(MailboxPath)`: a Sieve `fileinto` names a folder by path, and a
   rule read from a script must keep that name until something resolves it. `RuleMailbox::Role
   (Inbox)` needs no role extension anywhere: every transport has the inbox by name.
+- How a rule names one of the account's folders is the engine's, so a host building "move to this
+  folder" from a folder list knows no transport: `RuleMailbox::for_folder(folder, folders,
+  vocabulary)` answers the role where the folder is the only one with it and the account files by
+  role (judged as `plan_rules` judges it), else the id where it files by id, else the path where
+  the vocabulary says a folder's id is its path (`RuleVocabulary::with_folder_ids_as_paths`,
+  IMAP's), and `None` for a virtual collection (all mail, flagged, important) on any account, a
+  role a target holds only as a label of its own and adds no other (`TrashJunkArchiveOnly`), a
+  level holding no mail, or anything else. A role several folders share is no name for one of
+  them, since the server picks among them. `RuleMailbox::folder_in(folders, vocabulary)` is the
+  other way: the one folder with the role, the folder with the id, the folder whose id is the path
+  (only where ids are paths). A JMAP mailbox's name chain is not used as a path: no server has been
+  shown to read one, so on a JMAP server listing neither `mailboxid` nor `special-use` only the
+  inbox has a name. Each adapter's writer and reader round-trip every folder this names
+  (`rules_folder_tests.rs` in each adapter).
 - Marking an importance is a typed `Action::MarkImportance(Importance)`, not `Native`: it crosses
   kinds (Graph's `markImportance`, Sieve's `addheader "Importance"`, ≈), which `Native` never does.
 - A condition's header is `HeaderField::Subject` or `Named(String)`; addresses are

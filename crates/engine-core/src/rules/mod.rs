@@ -17,6 +17,8 @@
 //!   lists, for a transfer host's preflight, the rules an import holds back because they send mail
 //!   out of the account.
 //! - [`RulesReceipt`] is what a write answers.
+//! - [`RuleMailbox::for_folder`] is how a rule on an account names one of its folders, and
+//!   [`RuleMailbox::folder_in`] which folder a read rule names: one answer for every transport.
 //!
 //! Rule values, names, addresses and folder paths are content: every type here that carries
 //! them has a `Debug` that shows only kinds, counts and lengths.
@@ -27,6 +29,7 @@
 mod action;
 mod condition;
 mod folders;
+mod mailbox_name;
 mod outcome;
 mod plan;
 mod plan_support;
@@ -44,7 +47,7 @@ pub use condition::{
 };
 pub use folders::FolderMap;
 pub use outcome::{Kept, Loss, LossReason, RuleOutcome, RulePart};
-pub use plan::{ForwardingRules, PlanMode, RulesPlan, plan_rules};
+pub use plan::{ForwardingRules, PlanMode, PlannedRule, RulesPlan, plan_rules};
 pub use preflight::held_forwarding;
 pub use raw_rule::{Expansion, RawRule, RuleOrigin, RuleSyntax};
 pub use receipt::{FailedRule, ReplyEffect, RuleWriteFailure, RulesReceipt, RulesStored};

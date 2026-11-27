@@ -323,3 +323,7 @@ pub(crate) fn refused_script(key: &str, refusal: &Value) -> ProviderError {
 #[cfg(test)]
 #[path = "rules_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "rules_folder_tests.rs"]
+mod folder_tests;

@@ -127,6 +127,32 @@ pub use engine_core::{
 // `FailureClass` names a public field of `PendingOpRow`, so a host reading an outbox
 // row must be able to name its type without depending on `engine-core`.
 pub use engine_core::{error::FailureClass, mail::MailFlags, search_index::MailRow};
+// An account's mail rules and out-of-office reply, which a host's settings screen reaches
+// through `Provider::mail_rules` and `Provider::vacation` and edits directly: the model it
+// draws and builds, the plan that greys out what the account cannot hold, the receipts a write
+// answers, and how a rule names one of the account's folders (`RuleMailbox::for_folder`,
+// `RuleMailbox::folder_in`). Without these a host could reach the capability through
+// `Provider` and not name what it hands in or gets back. `ProviderError` is what each call
+// fails with: its class says whether asking again may help (a server that did not answer is
+// `Retryable`), and `is_item_unavailable` that the account cannot do what was asked as it
+// stands (a capability found missing, a script the server refused).
+pub use engine_core::{
+    raw::{RawRules, RawVacation},
+    rules::{
+        Action, AddressField, AddressPart, Condition, Expansion, FailedRule, FolderMap,
+        ForwardingRules, HeaderField, Kept, Loss, LossReason, MailRule, MailboxPath, Match,
+        MatchMode, MeField, NativeAction, NativeCondition, NativeKind, PlanMode, PlannedRule,
+        RawRule, ReplyEffect, RuleAddress, RuleBody, RuleFeature, RuleLimit, RuleMailbox, RuleName,
+        RuleOrigin, RuleOutcome, RulePart, RuleSet, RuleSyntax, RuleValueError, RuleVocabulary,
+        RuleWriteFailure, RulesActivation, RulesPlan, RulesReceipt, RulesStored, SizeBound,
+        Support, TextOp, TextTest, TypedRule, held_forwarding, is_phrase, plan_rules,
+    },
+    vacation::{
+        AutoReply, ReplyAudience, ReplyBodies, RulesEffect, VacationPart, VacationReceipt,
+        VacationResponse, VacationVocabulary, VacationWindow, WindowSupport,
+    },
+    version::{RuleSetVersion, VacationVersion},
+};
 /// How every HTTP provider answers a throttled reply, how many it may have in flight, and
 /// how a host hears about both.
 ///
@@ -153,13 +179,14 @@ pub use engine_provider::{
     DraftAttachmentDisposition, DraftCalendar, DraftReceipt, DraftRecurrence, EventDeletion,
     EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, IdentityControls,
     InvitationError, Invitee, InviteePatch, InviteeRole, JitsiMeetings, JitsiServerError,
-    KeywordName, MailEdit, MailEditReceipt, MailboxEdit, MailboxEditReceipt, MailboxWrites,
-    MeetingDraft, MeetingKey, MeetingKeyError, MeetingRequest, MeetingService, MessageReport,
-    NewConference, Occurrence, OverrideSurvival, PatchTarget, Provider, RecurrenceEdit,
-    ReplyDelivery, ReportControls, ReportEvidence, ReportReceipt, ReportVerdict, ReportVerdicts,
-    RsvpControls, RsvpResponse, SchedulingIdentity, SenderIdentity, SenderIdentityId, SentCopy,
-    SharedAccount, SharedAccounts, SourceStream, StoreDomains, SubmissionReceipt, TextEdit,
-    WriteGuard, WritePrecondition,
+    KeywordName, MailEdit, MailEditReceipt, MailRules, MailboxEdit, MailboxEditReceipt,
+    MailboxWrites, MeetingDraft, MeetingKey, MeetingKeyError, MeetingRequest, MeetingService,
+    MessageReport, NewConference, Occurrence, OverrideSurvival, PatchTarget, Provider,
+    ProviderError, ProviderResult, RecurrenceEdit, ReplyDelivery, ReportControls, ReportEvidence,
+    ReportReceipt, ReportVerdict, ReportVerdicts, RsvpControls, RsvpResponse, SchedulingIdentity,
+    SenderIdentity, SenderIdentityId, SentCopy, SharedAccount, SharedAccounts, SourceStream,
+    StoreDomains, SubmissionReceipt, TextEdit, Vacation, VacationPrecondition, WriteGuard,
+    WritePrecondition,
 };
 pub use engine_recurrence::{
     ExpandError, Horizon, available_zones, day_bounds_utc, is_supported_zone, resolve_instant,
