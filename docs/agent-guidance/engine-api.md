@@ -204,7 +204,10 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   `AccountProgress`, `ProgressSnapshot`, `SyncScope`, `SyncWindow`, `MailboxWindows`,
   `CalendarDate`, and `MessageMetadata` and `RawMime` for a draft's save and a message's
   source) are re-exported so a host depends on `engine-api` alone. The concrete provider still
-  comes from the adapter crate.
+  comes from the adapter crate. So are the capabilities a host reaches through `Provider` and
+  drives itself: an account's mail rules and reply (`MailRules`, `Vacation`, the
+  `engine_core::rules` and `engine_core::vacation` models, `plan_rules`, `RuleSetVersion`,
+  `RawRules`, and `ProviderError`, which each of their calls fails with).
 - **Display-side timezone resolution.** `resolve_instant` / `resolve_instant_in` /
   `is_supported_zone` (with `ExpandError`) are re-exported from `engine-recurrence`
   so a host can resolve a stored event's start to its absolute UTC instant for

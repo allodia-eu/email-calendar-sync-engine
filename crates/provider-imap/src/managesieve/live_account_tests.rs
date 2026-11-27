@@ -1,7 +1,7 @@
-//! Gated live: an IMAP account's ManageSieve service at connect, and beside a reply a JMAP server
-//! runs from its own script, on Stalwart (as the scratch account `carol@`). Each test takes the
-//! module's lock and starts from an account with no script; skipped, saying so, where an address or
-//! the harness gate is unset.
+//! Gated live: an IMAP account's ManageSieve service once it connects, and beside a reply a JMAP
+//! server runs from its own script, on Stalwart (as the scratch account `carol@`). Each test takes
+//! the module's lock and starts from an account with no script; skipped, saying so, where an
+//! address or the harness gate is unset.
 
 use std::sync::{Arc, Mutex};
 
@@ -25,7 +25,8 @@ use super::{
 use crate::{ImapAccount, ImapConfig};
 
 #[tokio::test]
-async fn an_endpoint_that_does_not_answer_costs_the_probe_s_deadline_and_hides_the_rules() {
+async fn an_endpoint_that_does_not_answer_delays_no_connect_and_hides_the_rules_after_its_deadline()
+{
     let Some(imap) = address("stalwart", "STALWART_IMAP_ADDR") else {
         return;
     };
@@ -43,40 +44,49 @@ async fn an_endpoint_that_does_not_answer_costs_the_probe_s_deadline_and_hides_t
         .await
         .expect("mail connects whatever Sieve does");
     let took = started.elapsed();
+    // The probe runs in the background: the connect is the mail's alone.
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    let provider = account.provider(MailboxId::try_from("INBOX").unwrap());
+    let rules = engine_provider::Provider::mail_rules(&provider).expect("not known yet: offered");
+    let id = AccountId::try_from("live-managesieve").unwrap();
+    let folders = engine_provider::Provider::sync_mailboxes(&provider, &id, None).await;
+    assert!(folders.is_ok(), "the mail works meanwhile: {folders:?}");
+    // A call waits for the probe, which runs out its deadline, and is refused as not reached yet.
+    let read = rules.read_rules(&id).await;
+    let took = started.elapsed();
     held.abort();
-    // The probe's own deadline, and not the minute its reply bound would allow.
+    let err = read.expect_err("not reached");
+    assert_eq!(err.class(), FailureClass::Retryable, "{err:?}");
     assert!(
         took >= PROBE_DEADLINE && took < std::time::Duration::from_secs(20),
-        "{took:?}"
+        "the probe's own deadline, and not the minute its reply bound would allow: {took:?}"
     );
     assert_eq!(
         *steps.lock().unwrap(),
         [(ConnectService::ManageSieve, FailureClass::Retryable)]
     );
-    let provider = account.provider(MailboxId::try_from("INBOX").unwrap());
     assert!(engine_provider::Provider::mail_rules(&provider).is_none());
     assert!(engine_provider::Provider::vacation(&provider).is_none());
-    let id = AccountId::try_from("live-managesieve").unwrap();
-    let folders = engine_provider::Provider::sync_mailboxes(&provider, &id, None).await;
-    assert!(folders.is_ok(), "the mail works: {folders:?}");
 }
 
 #[tokio::test]
 async fn after_invalidate_the_service_is_probed_again_and_offered_as_it_answers_now() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     let (Some(imap), Some(sieve)) = (
         address("stalwart", "STALWART_IMAP_ADDR"),
         address("stalwart", "STALWART_MANAGESIEVE_ADDR"),
     ) else {
         return;
     };
-    // At first the endpoint relays to the harness's service; after that it greets without
-    // `STARTTLS`, as no ManageSieve server does.
+    // While `relaying`, the endpoint relays to the harness's service; after that it greets
+    // without `STARTTLS`, as no ManageSieve server does.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap();
+    let relaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let relays = Arc::clone(&relaying);
     let relay = tokio::spawn(async move {
-        let mut first = true;
         while let Ok((mut inbound, _)) = listener.accept().await {
-            if !std::mem::take(&mut first) {
+            if !relays.load(std::sync::atomic::Ordering::SeqCst) {
                 let _ = inbound
                     .write_all(b"\"IMPLEMENTATION\" \"plain\"\r\nOK\r\n")
                     .await;
@@ -93,17 +103,33 @@ async fn after_invalidate_the_service_is_probed_again_and_offered_as_it_answers_
     let (config, steps) = observed(&imap, &port.to_string());
     let account = ImapAccount::connect(&config, connector()).await.unwrap();
     let provider = account.provider(MailboxId::try_from("INBOX").unwrap());
-    let offered_at_connect = engine_provider::Provider::mail_rules(&provider).is_some();
-    // A new network: the next dial probes again, and finds no ManageSieve there now.
-    account.invalidate();
     let id = AccountId::try_from("live-managesieve").unwrap();
+    let rules = engine_provider::Provider::mail_rules(&provider).expect("offered");
+    // The call waits for the probe at connect, which finds the service.
+    let read_at_connect = rules.read_rules(&id).await;
+    // A new network: the next dial starts a probe, and it finds no ManageSieve there now.
+    relaying.store(false, std::sync::atomic::Ordering::SeqCst);
+    account.invalidate();
     let folders = engine_provider::Provider::sync_mailboxes(&provider, &id, None).await;
+    // Nothing waits for that probe: the rules stay offered until it lands, within its deadline.
+    let deadline = tokio::time::Instant::now() + PROBE_DEADLINE + std::time::Duration::from_secs(5);
+    while engine_provider::Provider::mail_rules(&provider).is_some()
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let hidden = engine_provider::Provider::mail_rules(&provider).is_none();
+    // A definite answer: a call through the reference taken before is refused as not offered.
+    let read_after = rules.read_rules(&id).await;
     relay.abort();
-    assert!(offered_at_connect);
+    assert!(read_at_connect.is_ok(), "{read_at_connect:?}");
     assert!(folders.is_ok(), "{folders:?}");
+    assert!(hidden, "hidden once a probe failed");
     assert!(
-        engine_provider::Provider::mail_rules(&provider).is_none(),
-        "hidden once a probe failed"
+        read_after
+            .as_ref()
+            .is_err_and(engine_provider::ProviderError::is_item_unavailable),
+        "{read_after:?}"
     );
     assert_eq!(
         *steps.lock().unwrap(),

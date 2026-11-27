@@ -18,8 +18,10 @@ use crate::{ProviderError, ProviderResult, WriteGuard};
 /// An account's mail rules: what they can say, read them, and replace them.
 ///
 /// An adapter that can implements this and answers `Some(self)` from
-/// [`Provider::mail_rules`](crate::Provider::mail_rules), and only for an account that has rules
-/// at all, so the answer is the capability check.
+/// [`Provider::mail_rules`](crate::Provider::mail_rules) only for an account that has rules, or
+/// may have them while the adapter has not yet found out (an IMAP account's first ManageSieve
+/// probe, during which a call waits for the answer): `Some` is the capability check, and a call
+/// refused as described there says it turned out missing.
 #[async_trait]
 pub trait MailRules: Send + Sync {
     /// What this account's rule language can express, for

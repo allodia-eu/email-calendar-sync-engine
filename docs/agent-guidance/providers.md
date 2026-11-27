@@ -433,6 +433,13 @@ An account's rules are a setting too, written whole and directly, guarded by the
 - **A write never switches stored rules on or off** (`RuleSet::activation`, `RulesStored`), and
   says on the receipt whether the rules it wrote run (`RulesReceipt::activation`) and what it did
   to a running reply (`ReplyEffect`).
+- **A rule names a folder in one way per account, decided here**: `RuleMailbox::for_folder(folder,
+  folders, vocabulary)` answers how a rule files into one of the account's listed folders (by role
+  where it alone has the role and the account files by role, else by id, else by path where the
+  vocabulary says the folder ids are paths, `RuleVocabulary::with_folder_ids_as_paths`), or `None`
+  (a virtual collection among others); `RuleMailbox::folder_in` answers which listed folder a read
+  rule names. Each adapter's writer and reader round-trip what it
+  answers (`rules_folder_tests.rs` in each). No path is made up where the ids are not paths.
 - **Rule values are content**: names, addresses, folders, test values. Errors and `Debug` carry
   kinds, positions and counts only.
 

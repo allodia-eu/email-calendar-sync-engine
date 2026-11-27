@@ -24,7 +24,7 @@ engine-sieve = { workspace = true }
 # the live TCP connect; `time` for the IDLE watcher's keep-alive timeout (the
 # RFC 2177 re-issue clock). The protocol is generic over `AsyncRead + AsyncWrite`,
 # so the offline tests drive it over an in-memory duplex with no socket or TLS.
-tokio = { workspace = true, features = ["io-util", "net", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
 tokio-rustls = { workspace = true }
 # The self-signed certificate `test_server` presents; only with the `test-server` feature.
 rcgen = { version = "0.13", optional = true }

@@ -29,11 +29,12 @@
 //!
 //! The asymmetry is the one [`ConnectionInfo`](crate::ConnectionInfo) already models: a
 //! `reqwest` adapter cannot report a TLS version, and Graph has no connect exchange at
-//! all.
+//! all. A step about an optional service beside the account (IMAP's ManageSieve) may arrive
+//! after `connect` has returned, and is lost where the account is dropped before it.
 //!
 //! | Adapter | Steps |
 //! |---|---|
-//! | `provider-imap` | [`TlsEstablished`](ConnectStep::TlsEstablished) after the handshake, [`Authenticated`](ConnectStep::Authenticated) after `LOGIN`, [`Negotiated`](ConnectStep::Negotiated) after `CAPABILITY`/`ENABLE`; where the host configured ManageSieve, [`Negotiated`](ConnectStep::Negotiated) with its Sieve extensions, or [`Unavailable`](ConnectStep::Unavailable) when it could not be reached |
+//! | `provider-imap` | [`TlsEstablished`](ConnectStep::TlsEstablished) after the handshake, [`Authenticated`](ConnectStep::Authenticated) after `LOGIN`, [`Negotiated`](ConnectStep::Negotiated) after `CAPABILITY`/`ENABLE`; where the host configured ManageSieve, [`Negotiated`](ConnectStep::Negotiated) with its Sieve extensions, or [`Unavailable`](ConnectStep::Unavailable) when it could not be reached, each after `connect` returned, from a probe nothing waits for, and never if the account is dropped before the probe lands |
 //! | `provider-jmap` | [`Redirected`](ConnectStep::Redirected) per well-known hop, [`Authenticated`](ConnectStep::Authenticated) on the session `2xx`, [`Discovered`](ConnectStep::Discovered) with the `apiUrl` |
 //! | `provider-caldav` | [`Redirected`](ConnectStep::Redirected) per hop, [`Discovered`](ConnectStep::Discovered) with the calendar-home href |
 //! | `provider-caldav` (CardDAV) | [`Redirected`](ConnectStep::Redirected) per hop, [`Discovered`](ConnectStep::Discovered) with the address-book-home href, [`Negotiated`](ConnectStep::Negotiated) with the home's `DAV:` classes |
@@ -120,12 +121,13 @@ pub enum ConnectStep<'a> {
         /// and ordered stably, so two logs can be compared.
         features: &'a [&'a str],
     },
-    /// An optional service beside the account could not be reached at connect, so what it
-    /// serves is not offered, and the account works without it: a ManageSieve endpoint whose
-    /// greeting failed leaves the account's mail working and its rules unreachable.
+    /// An optional service beside the account could not be reached when it was probed, so what
+    /// it serves is not offered, and the account works without it: a ManageSieve endpoint whose
+    /// greeting failed leaves the account's mail working and its rules unreachable. The probe may
+    /// land after the connect has returned, so the step may come after it.
     ///
-    /// Reported once, because the absence alone (`mail_rules()` answering `None`) does not
-    /// tell a host that an endpoint it configured is wrong. It carries the
+    /// Reported once per probe, because the absence alone (`mail_rules()` answering `None`) does
+    /// not tell a host that an endpoint it configured is wrong. It carries the
     /// [`FailureClass`] and nothing else: no address, no server text.
     ///
     /// Build with [`ConnectStep::unavailable`].

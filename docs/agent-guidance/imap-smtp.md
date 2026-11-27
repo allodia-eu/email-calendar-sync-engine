@@ -930,20 +930,32 @@ connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "
 
 - **Configured, not discovered.** `ImapConfig::with_managesieve(addr, server_name)`; no SRV lookup.
   `STARTTLS` is the protocol's one transport and is required.
-- **Probed at connect, beside the mail, optional to the account.** `ImapAccount::connect` reads
-  the greeting and the capabilities over TLS (no credential) alongside the first IMAP connection
-  (`join`, so the outcome never depends on which finishes first), under the probe's own deadline
-  (`reach::PROBE_DEADLINE`, 10 s: a blackholed endpoint costs the connect that and no more), and
-  sends `LOGOUT` without waiting for its answer. Success: `ConnectStep::Negotiated("ManageSieve",
-  …)` and every provider of the account (not a shared store's) answers `mail_rules()`, and
-  `vacation()` where `vacation` is listed. A failure or a timeout:
-  `ConnectStep::Unavailable { service: ManageSieve, class }`, and neither is offered. A `Retryable`
-  one is probed again beside a later dial, as is any after `invalidate()`; a permanent one (no
-  `STARTTLS`, not ManageSieve) waits for `invalidate()`. After any failure no dial probes for
-  `PROBE_BACKOFF` (5 min), so a blackholed endpoint costs a dial at most one probe deadline per
-  backoff; a probe whose dial is dropped is wanted again. The accessors answer what the last probe
-  found, read in one load of the state byte (`probe_state::ProbeState`). Mail works either way. An offer does not mean signing in works:
-  a `Credential::ActingAs`, or a token against a `PLAIN`-only server, fails at the first call.
+- **Probed in the background once connected, optional to the account.** `ImapAccount::connect`
+  returns as soon as the first IMAP connection is up; the ManageSieve service then reads the
+  greeting and the capabilities over TLS (no credential) in a task of its own
+  (`reach::Prober`), under the probe's own deadline (`reach::PROBE_DEADLINE`, 10 s), and sends
+  `LOGOUT` without waiting for its answer. Nothing waits for the task, so an endpoint that drops
+  packets delays no connect and no dial; the service holds it and aborts it when dropped
+  (`reach::ProbeTask`, the newest probe's by generation), and the pool's dial reaches the service
+  through a `Weak`, so the service, and its probe, end with the account's providers. The probe's
+  socket takes no slot of the budget: one socket, one probe at a time, 10 s at most.
+  While the account's first probe runs, every provider of the account (not a shared store's)
+  answers `mail_rules()` and `vacation()`, and each call waits for it before it dials
+  (`ManageSieve::with_session`); a later probe is waited for by nothing, the last finding standing
+  until it lands. Success: `ConnectStep::Negotiated("ManageSieve", …)`, `mail_rules()`, and
+  `vacation()` where `vacation` is listed (a reply call where it is not is refused before
+  dialling). A failure or a timeout: `ConnectStep::Unavailable { service: ManageSieve, class }`,
+  neither is offered, and a call is refused without dialling, `Retryable` where the probe got no
+  answer (`SieveError::NotReached`), `item_unavailable` where it was told no (`NotOffered`). Both
+  steps arrive after `connect` returns, and not at all if the account is dropped first. A
+  `Retryable` failure is probed again when a later dial starts, as is any after `invalidate()`; a
+  permanent one (no `STARTTLS`, not ManageSieve) waits for `invalidate()`. After any failure no
+  probe starts for `PROBE_BACKOFF` (5 min), so a blackholed endpoint is dialled at most once per
+  backoff; a probe ended unfinished is wanted again (an unlanded first one offers nothing), and a
+  want that comes while one runs is kept for the next. The whole state sits behind one `watch`
+  channel, read and changed under its lock (`probe_state::ProbeState`). Mail works either way. An
+  offer does not mean signing in works: a `Credential::ActingAs`, or a token against a
+  `PLAIN`-only server, fails at the first call.
 - **A session per call, in the budget.** `ImapPool::reserve_other` takes a permit (closing the
   longest-parked IMAP socket when the shelf and the slots in use would pass the ceiling); the
   session dials, signs in (`AUTHENTICATE "PLAIN"` with `sasl::plain_response`, or
@@ -968,7 +980,12 @@ connection budget (`docs/design/filters-and-out-of-office.md`, decision 7, and "
   adapter knows a folder by its name, so the vocabulary leaves `FileIntoId` out
   (`RuleVocabulary::without`), and a rule another client wrote with `:mailboxid` is read carried
   whole (`engine_sieve::dialect::folder_ids_carried`) and copied back as it was, never handed to a
-  host as one of its folder ids.
+  host as one of its folder ids. A folder's id here is its full name, which `fileinto` takes, so
+  the vocabulary says the ids are paths (`RuleVocabulary::with_folder_ids_as_paths`) and
+  `RuleMailbox::for_folder` names a folder by its id as a path where no role names it. Live tests
+  file by a top-level folder's path (`live_provider_tests.rs`), but none calls `for_folder` or
+  `folder_in`; a nested or non-ASCII name follows RFC 5228 §4.1, and the round trip through the
+  adapter's writer and reader is proven offline only (`managesieve/rules_folder_tests.rs`).
 - **Import** (`managesieve/import.rs`, the `import` feature): `RulesImporter` through
   `engine_provider::import::append_rules` and `import_reply` over the same service
   (`providers.md`, "Importing rules and the reply"), answered by `Provider::rules_importer`

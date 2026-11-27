@@ -158,6 +158,7 @@ pub struct RuleVocabulary {
     folders: Option<FolderMap>,
     limits: BTreeSet<RuleLimit>,
     keywords: Option<BTreeSet<Keyword>>,
+    folder_ids_are_paths: bool,
 }
 
 impl RuleVocabulary {
@@ -250,6 +251,25 @@ impl RuleVocabulary {
     #[must_use]
     pub fn folders(&self) -> Option<&FolderMap> {
         self.folders.as_ref()
+    }
+
+    /// Names a folder by path in the very form the account's folder ids take, so a folder's id is
+    /// the path a rule files into it by (builder-style): an IMAP account, whose folder id is the
+    /// folder's full name in UTF-8, and whose Sieve `fileinto` takes a mailbox by that name, the
+    /// server's hierarchy separator included (RFC 5228 §4.1 files into `INBOX.harassment`).
+    /// Without it, a path names no folder the account listed
+    /// ([`RuleMailbox::for_folder`](super::RuleMailbox::for_folder)).
+    #[must_use]
+    pub fn with_folder_ids_as_paths(mut self) -> Self {
+        self.folder_ids_are_paths = true;
+        self
+    }
+
+    /// Whether a folder's id is the path a rule names it by
+    /// ([`with_folder_ids_as_paths`](Self::with_folder_ids_as_paths)).
+    #[must_use]
+    pub fn folder_ids_are_paths(&self) -> bool {
+        self.folder_ids_are_paths
     }
 
     /// Holds parts only within `limit` (builder-style).

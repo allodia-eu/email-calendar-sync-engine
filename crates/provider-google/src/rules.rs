@@ -203,3 +203,7 @@ impl MailRules for GmailProvider {
 #[cfg(test)]
 #[path = "rules_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "rules_folder_tests.rs"]
+mod folder_tests;
