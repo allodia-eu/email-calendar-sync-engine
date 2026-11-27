@@ -18,8 +18,10 @@ use crate::{ProviderError, ProviderResult, WriteGuard};
 /// An account's out-of-office reply: read it, and write it.
 ///
 /// An adapter that can implements this and answers `Some(self)` from
-/// [`Provider::vacation`](crate::Provider::vacation), and only for an account that has the
-/// setting at all, so the answer is the capability check.
+/// [`Provider::vacation`](crate::Provider::vacation) only for an account that has the setting, or
+/// may have it while the adapter has not yet found out (an IMAP account's first ManageSieve probe,
+/// during which a call waits for the answer): `Some` is the capability check, and a call refused
+/// as described there says it turned out missing.
 #[async_trait]
 pub trait Vacation: Send + Sync {
     /// What this account's reply can hold. A host offers only these parts, and

@@ -514,24 +514,38 @@ mailbox: its permission is a token scope, known only by asking, and a credential
 account), which a host answers by asking for the scope. ManageSieve is a module of
 `provider-imap`, sharing the adapter's TLS, SASL and the account's connection budget; its endpoint
 comes from host configuration, with no SRV discovery (RFC 5804 §1.8) for now. An IMAP provider
-answers `Some` only when the host gave it that endpoint and the greeting succeeded. On ManageSieve,
-rules and vacation are one script, so both traits are one object and share its version.
+answers `Some` only when the host gave it that endpoint, and only while its first greeting is
+being read or after the last one read succeeded. On ManageSieve, rules and vacation are one script, so both traits are one
+object and share its version.
 
 As built in slice 3 (`provider-imap/src/managesieve/`): `ImapConfig::with_managesieve(addr,
-server_name)` names the endpoint; `STARTTLS`, the protocol's one transport, is required. When the
-account connects it reads the greeting and what the server offers over TLS, with no credential,
-alongside the mail connect (joined, so the outcome never depends on which finishes first), under
-its own 10-second deadline, and leaves without waiting for `LOGOUT`'s answer.
-Where that succeeds the connect observer sees `ConnectStep::Negotiated("ManageSieve", extensions)`
-and `mail_rules()` answers `Some` (`vacation()` too where `vacation` is listed). Where it fails the
-observer sees `ConnectStep::Unavailable { service: ConnectService::ManageSieve, class }`, the class
-alone, and both answer `None`; mail works without them. The accessors answer what the last probe
-found: a failure that may pass (`Retryable`, a timeout) is probed again beside a later dial, and
-`invalidate()` asks for a probe whatever the last one found, so a blip at connect does not hide the
-rules for the account's lifetime. One that will not pass (no `STARTTLS`, not ManageSieve) waits for
-`invalidate()`. After any failure no dial probes for five minutes, so a blackholed endpoint costs a
-dial at most one probe deadline in that time, and a probe whose dial is dropped is wanted again.
-`Some` says the service answers, not that signing in works: nothing is signed in at connect. Each call opens a session of its own in a
+server_name)` names the endpoint; `STARTTLS`, the protocol's one transport, is required. Once the
+account has connected, a task of the service's own reads the greeting and what the server offers
+over TLS, with no credential, under its own 10-second deadline, and leaves without waiting for
+`LOGOUT`'s answer. Nothing waits for that task, so an endpoint that does not answer delays neither
+the connect nor any dial. The task belongs to the service and is ended when the account and its
+providers are dropped; the probe's socket takes no slot of the account's connection budget (one
+socket, one probe at a time, ten seconds at most), so the account may hold one socket over its
+ceiling meanwhile. While the account's first probe runs, `mail_rules()` and `vacation()` answer
+`Some`, since nothing is known yet, and each call of either waits for it before dialling, so a host
+can also wait for the answer through a call, at most the probe's deadline.
+Where the probe succeeds the connect observer sees `ConnectStep::Negotiated("ManageSieve",
+extensions)` and `mail_rules()` answers `Some` (`vacation()` too where `vacation` is listed; a
+reply call is refused before anything is dialled where it is not). Where it fails the observer
+sees `ConnectStep::Unavailable { service: ConnectService::ManageSieve, class }`, the class alone,
+and both answer `None`. A call made meanwhile, through a reference taken before, is refused before
+anything is dialled, with the probe's own verdict: `Retryable` where it got no answer (a timeout,
+the network), `item_unavailable` where the answer was definite (no `STARTTLS`, not ManageSieve).
+Mail works without them. Either step arrives after the connect has returned, and is not sent at
+all where the account is dropped before the probe lands. The accessors answer what the last probe
+found: a failure that may pass is probed again when a later dial starts, and `invalidate()` asks
+for a probe whatever the last one found, so a blip at connect does not hide the rules for the
+account's lifetime. One that will not pass waits for `invalidate()`. Neither the dial that starts
+a later probe nor a call waits for it: until it lands, the last probe's finding stands. After any
+failure no probe starts for five minutes, so a blackholed endpoint is dialled at most once in that
+time; a probe ended unfinished is wanted again (the account's first leaving nothing offered), and
+a want that comes while one runs is kept for the next.
+`Some` says the service answers, not that signing in works: nothing is signed in by the probe. Each call opens a session of its own in a
 slot of the account's connection budget (closing a parked IMAP socket when the shelf is full),
 with two minutes for the dial and the work, and then sends `LOGOUT` without waiting for its
 answer, so a slow `LOGOUT` never puts a finished write in doubt. The credential is asked as `CredentialProtocol::ManageSieve` for the origin

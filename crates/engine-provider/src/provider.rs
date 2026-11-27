@@ -445,6 +445,10 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
     /// adapter can learn that only by asking (Graph, whose permission is a token scope), it
     /// answers `Some`, and a credential without the permission shows as a `Permanent` refusal of
     /// the first read: the host asks the user to grant it, as for any refused scope.
+    /// While an adapter has not yet found out (an IMAP account's first ManageSieve probe) it
+    /// answers `Some` and a call waits for the answer; a setting found missing answers `None`
+    /// until a later probe finds it, and fails a call `item_unavailable` where the server said no,
+    /// `Retryable` where it did not answer.
     fn vacation(&self) -> Option<&dyn crate::Vacation> {
         None
     }
@@ -452,7 +456,7 @@ pub trait Provider: CalendarSync + CalendarWrites + MailboxWrites + Send + Sync 
     /// This adapter as [`MailRules`](crate::MailRules), the account's mail rules, or `None` where
     /// the account has none the adapter can reach (the default), as for
     /// [`vacation`](Self::vacation): on Graph `Some`, a missing permission showing as a
-    /// `Permanent` refusal of the first read.
+    /// `Permanent` refusal of the first read; on IMAP `Some` while its service is being probed.
     fn mail_rules(&self) -> Option<&dyn crate::MailRules> {
         None
     }

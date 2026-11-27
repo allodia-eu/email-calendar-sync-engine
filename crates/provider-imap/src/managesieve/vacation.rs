@@ -40,6 +40,7 @@ use engine_sieve::dialect::{
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{
+    probe_state::Offer,
     response::Capabilities,
     rules::{activate, refuse_stale, store},
     service::ManageSieve,
@@ -50,6 +51,7 @@ use super::{
 #[async_trait]
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Vacation for ManageSieve<T> {
     async fn vocabulary(&self, _account: &AccountId) -> ProviderResult<VacationVocabulary> {
+        refuse_unoffered(self).await?;
         self.with_session(async |session: &mut Session<T>| {
             refuse_unlisted(session)?;
             Ok(vocabulary(session.refresh_capabilities().await?))
@@ -65,6 +67,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Vacation for ManageSiev
     }
 
     async fn read_vacation(&self, _account: &AccountId) -> ProviderResult<VacationResponse> {
+        refuse_unoffered(self).await?;
         self.with_session(async |session: &mut Session<T>| {
             refuse_unlisted(session)?;
             read(&State::read(session).await?)
@@ -78,6 +81,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Vacation for ManageSiev
         precondition: VacationPrecondition<'_>,
         new: &VacationResponse,
     ) -> ProviderResult<VacationReceipt> {
+        refuse_unoffered(self).await?;
         self.with_session(async |session: &mut Session<T>| {
             refuse_unlisted(session)?;
             refuse_unheld_vacation(&vocabulary(session.refresh_capabilities().await?), new)?;
@@ -87,17 +91,29 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Vacation for ManageSiev
     }
 }
 
-/// Refuses where the server lists no `vacation`: the reply is offered before that is known when the
-/// probe at connect did not finish (`crate::managesieve::reach`), so each call checks.
+/// The words for a server that lists no `vacation`.
+const UNLISTED: &str =
+    "this account's Sieve server lists no vacation extension, so it keeps no reply";
+
+/// Refuses before anything is dialled where the probe found no `vacation`: the reply is offered
+/// while the account's first probe runs, before that is known (`crate::managesieve::reach`), and a
+/// call waits for it, so a call made then never signs in to a server that keeps no reply.
+async fn refuse_unoffered<T>(sieve: &ManageSieve<T>) -> ProviderResult<()> {
+    match sieve.probe.settled().await {
+        Offer::Found { reply: false } => Err(ProviderError::item_unavailable(UNLISTED)),
+        _ => Ok(()),
+    }
+}
+
+/// Refuses where the server lists no `vacation` once signed in: a server's list can change after
+/// the probe read it, so each call checks.
 fn refuse_unlisted<T: AsyncRead + AsyncWrite + Unpin + Send>(
     session: &Session<T>,
 ) -> ProviderResult<()> {
     if session.capabilities().lists("vacation") {
         return Ok(());
     }
-    Err(ProviderError::item_unavailable(
-        "this account's Sieve server lists no vacation extension, so it keeps no reply",
-    ))
+    Err(ProviderError::item_unavailable(UNLISTED))
 }
 
 /// What the rule can hold: a subject and one text body, to everyone, and a window where the server

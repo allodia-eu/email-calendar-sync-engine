@@ -7,7 +7,7 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -23,7 +23,8 @@ use tokio_rustls::{TlsConnector, client::TlsStream};
 use super::{
     dial::{self, SieveEndpoint},
     error::{SieveError, SieveResult},
-    probe_state::ProbeState,
+    probe_state::{Offer, ProbeState},
+    reach::{ProbeTask, Prober},
     session::Session,
 };
 use crate::{config::ImapConfig, pool::other::Budget};
@@ -40,9 +41,14 @@ pub(crate) type SieveDial<T> =
 pub(crate) struct ManageSieve<T> {
     dial: SieveDial<T>,
     budget: Arc<dyn Budget>,
-    /// What the last probe found, and whether a dial is to probe again
+    /// What the last probe found, whether one runs, and whether a dial is to start one
     /// (`crate::managesieve::reach`): the rules and the reply are offered only as it says.
-    pub(crate) probe: ProbeState,
+    pub(crate) probe: Arc<ProbeState>,
+    /// What probes the service, where anything does: the account's own service, not a scripted
+    /// one.
+    pub(super) prober: Option<Prober>,
+    /// The newest probe's generation and task, ended when the service is dropped.
+    pub(super) task: Mutex<Option<(u64, ProbeTask)>>,
 }
 
 impl<T> core::fmt::Debug for ManageSieve<T> {
@@ -55,14 +61,24 @@ impl<T> core::fmt::Debug for ManageSieve<T> {
 
 impl<T> ManageSieve<T> {
     /// The service `dial` signs in to, spending from `budget`, offered, with the reply where
-    /// `replies`. The account's own service is then recorded with its probe
-    /// ([`ProbeState::record`]).
+    /// `replies`, and probed by nothing. The account's own service is probed
+    /// ([`probed_by`](Self::probed_by)).
     pub(crate) fn new(dial: SieveDial<T>, budget: Arc<dyn Budget>, replies: bool) -> Self {
         Self {
             dial,
             budget,
-            probe: ProbeState::offered_with(replies),
+            probe: Arc::new(ProbeState::offered_with(replies)),
+            prober: None,
+            task: Mutex::new(None),
         }
+    }
+
+    /// The same service, probed by `prober` (builder-style): it knows nothing yet, and a probe
+    /// is wanted ([`ProbeState::unprobed`]).
+    pub(crate) fn probed_by(mut self, prober: Prober) -> Self {
+        self.prober = Some(prober);
+        self.probe = Arc::new(ProbeState::unprobed());
+        self
     }
 }
 
@@ -70,6 +86,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> ManageSieve<T> {
     /// Runs `work` over a signed-in session, holding a slot of the account's budget throughout,
     /// and sends `LOGOUT` after it whatever it answered, unless the stream failed under it, without
     /// waiting for the answer.
+    ///
+    /// The account's first probe, while it runs, is waited for first, within its own deadline.
+    /// Where the service is then not offered the call is refused before anything is dialled:
+    /// [`SieveError::NotReached`] where the last probe's failure may pass,
+    /// [`SieveError::NotOffered`] where it was a definite answer.
     ///
     /// The dial and the work together get [`SESSION_DEADLINE`]: each wait on the
     /// server is bounded on its own, but a server that answers a byte at a time inside each bound
@@ -79,6 +100,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> ManageSieve<T> {
         &self,
         work: impl AsyncFnOnce(&mut Session<T>) -> Result<R, E>,
     ) -> Result<R, E> {
+        match self.probe.settled().await {
+            Offer::Missing { may_pass: true } => return Err(E::from(SieveError::NotReached)),
+            Offer::Missing { may_pass: false } => return Err(E::from(SieveError::NotOffered)),
+            Offer::Probing | Offer::Found { .. } => {}
+        }
         let _slot = self.budget.reserve().await;
         let wrote = Arc::new(AtomicBool::new(false));
         let session = async {

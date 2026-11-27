@@ -254,7 +254,7 @@ async fn a_server_that_lists_no_vacation_keeps_no_reply() {
         service::{ManageSieve, SieveDial},
         test_support::OneSlot,
     };
-    // Offered because the probe at connect had not finished: each call checks the server's list.
+    // Offered while a probe ran, before the list was known: each call checks the server's list.
     let dial: SieveDial<crate::mock::MockStream> = Arc::new(|| {
         let (stream, _) =
             crate::mock::MockStream::new(b"\"SIEVE\" \"fileinto\"\r\nOK\r\nOK\r\n".to_vec());

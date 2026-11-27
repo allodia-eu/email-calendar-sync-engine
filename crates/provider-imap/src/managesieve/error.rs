@@ -22,6 +22,15 @@ pub(crate) enum SieveError {
     /// stored or switched on.
     #[error("the ManageSieve session ended after a write went out; it may have been applied")]
     Unconfirmed,
+    /// The service is not offered: its last probe had a definite answer (no `STARTTLS`, not a
+    /// ManageSieve server), so the account's providers no longer answer `mail_rules()` or
+    /// `vacation()`.
+    #[error("the account's ManageSieve endpoint is no ManageSieve service over TLS")]
+    NotOffered,
+    /// The service is not offered for now: its last probe failed in a way that may pass (the
+    /// network, a timeout), or never landed. It is probed again on a later dial.
+    #[error("the account's ManageSieve service did not answer its last probe")]
+    NotReached,
     /// The server answered `NO` to `command`, with `code` where it gave one.
     #[error("the ManageSieve server refused {command}{}", code_suffix(*.code))]
     Refused {
@@ -62,7 +71,7 @@ impl SieveError {
     pub(crate) fn code(&self) -> Option<ResponseCode> {
         match self {
             Self::Refused { code, .. } => *code,
-            Self::Imap(_) | Self::Unconfirmed => None,
+            Self::Imap(_) | Self::Unconfirmed | Self::NotOffered | Self::NotReached => None,
         }
     }
 }
@@ -72,12 +81,23 @@ impl From<SieveError> for ProviderError {
     /// quota on the number of scripts or the account's space is the target's own state, which
     /// waiting does not clear (`StorageFull`); anything else is the account's state refusing
     /// this command (`InvalidState`). A `QUOTA/MAXSIZE` on a script being stored is the
-    /// script's size, which the rules write classes itself before this.
+    /// script's size, which the rules write classes itself before this. A service found to be no
+    /// ManageSieve service is [`item_unavailable`](ProviderError::item_unavailable): nothing was
+    /// dialled, and asking again changes nothing until a later probe finds one there. One whose
+    /// probe got no answer is `Retryable`, as the probe was.
     fn from(error: SieveError) -> Self {
         let (command, code) = match error {
             SieveError::Imap(error) => return error.into(),
             SieveError::Unconfirmed => {
                 return ProviderError::needs_confirmation(error.to_string()).with_source(error);
+            }
+            // Nothing was dialled: the capability the caller reached is gone, as the accessors
+            // now say, until a later probe finds it again.
+            SieveError::NotOffered => {
+                return ProviderError::item_unavailable(error.to_string()).with_source(error);
+            }
+            SieveError::NotReached => {
+                return ProviderError::retryable(error.to_string()).with_source(error);
             }
             SieveError::Refused { command, code } => (command, code),
         };
@@ -150,6 +170,22 @@ mod tests {
             None,
             "a script too large is the script's fault, not the account's state"
         );
+    }
+
+    #[test]
+    fn a_service_not_offered_is_told_apart_from_a_server_that_did_not_answer() {
+        let gone = ProviderError::from(SieveError::NotOffered);
+        assert_eq!(gone.class(), FailureClass::Permanent);
+        assert!(gone.is_item_unavailable());
+        let unreached = ProviderError::from(SieveError::NotReached);
+        assert_eq!(unreached.class(), FailureClass::Retryable);
+        assert!(!unreached.is_item_unavailable());
+        let timed_out = ProviderError::from(SieveError::from(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "x",
+        )));
+        assert_eq!(timed_out.class(), FailureClass::Retryable);
+        assert!(!timed_out.is_item_unavailable());
     }
 
     #[test]

@@ -13,7 +13,7 @@
 //! under one budget.
 
 use std::{
-    sync::{Arc, OnceLock},
+    sync::{Arc, OnceLock, Weak},
     time::Duration,
 };
 
@@ -68,8 +68,8 @@ pub struct ImapAccount<S> {
     namespaces: Arc<OnceLock<Namespaces>>,
     /// Whether the session advertised Gmail's `X-GM-EXT-1` (`crate::gmail`).
     gmail: bool,
-    /// The account's rules and reply over ManageSieve, where configured and answering
-    /// (`crate::managesieve::reach`).
+    /// The account's rules and reply over ManageSieve, where configured; what it offers is what
+    /// its probe found (`crate::managesieve::reach`).
     sieve: Option<Arc<dyn Sieve>>,
     /// Who the account's source signs in as, which every connection in the pool presents.
     pub(crate) subject: CredentialSubject,
@@ -111,20 +111,7 @@ impl ImapAccount<TlsStream<TcpStream>> {
             .map(|settings| resolve_smtp(settings, &connector, config));
         // One identity for every connection the account opens, the first included.
         let presented = Arc::new(PresentedIdentity::default());
-        // ManageSieve is probed alongside the mail, under its own deadline, so it adds at most
-        // that to the connect (`crate::managesieve::reach`).
-        let (mail, probed) = match &config.managesieve {
-            None => (connect_session(config, &presented, &connector).await, None),
-            Some(endpoint) => {
-                // Boxed, so the two side by side do not make every caller's future large.
-                let (mail, probed) = tokio::join!(
-                    Box::pin(connect_session(config, &presented, &connector)),
-                    Box::pin(crate::managesieve::probe(endpoint, &connector))
-                );
-                (mail, Some(probed))
-            }
-        };
-        let (connection, tls_version) = mail?;
+        let (connection, tls_version) = connect_session(config, &presented, &connector).await?;
         let sieve_slot = Arc::new(OnceLock::new());
         let dial = dial_tls(
             config.clone(),
@@ -135,10 +122,10 @@ impl ImapAccount<TlsStream<TcpStream>> {
         let subject = config.credentials.subject().clone();
         let mut account = Self::build(connection, dial, smtp, config.since, tls_version, subject);
         let budget = Arc::clone(&account.pool) as Arc<dyn Budget>;
-        if let Some(sieve) =
-            probed.and_then(|probed| crate::managesieve::reach(config, &connector, budget, probed))
-        {
-            let _ = sieve_slot.set(Arc::clone(&sieve));
+        // ManageSieve is probed in the background, so the connect never waits for it
+        // (`crate::managesieve::reach`).
+        if let Some(sieve) = crate::managesieve::reach(config, &connector, budget) {
+            let _ = sieve_slot.set(Arc::downgrade(&sieve));
             account.sieve = Some(sieve);
         }
         Ok(account)
@@ -151,7 +138,8 @@ impl ImapAccount<TlsStream<TcpStream>> {
 /// [`ImapAccount::connect`] presents a token that is valid then, and every one signs in as the
 /// account the first connection signed in as (`presented`). Where the account's ManageSieve
 /// service wants another probe (after a failure that may pass, or [`ImapAccount::invalidate`]),
-/// the dial runs it alongside (`crate::managesieve::reprobe`).
+/// the dial starts one in the background and does not wait for it
+/// (`ManageSieve::reprobe`).
 fn dial_tls(
     config: ImapConfig,
     presented: Arc<PresentedIdentity>,
@@ -165,22 +153,21 @@ fn dial_tls(
         let connector = connector.clone();
         let sieve = Arc::clone(&sieve);
         Box::pin(async move {
-            let dial = connect_session(&config, &presented, &connector);
-            Box::pin(crate::managesieve::reprobe(
-                sieve.get().map(Arc::as_ref),
-                &config,
-                &connector,
-                dial,
-            ))
-            .await
-            .map(|(connection, _tls_version)| connection)
+            if let Some(sieve) = sieve.get().and_then(Weak::upgrade) {
+                sieve.reprobe();
+            }
+            connect_session(&config, &presented, &connector)
+                .await
+                .map(|(connection, _tls_version)| connection)
         })
     })
 }
 
 /// The account's ManageSieve service, set once the account's first connection is up, for the
-/// dials after it to probe again where it wants that.
-type SieveSlot = Arc<OnceLock<Arc<crate::managesieve::service::ManageSieve<TlsStream<TcpStream>>>>>;
+/// dials after it to probe again where it wants that. Weak: the service spends from the pool
+/// whose dial holds this, and must end with the account's providers, its probe with it.
+type SieveSlot =
+    Arc<OnceLock<Weak<crate::managesieve::service::ManageSieve<TlsStream<TcpStream>>>>>;
 
 impl<S> ImapAccount<S> {
     /// Builds an account around its first `connection`, advertising submission iff SMTP is

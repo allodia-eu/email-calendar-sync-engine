@@ -233,7 +233,7 @@ fn refused_store(err: SieveError) -> ProviderError {
             ..
         } => ProviderError::item_unavailable("the server refused the Sieve script as too large")
             .with_source(err),
-        SieveError::Refused { .. } => err.into(),
+        SieveError::Refused { .. } | SieveError::NotOffered | SieveError::NotReached => err.into(),
         // The command went out: the script may have been stored.
         SieveError::Imap(_) | SieveError::Unconfirmed => ProviderError::needs_confirmation(
             "the Sieve script may have been stored; read it again",

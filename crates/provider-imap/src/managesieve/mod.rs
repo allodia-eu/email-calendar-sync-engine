@@ -19,8 +19,8 @@
 //! - `state` — which script holds the rules and the reply, and the version a write is guarded by.
 //! - `rules`, `vacation` — [`MailRules`] and [`Vacation`] over it; `import` — the importer of both
 //!   (the `import` feature).
-//! - `reach` — the greeting read when the account connects, which decides whether the account's
-//!   providers offer the two.
+//! - `reach` — the greeting read in the background once the account connects, which decides whether
+//!   the account's providers offer the two; `probe_state` — what it found, and whether one runs.
 
 mod auth;
 pub(crate) mod dial;
@@ -38,14 +38,15 @@ mod state;
 mod vacation;
 
 use engine_provider::{MailRules, Vacation};
-pub(crate) use reach::{probe, reach, reprobe};
+pub(crate) use probe_state::Offer;
+pub(crate) use reach::reach;
 
 /// The rules and the reply of an account, as its providers hand them out: one object, since on
 /// ManageSieve they are one script with one version.
 pub(crate) trait Sieve: MailRules + Vacation {
-    /// What the last probe of the service found: `None` where it failed (nothing is offered),
-    /// else whether the server listed `vacation` (the reply is offered only then).
-    fn offered(&self) -> Option<bool>;
+    /// What the service offers: not known while a probe runs (both offered), else what the last
+    /// probe found.
+    fn offered(&self) -> Offer;
     /// Asks a later dial to probe (`ImapAccount::invalidate`).
     fn want_probe(&self);
     /// The rules and the reply as an importer (`import`).
@@ -56,7 +57,7 @@ pub(crate) trait Sieve: MailRules + Vacation {
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> Sieve
     for service::ManageSieve<T>
 {
-    fn offered(&self) -> Option<bool> {
+    fn offered(&self) -> Offer {
         self.probe.offered()
     }
 

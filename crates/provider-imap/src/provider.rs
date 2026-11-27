@@ -163,27 +163,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
         Some(self)
     }
 
-    /// Over ManageSieve, where the host configured it ([`ImapConfig::with_managesieve`]) and the
-    /// last probe of its greeting succeeded (at connect, or beside a later dial after a failure
-    /// that may pass or `ImapAccount::invalidate`); never for a shared mail store, whose rules are
-    /// its owner's. `Some` says the service answered, not that signing in works: no credential
-    /// was presented, so a credential ManageSieve does not carry, or a token where the server
-    /// offers only `PLAIN`, fails at the first call.
+    /// Over ManageSieve, where the host configured it ([`ImapConfig::with_managesieve`]), while a
+    /// probe of its greeting runs and after one succeeded (once the account connected, or after
+    /// a later dial following a failure that may pass or `ImapAccount::invalidate`); never for a
+    /// shared mail store, whose rules are its owner's. While a probe runs, each call waits for it
+    /// (at most its 10-second deadline), and where it failed the call answers
+    /// [`item_unavailable`](engine_provider::ProviderError::item_unavailable) and this answers
+    /// `None` from then on. `Some` says the service answers, not that signing in works: no
+    /// credential was presented, so a credential ManageSieve does not carry, or a token where the
+    /// server offers only `PLAIN`, fails at the first call.
     ///
     /// [`ImapConfig::with_managesieve`]: crate::ImapConfig::with_managesieve
     fn mail_rules(&self) -> Option<&dyn engine_provider::MailRules> {
         self.sieve
             .as_deref()
-            .filter(|sieve| sieve.offered().is_some())
+            .filter(|sieve| sieve.offered().rules())
             .map(|sieve| sieve as &dyn engine_provider::MailRules)
     }
 
-    /// As [`mail_rules`](Self::mail_rules), where the server also listed `vacation`: the reply is
-    /// a rule of the same script, sharing its version. The same caveat on signing in holds.
+    /// As [`mail_rules`](Self::mail_rules), where the server also listed `vacation`, or while
+    /// that is not known yet: the reply is a rule of the same script, sharing its version. A call
+    /// where the server lists no `vacation` answers `item_unavailable`. The same caveat on signing
+    /// in holds.
     fn vacation(&self) -> Option<&dyn engine_provider::Vacation> {
         self.sieve
             .as_deref()
-            .filter(|sieve| sieve.offered() == Some(true))
+            .filter(|sieve| sieve.offered().reply())
             .map(|sieve| sieve as &dyn engine_provider::Vacation)
     }
 
@@ -192,7 +197,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> Provider for Ima
     fn rules_importer(&self) -> Option<&dyn engine_provider::import::RulesImporter> {
         self.sieve
             .as_deref()
-            .filter(|sieve| sieve.offered().is_some())
+            .filter(|sieve| sieve.offered().rules())
             .map(crate::managesieve::Sieve::importer)
     }
 
